@@ -104,7 +104,7 @@ export class AgentModel extends Model {
 
     let messages = seed.slice();
     for (let i = 0; i < maxHops; i++) {
-      const msg = await chatOnce(this.id, messages, { tools, tool_choice: "auto" }) ?? { content: 'Error' };
+      const msg = await chatOnce(this.id, messages, { tools, tool_choice: "auto", num_ctx: 128000 }) ?? { content: 'Error' };
       const { clean: response, tags } = TagParser.parse(msg.content || '');
 
       const content = isEmpty(msg.tool_calls ?? []) ? response : undefined;

@@ -59,6 +59,7 @@ export async function chatOnce(
   opts?: {
     tools?: ToolDef[];
     tool_choice?: "auto" | { type: "function"; function: { name: string } };
+    num_ctx?: number;
     temperature?: number;
     model?: string;
     baseUrl?: string;
