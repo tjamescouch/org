@@ -72,7 +72,7 @@ export class AgentModel extends Model {
     Be concise.
     `;
 
-    const seed: ChatMessage[] = [
+    const fullMessageHistory: ChatMessage[] = [
       ...this.context,
       { role: "system", from: "System", content: system },
       { role: "user", from: incoming.from, content: incoming.content},
@@ -89,7 +89,7 @@ export class AgentModel extends Model {
     let messages;
 
     try {
-      messages = await this.runWithTools(seed, tools, (c) => this._execTool(c), 15);
+      messages = await this.runWithTools(fullMessageHistory, tools, (c) => this._execTool(c), 15);
       for (const message of messages) {
         this.context.push({
           ts: new Date().toISOString(),
@@ -137,8 +137,9 @@ export class AgentModel extends Model {
 
       if (tags[0]?.kind === 'file') {
         this.fileToRedirectTo = recipient;
-        await this._deliver(response);
-
+        const payload = (response ?? msg.content ?? '');
+        const statusMsg = await this._deliver(payload);   // <-- get status
+        messages.push(statusMsg);                         // <-- now the model sees it
         continue;
       }
 
@@ -262,35 +263,35 @@ export class AgentModel extends Model {
     }
   }
 
-  private async _deliver(msg: string) {
-    const kind = this.fileToRedirectTo ? "file" : this.audience.kind;
-    const target = this.fileToRedirectTo ? this.fileToRedirectTo : this.audience.target;
-
-    switch (kind) {
-      case "group":
-        await this.broadcast(msg);
-        this._push({ ts: Date.now().toString(), from: this.id, content: msg, read: true, role: 'assistant' });
-        break;
-      case "direct":
-        await this.broadcast(msg, target);
-        this._push({ ts: Date.now().toString(), from: this.id, content: msg, read: true, role: 'assistant' });
-        break;
-      case "file":
-        const p = (!target.startsWith('/') && !target.startsWith('./')) ? `./${target}` : target;
-
-        try {
-          writeFileSync(p, msg + "\n", { flag: "w", encoding: "utf-8" });
-          this._push({ ts: Date.now().toString(), from: this.id, content: `\`\`\`${msg}\`\`\`\n=> Written to file ${p}`, role: 'tool', read: true });
-          console.log(`******* wrote file ${p}`);
-        } catch (e) {
-          console.error(`******* file write failed: ${e}`);
-          this._push({ ts: Date.now().toString(), from: this.id, content: `${JSON.stringify({ ok: false, err: String(e) })} Failed to write to file ${p}.`,  read: true, role: 'tool' });
-        }
-        break;
+  private async _deliver(raw: string): Promise<ChatMessage> {
+    const target = this.fileToRedirectTo;
+    if (!target) {
+      return { role: "system", from: this.id, content: "file_write skipped: no target file set" };
     }
 
-    if (this.fileToRedirectTo) this.audience = { kind: "group", target: "*" };
-    this.fileToRedirectTo = undefined;
+    try {
+      // ensure dir exists
+      const dir = target.includes("/") ? target.slice(0, target.lastIndexOf("/")) : ".";
+      await Bun.mkdir(dir || ".", { recursive: true });
+
+      // If upstream double-escaped newlines (\\n), de-escape once.
+      const text =
+        raw.includes("\\n") && !raw.includes("\n")
+          ? raw.replace(/\\r\\n/g, "\r\n").replace(/\\n/g, "\n")
+          : raw;
+
+      // overwrite
+      await Bun.write(target, text, { create: true, append: false });
+
+      const bytes = new TextEncoder().encode(text).length;
+      return { role: "system", from: this.id, content: `file_write ok: ${target} (+${bytes}B)` };
+    } catch (e: any) {
+      return {
+        role: "system",
+        from: this.id,
+        content: `file_write error: ${target}: ${e?.message ?? String(e)}`
+      };
+    }
   }
 
   private _push(msg: RoomMessage): void {
