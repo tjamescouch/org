@@ -17,7 +17,7 @@ const truncate = (s: string, length: number): string => {
   if (s.length <= length) {
     return s;
   }
-  return s?.slice(0, length) + '...';
+  return s.slice(0, length) + '...';
 }
 
 export class AgentModel extends Model {
