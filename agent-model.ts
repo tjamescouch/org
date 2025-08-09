@@ -230,7 +230,7 @@ export class AgentModel extends Model {
         new Response(proc.stderr).text(),
         proc.exited,
       ]);
-      const content =truncate(`${ functionName ? `Tool ${functionName}: ` : '' } Command: '${rawCmd}' -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
+      const content =truncate(`${ functionName ? `Tool ${functionName}: ` : '' } Command: '${rawCmd ?? cmd}' -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
 
       console.log(`\n\n\n******* sh -> ${content}`);
       return {
