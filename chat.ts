@@ -10,10 +10,12 @@ export interface ChatMessage {
   from: string;
   role: ChatRole;
   content: string;
+  read: boolean;
   name?: string;           // for tool messages
   tool_call_id?: string;   // for tool messages
   reasoning?: string;
   recipient?: string;
+  ts?: string;
 }
 
 export interface ToolDef {
@@ -39,10 +41,6 @@ export interface AssistantMessage {
   content?: string;
   reasoning?: string;
   tool_calls?: ToolCall[];
-}
-
-interface ChatCompletionResp {
-  choices: { message: AssistantMessage }[];
 }
 
 const formatMessage = (message: ChatMessage): any => {
@@ -107,7 +105,6 @@ export async function chatOnce(
   let namePrinted = false;
   let firstThink = true;
   let firstNotThink = true;
-  let firstTool = true;
   
 
   while (!done) {
