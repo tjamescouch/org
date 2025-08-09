@@ -1,14 +1,14 @@
-import { chatOnce, ToolDef, ChatMessage, ToolCall } from "./chat";
-import { Model, RoomMessage } from "./model";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { chatOnce, type ChatMessage, type ToolCall, type ToolDef } from "./chat";
+import { Model } from "./model";
+import {  writeFileSync } from "fs";
 import { channelLock } from "./channel-lock";
+import type { RoomMessage } from "./chat-room";
+import { TagParser } from "./tag-parser";
 
 type Audience =
-  | { kind: "group" }
+  | { kind: "group"; target: "*" }
   | { kind: "direct"; target: string }      // send only to a given model
-  | { kind: "file"; path: string };         // append to a file on host FS
+  | { kind: "file"; target: string };         // append to a file on host FS
 
 const isEmpty = (maybeArray: unknown[]): boolean => {
   return (maybeArray ?? []).length === 0;
@@ -18,7 +18,8 @@ export class AgentModel extends Model {
   private readonly context: RoomMessage[] = [];
   private readonly maxTurns: number;
   private readonly shellTimeout = 5 * 60; // seconds
-  private audience: Audience = { kind: "group" }; // default
+  private audience: Audience = { kind: "group", target: "*" }; // default
+  private fileToRedirectTo: string | undefined;
 
   constructor(id: string, maxTurns = 5) {
     super(id);
@@ -28,14 +29,9 @@ export class AgentModel extends Model {
   /* ------------------------------------------------------------ */
   async initialMessage(incoming: RoomMessage): Promise<void> {
     this._push(incoming);
-    console.log(`\n\n*** ${this.id}:\n${incoming.text}`);
+    console.log(`\n\n*** ${this.id}:\n${incoming.content}`);
 
-    await this.broadcast(incoming.text);
-  }
-
-  private chatModeInfo(): string {
-    const destination = this.audience.kind === 'file' ? ` responses are written to "${this.audience.path}".` : ` responses are sent to the group.`
-    return `You are currently in chat mode ${this.audience.kind}`;
+    await this.broadcast(incoming.content);
   }
 
   async receiveMessage(incoming: RoomMessage): Promise<void> {
@@ -50,9 +46,9 @@ export class AgentModel extends Model {
     You have access to basic unix commands. There is no unix command called apply_patch nor is there a tool with that name.
     You have the unix 'patch' command as well as bun, git, echo, cat, etc. Use these to manipulate files.
 
-    Alternately: To write to a file start your response with @<filename>. 
+    Alternately: to write to a file include a tag in the response with the format #<filename>. 
     Example:
-    @index.ts
+    #file:index.ts
     console.log("hello world");
 
     PLEASE stream files to disk rather than just chatting them with the group.
@@ -67,7 +63,7 @@ export class AgentModel extends Model {
     const seed: ChatMessage[] = [
       ...this.context,
       { role: "system", from: "System", content: system },
-      { role: "user", from: incoming.from, content: incoming.text},
+      { role: "user", from: incoming.from, content: incoming.content},
     ];
 
     this._push(incoming);
@@ -88,7 +84,13 @@ export class AgentModel extends Model {
 
     const lastReply = reply[reply.length - 1];
 
-    if (lastReply) await this._deliver(lastReply.content || lastReply.reasoning);
+    if (lastReply) {
+      this.fileToRedirectTo = lastReply.recipient?.slice(5);
+      if (this.fileToRedirectTo) {
+        this.audience = { kind: "file", target: this.fileToRedirectTo }
+      }
+      await this._deliver(lastReply.content || lastReply.reasoning || '');
+    }
   }
 
 
@@ -96,17 +98,19 @@ export class AgentModel extends Model {
     seed: ChatMessage[],
     tools: ToolDef[],
     execTool: (call: ToolCall) => Promise<ChatMessage>, // returns a {role:"tool", name, tool_call_id, content}
-    maxHops
+    maxHops: number
   ): Promise<ChatMessage[]> {
 
     let messages = seed.slice();
     for (let i = 0; i < maxHops; i++) {
       const msg = await chatOnce(this.id, messages, { tools, tool_choice: "auto" }) ?? { content: 'Error' };
+      const { clean: response, tags } = TagParser.parse(msg.content || '');
 
-      const content = isEmpty(msg.tool_calls) ? msg.content: undefined;
+      const content = isEmpty(msg.tool_calls ?? []) ? response : undefined;
+
 
       if(msg.reasoning) messages.push({ role: "assistant", from: this.id, content: `<think>${msg.reasoning}</think>`, reasoning: msg.reasoning});
-      if(msg.content) messages.push({ role: "assistant", from: this.id, content, reasoning: msg.reasoning });
+      if(msg.content && content) messages.push({ role: "assistant", from: this.id, content, reasoning: msg.reasoning, recipient: tags[0]?.value });
 
       if (!msg.tool_calls || msg.tool_calls.length === 0) {
         return messages;
@@ -219,45 +223,53 @@ export class AgentModel extends Model {
   private _setAudience(modeStr: string) {
     console.log("********* Setting chat mode: ", modeStr);
     if (modeStr === "group") {
-      this.audience = { kind: "group" };
+      this.audience = { kind: "group", target: "*" };
     } else if (modeStr.startsWith("direct:")) {
       this.audience = { kind: "direct", target: modeStr.slice(7) };
     } else if (modeStr.startsWith("file:")) {
-      this.audience = { kind: "file", path: modeStr.slice(5) };
+      this.audience = { kind: "file", target: modeStr.slice(5) };
     }
   }
 
   private async _deliver(msg: string) {
-    switch (this.audience.kind) {
+    const kind = this.fileToRedirectTo ? "file" : this.audience.kind;
+    const target = this.fileToRedirectTo ? this.fileToRedirectTo : this.audience.target;
+
+    switch (kind) {
       case "group":
         await this.broadcast(msg);
-        this._push({ ts: Date.now().toString(), from: this.id, text: msg });
+        this._push({ ts: Date.now().toString(), from: this.id, content: msg, read: true, role: 'assistant' });
         break;
       case "direct":
         await this.broadcast(msg, this.audience.target);
-        this._push({ ts: Date.now().toString(), from: this.id, text: msg });
+        this._push({ ts: Date.now().toString(), from: this.id, content: msg, read: true, role: 'assistant' });
         break;
       case "file":
+        let p = this.audience.target;
+        if (!p.startsWith('/') && !p.startsWith('./')) {
+          p = `./${p}`
+        }
+
         try {
-          let p = this.audience.path;
-          if (!p.startsWith('/') && !p.startsWith('./')) {
-            p = `./${p}`
-          }
-          writeFileSync(p, msg + "\n", { flag: "a", encoding: "utf-8" });
-          this._push({ ts: Date.now().toString(), from: this.id, text: `${msg}\nWritten to file ${p}` });
+          writeFileSync(p, msg + "\n", { flag: "w+", encoding: "utf-8" });
+          this._push({ ts: Date.now().toString(), from: this.id, content: `${msg}\nWritten to file ${p}`, role: 'assistant', read: true });
         } catch (e) {
-          console.error(`file append failed: ${e}`);
-          this._push({ ts: Date.now().toString(), from: this.id, text: `${msg}\nFailed to write to file ${p}.` });
+          console.error(`******* file append failed: ${e}`);
+          this._push({ ts: Date.now().toString(), from: this.id, content: `${msg}\nFailed to write to file ${p}.`,  read: true, role: 'assistant' });
         }
         break;
     }
+
+    if (this.fileToRedirectTo) this.audience = { kind: "group", target: "*" };
   }
 
   private _push(msg: RoomMessage): void {
     this.context.push({
+      ts: new Date().toISOString(),
       role: msg.from === this.id ? "assistant" : "user",
       from: msg.from,
-      content: msg.text
+      content: msg.content,
+      read: true,
     });
     const maxEntries = this.maxTurns * 2;
     while (this.context.length > maxEntries) this.context.shift();
