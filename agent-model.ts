@@ -6,24 +6,30 @@ import type { RoomMessage } from "./chat-room";
 import { TagParser } from "./tag-parser";
 
 type Audience =
-  | { kind: "group"; target: "*" }
-  | { kind: "direct"; target: string }      // send only to a given model
+  | { kind: "group"; target: "*" } | { kind: "direct"; target: string }      // send only to a given model
   | { kind: "file"; target: string };         // append to a file on host FS
 
 const isEmpty = (maybeArray: unknown[]): boolean => {
   return (maybeArray ?? []).length === 0;
 }
 
+const truncate = (s: string, length: number): string => {
+  if (s.length <= length) {
+    return s;
+  }
+  return s?.slice(0, length) + '...';
+}
+
 export class AgentModel extends Model {
   private readonly context: RoomMessage[] = [];
-  private readonly maxTurns: number;
   private readonly shellTimeout = 5 * 60; // seconds
   private audience: Audience = { kind: "group", target: "*" }; // default
   private fileToRedirectTo: string | undefined;
+  private maxShellReponseCharacters: number = 7000;
+  private maxMessagesInContext = 20;
 
-  constructor(id: string, maxTurns = 5) {
+  constructor(id: string) {
     super(id);
-    this.maxTurns = maxTurns;
   }
 
   /* ------------------------------------------------------------ */
@@ -44,14 +50,19 @@ export class AgentModel extends Model {
     It has git and bun installed.
     PLEASE use the file system.
     You have access to basic unix commands. There is no unix command called apply_patch nor is there a tool with that name.
-    You have the unix 'patch' command as well as bun, git, echo, cat, etc. Use these to manipulate files.
+    You have the unix 'patch' command as well as cd, pwd, bun, git, echo, cat, etc. Use these to manipulate files.
 
     Alternately: to write to a file include a tag at the very start of the response with the format #file:<filename>. This way you do not do a tool call and simply respond.
     Example:
     #file:index.ts
     console.log("hello world");
 
+    Any output after the tag will be redirected to the file, so avoid accidentally including other output or code fences etc. Just include the desired content of the file.
+
+    Terminal responses are limited to ${this.maxShellReponseCharacters} characters. So avoid ls -R on directories with many files.
+
     Prefer the above tagging approach for writing files longer than a few paragraphs.
+    You may only use one tag per response.
     PLEASE stream files to disk rather than just chatting them with the group.
     PLEASE run shell commands and test your work.
     DO NOT do the same thing over and over again (infinite loop)
@@ -75,22 +86,29 @@ export class AgentModel extends Model {
     ];
 
     const release = await channelLock.waitForLock(15 * 60 * 1000);
-    let reply;
+    let messages;
 
     try {
-      reply = await this.runWithTools(seed, tools, (c) => this._execTool(c), 15);
+      messages = await this.runWithTools(seed, tools, (c) => this._execTool(c), 15);
+      for (const message of messages) {
+        this.context.push({
+          ts: new Date().toISOString(),
+          role: message.role === 'tool' ? message.role : (message.from === this.id ? "assistant" : "user"),
+          from: message.from,
+          content: message.content,
+          read: true,
+        });
+      }
     } finally {
       release();
     }
 
-    const lastReply = reply[reply.length - 1];
+    const lastMessage = messages[messages.length - 1];
 
-    if (lastReply) {
-      this.fileToRedirectTo = lastReply.recipient;
-      if (this.fileToRedirectTo) {
-        this.audience = { kind: "file", target: this.fileToRedirectTo }
-      }
-      await this._deliver(lastReply.content || lastReply.reasoning || '');
+    if (lastMessage) {
+      await this._deliver(lastMessage.content || lastMessage.reasoning || '');
+    } else {
+      console.error('lastMessage is undefined');
     }
   }
 
@@ -107,14 +125,24 @@ export class AgentModel extends Model {
       const msg = await chatOnce(this.id, messages, { tools, tool_choice: "auto", num_ctx: 128000 }) ?? { content: 'Error' };
       const { clean: response, tags } = TagParser.parse(msg.content || '');
 
-      const content = isEmpty(msg.tool_calls ?? []) ? response : undefined;
-
+      let content = isEmpty(msg.tool_calls ?? []) ? response : undefined;
       const recipient = tags[0]?.value;
+
+      if (tags[0]?.kind === 'file') {
+        content = `I am writing the following content\n\`\`\`\n${content}\n\`\`\`\n to file ${recipient}`;
+      }
 
       if(msg.reasoning) messages.push({ role: "assistant", from: this.id, content: `<think>${msg.reasoning}</think>`, reasoning: msg.reasoning});
       if(msg.content && content) messages.push({ role: "assistant", from: this.id, content, reasoning: msg.reasoning, recipient });
 
-      if ((!msg.tool_calls || msg.tool_calls.length === 0) && tags[0]?.kind !== 'file') {
+      if (tags[0]?.kind === 'file') {
+        this.fileToRedirectTo = recipient;
+        await this._deliver(response);
+
+        continue;
+      }
+
+      if ((!msg.tool_calls || msg.tool_calls.length === 0)) {
         return messages;
       }
 
@@ -201,7 +229,8 @@ export class AgentModel extends Model {
         new Response(proc.stderr).text(),
         proc.exited,
       ]);
-      const content =`Tool: ${functionName} Command: ${cmd} -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code })
+      const content =truncate(`Tool: ${functionName} Command: ${cmd} -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
+
       console.log(`\n\n\n******* sh -> ${content}`);
       return {
         role: "tool",
@@ -251,10 +280,11 @@ export class AgentModel extends Model {
 
         try {
           writeFileSync(p, msg + "\n", { flag: "w", encoding: "utf-8" });
-          this._push({ ts: Date.now().toString(), from: this.id, content: `${msg}\nWritten to file ${p}`, role: 'assistant', read: true });
+          this._push({ ts: Date.now().toString(), from: this.id, content: `\`\`\`${msg}\`\`\`\n=> Written to file ${p}`, role: 'tool', read: true });
+          console.log(`******* wrote file ${p}`);
         } catch (e) {
           console.error(`******* file write failed: ${e}`);
-          this._push({ ts: Date.now().toString(), from: this.id, content: `${msg}\nFailed to write to file ${p}.`,  read: true, role: 'assistant' });
+          this._push({ ts: Date.now().toString(), from: this.id, content: `${JSON.stringify({ ok: false, err: String(e) })} Failed to write to file ${p}.`,  read: true, role: 'tool' });
         }
         break;
     }
@@ -266,12 +296,11 @@ export class AgentModel extends Model {
   private _push(msg: RoomMessage): void {
     this.context.push({
       ts: new Date().toISOString(),
-      role: msg.from === this.id ? "assistant" : "user",
+      role: msg.role === 'tool' ? msg.role : (msg.from === this.id ? "assistant" : "user"),
       from: msg.from,
       content: msg.content,
       read: true,
     });
-    const maxEntries = this.maxTurns * 2;
-    while (this.context.length > maxEntries) this.context.shift();
+    while (this.context.length > this.maxMessagesInContext) this.context.shift();
   }
 }
