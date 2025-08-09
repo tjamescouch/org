@@ -53,7 +53,7 @@ export class ChatRoom {
       
       void m.receiveMessage(msg).catch(e => console.error('receiveMessage error', e));
 
-      await new Promise((r) => setTimeout(r, 100)); //in case of infinite looping
+      //await new Promise((r) => setTimeout(r, 100)); //in case of infinite looping
     }
   }
 }
