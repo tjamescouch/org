@@ -2,7 +2,8 @@
   "name": "org",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "bun-types": "^1.2.19"
   },
   "peerDependencies": {
     "typescript": "^5"

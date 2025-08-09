@@ -31,7 +31,7 @@ export abstract class Model {
     }
 
     if (text) {
-      await this.room.broadcast(this, text, recipient);
+      await this.room.broadcast(this, text, recipient?.replace(/\@agent:/, "") ?? '');
     } else {
       console.warn(`${text} produced no output`);
     }

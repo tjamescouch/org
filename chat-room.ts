@@ -1,14 +1,16 @@
 // -------------------------------------------------------------------
 // 4️⃣  ChatRoom – the hub that wires everything together
 
+import type { ChatRole } from "./chat";
 import { Model } from "./model";
 
 
 export interface RoomMessage {
-  ts: Timestamp;          // when the message was created
+  role: ChatRole;
+  ts: string;          // when the message was created
   from: string;           // model.id that sent it
   to?: string;
-  text: string;           // raw message content
+  content: string;           // raw message content
   read: boolean;
 }
 
@@ -37,9 +39,9 @@ export class ChatRoom {
   }
 
   /** Internal method used by Model.broadcast */
-  async broadcast(sender: Model, text: string, recipient: string): Promise<void> {
+  async broadcast(sender: Model, content: string, recipient: string): Promise<void> {
     const ts = new Date().toISOString();
-    const msg: RoomMessage = { ts, from: sender.id, text, read: false, ...((recipient || undefined) && {to: recipient}) };
+    const msg: RoomMessage = { role: 'user', ts, from: sender.id, content, read: false, ...((recipient || undefined) && {to: recipient}) };
 
     // 1️⃣  Store in the room history
     this.history.push(msg);

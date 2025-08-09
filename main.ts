@@ -25,7 +25,7 @@ async function app() {
   await alice.initialMessage({
     ts: Date.now().toString(),
     from: 'alice',
-    text: initialMessage,
+    content: initialMessage,
     read: false,
   });
 

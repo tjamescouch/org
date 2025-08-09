@@ -5,6 +5,7 @@
       "name": "org",
       "devDependencies": {
         "@types/bun": "latest",
+        "bun-types": "^1.2.19",
       },
       "peerDependencies": {
         "typescript": "^5",

@@ -13,6 +13,7 @@ export interface ChatMessage {
   name?: string;           // for tool messages
   tool_call_id?: string;   // for tool messages
   reasoning?: string;
+  recipient?: string;
 }
 
 export interface ToolDef {
