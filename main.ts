@@ -23,6 +23,7 @@ async function app() {
   //const initialMessage = "Agents! Let's get to work on a project. It is a calculator written in typescript to be run by bun. Bob - you will do the coding. Carol - you will do the architecture. I will be the product person who makes the decisions.";
   const initialMessage = "Agents! Let's get to work on a project. It is a calculator written in typescript to be run by bun. Bob - you will do the coding. I will be the product person who makes the decisions.";
   await alice.initialMessage({
+    role: 'assistant',
     ts: Date.now().toString(),
     from: 'alice',
     content: initialMessage,
