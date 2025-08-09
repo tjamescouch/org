@@ -69,6 +69,7 @@ export class AgentModel extends Model {
     If you get stuck reach out to the group for help.
     Delegate where appropriate and avoid doing work that should be done by another agent.
     Please actually use the tools provided. Do not simply hallucinate tool calls.
+    DO NOT PUSH ANYTHING TO GITHUB.
     Be concise.
     `;
 
