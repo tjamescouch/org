@@ -1,9 +1,10 @@
+// main.ts — Bun: keepalive via timer + graceful shutdown
+
 import { ChatRoom } from "./chat-room";
 import { AgentModel } from "./agent-model";
 
-// Harden runtime so hidden async errors don't kill the process silently
-process.on("unhandledRejection", (e) => console.error("[unhandledRejection]", e));
-process.on("uncaughtException",  (e) => { console.error("[uncaughtException]", e); process.exitCode = 1; });
+process.on("unhandledRejection", e => console.error("[unhandledRejection]", e));
+process.on("uncaughtException",  e => { console.error("[uncaughtException]", e); process.exitCode = 1; });
 
 function waitForSignal(): Promise<void> {
   return new Promise((resolve) => {
@@ -16,17 +17,11 @@ function waitForSignal(): Promise<void> {
 async function app() {
   const room = new ChatRoom();
 
-  // Create models – give them distinct IDs
   const alice = new AgentModel("alice");
   const bob   = new AgentModel("bob");
-  // const carol = new AgentModel("carol");
-
-  // Register in the same room
   room.addModel(alice);
   room.addModel(bob);
-  // room.addModel(carol);
 
-  // Kick off the conversation – Alice speaks first.
   const initialMessage =
     "Agents! Let's get to work on a project. It is a calculator written in typescript to be run by bun. Bob - you will do the coding. I will be the product person who makes the decisions.";
 
@@ -38,10 +33,15 @@ async function app() {
     read: false,
   });
 
-  // KEEP RUNNING until Ctrl-C (replaces the 2s sleep that caused early exit)
+  // --- Bun-specific: a Promise alone won't keep the runtime alive.
+  // Hold a *real* handle. A ticking interval is simplest.
+  const keepAlive = setInterval(() => { /* tick to stay alive */ }, 60_000);
+
+  // Wait for Ctrl-C / SIGTERM
   await waitForSignal();
 
-  // Graceful shutdown if implemented
+  clearInterval(keepAlive);
+
   if (typeof (room as any).shutdown === "function") {
     await (room as any).shutdown();
   }
