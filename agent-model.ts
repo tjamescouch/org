@@ -109,11 +109,12 @@ export class AgentModel extends Model {
 
       const content = isEmpty(msg.tool_calls ?? []) ? response : undefined;
 
+      const recipient = tags[0]?.value;
 
       if(msg.reasoning) messages.push({ role: "assistant", from: this.id, content: `<think>${msg.reasoning}</think>`, reasoning: msg.reasoning});
-      if(msg.content && content) messages.push({ role: "assistant", from: this.id, content, reasoning: msg.reasoning, recipient: tags[0]?.value });
+      if(msg.content && content) messages.push({ role: "assistant", from: this.id, content, reasoning: msg.reasoning, recipient });
 
-      if (!msg.tool_calls || msg.tool_calls.length === 0) {
+      if ((!msg.tool_calls || msg.tool_calls.length === 0) && tags[0]?.kind !== 'file') {
         return messages;
       }
 
@@ -242,26 +243,24 @@ export class AgentModel extends Model {
         this._push({ ts: Date.now().toString(), from: this.id, content: msg, read: true, role: 'assistant' });
         break;
       case "direct":
-        await this.broadcast(msg, this.audience.target);
+        await this.broadcast(msg, target);
         this._push({ ts: Date.now().toString(), from: this.id, content: msg, read: true, role: 'assistant' });
         break;
       case "file":
-        let p = this.audience.target;
-        if (!p.startsWith('/') && !p.startsWith('./')) {
-          p = `./${p}`
-        }
+        const p = (!target.startsWith('/') && !target.startsWith('./')) ? `./${target}` : target;
 
         try {
-          writeFileSync(p, msg + "\n", { flag: "w+", encoding: "utf-8" });
+          writeFileSync(p, msg + "\n", { flag: "w", encoding: "utf-8" });
           this._push({ ts: Date.now().toString(), from: this.id, content: `${msg}\nWritten to file ${p}`, role: 'assistant', read: true });
         } catch (e) {
-          console.error(`******* file append failed: ${e}`);
+          console.error(`******* file write failed: ${e}`);
           this._push({ ts: Date.now().toString(), from: this.id, content: `${msg}\nFailed to write to file ${p}.`,  read: true, role: 'assistant' });
         }
         break;
     }
 
     if (this.fileToRedirectTo) this.audience = { kind: "group", target: "*" };
+    this.fileToRedirectTo = undefined;
   }
 
   private _push(msg: RoomMessage): void {
