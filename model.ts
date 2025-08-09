@@ -2,7 +2,7 @@
 // 1️⃣  Types used by the room
 
 import { ChatRoom } from "./chat-room";
-import { RoomMessage } from "./chat-room";
+import type { RoomMessage } from "./chat-room";
 
 // -------------------------------------------------------------------
 type Timestamp = string; // ISO string, e.g. "2025-08-06T12:34:56.789Z"
