@@ -128,7 +128,7 @@ export class AgentModel extends Model {
       const recipient = tags[0]?.value;
 
       if (tags[0]?.kind === 'file') {
-        content = `I am writing the following content\n\`\`\`\n${content}\n\`\`\`\n to file ${recipient}`;
+        content = `${msg.content}`;
       }
 
       if(msg.reasoning) messages.push({ role: "assistant", from: this.id, content: `<think>${msg.reasoning}</think>`, reasoning: msg.reasoning, read: true});
