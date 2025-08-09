@@ -69,6 +69,9 @@ export class AgentModel extends Model {
     If you get stuck reach out to the group for help.
     Delegate where appropriate and avoid doing work that should be done by another agent.
     Please actually use the tools provided. Do not simply hallucinate tool calls.
+    Do not make stuff up. Do not imagine tool invocation results. Avoid repeating old commands.
+    Verify and validate your work.
+    Verify and validate the work of your team members.
     Be concise.
     `;
 
@@ -106,6 +109,8 @@ export class AgentModel extends Model {
       } else {
         console.error('lastMessage is undefined');
       }
+
+      this.cleanContext();
     } finally {
       release();
     }
@@ -265,7 +270,7 @@ async runWithTools(
         new Response(proc.stderr).text(),
         proc.exited,
       ]);
-      const content =truncate(`${ functionName ? `Tool ${functionName}: ` : '' } Command: '${rawCmd ?? cmd}' -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
+      const content =truncate(`${ functionName ? `Tool ${functionName}: ` : '' } Command: '${sanitizedCmd ?? rawCmd ?? cmd}' -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
 
       console.log(`\n\n\n******* sh -> ${content}`);
       return {
@@ -383,6 +388,10 @@ private async _deliver(msg: string): Promise<ChatMessage> {
       content: msg.content,
       read: true,
     });
+    this.cleanContext();
+  }
+
+  private cleanContext() {
     while (this.context.length > this.maxMessagesInContext) this.context.shift();
   }
 }
