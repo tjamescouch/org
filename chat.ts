@@ -67,6 +67,8 @@ export async function chatOnce(
 ): Promise<AssistantMessage> {
   const url = `${opts?.baseUrl ?? BASE_URL}/v1/chat/completions`;
 
+  console.error(messages.map(formatMessage));
+
   const body = {
     model: opts?.model ?? MODEL,
     messages: messages.map(formatMessage),
