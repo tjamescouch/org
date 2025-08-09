@@ -51,6 +51,7 @@ export class AgentModel extends Model {
     #file:index.ts
     console.log("hello world");
 
+    Prefer the above tagging approach for writing files longer than a few paragraphs.
     PLEASE stream files to disk rather than just chatting them with the group.
     PLEASE run shell commands and test your work.
     DO NOT do the same thing over and over again (infinite loop)
