@@ -86,7 +86,7 @@ export class AgentModel extends Model {
     const lastReply = reply[reply.length - 1];
 
     if (lastReply) {
-      this.fileToRedirectTo = lastReply.recipient?.slice(5);
+      this.fileToRedirectTo = lastReply.recipient?.slice(6);
       if (this.fileToRedirectTo) {
         this.audience = { kind: "file", target: this.fileToRedirectTo }
       }
