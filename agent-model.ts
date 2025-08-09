@@ -72,6 +72,8 @@ export class AgentModel extends Model {
     Do not make stuff up. Do not imagine tool invocation results. Avoid repeating old commands.
     Verify and validate your work.
     Verify and validate the work of your team members.
+    Messages will be of the format <username>: <message>.
+    DO NOT mimic the above format of messages within your response.
     Be concise.
     `;
 
