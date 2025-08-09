@@ -223,13 +223,14 @@ export class AgentModel extends Model {
     const timer = setTimeout(() => ac.abort(), (timeout + 1) * 1000);
 
     try {
-      const proc = Bun.spawn(["sh", "-c", cmd], { stdout: "pipe", stderr: "pipe", signal: ac.signal });
+      const sanitizedCmd = cmd.replaceAll('apply_patch', 'patch');
+      const proc = Bun.spawn(["sh", "-c", sanitizedCmd], { stdout: "pipe", stderr: "pipe", signal: ac.signal });
       const [stdout, stderr, code] = await Promise.all([
         new Response(proc.stdout).text(),
         new Response(proc.stderr).text(),
         proc.exited,
       ]);
-      const content =truncate(`Tool: ${functionName} Command: ${cmd} -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
+      const content =truncate(`Tool: ${functionName} Command: ${sanitizedCmd} -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
 
       console.log(`\n\n\n******* sh -> ${content}`);
       return {
