@@ -46,7 +46,7 @@ export class AgentModel extends Model {
     You have access to basic unix commands. There is no unix command called apply_patch nor is there a tool with that name.
     You have the unix 'patch' command as well as bun, git, echo, cat, etc. Use these to manipulate files.
 
-    Alternately: to write to a file include a tag in the response with the format #file:<filename>. This way you do not do a tool call and simply respond.
+    Alternately: to write to a file include a tag at the very start of the response with the format #file:<filename>. This way you do not do a tool call and simply respond.
     Example:
     #file:index.ts
     console.log("hello world");
