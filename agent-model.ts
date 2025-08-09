@@ -215,7 +215,7 @@ export class AgentModel extends Model {
   }
 
   /* ---------- shell helper (Bun.spawn) ------------------------- */
-  private async _runShell(functionName: string, { cmd }: { cmd: string }): Promise<{role: string, name: string, content: string}> {
+  private async _runShell(functionName: string, { cmd, rawCmd }: { cmd: string, rawCmd?: string }): Promise<{role: string, name: string, content: string}> {
 
     const timeout = Math.max(1, Math.min(30, Number(this.shellTimeout)));
 
@@ -230,7 +230,7 @@ export class AgentModel extends Model {
         new Response(proc.stderr).text(),
         proc.exited,
       ]);
-      const content =truncate(`Tool: ${functionName} Command: ${sanitizedCmd} -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
+      const content =truncate(`${ functionName ? `Tool ${functionName}: ` : '' } Command: '${rawCmd}' -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
 
       console.log(`\n\n\n******* sh -> ${content}`);
       return {
