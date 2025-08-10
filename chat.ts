@@ -47,7 +47,7 @@ export interface AssistantMessage {
 const formatMessage = (message: ChatMessage): any => {
   return {
     ...message,
-    content: `${message.from}: ${message.content}`
+    content: `${message.role === 'assistant' ? '' :  `${message.from}: `}${message.content}`,
   };
 }
 
@@ -71,10 +71,10 @@ export async function chatOnce(
   const body = {
     model: opts?.model ?? MODEL,
     messages: messages.map(formatMessage),
-    tools: opts?.tools,
+    tools: opts?.tools ?? [],
     tool_choice: opts?.tool_choice ?? (opts?.tools ? "auto" : undefined),
     temperature: opts?.temperature ?? 0,
-    stream: true,                          // <-- key change
+    stream: true, 
   };
 
   const resp = await fetch(url, {
