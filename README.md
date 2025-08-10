@@ -1,6 +1,3 @@
-Here’s a clean, up-to-date README.md you can drop in for org.
-
-⸻
 
 org
 
