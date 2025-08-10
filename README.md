@@ -1,6 +1,6 @@
 # Project Overview
 
-This repository provides a simple scaffold for building C/C++ projects with a `Makefile` and optionally running JavaScript/TypeScript scripts using **bun**. It includes basic source directories and a clear structure to get started quickly.
+This repository provides a simple scaffold for building C/C++ projects with a `Makefile` and optionally running JavaScript/TypeScript scripts using **bun**. It includes example source files, a basic build system, and documentation to help you get started quickly.
 
 ## Table of Contents
 
@@ -20,7 +20,8 @@ This repository provides a simple scaffold for building C/C++ projects with a `M
 ├─ include/      # Header files (if applicable)
 ├─ tests/        # Test suites
 ├─ Makefile      # Build instructions
-└─ README.md     # This file
+├─ README.md     # This documentation
+└─ LICENSE       # License file
 ```
 
 ## Build & Run
@@ -37,15 +38,16 @@ make
 
 ## JavaScript/TypeScript Support
 
-If the repository contains JavaScript or TypeScript files, you can run them with **bun**:
+If the repository contains JavaScript or TypeScript files, you can execute them with **bun**:
 
 ```sh
+# Run a script using bun
 bun run <script>
 ```
 
 ## Testing
 
-If test targets are defined in the `Makefile`, run them with:
+If test suites are provided, run them with:
 
 ```sh
 make test
@@ -57,9 +59,9 @@ Contributions are welcome! Follow these steps:
 
 1. Fork the repository.
 2. Create a new branch for your feature or bug fix.
-3. Make your changes and ensure they pass any existing tests.
+3. Make your changes and ensure they pass existing tests.
 4. Commit with clear messages.
-5. Open a pull request describing your changes.
+5. Open a Pull Request describing your changes.
 
 ## License
 
