@@ -395,6 +395,7 @@ private async _deliver(msg: string): Promise<ChatMessage> {
   const target = this.fileToRedirectTo ? this.fileToRedirectTo : this.audience.target;
 
   let response: ChatMessage | undefined;
+  let text;
 
   try {
     switch (kind) {
@@ -422,7 +423,7 @@ private async _deliver(msg: string): Promise<ChatMessage> {
         }
 
         // unescape once if upstream gave "\\n"
-        const text = (msg.includes("\\n") && !msg.includes("\n"))
+        text = (msg.includes("\\n") && !msg.includes("\n"))
           ? msg.replace(/\\r\\n/g, "\r\n").replace(/\\n/g, "\n")
           : msg;
 
@@ -431,7 +432,7 @@ private async _deliver(msg: string): Promise<ChatMessage> {
           await (globalThis as any).Bun.write(p, text + "\n", { create: true, append: false });
         } else {
           const fs = await import("fs");
-          await fs.promises.appendFile(p, text + "\n", { encoding: "utf-8" });
+          await fs.promises.writeFile(p, text + "\n", { encoding: "utf-8" });
         }
 
         response = {
