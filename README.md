@@ -21,14 +21,14 @@ A command-line tool for orchestrating a **group of LLMs** with tool-calling, saf
 
 ## Highlights
 
-- **Chat Completions + Tools**: Uses Ollama’s `/v1/chat/completions` with streaming and OpenAI-style tools.
+- **Chat Completions + Tools**: Uses Ollama's `/v1/chat/completions` with streaming and OpenAI-style tools.
 - **Shell & Python tools**:  
   - `sh` — run POSIX commands inside the VM (Bun spawn).  
   - `python_run` — execute Python snippets with a timeout (Bun spawn).
 - **AgentModel**: Can switch **chat modes** via tool (`chat_mode` → `group` / `direct:<model>` / `file:<path>`), and call `sh`.
 - **PythonModel**: Uses tool calls to run Python, consumes tool output internally, responds with summarized results.
 - **Robust tool parsing**: `runWithTools` executes **declared** and **embedded** tool calls in the **same turn**.
-- **Streaming**: `chatOnce(stream:true)` accumulates SSE deltas to bypass Ollama’s 5-minute non-streaming timeout.
+- **Streaming**: `chatOnce(stream:true)` accumulates SSE deltas to bypass Ollama's 5-minute non-streaming timeout.
 - **Concurrency control**: `ChannelLock` to serialize critical sections.
 - **Safe runtime**: Runs in a VM with host-only access to Ollama; optional egress blocking with `ufw`.
 - **Candidate testing**: Run **current** and **candidate** generations concurrently; promote via Git **merge** and rollback via **git revert**.
@@ -95,7 +95,7 @@ bun run main.ts
 1. `chatOnce` posts to `/v1/chat/completions` with `stream:true`.
 2. Streaming deltas are stitched until `[DONE]`.
 3. `runWithTools`:
-   - Reads model’s `tool_calls`.
+   - Reads model's `tool_calls`.
    - Parses embedded tool calls from text.
    - Executes all tools in sequence.
    - Appends results to the conversation.
@@ -193,7 +193,7 @@ sudo ufw enable
 
 ## Troubleshooting
 
-- **Timeouts**: Always use `stream:true` and disable Bun’s fetch timeout.
+- **Timeouts**: Always use `stream:true` and disable Bun's fetch timeout.
 - **Missing tool calls**: Check `finish_reason` and embedded extraction.
 - **Race conditions**: Use `ChannelLock` for critical sections.
 

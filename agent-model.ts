@@ -330,7 +330,7 @@ Now commit changes to git.{"id":"call_ri_ka","object":"chat.completion","created
         currentMessages.push(toolMsg);
       }
 
-      // Also handle tags **in the same hop** (don’t skip tools). This mirrors previous behavior.
+      // Also handle tags **in the same hop** (don't skip tools). This mirrors previous behavior.
       if (tags.length > 0) {
         const savedAudience = { ...this.audience } as any;
         for (const t of tags) {
