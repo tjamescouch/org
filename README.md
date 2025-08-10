@@ -1,13 +1,12 @@
 # Project Overview
 
-This repository provides a simple scaffold for building C/C++ projects with a `Makefile` and optionally running JavaScript/TypeScript scripts using **bun**. It includes example source files, a basic build system, and documentation to help you get started quickly.
+Welcome to the project repository. This README provides an overview of the project, its structure, and how to get started.
 
 ## Table of Contents
 
 - [Project Overview](#project-overview)
 - [Directory Structure](#directory-structure)
 - [Build & Run](#build--run)
-- [JavaScript/TypeScript Support](#javascripttypescript-support)
 - [Testing](#testing)
 - [Contributing](#contributing)
 - [License](#license)
@@ -15,53 +14,52 @@ This repository provides a simple scaffold for building C/C++ projects with a `M
 ## Directory Structure
 
 ```
-/                # Repository root
-├─ src/          # Source code (C/C++ files)
+/                # Root of the repository
+├─ src/          # Source code
 ├─ include/      # Header files (if applicable)
 ├─ tests/        # Test suites
 ├─ Makefile      # Build instructions
-├─ README.md     # This documentation
-└─ LICENSE       # License file
+└─ README.md     # This file
 ```
 
 ## Build & Run
 
-The project uses a `Makefile` for compilation. Ensure you have `gcc` (or a compatible compiler) installed.
+The project uses a `Makefile` for building. Ensure you have `gcc` (or the appropriate compiler) installed.
 
-```sh
+```bash
 # Build the project
 make
 
-# Run the resulting executable (replace <executable> with the actual name)
+# Run the executable (replace <executable> with the actual name)
 ./<executable>
 ```
 
-## JavaScript/TypeScript Support
+The `Makefile` handles compilation flags and dependencies.
 
-If the repository contains JavaScript or TypeScript files, you can execute them with **bun**:
+## Running JavaScript/TypeScript
 
-```sh
-# Run a script using bun
+If the project includes JavaScript or TypeScript files, you can use `bun`:
+
+```bash
 bun run <script>
 ```
 
 ## Testing
 
-If test suites are provided, run them with:
+If tests are provided, they can be run with:
 
-```sh
+```bash
 make test
 ```
 
 ## Contributing
 
-Contributions are welcome! Follow these steps:
+Contributions are welcome! Please follow these steps:
 
 1. Fork the repository.
 2. Create a new branch for your feature or bug fix.
-3. Make your changes and ensure they pass existing tests.
-4. Commit with clear messages.
-5. Open a Pull Request describing your changes.
+3. Commit your changes with clear messages.
+4. Open a pull request describing your changes.
 
 ## License
 
