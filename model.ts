@@ -1,6 +1,4 @@
-// model.ts
-import type { RoomMessage } from "./chat-room";
-import type { RoomAPI } from "./room-model";
+import type { RoomAPI, RoomMessage } from "./chat-room";
 
 export abstract class Model {
   public readonly id: string;
@@ -22,11 +20,10 @@ export abstract class Model {
 
   abstract receiveMessage(msg: RoomMessage): Promise<void>;
 
-  /** Helper: broadcast or direct-send via the room */
   public async broadcast(content: string, recipient?: string): Promise<void> {
     if (!this.room) throw new Error(`Model "${this.id}" is not attached to a ChatRoom`);
     if (recipient) {
-      await this.room.sendTo(this.id, recipient?.replace(/\@agent:/, "") ?? '', text);
+      await this.room.sendTo(this.id, recipient, content);
     } else {
       await this.room.broadcast(this.id, content);
     }

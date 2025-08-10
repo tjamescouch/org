@@ -1,23 +1,34 @@
-// -------------------------------------------------------------------
-// 4️⃣  ChatRoom – the hub that wires everything together
+// chat-room.ts — canonical room types and implementation (uses `content` payload)
 
-import type { ChatRole } from "./chat";
-import type { RoomModel, SeqListener } from "./room-model";
-
+export type ChatRole = "system" | "user" | "assistant";
 
 export interface RoomMessage {
-  ts: string;         // ISO timestamp set by the room
-  from: string;       // sender model id (or "System")
-  content: string;       // plain text payload
-  recipient?: string; // optional direct recipient model id
-  seq?: number;       // room sequence number (set by the room)
+  ts: string;         // ISO timestamp
+  from: string;       // sender id (or "System")
+  content: string;    // payload text
+  recipient?: string; // direct recipient id
+  seq?: number;       // room sequence
   role: ChatRole;     // role as seen by recipients
-  read: boolean;      // delivery/read flag (room sets false)
+  read: boolean;      // delivery flag
 }
 
+export type SeqListener = (seq: number) => void;
 
-// -------------------------------------------------------------------
-export class ChatRoom {
+export interface RoomAPI {
+  getSeq(): number;
+  onSeqChange(fn: SeqListener): () => void;
+  broadcast(from: string, content: string | undefined | null): Promise<void>;
+  sendTo(from: string, to: string, content: string | undefined | null): Promise<void>;
+}
+
+export interface RoomModel {
+  id: string;
+  receiveMessage(msg: RoomMessage): Promise<void>;
+  onAttach?(room: RoomAPI): void;
+  onDetach?(room: RoomAPI): void;
+}
+
+export class ChatRoom implements RoomAPI {
   private models = new Map<string, RoomModel>();
   private seqCounter = 0;
   private listeners = new Set<SeqListener>();
@@ -35,38 +46,35 @@ export class ChatRoom {
     m.onDetach?.(this);
   }
 
-  getSeq(): number {
-    return this.seqCounter;
-  }
+  getSeq(): number { return this.seqCounter; }
 
   onSeqChange(fn: SeqListener): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
   }
 
-  async broadcast(from: string, text: string | undefined | null): Promise<void> {
-    const msg = this.makeMessage(from, text);
+  async broadcast(from: string, content: string | undefined | null): Promise<void> {
+    const msg = this.makeMessage(from, content);
     this.bumpSeq(msg);
     await this.deliver(msg, undefined);
   }
 
-  async sendTo(from: string, to: string, text: string | undefined | null): Promise<void> {
-    const msg = this.makeMessage(from, text, to);
+  async sendTo(from: string, to: string, content: string | undefined | null): Promise<void> {
+    const msg = this.makeMessage(from, content, to);
     this.bumpSeq(msg);
     await this.deliver(msg, to);
   }
 
-  private makeMessage(from: string, text: string | undefined | null, recipient?: string): RoomMessage {
+  private makeMessage(from: string, content: string | undefined | null, recipient?: string): RoomMessage {
     const role: ChatRole = from === "System" ? "system" : "user";
-    const safeText = (text ?? "").toString();
+    const safe = (content ?? "").toString();
     return {
       ts: new Date().toISOString(),
       from,
-      content: safeText,
+      content: safe,
       recipient,
       role,
       read: false,
-      // seq set in bumpSeq()
     };
   }
 
@@ -78,37 +86,25 @@ export class ChatRoom {
   private async deliver(msg: RoomMessage, directTo?: string): Promise<void> {
     if (directTo) {
       const target = this.models.get(directTo);
-      if (target) {
-        await this.safeDeliver(target, msg); // direct messages remain awaited
-      }
+      if (target) await this.safeDeliver(target, msg);
       return;
     }
-
-    // BROADCAST: fire-and-forget to avoid room stalls
+    // fire-and-forget broadcast to avoid stalls
     for (const [id, model] of this.models) {
-      if (id === msg.from) continue; // no echo
-      // intentionally do not await; each delivery is time-limited
+      if (id === msg.from) continue;
       void this.safeDeliver(model, msg);
     }
   }
 
-  // Deliver with a hard timeout so a single slow model can't jam the room.
   private async safeDeliver(model: RoomModel, msg: RoomMessage): Promise<void> {
-    const TIMEOUT_MS = 30_000; // adjust as needed
-    const t = setTimeout(() => {
-      // optional: structured log here
-      // console.warn(`[room] deliver timeout to ${model.id} on seq=${msg.seq}`);
-    }, TIMEOUT_MS);
-
+    const TIMEOUT_MS = 30_000;
     try {
       await Promise.race([
         model.receiveMessage(msg),
         new Promise<void>((resolve) => setTimeout(resolve, TIMEOUT_MS)),
       ]);
     } catch {
-      // swallow model errors; they shouldn't crash the room
-    } finally {
-      clearTimeout(t);
+      // swallow
     }
   }
 }
