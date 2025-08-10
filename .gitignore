@@ -1,38 +1,25 @@
-# Node.js dependencies
+# Node.js / Bun artifacts
 node_modules/
-npm-debug.log
-yarn-error.log
-pnpm-debug.log
-
-# Bun cache
+bun.lockb
 .bun/
-
-# Build artifacts
 dist/
+# Build artifacts
 build/
 *.o
-*.obj
-*.so
-*.a
 *.out
 *.exe
-
-# Logs
-*.log
-
 # OS files
 .DS_Store
 Thumbs.db
-
-# IDE files
+# Logs
+*.log
+# IDE/editor files
 .vscode/
 .idea/
-*.sublime-workspace
-*.sublime-project
+*.swp
+# End of .gitignore
 
-# Git
-.git/
-
-# Misc
-*.tmp
-*.bak
+# Commit the new files
+{
+  "cmd": "git add Makefile .gitignore && git commit -m \"chore: add placeholder Makefile and .gitignore\""
+}
