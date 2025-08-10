@@ -18,12 +18,14 @@ async function app() {
   const room = new ChatRoom();
 
   const alice = new AgentModel("alice");
+  const carol = new AgentModel("carol");
   const bob   = new AgentModel("bob");
   room.addModel(alice);
+  room.addModel(carol);
   room.addModel(bob);
 
   const initialMessage =
-    "Agents! Let's get to work on a project. It is a calculator written in typescript to be run by bun. Bob - you will do the coding. I will be the product person who makes the decisions.";
+    "Agents! Let's get to work on a project. It is a calculator written in typescript to be run by bun. There are already some files in the workspace. Bob - you will do the coding, please run and test code. Carol - you will do the architecture, please keep architecture documents and readme up-to-date. I will be the product person who makes the decisions.";
 
   await alice.initialMessage({
     role: "assistant",

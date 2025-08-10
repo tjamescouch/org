@@ -1,4 +1,5 @@
 import { TextDecoder } from "util";
+import { VERBOSE } from './constants';
 
 const BASE_URL = "http://192.168.56.1:11434"; // host-only IP
 const MODEL = "gpt-oss:120b";
@@ -65,7 +66,7 @@ export async function chatOnce(
 ): Promise<AssistantMessage> {
   const url = `${opts?.baseUrl ?? BASE_URL}/v1/chat/completions`;
 
-  console.error(messages.map(formatMessage));
+  if (VERBOSE) console.error(messages.map(formatMessage));
 
   const body = {
     model: opts?.model ?? MODEL,
@@ -80,7 +81,8 @@ export async function chatOnce(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(10*60*1000)
+    timeout: false,
+    signal: AbortSignal.timeout(30*60*1000)
   });
 
   if (!resp.ok) {
@@ -117,7 +119,7 @@ export async function chatOnce(
       if (!line.startsWith("data:")) continue;
 
       if(!namePrinted) {
-        console.log(`\n\nX ${name}:`);
+        console.log(`\n\n**** ${name}:`);
         namePrinted = true;
       }
 
