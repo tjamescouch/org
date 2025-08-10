@@ -107,9 +107,12 @@ Above all - DO THE THING. Don't just talk about it.
   /* ------------------------------------------------------------ */
   async initialMessage(incoming: RoomMessage): Promise<void> {
     this._push(incoming);
-    console.log(`\n\n**** ${this.id}:\n${String(incoming!.content ?? "")}`);
+    const initialContent: string = (incoming && typeof incoming.content === "string")
+      ? incoming.content
+      : "";
 
-    await this.broadcast(String(incoming!.content ?? ""));
+    console.log(`\n\n**** ${this.id}:\n${initialContent}`);
+    await this.broadcast(initialContent);
   }
 
   async receiveMessage(incoming: RoomMessage): Promise<void> {
@@ -162,6 +165,30 @@ Above all - DO THE THING. Don't just talk about it.
     const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 128000 };
     const responses: ChatMessage[] = [];
     let retries = 5;
+    // Heuristic: suppress assistant narration that looks like pasted tool JSON
+    const looksLikeToolJson = (s: string): boolean => {
+      const t = (s || "").trim();
+      if (!t) return false;
+      // quick textual check first
+      if (/("stdout"|"stderr"|"exit_code"|"ok")/.test(t)) {
+        // try to parse if it looks like JSON
+        if (t.startsWith("{") && t.endsWith("}")) {
+          try {
+            const o = JSON.parse(t);
+            return o && typeof o === "object" && (
+              Object.prototype.hasOwnProperty.call(o, "stdout") ||
+              Object.prototype.hasOwnProperty.call(o, "stderr") ||
+              Object.prototype.hasOwnProperty.call(o, "exit_code") ||
+              Object.prototype.hasOwnProperty.call(o, "ok")
+            );
+          } catch {
+            return true; // smells like tool JSON even if invalid
+          }
+        }
+        return true; // contains stdout/stderr/exit_code/ok words
+      }
+      return false;
+    };
     for (let i = 0; i < maxHops; i++) {
       let msg = await chatOnce(this.id, messages.concat(responses).concat(responses), toolOptions) ?? { content: "Error" };
       let { clean: response, tags } = TagParser.parse(msg.content || "");
@@ -197,13 +224,19 @@ Above all - DO THE THING. Don't just talk about it.
       }
       // Push the visible assistant message (cleaned text w/o tags) if any
       if (msg.content && visibleContent !== undefined) {
-        responses.push({
-          role: "assistant",
-          from: this.id,
-          content: visibleContent,
-          reasoning: (msg as any).reasoning,
-          read: true,
-        });
+        const trimmed = String(visibleContent ?? "").trim();
+        if (trimmed.length > 0 && !looksLikeToolJson(trimmed)) {
+          responses.push({
+            role: "assistant",
+            from: this.id,
+            content: trimmed,
+            reasoning: (msg as any).reasoning,
+            read: true,
+          });
+        } else {
+          // Drop assistant narration that looks like tool stdout/stderr JSON.
+          // This prevents hallucinated tool outputs from being surfaced.
+        }
       }
       // --- Handle ALL tags (multiple) ----------------------------------------
       if (tags.length > 0) {
