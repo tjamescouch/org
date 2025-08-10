@@ -1,56 +1,64 @@
 # Project Overview
 
-Welcome to the project repository. This README provides an overview of the project, its structure, and how to get started.
+This repository contains the source code and build configuration for the project. Below are some key details to help you get started.
 
 ## Table of Contents
 
 - [Project Overview](#project-overview)
+- [Prerequisites](#prerequisites)
+- [Building the Project](#building-the-project)
+- [Running Tests](#running-tests)
 - [Directory Structure](#directory-structure)
-- [Build & Run](#build--run)
-- [Testing](#testing)
 - [Contributing](#contributing)
 - [License](#license)
+
+## Prerequisites
+
+- **Git** – version control system.
+- **GCC** – GNU Compiler Collection for compiling C/C++ code.
+- **Bun** – JavaScript runtime (if applicable).
+- **Make** – build automation tool.
+
+## Building the Project
+
+To compile the project, run:
+
+```sh
+make
+```
+
+This will invoke the `Makefile` and build all necessary targets.
+
+## Running Tests
+
+If the project includes tests, you can run them with:
+
+```sh
+make test
+```
+
+(Adjust the command according to the actual test setup.)
 
 ## Directory Structure
 
 ```
-/                # Root of the repository
-├─ src/          # Source code
-├─ include/      # Header files (if applicable)
-├─ tests/        # Test suites
-├─ Makefile      # Build instructions
-└─ README.md     # This file
-```
-
-## Build & Run
-
-The project uses a `Makefile` for building. Ensure you have `gcc` (or the appropriate compiler) installed.
-
-```bash
-# Build the project
-make
-
-# Run the executable (replace <executable> with the actual name)
-./<executable>
-```
-
-## Testing
-
-If tests are provided, they can be run with:
-
-```bash
-make test
+.
+├── src/            # Source files
+├── include/        # Header files
+├── tests/          # Test suites
+├── Makefile        # Build instructions
+└── README.md       # This documentation
 ```
 
 ## Contributing
-
-Contributions are welcome! Please follow these steps:
 
 1. Fork the repository.
 2. Create a new branch for your feature or bugfix.
 3. Commit your changes with clear messages.
 4. Open a pull request describing your changes.
 
+Please ensure that your code follows the existing style guidelines and passes all tests before submitting.
+
 ## License
 
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+This project is licensed under the MIT License. See the `LICENSE` file for more details.
