@@ -1,44 +1,64 @@
-# Project Title
+# Project Overview
 
-A brief description of the project, its purpose, and key features.
+This repository contains the source code and build configuration for the project. Below are some key details to help you get started.
 
 ## Table of Contents
 
-- [Installation](#installation)
-- [Usage](#usage)
+- [Project Overview](#project-overview)
+- [Prerequisites](#prerequisites)
+- [Building the Project](#building-the-project)
+- [Running Tests](#running-tests)
+- [Directory Structure](#directory-structure)
 - [Contributing](#contributing)
 - [License](#license)
 
-## Installation
+## Prerequisites
 
-```bash
-# Clone the repository
-git clone <repository-url>
-cd <project-directory>
+- **Git** – version control system.
+- **GCC** – GNU Compiler Collection for compiling C/C++ code.
+- **Bun** – JavaScript runtime (if applicable).
+- **Make** – build automation tool.
 
-# Install dependencies (example for Node.js)
-npm install
+## Building the Project
+
+To compile the project, run:
+
+```sh
+make
 ```
 
-## Usage
+This will invoke the `Makefile` and build all necessary targets.
 
-Provide instructions on how to run or use the project.
+## Running Tests
 
-```bash
-# Example command
-npm start
+If the project includes tests, you can run them with:
+
+```sh
+make test
+```
+
+(Adjust the command according to the actual test setup.)
+
+## Directory Structure
+
+```
+.
+├── src/            # Source files
+├── include/        # Header files
+├── tests/          # Test suites
+├── Makefile        # Build instructions
+└── README.md       # This documentation
 ```
 
 ## Contributing
 
-Contributions are welcome! Please follow these steps:
-
 1. Fork the repository.
-2. Create a new branch (`git checkout -b feature-branch`).
-3. Commit your changes (`git commit -am 'Add new feature'`).
-4. Push to the branch (`git push origin feature-branch`).
-5. Open a Pull Request.
+2. Create a new branch for your feature or bugfix.
+3. Commit your changes with clear messages.
+4. Open a pull request describing your changes.
+
+Please ensure that your code follows the existing style guidelines and passes all tests before submitting.
 
 ## License
 
-Specify the license under which the project is distributed, e.g., MIT License.
+This project is licensed under the MIT License. See the `LICENSE` file for more details.

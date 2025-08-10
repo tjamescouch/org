@@ -1,7 +1,14 @@
-# Simple placeholder Makefile for the project.
-# This Makefile currently does not build any C sources.
-# It can be extended in the future when source files are added.
+# Simple Makefile for building C source files.
+# Adjust variables and rules as needed for your project.
 
-.PHONY: all clean
+CC := gcc
+CFLAGS := -Wall -Wextra -O2
+SRC_DIR := src
+BUILD_DIR := build
+TARGET := $(BUILD_DIR)/app
 
-all:
+# Default target
+all: $(TARGET)
+
+# Ensure the build directory exists
+$(BUILD_DIR):
