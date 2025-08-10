@@ -35,6 +35,7 @@ export interface ToolCall {
     name: string;
     arguments: string; // JSON string
   };
+  index?: number;
 }
 
 export interface AssistantMessage {

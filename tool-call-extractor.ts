@@ -1,24 +1,43 @@
-import { ToolCall } from 'chat'
+import { ToolCall } from './chat'
 
-export function extractToolCallsFromText(
-  input: string
-): { tool_calls: ToolCall[]; cleaned: string } {
+export function extractToolCallsFromText(input: string): { tool_calls: ToolCall[]; cleaned: string } {
+  const text = String(input);
+  let out = "";
   let i = 0;
-  let out = input;
-  const all: ToolCall[] = [];
+  const calls: ToolCall[] = [];
 
-  while (true) {
-    const k = out.indexOf('"tool_calls"', i);
-    if (k === -1) break;
+  while (i < text.length) {
+    const k = text.indexOf('"tool_calls"', i);
+    if (k === -1) { out += text.slice(i); break; }
 
-    // find '[' after "tool_calls"
-    const lb = out.indexOf("[", k);
-    if (lb === -1) break;
+    // copy bytes before this occurrence
+    out += text.slice(i, k);
+    let j = k + '"tool_calls"'.length;
 
-    // scan forward to the matching ']'
-    let j = lb, depth = 0, inStr = false, esc = false, rb = -1;
-    for (; j < out.length; j++) {
-      const ch = out[j];
+    // skip spaces and colon
+    while (j < text.length && /\s/.test(text[j])) j++;
+    if (text[j] !== ":") { // not a key-value pair; copy and continue
+      out += text.slice(k, j + 1);
+      i = j + 1;
+      continue;
+    }
+    j++; // skip ':'
+    while (j < text.length && /\s/.test(text[j])) j++;
+
+    // must be an array
+    if (text[j] !== "[") {
+      // not the pattern we want; emit as-is and continue
+      out += text.slice(k, j + 1);
+      i = j + 1;
+      continue;
+    }
+
+    // bracket-balance the array ONLY
+    let arrStart = j;
+    let depth = 0, inStr = false, esc = false;
+    let arrEnd = -1;
+    for (; j < text.length; j++) {
+      const ch = text[j];
       if (inStr) {
         if (esc) { esc = false; continue; }
         if (ch === "\\") { esc = true; continue; }
@@ -26,40 +45,52 @@ export function extractToolCallsFromText(
         continue;
       }
       if (ch === '"') { inStr = true; continue; }
-      if (ch === "[") depth++;
-      else if (ch === "]") {
+      if (ch === "[") { depth++; continue; }
+      if (ch === "]") {
         depth--;
-        if (depth === 0) { rb = j; break; }
+        if (depth === 0) { arrEnd = j; j++; break; }
       }
     }
-    if (rb === -1) { i = k + 12; continue; } // malformed; skip
+    if (arrEnd === -1) {
+      // malformed; emit remainder and stop
+      out += text.slice(k);
+      i = text.length;
+      break;
+    }
 
-    const segmentStart = k;
-    const segmentEnd = rb + 1; // include closing ']'
-    const arrayText = out.slice(lb, segmentEnd);
+    const arrayText = text.slice(arrStart, arrEnd + 1);
 
+    // Try parse just the array; filter to valid tool-call shapes
     try {
-      const parsed = JSON.parse(`{"tool_calls":${arrayText}}`) as { tool_calls: ToolCall[] };
-      if (Array.isArray(parsed.tool_calls)) {
-        all.push(...parsed.tool_calls);
-        // remove this segment from text (including the key and optional spaces/colon)
-        const keyToArrayStart = out.slice(segmentStart, lb).match(/"tool_calls"\s*:\s*$/)?.[0]?.length ?? (lb - segmentStart);
-        const removeFrom = segmentStart;
-        const removeTo = segmentEnd;
-        out = out.slice(0, removeFrom) + out.slice(removeTo);
-        // continue scanning after the removed part
-        i = removeFrom;
-        continue;
+      const parsed = JSON.parse(arrayText);
+      if (Array.isArray(parsed)) {
+        for (const x of parsed) {
+          if (x && x.type === "function" && x.function && typeof x.function.name === "string") {
+            // normalize arguments to string
+            const args = typeof x.function.arguments === "string"
+              ? x.function.arguments
+              : JSON.stringify(x.function.arguments ?? "");
+            calls.push({
+              id: typeof x.id === "string" ? x.id : "",
+              index: typeof x.index === "number" ? x.index : undefined,
+              type: "function",
+              function: { name: x.function.name, arguments: args },
+            });
+          }
+        }
       }
+      // remove the whole `"tool_calls": [ ... ]` segment from output
+      // also swallow any trailing whitespace
+      i = j;
+      while (i < text.length && /\s/.test(text[i])) i++;
+      continue;
     } catch {
-      // fall through; skip this occurrence
+      // if parsing fails, keep original bytes and move on
+      out += text.slice(k, j);
+      i = j;
+      continue;
     }
-
-    i = rb + 1;
   }
 
-
-  console.error('\nextractToolCallsFromText', all);
-
-  return { tool_calls: all, cleaned: out.trim() };
+  return { tool_calls: calls, cleaned: out.trim() };
 }
