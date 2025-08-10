@@ -1,3 +1,38 @@
-# Ignore build artifacts in the new subproject
-workspace/textstats/*.o
-workspace/textstats/textstats
+# Node.js dependencies
+node_modules/
+npm-debug.log
+yarn-error.log
+pnpm-debug.log
+
+# Bun cache
+.bun/
+
+# Build artifacts
+dist/
+build/
+*.o
+*.obj
+*.so
+*.a
+*.out
+*.exe
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# Git
+.git/
+
+# Misc
+*.tmp
+*.bak
