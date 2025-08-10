@@ -13,6 +13,8 @@
     "typecheck": "tsc -p . --noEmit",
     "rollout": "bun rollout/rollout.ts",
     "fitness:blue": "bun rollout/fitness.ts",
-    "fitness:green": "bun rollout/fitness.ts"
+    "fitness:green": "bun rollout/fitness.ts",
+    "autopilot": "bun autopilot.ts",
+    "fitness": "bun rollout/fitness.ts"
   }
 }
