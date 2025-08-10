@@ -23,18 +23,18 @@ export abstract class Model {
   abstract receiveMessage(msg: RoomMessage): Promise<void>;
 
   /** Helper: broadcast or direct-send via the room */
-  public async broadcast(text: string, recipient?: string): Promise<void> {
+  public async broadcast(content: string, recipient?: string): Promise<void> {
     if (!this.room) throw new Error(`Model "${this.id}" is not attached to a ChatRoom`);
     if (recipient) {
       await this.room.sendTo(this.id, recipient?.replace(/\@agent:/, "") ?? '', text);
     } else {
-      await this.room.broadcast(this.id, text);
+      await this.room.broadcast(this.id, content);
     }
   }
 
   /** Convenience for direct send */
-  public async sendTo(recipient: string, text: string): Promise<void> {
+  public async sendTo(recipient: string, content: string): Promise<void> {
     if (!this.room) throw new Error(`Model "${this.id}" is not attached to a ChatRoom`);
-    await this.room.sendTo(this.id, recipient, text);
+    await this.room.sendTo(this.id, recipient, content);
   }
 }

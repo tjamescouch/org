@@ -1,7 +1,7 @@
 export interface RoomMessage {
   ts: string;         // ISO timestamp set by the room
   from: string;       // sender model id (or "System")
-  text: string;       // plain text payload
+  content: string;       // plain text payload
   recipient?: string; // optional direct recipient model id
   seq?: number;       // room sequence number (set by the room)
 }
@@ -16,8 +16,8 @@ export interface RoomModel {
 export interface RoomAPI {
   getSeq(): number;
   onSeqChange(fn: (seq: number) => void): () => void;
-  broadcast(from: string, text: string): Promise<void>;
-  sendTo(from: string, to: string, text: string): Promise<void>;
+  broadcast(from: string, content: string): Promise<void>;
+  sendTo(from: string, to: string, content: string): Promise<void>;
 }
 
 // Minimal shape the Room expects from a Model.
@@ -71,21 +71,21 @@ export class ChatRoom {
   }
 
   /** Broadcast a message to all models except the sender. */
-  async broadcast(from: string, text: string): Promise<void> {
+  async broadcast(from: string, content: string): Promise<void> {
     const msg = this.makeMessage(from, text);
     this.bumpSeq(msg);
     await this.deliver(msg, /*directTo*/ undefined);
   }
 
   /** Send a direct message to a specific model id. */
-  async sendTo(from: string, to: string, text: string): Promise<void> {
+  async sendTo(from: string, to: string, content: string): Promise<void> {
     const msg = this.makeMessage(from, text, to);
     this.bumpSeq(msg);
     await this.deliver(msg, to);
   }
 
   /** Internal: create a RoomMessage with ts (and optional recipient). */
-  private makeMessage(from: string, text: string, recipient?: string): RoomMessage {
+  private makeMessage(from: string, content: string, recipient?: string): RoomMessage {
     return {
       ts: new Date().toISOString(),
       from,

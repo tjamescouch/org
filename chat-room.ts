@@ -8,7 +8,7 @@ import type { RoomModel, SeqListener } from "./room-model";
 export interface RoomMessage {
   ts: string;         // ISO timestamp set by the room
   from: string;       // sender model id (or "System")
-  text: string;       // plain text payload
+  content: string;       // plain text payload
   recipient?: string; // optional direct recipient model id
   seq?: number;       // room sequence number (set by the room)
   role: ChatRole;     // role as seen by recipients
@@ -44,29 +44,28 @@ export class ChatRoom {
     return () => this.listeners.delete(fn);
   }
 
-  async broadcast(from: string, text: string): Promise<void> {
-    const msg = this.makeMessage(from, text);
+  async broadcast(from: string, content: string): Promise<void> {
+    const msg = this.makeMessage(from, content);
     this.bumpSeq(msg);
     await this.deliver(msg, undefined);
   }
 
-  async sendTo(from: string, to: string, text: string): Promise<void> {
-    const msg = this.makeMessage(from, text, to);
+  async sendTo(from: string, to: string, content: string): Promise<void> {
+    const msg = this.makeMessage(from, content, to);
     this.bumpSeq(msg);
     await this.deliver(msg, to);
   }
 
-  private makeMessage(from: string, text: string, recipient?: string): RoomMessage {
-    // Treat all non-system senders as "user" from the recipient’s perspective.
+  private makeMessage(from: string, content: string | undefined | null, recipient?: string): RoomMessage {
     const role: ChatRole = from === "System" ? "system" : "user";
+    const safeText = (content?? "").toString();
     return {
       ts: new Date().toISOString(),
       from,
-      text,
+      content: safeText,
       recipient,
       role,
       read: false,
-      // seq set in bumpSeq()
     };
   }
 

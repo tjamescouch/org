@@ -87,7 +87,7 @@ export async function chatOnce(
   });
 
   if (!resp.ok) {
-    const txt = await resp.text();
+    const txt = await resp.content();
     const content = `HTTP ${resp.status} – ${resp.statusText}\n${txt}`;
     console.error(content);
     return { role: "assistant", content }; // degraded msg

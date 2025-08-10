@@ -1,4 +1,4 @@
-import { ToolCall } from './chat'
+import type { ToolCall } from "./chat";
 
 export function extractToolCallsFromText(input: string): { tool_calls: ToolCall[]; cleaned: string } {
   const text = String(input);
@@ -15,14 +15,14 @@ export function extractToolCallsFromText(input: string): { tool_calls: ToolCall[
     let j = k + '"tool_calls"'.length;
 
     // skip spaces and colon
-    while (j < text.length && /\s/.test(text[j])) j++;
+    while (j < text.length && /\s/.test(text[j] ?? '')) j++;
     if (text[j] !== ":") { // not a key-value pair; copy and continue
       out += text.slice(k, j + 1);
       i = j + 1;
       continue;
     }
     j++; // skip ':'
-    while (j < text.length && /\s/.test(text[j])) j++;
+    while (j < text.length && /\s/.test(text[j] ?? '')) j++;
 
     // must be an array
     if (text[j] !== "[") {
@@ -82,7 +82,7 @@ export function extractToolCallsFromText(input: string): { tool_calls: ToolCall[
       // remove the whole `"tool_calls": [ ... ]` segment from output
       // also swallow any trailing whitespace
       i = j;
-      while (i < text.length && /\s/.test(text[i])) i++;
+      while (i < text.length && /\s/.test(text[i] ?? '')) i++;
       continue;
     } catch {
       // if parsing fails, keep original bytes and move on
