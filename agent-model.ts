@@ -155,155 +155,151 @@ Above all - DO THE THING. Don't just talk about it.
     }
   }
 
-  private detectHallucinations(content: string | undefined): string {
-    if (content?.match(/Shell call produced the following output/)) return 'Invalid response. You hallucinated the calling the sh tool. Please use the sh tool call commands properly. You can not simply write the output.';
-  }
+  async runWithTools(
+    messages: ChatMessage[],
+    tools: ToolDef[],
+    execTool: (call: ToolCall) => Promise<ChatMessage>, // returns a {role:"tool", name, tool_call_id, content}
+    maxHops: number
+  ): Promise<ChatMessage[]> {
+    const toolOptions = { tools, tool_choice: "auto", num_ctx: 128000 };
 
-async runWithTools(
-  messages: ChatMessage[],
-  tools: ToolDef[],
-  execTool: (call: ToolCall) => Promise<ChatMessage>, // returns a {role:"tool", name, tool_call_id, content}
-  maxHops: number
-): Promise<ChatMessage[]> {
-  const toolOptions = { tools, tool_choice: "auto", num_ctx: 128000 };
+    const responses: ChatMessage[] = [];
+    const systemMessage = { role: "system", from: "System", content: this.system, read: false };
 
-  const responses: ChatMessage[] = [];
-  const systemMessage = { role: "system", from: "System", content: this.system, read: false };
+    let retries = 5;
 
-  let retries = 5;
+    for (let i = 0; i < maxHops; i++) {
+      let msg = await chatOnce(this.id, messages.concat(responses).concat(responses), toolOptions) ?? { content: "Error" };
+      let { clean: response, tags } = TagParser.parse(msg.content || "");
 
-  for (let i = 0; i < maxHops; i++) {
-    let msg = await chatOnce(this.id, messages.concat(responses).concat(responses), toolOptions) ?? { content: "Error" };
-    let { clean: response, tags } = TagParser.parse(msg.content || "");
+      const tool_calls = [
+        ...(msg.tool_calls ?? []),
+        ...extractToolCallsFromText(msg.content ?? "").tool_calls,
+      ];
 
-    const tool_calls = [
-      ...(msg.tool_calls ?? []),
-      ...extractToolCallsFromText(msg.content ?? "").tool_calls,
-    ];
+      if (!msg.content && isEmpty(tool_calls)) {
+        retries--;
+        if (retries <= 0) {
+          return responses;
+        }
+        responses.push({
+          role: "assistant",
+          from: this.id,
+          content: `I need to think more.`,
+          reasoning: (msg as any).reasoning,
+          read: true,
+        });
+        continue;
+      }
 
-    if (!msg.content && isEmpty(tool_calls)) {
-      retries--;
-      if (retries <= 0) {
+      // Visible assistant text for this turn (only when not issuing tool calls)
+      const visibleContent = isEmpty(tool_calls) ? response : undefined;
+
+      // Preserve assistant's chain-of-thought wrapper if present
+      if ((msg as any).reasoning) {
+        responses.push({
+          role: "assistant",
+          from: this.id,
+          content: `<think>${(msg as any).reasoning}</think>`,
+          reasoning: (msg as any).reasoning,
+          read: true,
+        });
+      }
+
+      // Push the visible assistant message (cleaned text w/o tags) if any
+      if (msg.content && visibleContent !== undefined) {
+        responses.push({
+          role: "assistant",
+          from: this.id,
+          content: visibleContent,
+          reasoning: (msg as any).reasoning,
+          read: true,
+        });
+      }
+
+      // --- Handle ALL tags (multiple) ----------------------------------------
+      if (tags.length > 0) {
+        // Save current audience so we can restore after agent-directed deliveries
+        const savedAudience = { ...this.audience };
+
+        for (const t of tags) {
+          if (t.kind === "file") {
+            // Redirect _deliver to file; use this tag's content verbatim (no whitespace mangling)
+            this.fileToRedirectTo = t.value;
+            const statusMsg = await this._deliver(t.content ?? "");
+            // Ensure the LLM sees success/error on next hop
+            if (statusMsg) responses.push(statusMsg);
+            // _deliver will restore audience and clear fileToRedirectTo
+          } else if (t.kind === "agent") {
+            // Temporarily deliver directly to the tagged agent via _deliver
+            this.audience = { kind: "direct", target: t.value };
+            const delivered = await this._deliver(t.content ?? "");
+            if (delivered) responses.push(delivered);
+            // restore audience after each agent delivery
+            this.audience = { ...savedAudience };
+          }
+        }
+        // NOTE: removed the old `continue;` so tool calls in the same turn still run.
+      }
+
+      // Preserve existing early-exit behavior for direct deliveries,
+      // but ONLY when there are no tool calls to run this turn.
+      if (tags.length > 0 && tags[tags.length - 1]?.kind === "direct" && (isEmpty(tool_calls))) {
         return responses;
       }
-      responses.push({
-        role: "assistant",
-        from: this.id,
-        content: `I need to think more.`,
-        reasoning: (msg as any).reasoning,
-        read: true,
-      });
-      continue;
-    }
+      // -----------------------------------------------------------------------
 
-    // Visible assistant text for this turn (only when not issuing tool calls)
-    const visibleContent = isEmpty(tool_calls) ? response : undefined;
-
-    // Preserve assistant's chain-of-thought wrapper if present
-    if ((msg as any).reasoning) {
-      responses.push({
-        role: "assistant",
-        from: this.id,
-        content: `<think>${(msg as any).reasoning}</think>`,
-        reasoning: (msg as any).reasoning,
-        read: true,
-      });
-    }
-
-    // Push the visible assistant message (cleaned text w/o tags) if any
-    if (msg.content && visibleContent !== undefined) {
-      responses.push({
-        role: "assistant",
-        from: this.id,
-        content: visibleContent,
-        reasoning: (msg as any).reasoning,
-        read: true,
-      });
-    }
-
-    // --- Handle ALL tags (multiple) ----------------------------------------
-    if (tags.length > 0) {
-      // Save current audience so we can restore after agent-directed deliveries
-      const savedAudience = { ...this.audience };
-
-      for (const t of tags) {
-        if (t.kind === "file") {
-          // Redirect _deliver to file; use this tag's content verbatim (no whitespace mangling)
-          this.fileToRedirectTo = t.value;
-          const statusMsg = await this._deliver(t.content ?? "");
-          // Ensure the LLM sees success/error on next hop
-          if (statusMsg) responses.push(statusMsg);
-          // _deliver will restore audience and clear fileToRedirectTo
-        } else if (t.kind === "agent") {
-          // Temporarily deliver directly to the tagged agent via _deliver
-          this.audience = { kind: "direct", target: t.value };
-          const delivered = await this._deliver(t.content ?? "");
-          if (delivered) responses.push(delivered);
-          // restore audience after each agent delivery
-          this.audience = { ...savedAudience };
-        }
+      // If no tool calls were requested, return accumulated messages
+      if (!tool_calls || tool_calls.length === 0) {
+        return responses;
       }
-      // NOTE: removed the old `continue;` so tool calls in the same turn still run.
-    }
 
-    // Preserve existing early-exit behavior for direct deliveries,
-    // but ONLY when there are no tool calls to run this turn.
-    if (tags.length > 0 && tags[tags.length - 1]?.kind === "direct" && (isEmpty(tool_calls))) {
-      return responses;
-    }
-    // -----------------------------------------------------------------------
-
-    // If no tool calls were requested, return accumulated messages
-    if (!tool_calls || tool_calls.length === 0) {
-      return responses;
-    }
-
-    // Execute tool calls and append results (all in this same turn)
-    for (const call of tool_calls) {
-      responses.push({
-        role: "assistant",
-        from: this.id,
-        content: JSON.stringify({
-          id: makeToolCallId("call"),
-          object: "chat.completion",
-          created: new Date().getTime(),
-          model: "gpt-oss:120b",
-          choices: [
-            {
-              index: 0,
-              message: {
-                role: "assistant",
-                content: null,
-                tool_calls: [
-                  {
-                    id: makeToolCallId("call"),
-                    index: 0,
-                    type: "function",
-                    function: {
-                      name: "sh",
-                      arguments:
-                        typeof (call as any)?.function?.arguments === "object"
-                          ? JSON.stringify((call as any)?.function?.arguments)
-                          : (call as any)?.function?.arguments,
+      // Execute tool calls and append results (all in this same turn)
+      for (const call of tool_calls) {
+        responses.push({
+          role: "assistant",
+          from: this.id,
+          content: JSON.stringify({
+            id: makeToolCallId("call"),
+            object: "chat.completion",
+            created: new Date().getTime(),
+            model: "gpt-oss:120b",
+            choices: [
+              {
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: makeToolCallId("call"),
+                      index: 0,
+                      type: "function",
+                      function: {
+                        name: "sh",
+                        arguments:
+                          typeof (call as any)?.function?.arguments === "object"
+                            ? JSON.stringify((call as any)?.function?.arguments)
+                            : (call as any)?.function?.arguments,
+                      },
                     },
-                  },
-                ],
+                  ],
+                },
+                finish_reason: "tool_calls",
               },
-              finish_reason: "tool_calls",
-            },
-          ],
-        }),
-        reasoning: (msg as any).reasoning,
-        read: true,
-      });
+            ],
+          }),
+          reasoning: (msg as any).reasoning,
+          read: true,
+        });
 
-      const toolMsg = await execTool(call);
-      responses.push(toolMsg);
+        const toolMsg = await execTool(call);
+        responses.push(toolMsg);
+      }
     }
-  }
 
-  return responses;
-}
+    return responses;
+  }
 
 
   /* ------------------------------------------------------------ */
@@ -330,7 +326,7 @@ async runWithTools(
     const name = call?.function?.name ?? 'unknown';
 
     try {
-      const args = JSON.parse(call?.function?.arguments || {cmd: ''});
+      const args = JSON.parse(call?.function?.arguments || '{"cmd": ""}');
 
       if (name === "sh") {
         return { ...await this._runShell(name, {...args, rawCmd: args.cmd }), tool_call_id: call.id, role: "tool", name, from: this.id, read: false };
