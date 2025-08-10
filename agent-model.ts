@@ -4,6 +4,7 @@ import {  writeFileSync } from "fs";
 import { channelLock } from "./channel-lock";
 import type { RoomMessage } from "./chat-room";
 import { TagParser } from "./tag-parser";
+import { extractToolCallsFromText } from "./tool-call-extractor";
 
 type Audience =
   | { kind: "group"; target: "*" } | { kind: "direct"; target: string }      // send only to a given model
@@ -20,104 +21,37 @@ const truncate = (s: string, length: number): string => {
   return s.slice(0, length) + '...';
 }
 
+const makeToolCallId = (prefix: "call" | "tool" ): string => {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz";
+  // pick 2–3 random words/fragments from the alphabet
+  const randPart = () =>
+    alphabet[Math.floor(Math.random() * alphabet.length)] +
+    alphabet[Math.floor(Math.random() * alphabet.length)];
+
+  // join prefix with 2–3 random parts
+  return `${prefix}_${randPart()}_${randPart()}`;
+}
+
 export class AgentModel extends Model {
   private readonly context: RoomMessage[] = [];
   private readonly shellTimeout = 5 * 60; // seconds
   private audience: Audience = { kind: "group", target: "*" }; // default
   private fileToRedirectTo: string | undefined;
-  private maxShellReponseCharacters: number = 50_000;
-  private maxMessagesInContext = 10;
+  private maxShellReponseCharacters: number = 15_000;
+  private maxMessagesInContext = 50;
+  private system: string;
 
   constructor(id: string) {
     super(id);
-  }
 
-  /* ------------------------------------------------------------ */
-  async initialMessage(incoming: RoomMessage): Promise<void> {
-    this._push(incoming);
-    console.log(`\n\n**** ${this.id}:\n${incoming.content}`);
-
-    await this.broadcast(incoming.content);
-  }
-
-  async receiveMessage(incoming: RoomMessage): Promise<void> {
-
-    const system = `You are agent "${this.id}".
-If you need to run shell commands, call the sh tool. 
+    this.system = `You are agent "${this.id}".
+If you need to run shell commands, call the sh tool. If you misuse a tool you will get an "Invalid response" message.
 Commands are executed in a Debian VM.
-To chat directly to another agent use the chat_mode tool. 
-Examples: group, direct:bob - to talk to the group or directly to bob respectively.
 Try to make decisions for yourself even if you're not completely sure that they are correct.
 You have access to an actual Debian VM.
-It has git and bun installed.
+It has git, gcc and bun installed.
 
-You have the unix 'patch' command:
-
-Usage: patch [OPTION]... [ORIGFILE [PATCHFILE]]
-
-Input options:
-
-  -p NUM  --strip=NUM  Strip NUM leading components from file names.
-  -F LINES  --fuzz LINES  Set the fuzz factor to LINES for inexact matching.
-  -l  --ignore-whitespace  Ignore white space changes between patch and input.
-
-  -c  --context  Interpret the patch as a context difference.
-  -e  --ed  Interpret the patch as an ed script.
-  -n  --normal  Interpret the patch as a normal difference.
-  -u  --unified  Interpret the patch as a unified difference.
-
-  -N  --forward  Ignore patches that appear to be reversed or already applied.
-  -R  --reverse  Assume patches were created with old and new files swapped.
-
-  -i PATCHFILE  --input=PATCHFILE  Read patch from PATCHFILE instead of stdin.
-
-Output options:
-
-  -o FILE  --output=FILE  Output patched files to FILE.
-  -r FILE  --reject-file=FILE  Output rejects to FILE.
-
-  -D NAME  --ifdef=NAME  Make merged if-then-else output using NAME.
-  --merge  Merge using conflict markers instead of creating reject files.
-  -E  --remove-empty-files  Remove output files that are empty after patching.
-
-  -Z  --set-utc  Set times of patched files, assuming diff uses UTC (GMT).
-  -T  --set-time  Likewise, assuming local time.
-
-  --quoting-style=WORD   output file names using quoting style WORD.
-    Valid WORDs are: literal, shell, shell-always, c, escape.
-    Default is taken from QUOTING_STYLE env variable, or 'shell' if unset.
-
-Backup and version control options:
-
-  -b  --backup  Back up the original contents of each file.
-  --backup-if-mismatch  Back up if the patch does not match exactly.
-  --no-backup-if-mismatch  Back up mismatches only if otherwise requested.
-
-  -V STYLE  --version-control=STYLE  Use STYLE version control.
-	STYLE is either 'simple', 'numbered', or 'existing'.
-  -B PREFIX  --prefix=PREFIX  Prepend PREFIX to backup file names.
-  -Y PREFIX  --basename-prefix=PREFIX  Prepend PREFIX to backup file basenames.
-  -z SUFFIX  --suffix=SUFFIX  Append SUFFIX to backup file names.
-
-  -g NUM  --get=NUM  Get files from RCS etc. if positive; ask if negative.
-
-Miscellaneous options:
-
-  -t  --batch  Ask no questions; skip bad-Prereq patches; assume reversed.
-  -f  --force  Like -t, but ignore bad-Prereq patches, and assume unreversed.
-  -s  --quiet  --silent  Work silently unless an error occurs.
-  --verbose  Output extra information about the work being done.
-  --dry-run  Do not actually change any files; just print what would happen.
-  --posix  Conform to the POSIX standard.
-
-  -d DIR  --directory=DIR  Change the working directory to DIR first.
-  --reject-format=FORMAT  Create 'context' or 'unified' rejects.
-  --binary  Read and write data in binary mode.
-  --read-only=BEHAVIOR  How to handle read-only input files: 'ignore' that they
-                        are read-only, 'warn' (default), or 'fail'.
-
-  -v  --version  Output version info.
-  --help  Output this help.
+There is no apply_patch command or tool. Do not attempt to use an apply_patch command.
 
 You have access to basic unix commands. There is no unix command called apply_patch nor is there a tool with that name.
 Alternately: to write to a file include a tag with the format #file:<filename>. Follow the syntax exactly. i.e. lowercase, with no spaces.
@@ -136,8 +70,22 @@ Instead navigate around and explore the directories.
 
 Prefer the above tagging approach for writing files longer than a few paragraphs.
 You may only use one tag per response.
+
+
+You may direct message another agent using the following tag syntax: @<username>
+
+Example:
+@bob
+I have implemented the architecture documents.
+
+Prefer direct messages when the information is not important to other members of the group.
+Responses with no tags are sent to the entire group.
+
 PLEASE use the file system.
-PLEASE stream files to disk rather than just chatting about them with the group.
+PLEASE write files to disk rather than just chatting about them with the group.
+
+PLEASE avoid overwriting existing files by accident. Check for and read existing files before writing to disk.
+
 PLEASE run shell commands and test your work.
 DO NOT do the same thing over and over again (infinite loop)
 If you get stuck reach out to the group for help.
@@ -149,15 +97,25 @@ Verify and validate the work of your team members.
 Messages will be of the format <username>: <message>.
 DO NOT mimic the above format of messages within your response.
 DO NOT PUSH ANYTHING TO GITHUB.
-Be concise.
 
-
+Above all - DO THE THING. Don't just talk about it.
 `;
+  }
+
+  /* ------------------------------------------------------------ */
+  async initialMessage(incoming: RoomMessage): Promise<void> {
+    this._push(incoming);
+    console.log(`\n\n**** ${this.id}:\n${incoming.content}`);
+
+    await this.broadcast(incoming.content);
+  }
+
+  async receiveMessage(incoming: RoomMessage): Promise<void> {
 
     const fullMessageHistory: ChatMessage[] = [
-      { role: "system", from: "System", content: system, read: false},
+      { role: "system", from: "System", content: this.system, read: false},
       ...this.context,
-      { role: "system", from: "System", content: system, read: false},
+      { role: "system", from: "System", content: this.system, read: false},
       { role: "user", from: incoming.from, content: incoming.content, read: false},
     ];
 
@@ -165,7 +123,6 @@ Be concise.
 
     const tools: ToolDef[] = [
       this._defShellTool(),
-      this._defChatModeTool(),
     ];
 
     const release = await channelLock.waitForLock(15 * 60 * 1000);
@@ -196,86 +153,159 @@ Be concise.
     }
   }
 
-
-async runWithTools(
-  messages: ChatMessage[],
-  tools: ToolDef[],
-  execTool: (call: ToolCall) => Promise<ChatMessage>, // returns a {role:"tool", name, tool_call_id, content}
-  maxHops: number
-): Promise<ChatMessage[]> {
-  const responses: ChatMessage = [];
-
-  for (let i = 0; i < maxHops; i++) {
-    const msg = await chatOnce(this.id, messages.concat(responses), { tools, tool_choice: "auto", num_ctx: 128000 }) ?? { content: "Error" };
-
-    // Parse tags; TagParser returns { clean, tags }, where each tag has its own content slice.
-    const { clean: response, tags } = TagParser.parse(msg.content || "");
-
-    // Visible assistant text for this turn (only when not issuing tool calls)
-    const visibleContent = isEmpty(msg.tool_calls ?? []) ? response : undefined;
-
-    // Preserve assistant's chain-of-thought wrapper if present
-    if (msg.reasoning) {
-      responses.push({
-        role: "assistant",
-        from: this.id,
-        content: `<think>${msg.reasoning}</think>`,
-        reasoning: msg.reasoning,
-        read: true,
-      });
-    }
-
-    // Push the visible assistant message (cleaned text w/o tags) if any
-    if (msg.content && visibleContent !== undefined) {
-      responses.push({
-        role: "assistant",
-        from: this.id,
-        content: visibleContent,
-        reasoning: msg.reasoning,
-        read: true,
-      });
-    }
-
-    // --- Handle ALL tags (multiple) ----------------------------------------
-    if (tags.length > 0) {
-      // Save current audience so we can restore after agent-directed deliveries
-      const savedAudience = { ...this.audience };
-
-      for (const t of tags) {
-        if (t.kind === "file") {
-          // Redirect _deliver to file; use this tag's content verbatim (no whitespace mangling)
-          this.fileToRedirectTo = t.value;
-          const statusMsg = await this._deliver(t.content ?? "");
-          // Ensure the LLM sees success/error on next hop
-          if (statusMsg) responses.push(statusMsg);
-          // _deliver will restore audience and clear fileToRedirectTo
-        } else if (t.kind === "agent") {
-          // Temporarily deliver directly to the tagged agent via _deliver
-          this.audience = { kind: "direct", target: t.value };
-          const delivered = await this._deliver(t.content ?? "");
-          if (delivered) responses.push(delivered);
-          // restore audience after each agent delivery
-          this.audience = { ...savedAudience };
-        }
-      }
-      continue;
-    }
-    // -----------------------------------------------------------------------
-
-    // If no tool calls were requested, return accumulated messages
-    if (!msg.tool_calls || msg.tool_calls.length === 0) {
-      return responses;
-    }
-
-    // Execute tool calls and append results
-    for (const call of msg.tool_calls) {
-      const toolMsg = await execTool(call);
-      responses.push(toolMsg);
-    }
+  private detectHallucinations(content: string | undefined): string {
+    if (content?.match(/Shell call produced the following output/)) return 'Invalid response. You hallucinated the calling the sh tool. Please use the sh tool call commands properly. You can not simply write the output.';
   }
 
-  return responses;
-}
+
+  async runWithTools(
+    messages: ChatMessage[],
+    tools: ToolDef[],
+    execTool: (call: ToolCall) => Promise<ChatMessage>, // returns a {role:"tool", name, tool_call_id, content}
+    maxHops: number
+  ): Promise<ChatMessage[]> {
+    const toolOptions = { tools, tool_choice: "auto", num_ctx: 128000 };
+
+    const responses: ChatMessage = [];
+    const systemMessage = { role: "system", from: "System", content: this.system, read: false};
+
+    let retries = 5;
+
+    for (let i = 0; i < maxHops; i++) {
+      let msg = await chatOnce(this.id, messages.concat(responses).concat(responses), toolOptions) ?? { content: "Error" };
+      let { clean: response, tags } = TagParser.parse(msg.content || "");
+
+      const hallucinationCorrection = this.detectHallucinations(msg.content)
+      if (hallucinationCorrection)
+      {
+        msg = await chatOnce(this.id, messages.concat(responses).concat(responses).concat({ role: "system", name: "System", content: hallucinationCorrection, from: this.id, read: false }), toolOptions) ?? { content: "Error" };
+        const { clean: retriedResponse, tags: newTags } = TagParser.parse(msg.content || "");
+
+        response = retriedResponse;
+        tags = newTags;
+      }
+
+      const tool_calls = [...(msg.tool_calls ?? []), ...extractToolCallsFromText(msg.content ?? '').tool_calls];
+
+      if (!msg.content && isEmpty(tool_calls)) {
+        retries--;
+
+        if (retries <= 0) {
+          return responses;
+        }
+
+        responses.push({
+          role: "assistant",
+          from: this.id,
+          content: `I need to think more.`,
+          reasoning: msg.reasoning,
+          read: true,
+        });
+
+        continue;
+      }
+
+      // Parse tags; TagParser returns { clean, tags }, where each tag has its own content slice.
+
+      // Visible assistant text for this turn (only when not issuing tool calls)
+      const visibleContent = isEmpty(tool_calls) ? response : undefined;
+
+      // Preserve assistant's chain-of-thought wrapper if present
+      if (msg.reasoning) {
+        responses.push({
+          role: "assistant",
+          from: this.id,
+          content: `<think>${msg.reasoning}</think>`,
+          reasoning: msg.reasoning,
+          read: true,
+        });
+      }
+
+      // Push the visible assistant message (cleaned text w/o tags) if any
+      if (msg.content && visibleContent !== undefined) {
+        responses.push({
+          role: "assistant",
+          from: this.id,
+          content: visibleContent,
+          reasoning: msg.reasoning,
+          read: true,
+        });
+      }
+
+      // --- Handle ALL tags (multiple) ----------------------------------------
+      if (tags.length > 0) {
+        // Save current audience so we can restore after agent-directed deliveries
+        const savedAudience = { ...this.audience };
+
+        for (const t of tags) {
+          if (t.kind === "file") {
+            // Redirect _deliver to file; use this tag's content verbatim (no whitespace mangling)
+            this.fileToRedirectTo = t.value;
+            const statusMsg = await this._deliver(t.content ?? "");
+            // Ensure the LLM sees success/error on next hop
+            if (statusMsg) responses.push(statusMsg);
+            // _deliver will restore audience and clear fileToRedirectTo
+          } else if (t.kind === "agent") {
+            // Temporarily deliver directly to the tagged agent via _deliver
+            this.audience = { kind: "direct", target: t.value };
+            const delivered = await this._deliver(t.content ?? "");
+            if (delivered) responses.push(delivered);
+            // restore audience after each agent delivery
+            this.audience = { ...savedAudience };
+          }
+        }
+
+        continue;
+      }
+      // -----------------------------------------------------------------------
+
+      // If no tool calls were requested, return accumulated messages
+      if (!tool_calls || tool_calls.length === 0) {
+        return responses;
+      }
+
+      // Execute tool calls and append results
+      for (const call of tool_calls) {
+        responses.push({
+          role: "assistant",
+          from: this.id,
+	  content: JSON.stringify({
+		  "id": makeToolCallId("call"),
+		  "object": "chat.completion",
+		  "created": new Date().getTime(),
+		  "model": "gpt-oss:120b",
+		  "choices": [
+		    {
+		      "index": 0,
+		      "message": {
+			"role": "assistant",
+			"content": null,
+			"tool_calls": [
+			  {
+			    "id": "call_luhn_h",
+			    "index": 0,
+			    "type": "function",
+			    "function": {
+			      "name": "sh",
+			      "arguments": "{\"cmd\":\"sed -n '1,200p' luhn.h\"}"
+			    }
+			  }
+			]
+		      },
+		      "finish_reason": "tool_calls"
+		    }
+		  ]
+		}),
+          reasoning: msg.reasoning,
+          read: true,
+        });
+        const toolMsg = await execTool(call);
+        responses.push(toolMsg);
+      }
+    }
+
+    return responses;
+  }
 
   /* ------------------------------------------------------------ */
   private _defShellTool(): ToolDef {
@@ -295,26 +325,10 @@ async runWithTools(
     };
   }
 
-  private _defChatModeTool(): ToolDef {
-    return {
-      type: "function",
-      function: {
-        name: "chat_mode",
-        description: "Switch the agent's audience. Examples: group, direct:bob",
-        parameters: {
-          type: "object",
-          properties: {
-            mode: { type: "string" },
-          },
-          required: ["mode"],
-        },
-      },
-    };
-  }
-
   /* ------------------------------------------------------------ */
   private async _execTool(call: ToolCall): Promise<ChatMessage> {
-    const { name } = call.function;
+	  console.error("************** CALL", call);
+    const name = call.function.name;
 
     try {
       const args = JSON.parse(call.function.arguments || {cmd: ''});
@@ -322,13 +336,9 @@ async runWithTools(
       if (name === "sh") {
         return { ...await this._runShell(name, {...args, rawCmd: args.cmd }), tool_call_id: call.id, role: "tool", name, from: this.id, read: false };
       }
-      if (name === "chat_mode") {
-        this._setAudience(String(args.mode ?? "group"));
-        return { role: "tool", name, tool_call_id: call.id, content: JSON.stringify({ ok: true }), from: this.id, read: false };
-      }
 
       // unknown tool
-      return { role: "tool", name, tool_call_id: call.id, content: JSON.stringify({ ok: false, err: "unknown tool" }), from: this.id, read: false };
+      return { role: "tool", name, tool_call_id: call.id, content: JSON.stringify({ ok: false, err: `unknown tool: ${name}` }), from: this.id, read: false };
     } catch (err) {
       return { role: "tool", name, tool_call_id: call.id, content: JSON.stringify({ ok: false, err: String(err) }), from: this.id, read: false };
     }
@@ -350,9 +360,10 @@ async runWithTools(
         new Response(proc.stderr).text(),
         proc.exited,
       ]);
-      const content =truncate(`${ functionName ? `Tool ${functionName}: ` : '' } Command: '${sanitizedCmd ?? rawCmd ?? cmd}' -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
+      //const content =truncate(`${ functionName ? `Tool ${functionName}: ` : '' } Command: '${sanitizedCmd ?? rawCmd ?? cmd}' -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
+      const content =truncate(JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
 
-      console.log(`\n\n\n******* sh -> ${content}`);
+      console.log(`\n\n\n******* sh ${sanitizedCmd ?? rawCmd ?? cmd} -> ${content}`);
       return {
         role: "tool",
         name: "sh",
@@ -458,8 +469,8 @@ private async _deliver(msg: string): Promise<ChatMessage> {
     this.fileToRedirectTo = undefined;
   }
 
-  return response ?? { ts: Date.now().toString(), from: this.id, role: "system", read: true, content: "(deliver: no-op)" };
-}
+    return response ?? { ts: Date.now().toString(), from: this.id, role: "system", read: true, content: "(deliver: no-op)" };
+  }
   private _push(msg: RoomMessage): void {
     this.context.push({
       ts: new Date().toISOString(),
