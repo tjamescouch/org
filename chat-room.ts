@@ -44,21 +44,21 @@ export class ChatRoom {
     return () => this.listeners.delete(fn);
   }
 
-  async broadcast(from: string, content: string): Promise<void> {
-    const msg = this.makeMessage(from, content);
+  async broadcast(from: string, text: string | undefined | null): Promise<void> {
+    const msg = this.makeMessage(from, text);
     this.bumpSeq(msg);
     await this.deliver(msg, undefined);
   }
 
-  async sendTo(from: string, to: string, content: string): Promise<void> {
-    const msg = this.makeMessage(from, content, to);
+  async sendTo(from: string, to: string, text: string | undefined | null): Promise<void> {
+    const msg = this.makeMessage(from, text, to);
     this.bumpSeq(msg);
     await this.deliver(msg, to);
   }
 
-  private makeMessage(from: string, content: string | undefined | null, recipient?: string): RoomMessage {
+  private makeMessage(from: string, text: string | undefined | null, recipient?: string): RoomMessage {
     const role: ChatRole = from === "System" ? "system" : "user";
-    const safeText = (content?? "").toString();
+    const safeText = (text ?? "").toString();
     return {
       ts: new Date().toISOString(),
       from,
@@ -66,6 +66,7 @@ export class ChatRoom {
       recipient,
       role,
       read: false,
+      // seq set in bumpSeq()
     };
   }
 
@@ -77,16 +78,37 @@ export class ChatRoom {
   private async deliver(msg: RoomMessage, directTo?: string): Promise<void> {
     if (directTo) {
       const target = this.models.get(directTo);
-      if (target) await this.safeDeliver(target, msg);
+      if (target) {
+        await this.safeDeliver(target, msg); // direct messages remain awaited
+      }
       return;
     }
+
+    // BROADCAST: fire-and-forget to avoid room stalls
     for (const [id, model] of this.models) {
-      if (id === msg.from) continue; // don't echo to sender
-      await this.safeDeliver(model, msg);
+      if (id === msg.from) continue; // no echo
+      // intentionally do not await; each delivery is time-limited
+      void this.safeDeliver(model, msg);
     }
   }
 
+  // Deliver with a hard timeout so a single slow model can't jam the room.
   private async safeDeliver(model: RoomModel, msg: RoomMessage): Promise<void> {
-    try { await model.receiveMessage(msg); } catch { /* optionally log */ }
+    const TIMEOUT_MS = 30_000; // adjust as needed
+    const t = setTimeout(() => {
+      // optional: structured log here
+      // console.warn(`[room] deliver timeout to ${model.id} on seq=${msg.seq}`);
+    }, TIMEOUT_MS);
+
+    try {
+      await Promise.race([
+        model.receiveMessage(msg),
+        new Promise<void>((resolve) => setTimeout(resolve, TIMEOUT_MS)),
+      ]);
+    } catch {
+      // swallow model errors; they shouldn't crash the room
+    } finally {
+      clearTimeout(t);
+    }
   }
 }
