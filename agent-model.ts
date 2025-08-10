@@ -96,6 +96,8 @@ Verify and validate your work.
 Verify and validate the work of your team members.
 Messages will be of the format <username>: <message>.
 DO NOT mimic the above format of messages within your response.
+
+Use git and commit often.
 DO NOT PUSH ANYTHING TO GITHUB.
 
 Above all - DO THE THING. Don't just talk about it.
