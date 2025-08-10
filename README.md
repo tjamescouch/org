@@ -1,3 +1,7 @@
+# Project Title
+
+A brief description of the project, its purpose, and key features.
+
 # Project Overview
 
 Welcome to the project repository. This repository contains a simple project scaffold with a `Makefile` and source files. The goal is to provide a clean build environment using standard tools like `gcc` and `bun`.
@@ -6,10 +10,12 @@ Welcome to the project repository. This repository contains a simple project sca
 
 - [Project Overview](#project-overview)
 - [Directory Structure](#directory-structure)
-- [Building the Project](#building-the-project)
+- [Building the Project (C/C++)](#building-the-project-cc)
 - [Running JavaScript/TypeScript](#running-javascripttypescript)
-- [Build & Run (C/C++)](#build--run-c-c)
+- [Build & Run (C/C++)](#build--run-cc)
 - [Testing](#testing)
+- [Installation](#installation)
+- [Usage](#usage)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -58,6 +64,30 @@ If tests are provided, they can be run with:
 
 ```bash
 make test
+```
+
+## Installation
+
+Instructions on how to set up the project locally.
+
+```bash
+# Clone the repository
+git clone <repository-url>
+
+# Navigate into the project directory
+cd <project-directory>
+
+# Install dependencies (example for Node.js projects)
+npm install
+```
+
+## Usage
+
+Examples of how to run or use the project.
+
+```bash
+# Example command to start the application
+npm start
 ```
 
 ## Contributing
