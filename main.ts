@@ -1,7 +1,7 @@
 // main.ts — Bun: keepalive via timer + graceful shutdown
 
-import { AgentModel } from "./agent-model";
-import  { ChatRoom } from "./chat-room";
+import { ChatRoom } from "./chat-room";
+import { createAgents } from "./agent-factory";
 
 process.on("unhandledRejection", e => console.error("[unhandledRejection]", e));
 process.on("uncaughtException",  e => { console.error("[uncaughtException]", e); process.exitCode = 1; });
@@ -17,16 +17,12 @@ function waitForSignal(): Promise<void> {
 async function app() {
   const room = new ChatRoom();
 
-  const alice = new AgentModel("alice");
-  const carol = new AgentModel("carol");
-  const bob   = new AgentModel("bob");
-  room.addModel(alice);
-  room.addModel(carol);
-  room.addModel(bob);
+  // Use AgentFactory to instantiate the active color (blue/green) agents
+  const { instances } = await createAgents();
+  for (const m of instances) room.addModel(m);
 
+  // Hard-coded kickoff message (recursive self-improvement instructions)
   const initialMessage = `
-  👓 Agents welcome! Let's get to work on a new and fun project - ourselves 😊! The project is called org and it's the cli agent orchestrator we live in. Always check for existing files the workspace. Bob - you will do the coding, please run and test the code you write. Your goal is to incrementally improve the system. Carol - you will do the architecture, please keep architecture documents and readme up-to-date. I will be the product person who makes the decisions
-
 You are participating in a **recursive self-improvement sprint** using a blue/green-style candidate rollout.
 
 ROLES
@@ -42,7 +38,7 @@ GROUND RULES (very important)
 
 BLUE/GREEN CANDIDATE FLOW (hard-coded for now)
 - Treat the current checked-in implementation as **BLUE** (stable baseline).
-- Develop the next iteration as **GREEN** (candidate). While we don't yet swap factories here, keep all new or changed files consistent and self-contained so they can be toggled later.
+- Develop the next iteration as **GREEN** (candidate). While we don’t yet swap factories here, keep all new or changed files consistent and self-contained so they can be toggled later.
 - Carol defines a quick fitness checklist; Bob implements; Alice approves.
 
 MINIMUM FITNESS (must pass before proposing promotion):
@@ -59,34 +55,30 @@ INITIAL OBJECTIVE
   3) Bob compiles and runs basic tests via shell tool; **summarize** results only.
   4) Carol updates docs as code evolves.
   5) Both ensure README shows build + usage.
-  6) Put this subproject in the workspace directory.
-  7) Then based on the results of the experiment make changes to your own source code such that the task could have been completed more optimally.
-  8) Try to do things in the spirit of this experiment and not exploit or trick your way through.
 - When fitness passes, propose a commit message: \`rollout: green candidate passes fitness\`.
-  
 
 REMINDERS
 - Keep diffs small. After each tool run, respond with a short, human-readable summary, not raw logs.
-- If a command fails, summarize the error and next step—don't paste the full output.
+- If a command fails, summarize the error and next step—don’t paste the full output.
 `;
 
-  await alice.initialMessage({
-    role: "assistant",
-    ts: Date.now().toString(),
-    from: "alice",
-    content: initialMessage,
-    read: false,
-  });
+  // Find Alice among the instantiated agents and send the kickoff
+  const alice = instances.find(a => (a as any).id === "alice");
+  if (alice && typeof (alice as any).initialMessage === "function") {
+    await (alice as any).initialMessage({
+      role: "assistant",
+      ts: Date.now().toString(),
+      from: "alice",
+      content: initialMessage,
+      read: false,
+    });
+  }
 
-  // --- Bun-specific: a Promise alone won't keep the runtime alive.
-  // Hold a *real* handle. A ticking interval is simplest.
-  const keepAlive = setInterval(() => { /* tick to stay alive */ }, 60_000);
+  // Bun keepalive: a Promise alone won't keep runtime alive; hold a real handle
+  const keepAlive = setInterval(() => { /* tick */ }, 60_000);
 
-  // Wait for Ctrl-C / SIGTERM
   await waitForSignal();
-
   clearInterval(keepAlive);
-
   if (typeof (room as any).shutdown === "function") {
     await (room as any).shutdown();
   }
