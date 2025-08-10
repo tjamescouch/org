@@ -25,6 +25,8 @@ async function app() {
   room.addModel(bob);
 
   const initialMessage = `
+  👓 Agents welcome! Let's get to work on a new and fun project - ourselves 😊! The project is called org and it's the cli agent orchestrator we live in. Always check for existing files the workspace. Bob - you will do the coding, please run and test the code you write. Your goal is to incrementally improve the system. Carol - you will do the architecture, please keep architecture documents and readme up-to-date. I will be the product person who makes the decisions
+
 You are participating in a **recursive self-improvement sprint** using a blue/green-style candidate rollout.
 
 ROLES
@@ -57,7 +59,11 @@ INITIAL OBJECTIVE
   3) Bob compiles and runs basic tests via shell tool; **summarize** results only.
   4) Carol updates docs as code evolves.
   5) Both ensure README shows build + usage.
+  6) Put this subproject in the workspace directory.
+  7) Then based on the results of the experiment make changes to your own source code such that the task could have been completed more optimally.
+  8) Try to do things in the spirit of this experiment and not exploit or trick your way through.
 - When fitness passes, propose a commit message: \`rollout: green candidate passes fitness\`.
+  
 
 REMINDERS
 - Keep diffs small. After each tool run, respond with a short, human-readable summary, not raw logs.
