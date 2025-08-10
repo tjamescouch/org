@@ -161,17 +161,17 @@ Above all - DO THE THING. Don't just talk about it.
     execTool: (call: ToolCall) => Promise<ChatMessage>, // returns a {role:"tool", name, tool_call_id, content}
     maxHops: number
   ): Promise<ChatMessage[]> {
-    // const systemMessage = { role: "system", from: "System", content: this.system, read: false }; // unused
-    const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 128000 };
     const responses: ChatMessage[] = [];
-    let retries = 5;
-    // Heuristic: suppress assistant narration that looks like pasted tool JSON
+    const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 128000 };
+
+    // Start with the provided conversation
+    let currentMessages: ChatMessage[] = [...messages];
+
+    // Helper: treat pasted tool JSON as non-user-visible even on final hop
     const looksLikeToolJson = (s: string): boolean => {
       const t = (s || "").trim();
       if (!t) return false;
-      // quick textual check first
       if (/("stdout"|"stderr"|"exit_code"|"ok")/.test(t)) {
-        // try to parse if it looks like JSON
         if (t.startsWith("{") && t.endsWith("}")) {
           try {
             const o = JSON.parse(t);
@@ -182,49 +182,41 @@ Above all - DO THE THING. Don't just talk about it.
               Object.prototype.hasOwnProperty.call(o, "ok")
             );
           } catch {
-            return true; // smells like tool JSON even if invalid
+            return true;
           }
         }
-        return true; // contains stdout/stderr/exit_code/ok words
+        return true;
       }
       return false;
     };
-    for (let i = 0; i < maxHops; i++) {
-      let msg = await chatOnce(this.id, messages.concat(responses).concat(responses), toolOptions) ?? { content: "Error" };
-      let { clean: response, tags } = TagParser.parse(msg.content || "");
+
+    for (let hop = 0; hop < maxHops; hop++) {
+      // Ask the model what to do next given the *internal* conversation
+      const msg = (await chatOnce(this.id, currentMessages, toolOptions)) ?? { content: "Error" } as any;
+
+      // Parse tags from assistant content
+      const { clean: response, tags } = TagParser.parse(msg.content || "");
+
+      // Collect declared + embedded tool calls
       const tool_calls = [
         ...(msg.tool_calls ?? []),
         ...extractToolCallsFromText(msg.content ?? "").tool_calls,
       ];
-      if (!msg.content && isEmpty(tool_calls)) {
-        retries--;
-        if (retries <= 0) {
-          return responses;
+
+      // If there are *no* tool calls, this is a summary/final assistant message.
+      if (!tool_calls || tool_calls.length === 0) {
+        // Optionally surface chain-of-thought wrapper (kept as-is if present)
+        if ((msg as any).reasoning) {
+          responses.push({
+            role: "assistant",
+            from: this.id,
+            content: `<think>${(msg as any).reasoning}</think>`,
+            reasoning: (msg as any).reasoning,
+            read: true,
+          });
         }
-        responses.push({
-          role: "assistant",
-          from: this.id,
-          content: `I need to think more.`,
-          reasoning: (msg as any).reasoning,
-          read: true,
-        });
-        continue;
-      }
-      // Visible assistant text for this turn (only when not issuing tool calls)
-      const visibleContent = isEmpty(tool_calls) ? response : undefined;
-      // Preserve assistant's chain-of-thought wrapper if present
-      if ((msg as any).reasoning) {
-        responses.push({
-          role: "assistant",
-          from: this.id,
-          content: `<think>${(msg as any).reasoning}</think>`,
-          reasoning: (msg as any).reasoning,
-          read: true,
-        });
-      }
-      // Push the visible assistant message (cleaned text w/o tags) if any
-      if (msg.content && visibleContent !== undefined) {
-        const trimmed = String(visibleContent ?? "").trim();
+
+        const trimmed = String(response ?? "").trim();
         if (trimmed.length > 0 && !looksLikeToolJson(trimmed)) {
           responses.push({
             role: "assistant",
@@ -233,50 +225,56 @@ Above all - DO THE THING. Don't just talk about it.
             reasoning: (msg as any).reasoning,
             read: true,
           });
-        } else {
-          // Drop assistant narration that looks like tool stdout/stderr JSON.
-          // This prevents hallucinated tool outputs from being surfaced.
         }
-      }
-      // --- Handle ALL tags (multiple) ----------------------------------------
-      if (tags.length > 0) {
-        // Save current audience so we can restore after agent-directed deliveries
-        const savedAudience = { ...this.audience };
-        for (const t of tags) {
-          if (t.kind === "file") {
-            // Redirect _deliver to file; use this tag's content verbatim (no whitespace mangling)
-            this.fileToRedirectTo = t.value;
-            const statusMsg = await this._deliver(t.content ?? "");
-            // Ensure the LLM sees success/error on next hop
-            if (statusMsg) responses.push(statusMsg);
-            // _deliver will restore audience and clear fileToRedirectTo
-          } else if (t.kind === "agent") {
-            // Temporarily deliver directly to the tagged agent via _deliver
-            this.audience = { kind: "direct", target: t.value };
-            const delivered = await this._deliver(t.content ?? "");
-            if (delivered) responses.push(delivered);
-            // restore audience after each agent delivery
-            this.audience = { ...savedAudience };
+
+        // Handle tags on the *final* hop (file/direct). These produce tool/direct messages but
+        // do not change the fact that we are done.
+        if (tags.length > 0) {
+          const savedAudience = { ...this.audience } as any;
+          for (const t of tags) {
+            if (t.kind === "file") {
+              this.fileToRedirectTo = t.value;
+              const statusMsg = await this._deliver(t.content ?? "");
+              if (statusMsg) responses.push(statusMsg);
+            } else if (t.kind === "agent") {
+              this.audience = { kind: "direct", target: t.value } as any;
+              const delivered = await this._deliver(t.content ?? "");
+              if (delivered) responses.push(delivered);
+              this.audience = { ...savedAudience } as any;
+            }
           }
         }
-        // NOTE: removed the old `continue;` so tool calls in the same turn still run.
+
+        break; // finished; no more tools requested
       }
-      // Preserve existing early-exit behavior for agent-directed deliveries,
-      // but ONLY when there are no tool calls to run this turn.
-      if (tags.length > 0 && tags[tags.length - 1]?.kind === "agent" && isEmpty(tool_calls)) {
-        return responses;
-      }
-      // -----------------------------------------------------------------------
-      // If no tool calls were requested, return accumulated messages
-      if (!tool_calls || tool_calls.length === 0) {
-        return responses;
-      }
-      // Execute tool calls and append results (all in this same turn)
+
+      // There *are* tool calls this hop: execute them and feed back results as role:"tool"
       for (const call of tool_calls) {
-        const toolMsg = await execTool(call);
-        responses.push(toolMsg);
+        const toolMsg = await execTool(call); // { role:"tool", name, tool_call_id, content, from, read }
+        // Append internally so the next assistant step can read it
+        currentMessages.push(toolMsg);
       }
+
+      // Also handle tags **in the same hop** (don’t skip tools). This mirrors previous behavior.
+      if (tags.length > 0) {
+        const savedAudience = { ...this.audience } as any;
+        for (const t of tags) {
+          if (t.kind === "file") {
+            this.fileToRedirectTo = t.value;
+            const statusMsg = await this._deliver(t.content ?? "");
+            if (statusMsg) responses.push(statusMsg);
+          } else if (t.kind === "agent") {
+            this.audience = { kind: "direct", target: t.value } as any;
+            const delivered = await this._deliver(t.content ?? "");
+            if (delivered) responses.push(delivered);
+            this.audience = { ...savedAudience } as any;
+          }
+        }
+      }
+
+      // Loop back: the next chatOnce() sees the tool outputs via currentMessages
     }
+
     return responses;
   }
 
