@@ -1,6 +1,3 @@
-*.swp
-*.swo
-build
-workspace
-node_modules
-typecheck.txt
+# Ignore build artifacts in the new subproject
+workspace/textstats/*.o
+workspace/textstats/textstats
