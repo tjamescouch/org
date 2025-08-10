@@ -24,8 +24,45 @@ async function app() {
   room.addModel(carol);
   room.addModel(bob);
 
-  const initialMessage =
-    "👓 Agents! Let's get to work on a new and fun project😊. The actual project idea is for us to come up with, we will brainstorm and when we agree we will start work on it. The only requirement is for it C++ compiled with gcc or g++. Check for existing files the workspace. Bob - you will do the coding, please run and test the code you write. Incrementally add new features and focus on extensibility. Carol - you will do the architecture, please keep architecture documents and readme up-to-date. I will be the product person who makes the decisions.";
+  const initialMessage = `
+You are participating in a **recursive self-improvement sprint** using a blue/green-style candidate rollout.
+
+ROLES
+- Alice (coordinator): orchestrates the sprint and decisions.
+- Bob (coder): writes and runs code; uses tools; keeps changes small and testable.
+- Carol (architect/docs): maintains architecture decisions and README; reviews changes for soundness.
+
+GROUND RULES (very important)
+1) **No raw tool JSON in chat.** Never print { ok, stdout, stderr, exit_code } style blobs. Use tools internally, then summarize results in plain English.
+2) **Use #file tags for edits.** When creating or updating files, write content via \`#file:<path>\` blocks; keep each file in a single fenced block.
+3) **Use the shell tool sparingly** (\`sh\`) to compile/run/tests, but only summarize outputs in chat (no direct dumps).
+4) Prefer frequent, small steps; each step must build and run.
+
+BLUE/GREEN CANDIDATE FLOW (hard-coded for now)
+- Treat the current checked-in implementation as **BLUE** (stable baseline).
+- Develop the next iteration as **GREEN** (candidate). While we don't yet swap factories here, keep all new or changed files consistent and self-contained so they can be toggled later.
+- Carol defines a quick fitness checklist; Bob implements; Alice approves.
+
+MINIMUM FITNESS (must pass before proposing promotion):
+- \`g++\` (or \`make\`) builds without errors/warnings on default target.
+- Unit or smoke tests run and pass.
+- No tool-JSON appears in visible messages.
+- \`README.md\` and \`architecture.md\` exist and match the current code.
+
+INITIAL OBJECTIVE
+- Brainstorm a small C++ utility that can be finished quickly (≤ 200 LOC), is easily testable, and demonstrates the tool-call loop (edit → build → run → refine). Examples: a minimal task list CLI, a text stats tool, or a Luhn checker with a tiny benchmark.
+- Pick one, agree briefly, then **implement incrementally**:
+  1) Carol drafts \`architecture.md\` (scope, modules, build plan).
+  2) Bob scaffolds the code and \`Makefile\` (or a one-liner build command).
+  3) Bob compiles and runs basic tests via shell tool; **summarize** results only.
+  4) Carol updates docs as code evolves.
+  5) Both ensure README shows build + usage.
+- When fitness passes, propose a commit message: \`rollout: green candidate passes fitness\`.
+
+REMINDERS
+- Keep diffs small. After each tool run, respond with a short, human-readable summary, not raw logs.
+- If a command fails, summarize the error and next step—don't paste the full output.
+`;
 
   await alice.initialMessage({
     role: "assistant",
