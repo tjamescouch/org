@@ -196,10 +196,14 @@ Above all - DO THE THING. Don't just talk about it.
       const { clean: response, tags } = TagParser.parse(msg.content || "");
 
       // Collect declared + embedded tool calls
+      const extractedToolCall = extractToolCallsFromText(msg.content ?? "").tool_calls[0];
       const tool_calls = [
         ...(msg.tool_calls ?? []),
-        ...extractToolCallsFromText(msg.content ?? "").tool_calls,
       ];
+
+      if (extractedToolCall) {
+        tool_calls.push(extractedToolCall);
+      }
 
       // If there are *no* tool calls, this is a summary/final assistant message.
       if (!tool_calls || tool_calls.length === 0) {
