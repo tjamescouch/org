@@ -1,13 +1,37 @@
 # Project Overview
 
-This repository contains a simple project scaffold with a `Makefile` and source files. The goal is to provide a clean build environment using standard tools like `gcc` and `bun`.
+Welcome to the project repository. This README provides an overview of the project, its structure, and how to get started.
 
-## Building the Project
+## Table of Contents
 
-To compile the C/C++ sources, run:
+- [Project Overview](#project-overview)
+- [Directory Structure](#directory-structure)
+- [Build & Run](#build--run)
+- [Testing](#testing)
+- [Contributing](#contributing)
+- [License](#license)
 
-```sh
+## Directory Structure
+
+```
+/                # Root of the repository
+├─ src/          # Source code
+├─ include/      # Header files (if applicable)
+├─ tests/        # Test suites
+├─ Makefile      # Build instructions
+└─ README.md     # This file
+```
+
+## Build & Run
+
+The project uses a `Makefile` for building. Ensure you have `gcc` (or the appropriate compiler) installed.
+
+```bash
+# Build the project
 make
+
+# Run the executable (replace <executable> with the actual name)
+./<executable>
 ```
 
 The `Makefile` handles compilation flags and dependencies.
@@ -16,16 +40,26 @@ The `Makefile` handles compilation flags and dependencies.
 
 If the project includes JavaScript or TypeScript files, you can use `bun`:
 
-```sh
+```bash
 bun run <script>
+```
+
+## Testing
+
+If tests are provided, they can be run with:
+
+```bash
+make test
 ```
 
 ## Contributing
 
+Contributions are welcome! Please follow these steps:
+
 1. Fork the repository.
 2. Create a new branch for your feature or bug fix.
-3. Make your changes and ensure they pass any existing tests.
-4. Submit a pull request with a clear description of your changes.
+3. Commit your changes with clear messages.
+4. Open a pull request describing your changes.
 
 ## License
 
