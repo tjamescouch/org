@@ -1,7 +1,7 @@
 // main.ts — Bun: keepalive via timer + graceful shutdown
 
-import { ChatRoom } from "./chat-room";
 import { AgentModel } from "./agent-model";
+import  { ChatRoom } from "./chat-room";
 
 process.on("unhandledRejection", e => console.error("[unhandledRejection]", e));
 process.on("uncaughtException",  e => { console.error("[uncaughtException]", e); process.exitCode = 1; });

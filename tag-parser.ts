@@ -43,7 +43,8 @@ export class TagParser {
     const tags: Tag[] = [];
     for (let i = 0; i < hits.length; i++) {
       const cur = hits[i];
-      const nextStart = i + 1 < hits.length ? hits[i + 1].start : input.length;
+      if (!cur) continue;
+      const nextStart = i + 1 < hits.length ? hits[i + 1]?.start ?? 0 : input.length;
       const content = input.slice(cur.end, nextStart).trim(); // preserve as-is (including newlines/spaces)
       tags.push({ kind: cur.kind, value: cur.value, content });
     }

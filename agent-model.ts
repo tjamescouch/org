@@ -10,7 +10,7 @@ type Audience =
   | { kind: "group"; target: "*" } | { kind: "direct"; target: string }      // send only to a given model
   | { kind: "file"; target: string };         // write to a file on VM
 
-const isEmpty = (maybeArray: unknown[]): boolean => {
+const isEmpty = (maybeArray: any[]): boolean => {
   return (maybeArray ?? []).length === 0;
 }
 
@@ -21,7 +21,7 @@ const truncate = (s: string, length: number): string => {
   return s.slice(0, length) + '...';
 }
 
-const makeToolCallId = (prefix: "call" | "tool" ): string => {
+const makeToolCallId = (prefix: "call" | "tool"): string => {
   const alphabet = "abcdefghijklmnopqrstuvwxyz";
   // pick 2–3 random words/fragments from the alphabet
   const randPart = () =>
@@ -107,18 +107,17 @@ Above all - DO THE THING. Don't just talk about it.
   /* ------------------------------------------------------------ */
   async initialMessage(incoming: RoomMessage): Promise<void> {
     this._push(incoming);
-    console.log(`\n\n**** ${this.id}:\n${incoming.content}`);
+    console.log(`\n\n**** ${this.id}:\n${String(incoming!.content ?? "")}`);
 
-    await this.broadcast(incoming.content);
+    await this.broadcast(String(incoming!.content ?? ""));
   }
 
   async receiveMessage(incoming: RoomMessage): Promise<void> {
-
     const fullMessageHistory: ChatMessage[] = [
-      { role: "system", from: "System", content: this.system, read: false},
+      { role: "system", from: "System", content: this.system, read: false },
       ...this.context,
-      { role: "system", from: "System", content: this.system, read: false},
-      { role: "user", from: incoming.from, content: incoming.content, read: false},
+      { role: "system", from: "System", content: this.system, read: false },
+      { role: "user", from: incoming.from, content: incoming.content, read: false },
     ];
 
     this._push(incoming);
@@ -134,7 +133,7 @@ Above all - DO THE THING. Don't just talk about it.
       for (const message of messages) {
         this.context.push({
           ts: new Date().toISOString(),
-          role: message.role === 'tool' ? message.role : (message.from === this.id ? "assistant" : "user"),
+          role: (message.role === 'tool') ? 'user' : (message.from === this.id ? 'assistant' : 'user'),
           from: message.from,
           content: message.content,
           read: true,
@@ -142,13 +141,11 @@ Above all - DO THE THING. Don't just talk about it.
       }
 
       const lastMessage = messages[messages.length - 1];
-
       if (lastMessage) {
-        await this._deliver(lastMessage.content || lastMessage.reasoning || '');
+        await this._deliver((lastMessage.content ?? (lastMessage.reasoning ?? '')));
       } else {
         console.error('lastMessage is undefined');
       }
-
       this.cleanContext();
     } finally {
       release();
@@ -161,22 +158,17 @@ Above all - DO THE THING. Don't just talk about it.
     execTool: (call: ToolCall) => Promise<ChatMessage>, // returns a {role:"tool", name, tool_call_id, content}
     maxHops: number
   ): Promise<ChatMessage[]> {
-    const toolOptions = { tools, tool_choice: "auto", num_ctx: 128000 };
-
+    // const systemMessage = { role: "system", from: "System", content: this.system, read: false }; // unused
+    const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 128000 };
     const responses: ChatMessage[] = [];
-    const systemMessage = { role: "system", from: "System", content: this.system, read: false };
-
     let retries = 5;
-
     for (let i = 0; i < maxHops; i++) {
       let msg = await chatOnce(this.id, messages.concat(responses).concat(responses), toolOptions) ?? { content: "Error" };
       let { clean: response, tags } = TagParser.parse(msg.content || "");
-
       const tool_calls = [
         ...(msg.tool_calls ?? []),
         ...extractToolCallsFromText(msg.content ?? "").tool_calls,
       ];
-
       if (!msg.content && isEmpty(tool_calls)) {
         retries--;
         if (retries <= 0) {
@@ -191,10 +183,8 @@ Above all - DO THE THING. Don't just talk about it.
         });
         continue;
       }
-
       // Visible assistant text for this turn (only when not issuing tool calls)
       const visibleContent = isEmpty(tool_calls) ? response : undefined;
-
       // Preserve assistant's chain-of-thought wrapper if present
       if ((msg as any).reasoning) {
         responses.push({
@@ -205,7 +195,6 @@ Above all - DO THE THING. Don't just talk about it.
           read: true,
         });
       }
-
       // Push the visible assistant message (cleaned text w/o tags) if any
       if (msg.content && visibleContent !== undefined) {
         responses.push({
@@ -216,12 +205,10 @@ Above all - DO THE THING. Don't just talk about it.
           read: true,
         });
       }
-
       // --- Handle ALL tags (multiple) ----------------------------------------
       if (tags.length > 0) {
         // Save current audience so we can restore after agent-directed deliveries
         const savedAudience = { ...this.audience };
-
         for (const t of tags) {
           if (t.kind === "file") {
             // Redirect _deliver to file; use this tag's content verbatim (no whitespace mangling)
@@ -241,63 +228,22 @@ Above all - DO THE THING. Don't just talk about it.
         }
         // NOTE: removed the old `continue;` so tool calls in the same turn still run.
       }
-
-      // Preserve existing early-exit behavior for direct deliveries,
+      // Preserve existing early-exit behavior for agent-directed deliveries,
       // but ONLY when there are no tool calls to run this turn.
-      if (tags.length > 0 && tags[tags.length - 1]?.kind === "direct" && (isEmpty(tool_calls))) {
+      if (tags.length > 0 && tags[tags.length - 1]?.kind === "agent" && isEmpty(tool_calls)) {
         return responses;
       }
       // -----------------------------------------------------------------------
-
       // If no tool calls were requested, return accumulated messages
       if (!tool_calls || tool_calls.length === 0) {
         return responses;
       }
-
       // Execute tool calls and append results (all in this same turn)
       for (const call of tool_calls) {
-        responses.push({
-          role: "assistant",
-          from: this.id,
-          content: JSON.stringify({
-            id: makeToolCallId("call"),
-            object: "chat.completion",
-            created: new Date().getTime(),
-            model: "gpt-oss:120b",
-            choices: [
-              {
-                index: 0,
-                message: {
-                  role: "assistant",
-                  content: null,
-                  tool_calls: [
-                    {
-                      id: makeToolCallId("call"),
-                      index: 0,
-                      type: "function",
-                      function: {
-                        name: "sh",
-                        arguments:
-                          typeof (call as any)?.function?.arguments === "object"
-                            ? JSON.stringify((call as any)?.function?.arguments)
-                            : (call as any)?.function?.arguments,
-                      },
-                    },
-                  ],
-                },
-                finish_reason: "tool_calls",
-              },
-            ],
-          }),
-          reasoning: (msg as any).reasoning,
-          read: true,
-        });
-
         const toolMsg = await execTool(call);
         responses.push(toolMsg);
       }
     }
-
     return responses;
   }
 
@@ -322,16 +268,14 @@ Above all - DO THE THING. Don't just talk about it.
 
   /* ------------------------------------------------------------ */
   private async _execTool(call: ToolCall): Promise<ChatMessage> {
-	  console.error("************** CALL", call);
-    const name = call?.function?.name ?? 'unknown';
-
+    console.error("************** CALL", call);
+    const name: string = call?.function?.name ?? 'unknown';
     try {
-      const args = JSON.parse(call?.function?.arguments || '{"cmd": ""}');
-
+      // Ensure arguments are parsed safely and type matches expected signature
+      const args = JSON.parse(call?.function?.arguments ?? '{"cmd": ""}') as { cmd: string };
       if (name === "sh") {
-        return { ...await this._runShell(name, {...args, rawCmd: args.cmd }), tool_call_id: call.id, role: "tool", name, from: this.id, read: false };
+        return { ...(await this._runShell(name, { ...args, rawCmd: args.cmd })), tool_call_id: call.id, role: "tool", name, from: this.id, read: false };
       }
-
       // unknown tool
       return { role: "tool", name, tool_call_id: call.id, content: JSON.stringify({ ok: false, err: `unknown tool: ${name}` }), from: this.id, read: false };
     } catch (err) {
@@ -342,7 +286,7 @@ Above all - DO THE THING. Don't just talk about it.
   /* ---------- shell helper (Bun.spawn) ------------------------- */
   private async _runShell(functionName: string, { cmd, rawCmd }: { cmd: string, rawCmd?: string }): Promise<{role: string, name: string, content: string}> {
 
-    const timeout = Math.max(1, Math.min(30, Number(this.shellTimeout)));
+    const timeout = Math.max(1, Number(this.shellTimeout));
 
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), (timeout + 1) * 1000);
@@ -389,89 +333,80 @@ Above all - DO THE THING. Don't just talk about it.
     }
   }
 
-// inside AgentModel
-private async _deliver(msg: string): Promise<ChatMessage> {
-  const kind   = this.fileToRedirectTo ? "file" : this.audience.kind;
-  const target = this.fileToRedirectTo ? this.fileToRedirectTo : this.audience.target;
-
-  let response: ChatMessage | undefined;
-  let text;
-
-  try {
-    switch (kind) {
-      case "group": {
-        await this.broadcast(msg);
-        response = { ts: Date.now().toString(), from: this.id, content: msg, read: true, role: "assistant" };
-        break;
-      }
-      case "direct": {
-        await this.broadcast(msg, target);
-        response = { ts: Date.now().toString(), from: this.id, content: msg, read: true, role: "assistant" };
-        break;
-      }
-      case "file": {
-        const p = (!target.startsWith("/") && !target.startsWith("./")) ? `./${target}` : target;
-
-        // ensure directory exists
-        const slash = p.lastIndexOf("/");
-        const dir = slash >= 0 ? p.slice(0, slash) : ".";
-        if ((globalThis as any).Bun?.mkdir) {
-          await (globalThis as any).Bun.mkdir(dir || ".", { recursive: true });
-        } else {
-          const fs = await import("fs");
-          await fs.promises.mkdir(dir || ".", { recursive: true });
+  // inside AgentModel
+  private async _deliver(msg: string): Promise<ChatMessage> {
+    const kind: Audience["kind"] = this.fileToRedirectTo ? "file" : this.audience.kind;
+    const target: string = this.fileToRedirectTo ? this.fileToRedirectTo : this.audience.target;
+    let response: ChatMessage | undefined;
+    try {
+      switch (kind) {
+        case "group": {
+          await this.broadcast(String(msg ?? ""));
+          response = { ts: Date.now().toString(), from: this.id, content: msg, read: true, role: "assistant" };
+          break;
         }
-
-        // unescape once if upstream gave "\\n"
-        const text = (msg.includes("\\n") && !msg.includes("\n"))
-          ? msg.replace(/\\r\\n/g, "\r\n").replace(/\\n/g, "\n")
-          : msg;
-
-        // overwrite
-        if ((globalThis as any).Bun?.write) {
-          await (globalThis as any).Bun.write(p, text + "\n", { create: true, append: false });
-        } else {
-          const fs = await import("fs");
-          await fs.promises.writeFile(p, text + "\n", { encoding: "utf-8" });
+        case "direct": {
+          await this.broadcast(String(msg ?? ""), target);
+          response = { ts: Date.now().toString(), from: this.id, content: msg, read: true, role: "assistant" };
+          break;
         }
-
-        response = {
-          ts: Date.now().toString(),
-          from: this.id,
-          role: "tool",
-          read: true,
-          content: `\`\`\`${text}\`\`\`\n=> Written to file ${p}`
-        };
-        console.log(`\n******* wrote file ${p}`);
-        break;
+        case "file": {
+          const p = (!target.startsWith("/") && !target.startsWith("./")) ? `./${target}` : target;
+          // ensure directory exists
+          const slash = p.lastIndexOf("/");
+          const dir = slash >= 0 ? p.slice(0, slash) : ".";
+          if ((globalThis as any).Bun?.mkdir) {
+            await (globalThis as any).Bun.mkdir(dir || ".", { recursive: true });
+          } else {
+            const fs = await import("fs");
+            await fs.promises.mkdir(dir || ".", { recursive: true });
+          }
+          // unescape once if upstream gave "\\n"
+          const text = (msg.includes("\\n") && !msg.includes("\n"))
+            ? msg.replace(/\\r\\n/g, "\r\n").replace(/\\n/g, "\n")
+            : msg;
+          // overwrite
+          if ((globalThis as any).Bun?.write) {
+            await (globalThis as any).Bun.write(p, text + "\n", { create: true, append: false });
+          } else {
+            const fs = await import("fs");
+            await fs.promises.writeFile(p, text + "\n", { encoding: "utf-8" });
+          }
+          response = {
+            ts: Date.now().toString(),
+            from: this.id,
+            role: "tool",
+            read: true,
+            content: `\`\`\`${text}\`\`\`\n=> Written to file ${p}`
+          };
+          console.log(`\n******* wrote file ${p}`);
+          break;
+        }
       }
+    } catch (e: any) {
+      // mirror your existing error push
+      const p = (kind === "file")
+        ? ((!target.startsWith("/") && !target.startsWith("./")) ? `./${target}` : target)
+        : String(target);
+      response = {
+        ts: Date.now().toString(),
+        from: this.id,
+        role: "tool",
+        read: true,
+        content: `${JSON.stringify({ ok: false, err: String(e) })} Failed to write to file ${p}.`
+      };
+      console.error(`\n******* file write failed: ${e}`);
+      console.error(e);
+    } finally {
+      if (this.fileToRedirectTo) this.audience = { kind: "group", target: "*" };
+      this.fileToRedirectTo = undefined;
     }
-  } catch (e: any) {
-    // mirror your existing error push
-    const p = (kind === "file")
-      ? ((!target.startsWith("/") && !target.startsWith("./")) ? `./${target}` : target)
-      : String(target);
-
-    response = {
-      ts: Date.now().toString(),
-      from: this.id,
-      role: "tool",
-      read: true,
-      content: `${JSON.stringify({ ok: false, err: String(e) })} Failed to write to file ${p}.`
-    };
-    console.error(`\n******* file write failed: ${e}`);
-    console.error(e);
-  } finally {
-    if (this.fileToRedirectTo) this.audience = { kind: "group", target: "*" };
-    this.fileToRedirectTo = undefined;
-  }
-
     return response ?? { ts: Date.now().toString(), from: this.id, role: "system", read: true, content: "(deliver: no-op)" };
   }
   private _push(msg: RoomMessage): void {
     this.context.push({
       ts: new Date().toISOString(),
-      role: msg.role === 'tool' ? msg.role : (msg.from === this.id ? "assistant" : "user"),
+      role: msg.role === 'system' ? 'system' : (msg.from === this.id ? 'assistant' : 'user'),
       from: msg.from,
       content: msg.content,
       read: true,

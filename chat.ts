@@ -82,12 +82,11 @@ export async function chatOnce(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-    timeout: false,
     signal: AbortSignal.timeout(30*60*1000)
   });
 
   if (!resp.ok) {
-    const txt = await resp.content();
+    const txt = await resp.text();
     const content = `HTTP ${resp.status} – ${resp.statusText}\n${txt}`;
     console.error(content);
     return { role: "assistant", content }; // degraded msg
