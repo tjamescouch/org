@@ -1,49 +1,32 @@
-# Project Title
+# Project Overview
 
-A brief description of the project, its purpose, and key features.
+This repository contains a simple project scaffold with a `Makefile` and source files. The goal is to provide a clean build environment using standard tools like `gcc` and `bun`.
 
-## Table of Contents
+## Building the Project
 
-- [Installation](#installation)
-- [Usage](#usage)
-- [Contributing](#contributing)
-- [License](#license)
+To compile the C/C++ sources, run:
 
-## Installation
-
-Instructions on how to set up the project locally.
-
-```bash
-# Clone the repository
-git clone <repository-url>
-
-# Navigate into the project directory
-cd <project-directory>
-
-# Install dependencies
-# (example for Node.js projects)
-npm install
+```sh
+make
 ```
 
-## Usage
+The `Makefile` handles compilation flags and dependencies.
 
-Examples of how to run or use the project.
+## Running JavaScript/TypeScript
 
-```bash
-# Example command to start the application
-npm start
+If the project includes JavaScript or TypeScript files, you can use `bun`:
+
+```sh
+bun run <script>
 ```
 
 ## Contributing
 
-Guidelines for contributing to the project.
-
 1. Fork the repository.
-2. Create a new branch (`git checkout -b feature-branch`).
-3. Make your changes and commit them (`git commit -am 'Add new feature'`).
-4. Push to the branch (`git push origin feature-branch`).
-5. Open a Pull Request.
+2. Create a new branch for your feature or bug fix.
+3. Make your changes and ensure they pass any existing tests.
+4. Submit a pull request with a clear description of your changes.
 
 ## License
 
-Specify the license under which the project is distributed, e.g., MIT License.
+This project is licensed under the MIT License. See the `LICENSE` file for details.
