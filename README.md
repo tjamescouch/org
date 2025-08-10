@@ -1,58 +1,43 @@
-# Project Title
-
-A brief description of the project, its purpose, and key features.
-
 # Project Overview
 
-Welcome to the project repository. This repository contains a simple project scaffold with a `Makefile` and source files. The goal is to provide a clean build environment using standard tools like `gcc` and `bun`.
+This repository provides a simple scaffold for building C/C++ projects with a `Makefile` and optionally running JavaScript/TypeScript scripts using **bun**. It includes basic source directories and a clear structure to get started quickly.
 
 ## Table of Contents
 
 - [Project Overview](#project-overview)
 - [Directory Structure](#directory-structure)
-- [Building the Project (C/C++)](#building-the-project-cc)
-- [Running JavaScript/TypeScript](#running-javascripttypescript)
-- [Build & Run (C/C++)](#build--run-cc)
+- [Build & Run](#build--run)
+- [JavaScript/TypeScript Support](#javascripttypescript-support)
 - [Testing](#testing)
-- [Installation](#installation)
-- [Usage](#usage)
 - [Contributing](#contributing)
 - [License](#license)
 
 ## Directory Structure
 
 ```
-/                # Root of the repository
-├─ src/          # Source code
+/                # Repository root
+├─ src/          # Source code (C/C++ files)
 ├─ include/      # Header files (if applicable)
 ├─ tests/        # Test suites
 ├─ Makefile      # Build instructions
 └─ README.md     # This file
 ```
 
-## Building the Project (C/C++)
+## Build & Run
 
-To compile the C/C++ sources, run:
+The project uses a `Makefile` for compilation. Ensure you have `gcc` (or a compatible compiler) installed.
 
 ```sh
-make
-```
-
-The `Makefile` handles compilation flags and dependencies.
-
-## Build & Run (C/C++)
-
-```bash
 # Build the project
 make
 
-# Run the executable (replace <executable> with the actual name)
+# Run the resulting executable (replace <executable> with the actual name)
 ./<executable>
 ```
 
-## Running JavaScript/TypeScript
+## JavaScript/TypeScript Support
 
-If the project includes JavaScript or TypeScript files, you can use `bun`:
+If the repository contains JavaScript or TypeScript files, you can run them with **bun**:
 
 ```sh
 bun run <script>
@@ -60,42 +45,21 @@ bun run <script>
 
 ## Testing
 
-If tests are provided, they can be run with:
+If test targets are defined in the `Makefile`, run them with:
 
-```bash
+```sh
 make test
-```
-
-## Installation
-
-Instructions on how to set up the project locally.
-
-```bash
-# Clone the repository
-git clone <repository-url>
-
-# Navigate into the project directory
-cd <project-directory>
-
-# Install dependencies (example for Node.js projects)
-npm install
-```
-
-## Usage
-
-Examples of how to run or use the project.
-
-```bash
-# Example command to start the application
-npm start
 ```
 
 ## Contributing
 
-1. Fork the repository.  
-2. Create a new branch for your feature or bug fix.  
-3. Make your changes and ensure they pass any existing tests.  
-4. Submit a pull request with a clear description of your changes.
+Contributions are welcome! Follow these steps:
+
+1. Fork the repository.
+2. Create a new branch for your feature or bug fix.
+3. Make your changes and ensure they pass any existing tests.
+4. Commit with clear messages.
+5. Open a pull request describing your changes.
 
 ## License
 
