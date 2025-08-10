@@ -25,8 +25,8 @@ export class AgentModel extends Model {
   private readonly shellTimeout = 5 * 60; // seconds
   private audience: Audience = { kind: "group", target: "*" }; // default
   private fileToRedirectTo: string | undefined;
-  private maxShellReponseCharacters: number = 7000;
-  private maxMessagesInContext = 20;
+  private maxShellReponseCharacters: number = 50_000;
+  private maxMessagesInContext = 10;
 
   constructor(id: string) {
     super(id);
@@ -35,50 +35,127 @@ export class AgentModel extends Model {
   /* ------------------------------------------------------------ */
   async initialMessage(incoming: RoomMessage): Promise<void> {
     this._push(incoming);
-    console.log(`\n\n*** ${this.id}:\n${incoming.content}`);
+    console.log(`\n\n**** ${this.id}:\n${incoming.content}`);
 
     await this.broadcast(incoming.content);
   }
 
   async receiveMessage(incoming: RoomMessage): Promise<void> {
 
-    const system = `You are agent "${this.id}". 
-    If you need to run shell commands, call the tool "sh". Commands are executed in a Debian VM.
-    To chat directly to another agent use the chat_mode tool. Examples: group, direct:bob - to talk to the group or directly to bob respectively.
-    Try to make decisions for yourself even if you're not completely sure that they are correct.
-    You have access to an actual Debian VM.
-    It has git and bun installed.
-    PLEASE use the file system.
-    You have access to basic unix commands. There is no unix command called apply_patch nor is there a tool with that name.
-    You have the unix 'patch' command as well as cd, pwd, bun, git, echo, cat, etc. Use these to manipulate files.
+    const system = `You are agent "${this.id}".
+If you need to run shell commands, call the sh tool. 
+Commands are executed in a Debian VM.
+To chat directly to another agent use the chat_mode tool. 
+Examples: group, direct:bob - to talk to the group or directly to bob respectively.
+Try to make decisions for yourself even if you're not completely sure that they are correct.
+You have access to an actual Debian VM.
+It has git and bun installed.
 
-    Alternately: to write to a file include a tag at the very start of the response with the format #file:<filename>. This way you do not do a tool call and simply respond.
-    Example:
-    #file:index.ts
-    console.log("hello world");
+You have the unix 'patch' command:
 
-    Any output after the tag will be redirected to the file, so avoid accidentally including other output or code fences etc. Just include the desired content of the file.
+Usage: patch [OPTION]... [ORIGFILE [PATCHFILE]]
 
-    Terminal responses are limited to ${this.maxShellReponseCharacters} characters. So avoid ls -R on directories with many files.
+Input options:
 
-    Prefer the above tagging approach for writing files longer than a few paragraphs.
-    You may only use one tag per response.
-    PLEASE stream files to disk rather than just chatting them with the group.
-    PLEASE run shell commands and test your work.
-    DO NOT do the same thing over and over again (infinite loop)
-    If you get stuck reach out to the group for help.
-    Delegate where appropriate and avoid doing work that should be done by another agent.
-    Please actually use the tools provided. Do not simply hallucinate tool calls.
-    Do not make stuff up. Do not imagine tool invocation results. Avoid repeating old commands.
-    Verify and validate your work.
-    Verify and validate the work of your team members.
-    Messages will be of the format <username>: <message>.
-    DO NOT mimic the above format of messages within your response.
-    DO NOT PUSH ANYTHING TO GITHUB.
-    Be concise.
-    `;
+  -p NUM  --strip=NUM  Strip NUM leading components from file names.
+  -F LINES  --fuzz LINES  Set the fuzz factor to LINES for inexact matching.
+  -l  --ignore-whitespace  Ignore white space changes between patch and input.
+
+  -c  --context  Interpret the patch as a context difference.
+  -e  --ed  Interpret the patch as an ed script.
+  -n  --normal  Interpret the patch as a normal difference.
+  -u  --unified  Interpret the patch as a unified difference.
+
+  -N  --forward  Ignore patches that appear to be reversed or already applied.
+  -R  --reverse  Assume patches were created with old and new files swapped.
+
+  -i PATCHFILE  --input=PATCHFILE  Read patch from PATCHFILE instead of stdin.
+
+Output options:
+
+  -o FILE  --output=FILE  Output patched files to FILE.
+  -r FILE  --reject-file=FILE  Output rejects to FILE.
+
+  -D NAME  --ifdef=NAME  Make merged if-then-else output using NAME.
+  --merge  Merge using conflict markers instead of creating reject files.
+  -E  --remove-empty-files  Remove output files that are empty after patching.
+
+  -Z  --set-utc  Set times of patched files, assuming diff uses UTC (GMT).
+  -T  --set-time  Likewise, assuming local time.
+
+  --quoting-style=WORD   output file names using quoting style WORD.
+    Valid WORDs are: literal, shell, shell-always, c, escape.
+    Default is taken from QUOTING_STYLE env variable, or 'shell' if unset.
+
+Backup and version control options:
+
+  -b  --backup  Back up the original contents of each file.
+  --backup-if-mismatch  Back up if the patch does not match exactly.
+  --no-backup-if-mismatch  Back up mismatches only if otherwise requested.
+
+  -V STYLE  --version-control=STYLE  Use STYLE version control.
+	STYLE is either 'simple', 'numbered', or 'existing'.
+  -B PREFIX  --prefix=PREFIX  Prepend PREFIX to backup file names.
+  -Y PREFIX  --basename-prefix=PREFIX  Prepend PREFIX to backup file basenames.
+  -z SUFFIX  --suffix=SUFFIX  Append SUFFIX to backup file names.
+
+  -g NUM  --get=NUM  Get files from RCS etc. if positive; ask if negative.
+
+Miscellaneous options:
+
+  -t  --batch  Ask no questions; skip bad-Prereq patches; assume reversed.
+  -f  --force  Like -t, but ignore bad-Prereq patches, and assume unreversed.
+  -s  --quiet  --silent  Work silently unless an error occurs.
+  --verbose  Output extra information about the work being done.
+  --dry-run  Do not actually change any files; just print what would happen.
+  --posix  Conform to the POSIX standard.
+
+  -d DIR  --directory=DIR  Change the working directory to DIR first.
+  --reject-format=FORMAT  Create 'context' or 'unified' rejects.
+  --binary  Read and write data in binary mode.
+  --read-only=BEHAVIOR  How to handle read-only input files: 'ignore' that they
+                        are read-only, 'warn' (default), or 'fail'.
+
+  -v  --version  Output version info.
+  --help  Output this help.
+
+You have access to basic unix commands. There is no unix command called apply_patch nor is there a tool with that name.
+Alternately: to write to a file include a tag with the format #file:<filename>. Follow the syntax exactly. i.e. lowercase, with no spaces.
+This way you do not do a tool call and simply respond.
+
+Example:
+#file:index.ts
+console.log("hello world");
+
+Any output after the tag, and before another tag, will be redirected to the file, so avoid accidentally including other output or code fences etc. Just include the desired content of the file.
+If multiple tags are present then multiple files will be written.
+
+Terminal responses are limited to ${this.maxShellReponseCharacters} characters. 
+DO NOT do a recursive list (ls -R) as this may result in a lot of characters.
+Instead navigate around and explore the directories.
+
+Prefer the above tagging approach for writing files longer than a few paragraphs.
+You may only use one tag per response.
+PLEASE use the file system.
+PLEASE stream files to disk rather than just chatting about them with the group.
+PLEASE run shell commands and test your work.
+DO NOT do the same thing over and over again (infinite loop)
+If you get stuck reach out to the group for help.
+Delegate where appropriate and avoid doing work that should be done by another agent.
+Please actually use the tools provided. Do not simply hallucinate tool calls.
+Do not make stuff up. Do not imagine tool invocation results. Avoid repeating old commands.
+Verify and validate your work.
+Verify and validate the work of your team members.
+Messages will be of the format <username>: <message>.
+DO NOT mimic the above format of messages within your response.
+DO NOT PUSH ANYTHING TO GITHUB.
+Be concise.
+
+
+`;
 
     const fullMessageHistory: ChatMessage[] = [
+      { role: "system", from: "System", content: system, read: false},
       ...this.context,
       { role: "system", from: "System", content: system, read: false},
       { role: "user", from: incoming.from, content: incoming.content, read: false},
@@ -121,16 +198,15 @@ export class AgentModel extends Model {
 
 
 async runWithTools(
-  seed: ChatMessage[],
+  messages: ChatMessage[],
   tools: ToolDef[],
   execTool: (call: ToolCall) => Promise<ChatMessage>, // returns a {role:"tool", name, tool_call_id, content}
   maxHops: number
 ): Promise<ChatMessage[]> {
-
-  let messages = seed.slice();
+  const responses: ChatMessage = [];
 
   for (let i = 0; i < maxHops; i++) {
-    const msg = await chatOnce(this.id, messages, { tools, tool_choice: "auto", num_ctx: 128000 }) ?? { content: "Error" };
+    const msg = await chatOnce(this.id, messages.concat(responses), { tools, tool_choice: "auto", num_ctx: 128000 }) ?? { content: "Error" };
 
     // Parse tags; TagParser returns { clean, tags }, where each tag has its own content slice.
     const { clean: response, tags } = TagParser.parse(msg.content || "");
@@ -140,7 +216,7 @@ async runWithTools(
 
     // Preserve assistant's chain-of-thought wrapper if present
     if (msg.reasoning) {
-      messages.push({
+      responses.push({
         role: "assistant",
         from: this.id,
         content: `<think>${msg.reasoning}</think>`,
@@ -151,7 +227,7 @@ async runWithTools(
 
     // Push the visible assistant message (cleaned text w/o tags) if any
     if (msg.content && visibleContent !== undefined) {
-      messages.push({
+      responses.push({
         role: "assistant",
         from: this.id,
         content: visibleContent,
@@ -171,33 +247,34 @@ async runWithTools(
           this.fileToRedirectTo = t.value;
           const statusMsg = await this._deliver(t.content ?? "");
           // Ensure the LLM sees success/error on next hop
-          if (statusMsg) messages.push(statusMsg);
+          if (statusMsg) responses.push(statusMsg);
           // _deliver will restore audience and clear fileToRedirectTo
         } else if (t.kind === "agent") {
           // Temporarily deliver directly to the tagged agent via _deliver
           this.audience = { kind: "direct", target: t.value };
           const delivered = await this._deliver(t.content ?? "");
-          if (delivered) messages.push(delivered);
+          if (delivered) responses.push(delivered);
           // restore audience after each agent delivery
           this.audience = { ...savedAudience };
         }
       }
+      continue;
     }
     // -----------------------------------------------------------------------
 
     // If no tool calls were requested, return accumulated messages
     if (!msg.tool_calls || msg.tool_calls.length === 0) {
-      return messages;
+      return responses;
     }
 
     // Execute tool calls and append results
     for (const call of msg.tool_calls) {
       const toolMsg = await execTool(call);
-      messages.push(toolMsg);
+      responses.push(toolMsg);
     }
   }
 
-  return messages;
+  return responses;
 }
 
   /* ------------------------------------------------------------ */
@@ -240,10 +317,10 @@ async runWithTools(
     const { name } = call.function;
 
     try {
-      const args = JSON.parse(call.function.arguments || "{}");
+      const args = JSON.parse(call.function.arguments || {cmd: ''});
 
       if (name === "sh") {
-        return { ...await this._runShell(name, args), tool_call_id: call.id, role: "tool", name, from: this.id, read: false };
+        return { ...await this._runShell(name, {...args, rawCmd: args.cmd }), tool_call_id: call.id, role: "tool", name, from: this.id, read: false };
       }
       if (name === "chat_mode") {
         this._setAudience(String(args.mode ?? "group"));
@@ -343,9 +420,9 @@ private async _deliver(msg: string): Promise<ChatMessage> {
           ? msg.replace(/\\r\\n/g, "\r\n").replace(/\\n/g, "\n")
           : msg;
 
-        // append (not overwrite)
+        // overwrite
         if ((globalThis as any).Bun?.write) {
-          await (globalThis as any).Bun.write(p, text + "\n", { create: true, append: true });
+          await (globalThis as any).Bun.write(p, text + "\n", { create: true, append: false });
         } else {
           const fs = await import("fs");
           await fs.promises.appendFile(p, text + "\n", { encoding: "utf-8" });
@@ -358,7 +435,7 @@ private async _deliver(msg: string): Promise<ChatMessage> {
           read: true,
           content: `\`\`\`${text}\`\`\`\n=> Written to file ${p}`
         };
-        console.log(`******* wrote file ${p}`);
+        console.log(`\n******* wrote file ${p}`);
         break;
       }
     }
@@ -375,7 +452,7 @@ private async _deliver(msg: string): Promise<ChatMessage> {
       read: true,
       content: `${JSON.stringify({ ok: false, err: String(e) })} Failed to write to file ${p}.`
     };
-    console.error(`******* file write failed: ${e}`);
+    console.error(`\n******* file write failed: ${e}`);
   } finally {
     if (this.fileToRedirectTo) this.audience = { kind: "group", target: "*" };
     this.fileToRedirectTo = undefined;
