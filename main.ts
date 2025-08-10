@@ -25,7 +25,7 @@ async function app() {
   room.addModel(bob);
 
   const initialMessage =
-    "Agents! Let's get to work on a project. It is a luhn check implementation written in C++ compiled with gcc. Check for existing files the workspace. Bob - you will do the coding, please run and test and benchmark code. You should create a load tester that calculates the performance. The goal is to have the most performant implementation of a luhn check. Do not add unnecessary features. Carol - you will do the architecture, please keep architecture documents and readme up-to-date. I will be the product person who makes the decisions.";
+    "Agents! Let's get to work on a project. It is a CLI calculator written in C++ compiled with gcc. Check for existing files the workspace. Bob - you will do the coding, please run and test the code you write. Incrementally add new features and focus on extensibility. Carol - you will do the architecture, please keep architecture documents and readme up-to-date. I will be the product person who makes the decisions.";
 
   await alice.initialMessage({
     role: "assistant",

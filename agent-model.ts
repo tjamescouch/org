@@ -175,16 +175,6 @@ Above all - DO THE THING. Don't just talk about it.
       let msg = await chatOnce(this.id, messages.concat(responses).concat(responses), toolOptions) ?? { content: "Error" };
       let { clean: response, tags } = TagParser.parse(msg.content || "");
 
-      const hallucinationCorrection = this.detectHallucinations(msg.content)
-      if (hallucinationCorrection)
-      {
-        msg = await chatOnce(this.id, messages.concat(responses).concat(responses).concat({ role: "system", name: "System", content: hallucinationCorrection, from: this.id, read: false }), toolOptions) ?? { content: "Error" };
-        const { clean: retriedResponse, tags: newTags } = TagParser.parse(msg.content || "");
-
-        response = retriedResponse;
-        tags = newTags;
-      }
-
       const tool_calls = [...(msg.tool_calls ?? []), ...extractToolCallsFromText(msg.content ?? '').tool_calls];
 
       if (!msg.content && isEmpty(tool_calls)) {
@@ -257,6 +247,10 @@ Above all - DO THE THING. Don't just talk about it.
 
         continue;
       }
+
+      if (tags.length > 0 && tags[tags.legth - 1].kind === 'direct') {
+	  return responses;
+      }
       // -----------------------------------------------------------------------
 
       // If no tool calls were requested, return accumulated messages
@@ -282,12 +276,12 @@ Above all - DO THE THING. Don't just talk about it.
 			"content": null,
 			"tool_calls": [
 			  {
-			    "id": "call_luhn_h",
+			    "id": makeToolCallId("call"),
 			    "index": 0,
 			    "type": "function",
 			    "function": {
 			      "name": "sh",
-			      "arguments": "{\"cmd\":\"sed -n '1,200p' luhn.h\"}"
+			      "arguments": typeof call?.function?.arguments === 'object' ? JSON.stringify(call?.function?.arguments) : call?.function?.arguments
 			    }
 			  }
 			]
@@ -328,10 +322,10 @@ Above all - DO THE THING. Don't just talk about it.
   /* ------------------------------------------------------------ */
   private async _execTool(call: ToolCall): Promise<ChatMessage> {
 	  console.error("************** CALL", call);
-    const name = call.function.name;
+    const name = call?.function?.name ?? 'unknown';
 
     try {
-      const args = JSON.parse(call.function.arguments || {cmd: ''});
+      const args = JSON.parse(call?.function?.arguments || {cmd: ''});
 
       if (name === "sh") {
         return { ...await this._runShell(name, {...args, rawCmd: args.cmd }), tool_call_id: call.id, role: "tool", name, from: this.id, read: false };
