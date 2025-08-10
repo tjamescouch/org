@@ -1,64 +1,32 @@
 # Project Overview
 
-This repository contains the source code and build configuration for the project. Below are some key details to help you get started.
-
-## Table of Contents
-
-- [Project Overview](#project-overview)
-- [Prerequisites](#prerequisites)
-- [Building the Project](#building-the-project)
-- [Running Tests](#running-tests)
-- [Directory Structure](#directory-structure)
-- [Contributing](#contributing)
-- [License](#license)
-
-## Prerequisites
-
-- **Git** – version control system.
-- **GCC** – GNU Compiler Collection for compiling C/C++ code.
-- **Bun** – JavaScript runtime (if applicable).
-- **Make** – build automation tool.
+This repository contains a simple project scaffold with a `Makefile` and source files. The goal is to provide a clean build environment using standard tools like `gcc` and `bun`.
 
 ## Building the Project
 
-To compile the project, run:
+To compile the C/C++ sources, run:
 
 ```sh
 make
 ```
 
-This will invoke the `Makefile` and build all necessary targets.
+The `Makefile` handles compilation flags and dependencies.
 
-## Running Tests
+## Running JavaScript/TypeScript
 
-If the project includes tests, you can run them with:
+If the project includes JavaScript or TypeScript files, you can use `bun`:
 
 ```sh
-make test
-```
-
-(Adjust the command according to the actual test setup.)
-
-## Directory Structure
-
-```
-.
-├── src/            # Source files
-├── include/        # Header files
-├── tests/          # Test suites
-├── Makefile        # Build instructions
-└── README.md       # This documentation
+bun run <script>
 ```
 
 ## Contributing
 
 1. Fork the repository.
-2. Create a new branch for your feature or bugfix.
-3. Commit your changes with clear messages.
-4. Open a pull request describing your changes.
-
-Please ensure that your code follows the existing style guidelines and passes all tests before submitting.
+2. Create a new branch for your feature or bug fix.
+3. Make your changes and ensure they pass any existing tests.
+4. Submit a pull request with a clear description of your changes.
 
 ## License
 
-This project is licensed under the MIT License. See the `LICENSE` file for more details.
+This project is licensed under the MIT License. See the `LICENSE` file for details.
