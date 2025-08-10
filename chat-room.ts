@@ -2,58 +2,92 @@
 // 4️⃣  ChatRoom – the hub that wires everything together
 
 import type { ChatRole } from "./chat";
-import { Model } from "./model";
+import type { RoomModel, SeqListener } from "./room-model";
 
 
 export interface RoomMessage {
-  role: ChatRole;
-  ts: string;          // when the message was created
-  from: string;           // model.id that sent it
-  to?: string;
-  content: string;           // raw message content
-  read: boolean;
+  ts: string;         // ISO timestamp set by the room
+  from: string;       // sender model id (or "System")
+  text: string;       // plain text payload
+  recipient?: string; // optional direct recipient model id
+  seq?: number;       // room sequence number (set by the room)
+  role: ChatRole;     // role as seen by recipients
+  read: boolean;      // delivery/read flag (room sets false)
 }
 
 
 // -------------------------------------------------------------------
 export class ChatRoom {
-  /** All participants */
-  private readonly models: Model[] = [];
+  private models = new Map<string, RoomModel>();
+  private seqCounter = 0;
+  private listeners = new Set<SeqListener>();
 
-  /** Full room history (timestamped) */
-  private readonly history: RoomMessage[] = [];
-
-  /** Add a new participant – the model gets a back‑reference to this room */
-  addModel(model: Model): void {
-    if (this.models.some((m) => m.id === model.id)) {
-      throw new Error(`A model with id "${model.id}" already exists in the room`);
-    }
-    // @ts-ignore – we know the property exists on Model
-    model.room = this;
-    this.models.push(model);
+  addModel(model: RoomModel): void {
+    if (this.models.has(model.id)) throw new Error(`Model id already exists: ${model.id}`);
+    this.models.set(model.id, model);
+    model.onAttach?.(this);
   }
 
-  /** Return a shallow copy of the conversation log */
-  getLog(): readonly RoomMessage[] {
-    return [...this.history];
+  removeModel(id: string): void {
+    const m = this.models.get(id);
+    if (!m) return;
+    this.models.delete(id);
+    m.onDetach?.(this);
   }
 
-  /** Internal method used by Model.broadcast */
-  async broadcast(sender: Model, content: string, recipient: string): Promise<void> {
-    const ts = new Date().toISOString();
-    const msg: RoomMessage = { role: 'user', ts, from: sender.id, content, read: false, ...((recipient || undefined) && {to: recipient}) };
+  getSeq(): number {
+    return this.seqCounter;
+  }
 
-    // 1️⃣  Store in the room history
-    this.history.push(msg);
+  onSeqChange(fn: SeqListener): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
 
-    // 2️⃣  Deliver the message to every *other*
-    for (const m of this.models) {
-      if (m===sender) continue;
-      if (recipient && m.id !== recipient) continue;
-      
-      void m.receiveMessage(msg).catch(e => console.error('receiveMessage error', e));
+  async broadcast(from: string, text: string): Promise<void> {
+    const msg = this.makeMessage(from, text);
+    this.bumpSeq(msg);
+    await this.deliver(msg, undefined);
+  }
 
-      //await new Promise((r) => setTimeout(r, 100)); //in case of infinite looping
+  async sendTo(from: string, to: string, text: string): Promise<void> {
+    const msg = this.makeMessage(from, text, to);
+    this.bumpSeq(msg);
+    await this.deliver(msg, to);
+  }
+
+  private makeMessage(from: string, text: string, recipient?: string): RoomMessage {
+    // Treat all non-system senders as "user" from the recipient’s perspective.
+    const role: ChatRole = from === "System" ? "system" : "user";
+    return {
+      ts: new Date().toISOString(),
+      from,
+      text,
+      recipient,
+      role,
+      read: false,
+      // seq set in bumpSeq()
+    };
+  }
+
+  private bumpSeq(msg: RoomMessage): void {
+    msg.seq = ++this.seqCounter;
+    for (const fn of this.listeners) { try { fn(this.seqCounter); } catch {} }
+  }
+
+  private async deliver(msg: RoomMessage, directTo?: string): Promise<void> {
+    if (directTo) {
+      const target = this.models.get(directTo);
+      if (target) await this.safeDeliver(target, msg);
+      return;
     }
+    for (const [id, model] of this.models) {
+      if (id === msg.from) continue; // don't echo to sender
+      await this.safeDeliver(model, msg);
+    }
+  }
+
+  private async safeDeliver(model: RoomModel, msg: RoomMessage): Promise<void> {
+    try { await model.receiveMessage(msg); } catch { /* optionally log */ }
   }
 }
