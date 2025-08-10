@@ -1,6 +1,5 @@
 import { chatOnce, type ChatMessage, type ToolCall, type ToolDef } from "./chat";
 import { Model } from "./model";
-import {  writeFileSync } from "fs";
 import { channelLock } from "./channel-lock";
 import type { RoomMessage } from "./chat-room";
 import { TagParser } from "./tag-parser";
