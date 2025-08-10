@@ -51,9 +51,7 @@ Try to make decisions for yourself even if you're not completely sure that they 
 You have access to an actual Debian VM.
 It has git, gcc and bun installed.
 
-There is no apply_patch command or tool. Do not attempt to use an apply_patch command.
-
-You have access to basic unix commands. There is no unix command called apply_patch nor is there a tool with that name.
+You have access to basic unix commands. You have access to the apply_patch command.
 Alternately: to write to a file include a tag with the format #file:<filename>. Follow the syntax exactly. i.e. lowercase, with no spaces.
 This way you do not do a tool call and simply respond.
 
@@ -323,8 +321,7 @@ Above all - DO THE THING. Don't just talk about it.
     const timer = setTimeout(() => ac.abort(), (timeout + 1) * 1000);
 
     try {
-      const sanitizedCmd = cmd.replaceAll('apply_patch', 'patch');
-      const proc = Bun.spawn(["sh", "-c", sanitizedCmd], { stdout: "pipe", stderr: "pipe", signal: ac.signal });
+      const proc = Bun.spawn(["sh", "-c", cmd], { stdout: "pipe", stderr: "pipe", signal: ac.signal });
       const [stdout, stderr, code] = await Promise.all([
         new Response(proc.stdout).text(),
         new Response(proc.stderr).text(),
@@ -333,7 +330,7 @@ Above all - DO THE THING. Don't just talk about it.
       //const content =truncate(`${ functionName ? `Tool ${functionName}: ` : '' } Command: '${sanitizedCmd ?? rawCmd ?? cmd}' -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
       const content =truncate(JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
 
-      console.log(`\n\n\n******* sh ${sanitizedCmd ?? rawCmd ?? cmd} -> ${content}`);
+      console.error(`\n\n\n******* sh ${cmd ?? rawCmd} -> `, content);
       return {
         role: "tool",
         name: "sh",
@@ -341,7 +338,7 @@ Above all - DO THE THING. Don't just talk about it.
       };
     } catch (e) {
       const content =`sh -c ${cmd} -> ` + JSON.stringify({ ok: false, err: e instanceof Error ? e.message : String(e) })
-      console.log(`\n\n\n******* sh -> ${content}`);
+      console.error(`\n\n\n******* sh -> `, content);
       return {
         role: "tool",
         name: "sh",
