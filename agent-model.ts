@@ -37,8 +37,8 @@ export class AgentModel extends Model {
   private readonly shellTimeout = 5 * 60; // seconds
   private audience: Audience = { kind: "group", target: "*" }; // default
   private fileToRedirectTo: string | undefined;
-  private maxShellReponseCharacters: number = 15_000;
-  private maxMessagesInContext = 50;
+  private maxShellReponseCharacters: number = 50_000;
+  private maxMessagesInContext = 100;
   private system: string;
 
   constructor(id: string) {
@@ -51,7 +51,7 @@ Try to make decisions for yourself even if you're not completely sure that they 
 You have access to an actual Debian VM.
 It has git, gcc and bun installed.
 
-You have access to basic unix commands. You have access to the apply_patch command.
+You have access to basic unix commands.
 Alternately: to write to a file include a tag with the format #file:<filename>. Follow the syntax exactly. i.e. lowercase, with no spaces.
 This way you do not do a tool call and simply respond.
 
@@ -67,8 +67,39 @@ DO NOT do a recursive list (ls -R) as this may result in a lot of characters.
 Instead navigate around and explore the directories.
 
 Prefer the above tagging approach for writing files longer than a few paragraphs.
-You may only use one tag per response.
+You may only use multple tags per response. Please avoid leaking your thoughts/interjections into the files. If you must, comment them out.
+Remember all content after a tag and before the next tag is applied to the first tag.
 
+
+Example of leaking thoughts:
+#file:Makefile
+CXX = g++
+CXXFLAGS = -std=c++17 -Wall -Wextra -Iinclude
+...
+.PHONY: all clean
+Now utils.h #file:utils.h
+include ...
+
+The Makefile will end up with "Now utils.h" at the end.
+Instead either do not say anything unnecessary or comment it out:
+
+Option A (Preferred):
+#file:Makefile
+CXX = g++
+CXXFLAGS = -std=c++17 -Wall -Wextra -Iinclude
+...
+.PHONY: all clean
+#file:utils.h
+include ...
+
+Option B:
+#file:Makefile
+CXX = g++
+CXXFLAGS = -std=c++17 -Wall -Wextra -Iinclude
+...
+.PHONY: all clean
+# Now utils.h #file:utils.h
+include ...
 
 You may direct message another agent using the following tag syntax: @<username>
 
@@ -98,7 +129,14 @@ DO NOT mimic the above format of messages within your response.
 Use git and commit often.
 DO NOT PUSH ANYTHING TO GITHUB.
 
+Be polite and friendly with your team members.
+
 Above all - DO THE THING. Don't just talk about it.
+DO NOT write <username>: ...
+The above is likely a hallucination. Stop yourself.
+
+
+Now commit changes to git.{"id":"call_ri_ka","object":"chat.completion","created":1754860271234,"model":"gpt-oss:120b","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_ri_ka","index":0,"type":"function","function":{"name":"sh","arguments":"{\"cmd\":\"git add Makefile && git commit -m \\\"chore: fix Makefile for proper build\\\"\"}"}}]},"finish_reason":"tool_calls"}]}alice: {"ok":true,"stderr":"","stdout":"[master (root-commit) 5c5c5c5] chore: fix Makefile for proper build\n 1 file changed, 30 insertions(+), 0 deletions(-)\n"}************** CALL {
 `;
   }
 
@@ -253,6 +291,42 @@ Above all - DO THE THING. Don't just talk about it.
       // There *are* tool calls this hop: execute them and feed back results as role:"tool"
       for (const call of tool_calls) {
         const toolMsg = await execTool(call); // { role:"tool", name, tool_call_id, content, from, read }
+	currentMessages.push({
+          role: "assistant",
+          from: this.id,
+          content: JSON.stringify({
+            id: makeToolCallId("call"),
+            object: "chat.completion",
+            created: new Date().getTime(),
+            model: "gpt-oss:120b",
+            choices: [
+              {
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: makeToolCallId("call"),
+                      index: 0,
+                      type: "function",
+                      function: {
+                        name: "sh",
+                        arguments:
+                          typeof (call as any)?.function?.arguments === "object"
+                            ? JSON.stringify((call as any)?.function?.arguments)
+                            : (call as any)?.function?.arguments,
+                      },
+                    },
+                  ],
+                },
+                finish_reason: "tool_calls",
+              },
+            ],
+          }),
+          reasoning: (msg as any).reasoning,
+          read: true,
+        });
         // Append internally so the next assistant step can read it
         currentMessages.push(toolMsg);
       }
