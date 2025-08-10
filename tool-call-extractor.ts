@@ -59,7 +59,7 @@ export function extractToolCallsFromText(
   }
 
 
-  console.error('extractToolCallsFromText', all);
+  console.error('\nextractToolCallsFromText', all);
 
   return { tool_calls: all, cleaned: out.trim() };
 }
