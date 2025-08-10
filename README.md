@@ -34,16 +34,6 @@ make
 ./<executable>
 ```
 
-The `Makefile` handles compilation flags and dependencies.
-
-## Running JavaScript/TypeScript
-
-If the project includes JavaScript or TypeScript files, you can use `bun`:
-
-```bash
-bun run <script>
-```
-
 ## Testing
 
 If tests are provided, they can be run with:
