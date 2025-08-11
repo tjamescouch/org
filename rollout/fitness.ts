@@ -1,7 +1,7 @@
 import { ChatRoom } from "../chat-room";
 import { createAgentsFor, type DeploymentColor } from "../agent-factory";
 import { passed, type Metrics, summarize } from "../policy";
-import { sh, runMake, hasFile } from "./sh";
+import { sh, runMake, hasFile } from "../sh";
 
 export interface FitnessResult {
   color: DeploymentColor;
