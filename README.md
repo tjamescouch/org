@@ -144,40 +144,6 @@ if (delta.content) Bun.stdout.write(delta.content);
 if (delta.content) process.stdout.write(delta.content);
 ```
 
-## Candidate vs Current Workflow
-
-Run both generations side-by-side in the VM.
-
-Start **current** (main branch) on port 7001:
-
-```bash
-./ops/start-current.sh
-```
-
-Start **candidate** (branch `cand/<timestamp>`) on port 7002:
-
-```bash
-./ops/start-candidate.sh
-```
-
-Test candidate fitness:
-
-```bash
-./ops/fitness.sh 7002
-```
-
-Promote candidate to current:
-
-```bash
-./ops/promote.sh
-```
-
-Rollback last promotion:
-
-```bash
-./ops/rollback.sh
-```
-
 ## Security in VM
 
 - Host-only network adapter only.
