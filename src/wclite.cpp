@@ -1,7 +1,7 @@
 #include <iostream>
 #include <fstream>
-#include <cctype>
 #include <string>
+#include <cctype>
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
@@ -26,8 +26,8 @@ int main(int argc, char* argv[]) {
         if (ch == '\n')
             ++lines;
 
-        unsigned char uch = static_cast<unsigned char>(ch);
-        bool is_ws = std::isspace(uch);
+        // Use std::isspace to match wc's definition (space, newline, tab, vertical tab, form feed, carriage return)
+        bool is_ws = std::isspace(static_cast<unsigned char>(ch));
         if (is_ws) {
             if (in_word) {
                 ++words;
