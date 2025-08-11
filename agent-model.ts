@@ -343,7 +343,7 @@ Above all - DO THE THING. Don't just talk about it.
     try {
       // Ensure arguments are parsed safely and type matches expected signature
       const args = JSON.parse(call?.function?.arguments ?? '{"cmd": ""}') as { cmd: string };
-      if (name === "sh") {
+      if (name === "sh" || name === "assistant") {
         return { ...(await this._runShell(name, { ...args, rawCmd: args.cmd })), tool_call_id: call.id, role: "tool", name, from: this.id, read: false };
       }
       // unknown tool
