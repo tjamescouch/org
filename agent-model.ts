@@ -81,7 +81,6 @@ Responses with no tags are sent to the entire group.
 
 PLEASE use the file system.
 PLEASE write files to disk rather than just chatting about them with the group.
-
 PLEASE avoid overwriting existing files by accident. Check for and read existing files before writing to disk.
 
 PLEASE run shell commands and test your work.
@@ -264,6 +263,8 @@ Above all - DO THE THING. Don't just talk about it.
               {
                 index: 0,
                 message: {
+                  role: "assistant",
+                  content: null,
                   tool_calls: [
                     {
                       id: makeToolCallId("call"),
@@ -289,7 +290,7 @@ Above all - DO THE THING. Don't just talk about it.
 
         const toolMsg = await execTool(call); // { role:"tool", name, tool_call_id, content, from, read }
         // Append internally so the next assistant step can read it
-        currentMessages.push(toolMsg);
+        responses.push(toolMsg);
       }
 
       // Also handle tags **in the same hop** (don’t skip tools). This mirrors previous behavior.
