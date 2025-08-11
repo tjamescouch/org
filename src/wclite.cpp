@@ -1,3 +1,4 @@
+
 #include <iostream>
 #include <fstream>
 #include <cctype>
@@ -5,14 +6,16 @@
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
-        std::cerr << "Usage: " << argv[0] << " <path>\n";
+        std::cerr << \"Usage: \" << argv[0] << \" <path>\
+\";
         return 1;
     }
 
     const char* path = argv[1];
     std::ifstream file(path, std::ios::binary);
     if (!file) {
-        std::cerr << "Error: cannot open file '" << path << "'\n";
+        std::cerr << \"Error: cannot open file '\" << path << \"'\
+\";
         return 1;
     }
 
@@ -23,12 +26,12 @@ int main(int argc, char* argv[]) {
     char ch;
     while (file.get(ch)) {
         ++bytes;
-        if (ch == '\n')
+        if (ch == '\
+')
             ++lines;
 
-        // Treat as whitespace if std::isspace or control characters (<= 0x20)
         unsigned char uch = static_cast<unsigned char>(ch);
-        bool is_ws = std::isspace(uch) || uch <= 0x20;
+        bool is_ws = std::isspace(uch);
         if (is_ws) {
             if (in_word) {
                 ++words;
@@ -41,6 +44,8 @@ int main(int argc, char* argv[]) {
     if (in_word)
         ++words;
 
-    std::cout << "lines=" << lines << " words=" << words << " bytes=" << bytes << "\n";
+    std::cout << \"lines=\" << lines << \" words=\" << words << \" bytes=\" << bytes << \"\
+\";
     return 0;
 }
+"},"finish_reason":"stop"}]}
