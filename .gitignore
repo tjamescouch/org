@@ -4,3 +4,8 @@ build
 workspace
 node_modules
 typecheck.txt
+.bin
+build
+bench/sample.txt
+bench/*.bin
+.DS_Store
