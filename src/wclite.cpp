@@ -1,4 +1,3 @@
-
 #include <iostream>
 #include <fstream>
 #include <cctype>
@@ -6,16 +5,14 @@
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
-        std::cerr << \"Usage: \" << argv[0] << \" <path>\
-\";
+        std::cerr << "Usage: " << argv[0] << " <path>\n";
         return 1;
     }
 
     const char* path = argv[1];
     std::ifstream file(path, std::ios::binary);
     if (!file) {
-        std::cerr << \"Error: cannot open file '\" << path << \"'\
-\";
+        std::cerr << "Error: cannot open file '" << path << "'\n";
         return 1;
     }
 
@@ -26,8 +23,7 @@ int main(int argc, char* argv[]) {
     char ch;
     while (file.get(ch)) {
         ++bytes;
-        if (ch == '\
-')
+        if (ch == '\n')
             ++lines;
 
         unsigned char uch = static_cast<unsigned char>(ch);
@@ -44,8 +40,6 @@ int main(int argc, char* argv[]) {
     if (in_word)
         ++words;
 
-    std::cout << \"lines=\" << lines << \" words=\" << words << \" bytes=\" << bytes << \"\
-\";
+    std::cout << "lines=" << lines << " words=" << words << " bytes=" << bytes << "\n";
     return 0;
 }
-"},"finish_reason":"stop"}]}
