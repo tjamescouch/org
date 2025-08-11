@@ -1,3 +1,23 @@
+# Node.js dependencies
+node_modules/
+npm-debug.log
+yarn-error.log
+pnpm-debug.log
+
+# Bun cache
+.bun/
+
+# Build artifacts
+dist/
+build/
+bench/
+*.o
+*.obj
+*.so
+*.a
+*.out
+*.exe
+*.bin
 *.swp
 *.swo
 build
@@ -9,3 +29,24 @@ build
 bench/sample.txt
 bench/*.bin
 .DS_Store
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# Git
+.git/
+
+# Misc
+*.tmp
+*.bak
+bench/sample.txt

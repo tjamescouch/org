@@ -1,6 +1,7 @@
 import { writeFileSync } from "fs";
 import { evaluate } from "./fitness";
 import { gitAddAll, gitBranch, gitCommit } from "./git-utils";
+import { allowPromotion, summarize, score } from "../policy";
 
 function setActive(color: "blue"|"green") {
   writeFileSync("./deployment.json", JSON.stringify({ active: color }, null, 2));
@@ -9,12 +10,15 @@ function setActive(color: "blue"|"green") {
 async function main() {
   await gitBranch("candidate");
 
-  const blue = await evaluate("blue");
+  const blue  = await evaluate("blue");
   const green = await evaluate("green");
 
-  const chooseGreen = green.passed && (!blue.passed);
+  console.log("BLUE ", summarize(blue.metrics), "score=", score(blue.metrics));
+  console.log("GREEN", summarize(green.metrics), "score=", score(green.metrics));
 
-  if (chooseGreen) {
+  const promote = allowPromotion(green.metrics, blue.metrics);
+
+  if (promote) {
     setActive("green");
     await gitAddAll();
     await gitCommit("rollout: promote green to active");
@@ -25,8 +29,6 @@ async function main() {
     await gitCommit("rollout: keep blue active");
     console.log("ℹ️  Kept BLUE active");
   }
-
-  console.log("Blue:", blue.metrics, "Green:", green.metrics);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
