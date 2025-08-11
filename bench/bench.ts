@@ -1,7 +1,7 @@
 import { ChatRoom } from "../chat-room";
 import { createAgentsFor, type DeploymentColor } from "../agent-factory";
 import { passed, type Metrics, summarize } from "../policy";
-import { sh, runMake, hasFile } from "./sh";
+import { sh, runMake, hasFile } from "../sh";
 
 export interface FitnessResult {
   color: DeploymentColor;
@@ -70,7 +70,7 @@ REQUIREMENTS
   if (await hasFile("bench/bench.sh")) {
     const r = await sh("bash", ["bench/bench.sh"], { cwd: "." });
     const m = r.out.match(/median_ms=(\d+)/);
-    if (m) benchMs = parseInt(m[1], 10);
+    if (m) benchMs = parseInt(m[1] ?? '100_000_000_000', 10);
   }
 
   const metrics: Metrics = {
