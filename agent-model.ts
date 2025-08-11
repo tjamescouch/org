@@ -37,7 +37,7 @@ export class AgentModel extends Model {
   private readonly shellTimeout = 5 * 60; // seconds
   private audience: Audience = { kind: "group", target: "*" }; // default
   private fileToRedirectTo: string | undefined;
-  private maxShellReponseCharacters: number = 15_000;
+  private maxShellReponseCharacters: number = 25_000;
   private maxMessagesInContext = 50;
   private system: string;
 
@@ -264,8 +264,6 @@ Above all - DO THE THING. Don't just talk about it.
               {
                 index: 0,
                 message: {
-                  role: "assistant",
-                  content: null,
                   tool_calls: [
                     {
                       id: makeToolCallId("call"),
