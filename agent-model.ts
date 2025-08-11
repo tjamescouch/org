@@ -133,7 +133,7 @@ Above all - DO THE THING. Don't just talk about it.
       for (const message of messages) {
         this.context.push({
           ts: new Date().toISOString(),
-          role: (message.role === 'tool') ? 'user' : (message.from === this.id ? 'assistant' : 'user'),
+          role: (message.role === 'tool') ? 'tool' : (message.from === this.id ? 'assistant' : 'user'),
           from: message.from,
           content: message.content,
           read: true,
@@ -251,7 +251,7 @@ Above all - DO THE THING. Don't just talk about it.
 
       // There *are* tool calls this hop: execute them and feed back results as role:"tool"
       for (const call of tool_calls) {
-        responses.push({
+        currentMessages.push({
           role: "assistant",
           from: this.id,
           content: JSON.stringify({
@@ -290,7 +290,7 @@ Above all - DO THE THING. Don't just talk about it.
 
         const toolMsg = await execTool(call); // { role:"tool", name, tool_call_id, content, from, read }
         // Append internally so the next assistant step can read it
-        responses.push(toolMsg);
+        currentMessages.push(toolMsg);
       }
 
       // Also handle tags **in the same hop** (don’t skip tools). This mirrors previous behavior.
@@ -343,12 +343,12 @@ Above all - DO THE THING. Don't just talk about it.
       // Ensure arguments are parsed safely and type matches expected signature
       const args = JSON.parse(call?.function?.arguments ?? '{"cmd": ""}') as { cmd: string };
       if (name === "sh" || name === "assistant") {
-        return { ...(await this._runShell(name, { ...args, rawCmd: args.cmd })), tool_call_id: call.id, role: "tool", name, from: this.id, read: false };
+        return { ...(await this._runShell(name, { ...args, rawCmd: args.cmd })), tool_call_id: call.id, role: "tool", name: "tool", from: this.id, read: false };
       }
       // unknown tool
-      return { role: "tool", name, tool_call_id: call.id, content: JSON.stringify({ ok: false, err: `unknown tool: ${name} - try using the sh tool`, call }), from: this.id, read: false };
+      return { role: "tool", name: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: false, err: `unknown tool: ${name} - try using the sh tool`, call }), from: this.id, read: false };
     } catch (err) {
-      return { role: "tool", name, tool_call_id: call.id, content: JSON.stringify({ ok: false, err: String(err) }), from: this.id, read: false };
+      return { role: "tool", name: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: false, err: String(err) }), from: this.id, read: false };
     }
   }
 

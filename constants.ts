@@ -1,1 +1,1 @@
-export const VERBOSE = false;
+export const VERBOSE = true;
