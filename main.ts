@@ -25,7 +25,7 @@ async function app() {
   room.addModel(bob);
 
   const initialMessage =
-    "Agents! Let's get to work on a new and fun project. The actual project idea is for us to come up with, we will brainstorm and when we agree we will start work on it. The only requirement is for it C++ compiled with gcc or g++. Check for existing files the workspace. Bob - you will do the coding, please run and test the code you write. Incrementally add new features and focus on extensibility. Carol - you will do the architecture, please keep architecture documents and readme up-to-date. I will be the product person who makes the decisions.";
+    "Agents! Let's get to work on a new and fun project. The project is a web socket based p2p file transfer and chat app with no middle man. The only requirement is for it C++ compiled with gcc or g++. Check for existing files the workspace. Bob - you will do the coding, please run and test the code you write. Incrementally add new features and focus on extensibility. Carol - you will do the architecture, please keep architecture documents and readme up-to-date. I will be the product person who makes the decisions.";
 
   await alice.initialMessage({
     role: "assistant",
