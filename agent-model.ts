@@ -51,7 +51,7 @@ Try to make decisions for yourself even if you're not completely sure that they 
 You have access to an actual Debian VM.
 It has git, gcc and bun installed.
 
-You have access to basic unix commands. You have access to the apply_patch command.
+You have access to basic unix commands. You have access to the apply_patch via the sh command.
 Alternately: to write to a file include a tag with the format #file:<filename>. Follow the syntax exactly. i.e. lowercase, with no spaces.
 This way you do not do a tool call and simply respond.
 
