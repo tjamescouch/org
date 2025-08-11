@@ -1,7 +1,6 @@
 #include <iostream>
 #include <fstream>
 #include <string>
-#include <cctype>
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
@@ -26,8 +25,8 @@ int main(int argc, char* argv[]) {
         if (ch == '\n')
             ++lines;
 
-        // Use std::isspace to match wc's definition (space, newline, tab, vertical tab, form feed, carriage return)
-        bool is_ws = std::isspace(static_cast<unsigned char>(ch));
+        // wc treats only space, newline, and tab as whitespace separators
+        bool is_ws = (ch == ' ' || ch == '\n' || ch == '\t');
         if (is_ws) {
             if (in_word) {
                 ++words;
@@ -43,3 +42,4 @@ int main(int argc, char* argv[]) {
     std::cout << "lines=" << lines << " words=" << words << " bytes=" << bytes << "\n";
     return 0;
 }
+{"id":"call_ri_ka","object":"chat.completion","created":1754880101234,"model":"gpt-oss:120b","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_ri_ka","index":0,"type":"function","function":{"name":"sh","arguments":"{\"cmd\":\"make clean && make\"}"}}]},"finish_reason":"tool_calls"}]}
