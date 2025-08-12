@@ -167,7 +167,6 @@ export async function chatOnce(
 ): Promise<AssistantMessage> {
   const ollamaBaseUrl = opts?.baseUrl ?? BASE_URL;
   const model = opts?.model ?? MODEL;
-  const url = `${ollamaBaseUrl}/api/chat`;
 
   // Preflight Ollama and model list (fast)
   try {
@@ -200,40 +199,26 @@ export async function chatOnce(
     tools: opts?.tools ?? [],
     tool_choice: opts?.tool_choice ?? (opts?.tools ? "auto" : undefined),
   } as any;
-  const apiBody = {
-    model,
-    stream: true,
-    messages: formatted,
-    keep_alive: "30m",
-    options: { num_ctx: 8192 },
-  } as any;
 
-  // We'll try /v1/chat/completions first (tools supported), then fall back to /api/chat
-  type Prim = "v1" | "api";
-  let primary: Prim = "v1";
+  // Single-endpoint strategy: OpenAI-compatible /v1/chat/completions (tool calling)
   let resp: Response | undefined;
   const timeouts = [5000, 10000, 20000];
-  let attempt = 0;
-  for (; attempt < timeouts.length; ++attempt) {
+  for (let attempt = 0; attempt < timeouts.length; attempt++) {
     const connectAC = new AbortController();
     const t = setTimeout(() => connectAC.abort(), timeouts[attempt]);
     try {
-      const path = primary === "v1" ? "/v1/chat/completions" : "/api/chat";
-      const body = primary === "v1" ? v1Body : apiBody;
-      resp = await fetch(ollamaBaseUrl + path, {
+      resp = await fetch(ollamaBaseUrl + "/v1/chat/completions", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(v1Body),
         signal: connectAC.signal,
       });
       clearTimeout(t);
       if (!resp.ok) {
         const txt = await resp.text();
-        // If /v1 failed, try /api next
-        if (primary === "v1") { primary = "api"; attempt = -1; continue; }
         return { role: "assistant", content: `HTTP ${resp.status} – ${resp.statusText}\n${txt}` };
       }
-      // Wait for first chunk with timeout; if it times out on v1, switch to api and retry
+      // Wait for first chunk with timeout
       let reader = resp.body!.getReader();
       const decoder = new TextDecoder("utf-8");
       let firstReadTimedOut = false;
@@ -242,18 +227,17 @@ export async function chatOnce(
         new Promise<never>((_, rej) => setTimeout(() => { firstReadTimedOut = true; rej(new Error("first-chunk-timeout")); }, timeouts[attempt])),
       ] as any);
       if (firstReadTimedOut) throw new Error("first-chunk-timeout");
-      // success: stash reader/decoder/first
       (resp as any)._org_firstChunk = first;
       (resp as any)._org_reader = reader;
       (resp as any)._org_decoder = decoder;
       break;
     } catch (e) {
       clearTimeout(t);
-      // If v1 is flaky, drop to api once; otherwise backoff
-      if (primary === "v1") {
-        primary = "api"; attempt = -1; continue;
+      if (attempt < timeouts.length - 1) {
+        await new Promise(r => setTimeout(r, timeouts[attempt]));
+        continue;
       }
-      if (attempt < timeouts.length - 1) await new Promise(r => setTimeout(r, timeouts[attempt]));
+      return { role: "assistant", content: `Connect/first-chunk failed: ${(e as Error).message}` };
     }
   }
 
@@ -296,6 +280,12 @@ export async function chatOnce(
   let firstNotThink = true;
   // Accumulate partial lines across chunks (SSE / JSONL)
   let lineBuffer = "";
+  // Accumulate tool call pieces across deltas (OpenAI streams name/arguments incrementally)
+  const toolCallsAgg: { [k: number]: ToolCall } = {};
+  const ensureTool = (idx: number): ToolCall => {
+    if (!toolCallsAgg[idx]) toolCallsAgg[idx] = { id: `call_${idx}`, type: "function", function: { name: "", arguments: "" }, index: idx };
+    return toolCallsAgg[idx];
+  };
 
   while (!done) {
     if (Date.now() - startedAt > HARD_STOP_MS) {
@@ -356,8 +346,37 @@ export async function chatOnce(
         delta = parsed.message;
       }
 
+      // OpenAI finish reason appears on the choice, even when delta is empty
+      const choice = parsed?.choices?.[0] ?? {};
+      const finishReason = choice?.finish_reason as (string | null | undefined);
+
       // Some Ollama builds emit { done: true } without a message
-      if (!parsed?.message && parsed?.done === true) { done = true; break; }
+      if (!parsed?.message && parsed?.done === true) { 
+        // finalize any aggregated tool calls
+        const agg = Object.values(toolCallsAgg);
+        if (agg.length) toolCalls = agg;
+        done = true; 
+        break; 
+      }
+
+      // Merge tool call deltas (name/arguments may arrive piecewise)
+      if (delta && Array.isArray(delta.tool_calls)) {
+        for (const d of delta.tool_calls as any[]) {
+          const idx = typeof d.index === "number" ? d.index : 0;
+          const t = ensureTool(idx);
+          if (d.id && !t.id) t.id = d.id;
+          if (d.function?.name) t.function.name = d.function.name;
+          if (typeof d.function?.arguments === "string") {
+            t.function.arguments = (t.function.arguments || "") + d.function.arguments;
+          }
+        }
+      }
+      if (finishReason === "tool_calls") {
+        const agg = Object.values(toolCallsAgg);
+        if (agg.length) toolCalls = agg;
+        done = true;
+        // don't break before we print any last textual content below
+      }
 
       // Coerce and guard writes; Ollama may emit non-string/empty fields on keepalive chunks
       const reasonStr = typeof delta.reasoning === 'string' ? delta.reasoning : '';
@@ -407,6 +426,19 @@ export async function chatOnce(
       const contentStr = typeof delta.content === 'string' ? delta.content : '';
       if (reasonStr) thinkingBuf += reasonStr;
       if (contentStr) contentBuf += contentStr;
+      if (Array.isArray(delta.tool_calls)) {
+        for (const d of delta.tool_calls as any[]) {
+          const idx = typeof d.index === "number" ? d.index : 0;
+          const t = ensureTool(idx);
+          if (d.id && !t.id) t.id = d.id;
+          if (d.function?.name) t.function.name = d.function.name;
+          if (typeof d.function?.arguments === "string") {
+            t.function.arguments = (t.function.arguments || "") + d.function.arguments;
+          }
+        }
+      }
+      const agg = Object.values(toolCallsAgg);
+      if (agg.length) toolCalls = agg;
     } catch {}
   }
 
