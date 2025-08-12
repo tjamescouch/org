@@ -242,7 +242,7 @@ DO NOT do a recursive list (ls -R) as this may result in a lot of characters.
 Instead navigate around and explore the directories.
 
 Prefer the above tagging approach for writing files longer than a few paragraphs.
-You may only use one tag per response.
+You may write to files with echo, apply_patch, patch, or the tagging approach.
 
 
 You may direct message another agent using the following tag syntax: @<username>
@@ -411,26 +411,26 @@ Above all - DO THE THING. Don't just talk about it.
       // Build per-hop abort detectors (model controls policy)
       const agents = Array.from(new Set(currentMessages.map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
       const detectors: AbortDetector[] = [
-        new CrossTurnRepetitionDetector({
-          tailWords: 20,
-          minChars: 220,
-          minNoveltyRatio: 0.08,
-          sampleSocChars: 20000,
-        }),
-        new AgentQuoteAbortDetector(agents),
-        new RepetitionAbortDetector({
-          tailWords: 20,
-          maxRepeats: 6,
-          minWordsForNovelty: 220,
-          minNoveltyRatio: 0.04,  // was ~0.18
-        }),
-        new ToolEchoFloodDetector(4),          // was 2
-        // new SpiralPhraseDetector(),         // keep disabled for now
-        new MaxLengthAbortDetector(12000),     // was 8000
-        new RegexAbortDetector([
-          /\bnow create new file\b/i,
-          /\bit didn't show output\b/i,
-        ]),
+        //new CrossTurnRepetitionDetector({
+        //  tailWords: 20,
+        //  minChars: 220,
+        //  minNoveltyRatio: 0.08,
+        //  sampleSocChars: 20000,
+        //}),
+        //new AgentQuoteAbortDetector(agents),
+        //new RepetitionAbortDetector({
+        //  tailWords: 20,
+        //  maxRepeats: 6,
+        //  minWordsForNovelty: 220,
+        //  minNoveltyRatio: 0.04,  // was ~0.18
+        //}),
+        //new ToolEchoFloodDetector(4),          // was 2
+        //// new SpiralPhraseDetector(),         // keep disabled for now
+        //new MaxLengthAbortDetector(12000),     // was 8000
+        //new RegexAbortDetector([
+        //  /\bnow create new file\b/i,
+        //  /\bit didn't show output\b/i,
+        //]),
       ];
       const msg = (await withTimeout(
         chatOnce(this.id, currentMessages, {
