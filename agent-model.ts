@@ -5,7 +5,6 @@ const withTimeout = <T>(p: Promise<T>, ms: number, label = "timeout"): Promise<T
   ]) as any;
 import { chatOnce, summarizeOnce, type ChatMessage, type ToolCall, type ToolDef, type AbortDetector } from "./chat";
 import { Model } from "./model";
-import {  writeFileSync } from "fs";
 import { channelLock } from "./channel-lock";
 import type { RoomMessage } from "./chat-room";
 import { TagParser } from "./tag-parser";
@@ -163,10 +162,12 @@ export class AgentModel extends Model {
   private maxShellReponseCharacters: number = 25_000;
   private maxMessagesInContext = 10;
   private system: string;
+  private model: string;
 
-  constructor(id: string) {
+  constructor(id: string, model: string) {
     super(id);
 
+    this.model = model;
     this.system = `You are agent "${this.id}".
 If you need to run shell commands, call the sh tool. If you misuse a tool you will get an "Invalid response" message.
 Commands are executed in a Debian VM.
@@ -363,7 +364,7 @@ Above all - DO THE THING. Don't just talk about it.
       ];
 
       const msg = (await withTimeout(
-        chatOnce(this.id, currentMessages, { tools: toolsForHop, tool_choice: toolChoiceForHop, num_ctx: 8192, abortDetectors: detectors }),
+        chatOnce(this.id, currentMessages, { tools: toolsForHop, tool_choice: toolChoiceForHop, num_ctx: 8192, abortDetectors: detectors, model: this.model }),
         90_000,
         "chatOnce hop timeout"
       )) ?? { content: "Error" } as any;
