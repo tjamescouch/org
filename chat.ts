@@ -117,7 +117,12 @@ export async function summarizeOnce(
         stream: false,
         messages: formatted,
         keep_alive: "20m",
-        options: { num_ctx: opts?.num_ctx ?? 128000, temperature: opts?.temperature ?? 0 },
+        options: { 
+					max_tokens: opts?.num_ctx ?? 128000,
+					max_output_tokens: 64000,
+          num_ctx: opts?.num_ctx ?? 128000, 
+					temperature: opts?.temperature ?? 1 
+				},
       }
     },
     {
@@ -126,8 +131,11 @@ export async function summarizeOnce(
         model,
         stream: false,
         messages: formatted,
-        temperature: opts?.temperature ?? 0,
-	max_output_tokens: 100000
+        keep_alive: "20m",
+        temperature: opts?.temperature ?? 1,
+				max_tokens: opts?.num_ctx ?? 128000,
+				max_output_tokens: 64000,
+				num_ctx: opts?.num_ctx ?? 128000,
       }
     }
   ];
@@ -206,6 +214,9 @@ export async function chatOnce(
     tools: opts?.tools ?? [],
     tool_choice: opts?.tool_choice ?? (opts?.tools ? "auto" : undefined),
     keep_alive: "30m", // keep model warm between hops (Ollama extension)
+		max_tokens: opts?.num_ctx ?? 128000,
+		max_output_tokens: 64000,
+		num_ctx: opts?.num_ctx ?? 128000,
   } as any;
 
   // Single-endpoint strategy: OpenAI-compatible /v1/chat/completions (tool calling)

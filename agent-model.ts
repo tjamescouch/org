@@ -275,6 +275,8 @@ Speak only in your own voice as "${this.id}" in the first person.
 Do not describe your intentions (e.g., "We need to respond as Bob").
 Do not narrate plans or roles; provide the final answer only.
 Do not quote other agents’ names as prefixes like "bob:" or "carol:".
+
+Be concise.
 `;
   }
 
@@ -438,13 +440,13 @@ Do not quote other agents’ names as prefixes like "bob:" or "carol:".
       // Build per-hop abort detectors (model controls policy)
       const agents = Array.from(new Set(currentMessages.map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
       const detectors: AbortDetector[] = [
-        new CrossTurnRepetitionDetector({ tailWords: 20, minChars: 220, minNoveltyRatio: 0.08, sampleSocChars: 20000 }),
-        new AgentQuoteAbortDetector(agents),
-        new RepetitionAbortDetector({ tailWords: 20, maxRepeats: 6, minWordsForNovelty: 220, minNoveltyRatio: 0.04 }),
-        new ToolEchoFloodDetector(4),
-        // new SpiralPhraseDetector(), // keep disabled for now
-        new MaxLengthAbortDetector(12000),
-        new RegexAbortDetector([ /\bnow create new file\b/i, /\bit didn't show output\b/i ]),
+        //new CrossTurnRepetitionDetector({ tailWords: 20, minChars: 220, minNoveltyRatio: 0.08, sampleSocChars: 20000 }),
+        //new AgentQuoteAbortDetector(agents),
+        //new RepetitionAbortDetector({ tailWords: 20, maxRepeats: 6, minWordsForNovelty: 220, minNoveltyRatio: 0.04 }),
+        //new ToolEchoFloodDetector(4),
+        //// new SpiralPhraseDetector(), // keep disabled for now
+        //new MaxLengthAbortDetector(12000),
+        //new RegexAbortDetector([ /\bnow create new file\b/i, /\bit didn't show output\b/i ]),
       ];
 
       const msg = (await withTimeout(
