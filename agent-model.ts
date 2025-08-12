@@ -159,7 +159,7 @@ Above all - DO THE THING. Don't just talk about it.
     maxHops: number
   ): Promise<ChatMessage[]> {
     const responses: ChatMessage[] = [];
-    const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 128000 };
+    const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 64000 };
 
     // Start with the provided conversation
     let currentMessages: ChatMessage[] = [...messages];

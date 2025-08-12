@@ -74,7 +74,7 @@ export async function chatOnce(
     messages: messages.map(formatMessage),
     tools: opts?.tools ?? [],
     tool_choice: opts?.tool_choice ?? (opts?.tools ? "auto" : undefined),
-    temperature: opts?.temperature ?? 0,
+    temperature: opts?.temperature ?? 0.7,
     stream: true, 
   };
 
