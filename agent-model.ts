@@ -206,6 +206,13 @@ export class AgentModel extends Model {
   private model: string;
   private socText: string = "";
   private readonly maxSocChars = 50_000;
+  // Hysteresis watermarks for context summarization
+  private readonly contextWM = {
+    // summarize only when we exceed HIGH…
+    high: Math.max(this.maxMessagesInContext + 6, Math.ceil(this.maxMessagesInContext * 1.5)),
+    // …and compress down to LOW (leave headroom for a 1-message summary)
+    low: Math.max(Math.floor(this.maxMessagesInContext * 0.6), 6),
+  };
 
   constructor(id: string, model: string) {
     super(id);
@@ -742,17 +749,23 @@ Above all - DO THE THING. Don't just talk about it.
     this.cleanContext();
   }
 
-  private cleanContext() { // If within limit, nothing to do
+  private cleanContext() {
     const MAX = this.maxMessagesInContext;
-    if (this.context.length <= MAX) return;
+    const { high, low } = this.contextWM;
 
-    // Keep the most recent ~60% verbatim; summarize the older head into one system note
-    const keepTail = Math.floor(MAX * 0.6);
-    const dropCount = this.context.length - keepTail;
-    const head = this.context.slice(0, dropCount);
-    const tail = this.context.slice(dropCount);
+    // If we’re below the HIGH watermark, do nothing.
+    if (this.context.length <= high) return;
 
-    // Deterministic, lightweight summary (no LLM): count tools, last cmd, files written, last few lines
+    // We’re over HIGH: compress the oldest portion so that
+    // final length ≲ LOW + 1 (for the summary itself).
+    const target = Math.max(low - 1, 1); // leave space for one summary message
+    const needToDrop = Math.max(0, this.context.length - target);
+    if (needToDrop <= 0) return;
+
+    const head = this.context.slice(0, needToDrop);
+    const tail = this.context.slice(needToDrop);
+
+    // Deterministic summary of 'head' (no LLM)
     let toolCount = 0; let lastCmd = ""; const filesWritten: string[] = [];
     for (const m of head) {
       const c = String(m.content || "");
@@ -784,7 +797,9 @@ Above all - DO THE THING. Don't just talk about it.
     };
 
     this.context = [summaryMsg, ...tail];
-    while (this.context.length > MAX) this.context.shift();
+
+    // Final clamp in case LOW is extremely small vs. incoming burst
+    while (this.context.length > low + 1) this.context.shift();
   }
 
   private _appendSoC(s: string) {
