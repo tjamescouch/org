@@ -109,33 +109,31 @@ export async function summarizeOnce(
 
   const formatted = messages.map(formatMessage);
 
-  // Ollama native chat API (non-streaming)
-  const body = {
+  // OpenAI-compatible /v1/chat/completions (non-streaming)
+  const v1Body = {
     model,
     stream: false,
     messages: formatted,
+    temperature: opts?.temperature ?? 0,
     keep_alive: "20m",
-    tools: [],
-    options: {
-      num_ctx: opts?.num_ctx ?? 64000,
-      temperature: opts?.temperature ?? 0,
-    },
+    num_ctx: 128000
   } as any;
 
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeout);
   try {
-    const resp = await fetch(ollamaBaseUrl + "/api/chat", {
+    const resp = await fetch(ollamaBaseUrl + "/v1/chat/completions", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(v1Body),
       signal: ac.signal,
     });
     clearTimeout(t);
     if (!resp.ok) return "";
     const json = await resp.json();
-    const viaApi = (json && json.message && typeof json.message.content === "string") ? json.message.content : null;
-    return (viaApi ?? "").trim();
+    const viaV1 = (json && json.choices && json.choices[0] && json.choices[0].message && typeof json.choices[0].message.content === "string")
+      ? json.choices[0].message.content : null;
+    return (viaV1 ?? "").trim();
   } catch {
     clearTimeout(t);
     return "";
@@ -182,30 +180,29 @@ export async function chatOnce(
 
   // Shared body pieces
   const formatted = messages.map(formatMessage);
-  const apiBody = {
+  const v1Body = {
     model,
     stream: true,
     messages: formatted,
-    keep_alive: "30m",
+    temperature: opts?.temperature ?? 1,
     tools: opts?.tools ?? [],
-    options: {
-      num_ctx: opts?.num_ctx ?? 64000,
-      temperature: opts?.temperature ?? 1,
-      // num_predict can be tuned if needed; omit to use server default
-    },
+    tool_choice: opts?.tool_choice ?? (opts?.tools ? "auto" : undefined),
+    keep_alive: "30m",
+    num_ctx: 128000
+    // some Ollama builds also accept num_ctx here; include if needed via options
   } as any;
 
-  // Single-endpoint strategy: Ollama-native /api/chat (tool calling)
+  // Single-endpoint strategy: OpenAI-compatible /v1/chat/completions (tool calling)
   let resp: Response | undefined;
   const timeouts = [100000, 200000, 400000];
   for (let attempt = 0; attempt < timeouts.length; attempt++) {
     const connectAC = new AbortController();
     const t = setTimeout(() => connectAC.abort(), timeouts[attempt]);
     try {
-      resp = await fetch(ollamaBaseUrl + "/api/chat", {
+      resp = await fetch(ollamaBaseUrl + "/v1/chat/completions", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(apiBody),
+        body: JSON.stringify(v1Body),
         signal: connectAC.signal,
       });
       clearTimeout(t);
