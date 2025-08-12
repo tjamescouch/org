@@ -18,7 +18,8 @@ import { VERBOSE } from './constants';
 import type { ReadableStreamReadResult } from "stream/web";
 
 const BASE_URL = "http://192.168.56.1:11434"; // host-only IP
-const MODEL = "gpt-oss:20b";
+// Default model can be overridden via env OLLAMA_MODEL
+const DEFAULT_MODEL = process.env.OLLAMA_MODEL || "deepseek-coder";
 
 // Patterns to suppress from terminal output (still kept in buffers)
 const GARBAGE_RES: RegExp[] = [
@@ -96,7 +97,7 @@ export async function summarizeOnce(
   }
 ): Promise<string> {
   const ollamaBaseUrl = opts?.baseUrl ?? BASE_URL;
-  const model = opts?.model ?? MODEL;
+  const model = opts?.model ?? DEFAULT_MODEL;
   const timeout = Math.max(2000, Math.min(60_000, opts?.timeout_ms ?? 12_000));
 
   // quick preflight
@@ -131,6 +132,9 @@ export async function summarizeOnce(
     clearTimeout(t);
     if (!resp.ok) return "";
     const json = await resp.json();
+
+    console.log(json);
+
     const viaV1 = (json && json.choices && json.choices[0] && json.choices[0].message && typeof json.choices[0].message.content === "string")
       ? json.choices[0].message.content : null;
     return (viaV1 ?? "").trim();
@@ -155,7 +159,7 @@ export async function chatOnce(
   }
 ): Promise<AssistantMessage> {
   const ollamaBaseUrl = opts?.baseUrl ?? BASE_URL;
-  const model = opts?.model ?? MODEL;
+  const model = opts?.model ?? DEFAULT_MODEL;
 
   // Preflight Ollama and model list (fast)
   try {
