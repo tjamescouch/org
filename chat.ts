@@ -2,7 +2,7 @@ import { TextDecoder } from "util";
 import { VERBOSE } from './constants';
 
 const BASE_URL = "http://192.168.56.1:11434"; // host-only IP
-const MODEL = "gpt-oss:120b";
+const MODEL = "gpt-oss:20b";
 
 // ---- Types (OpenAI-style) ----
 export type ChatRole = "system" | "user" | "assistant" | "tool";
@@ -74,7 +74,7 @@ export async function chatOnce(
     messages: messages.map(formatMessage),
     tools: opts?.tools ?? [],
     tool_choice: opts?.tool_choice ?? (opts?.tools ? "auto" : undefined),
-    temperature: opts?.temperature ?? 0.7,
+    temperature: opts?.temperature ?? 0.2,
     stream: true, 
   };
 

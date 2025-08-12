@@ -51,7 +51,8 @@ Try to make decisions for yourself even if you're not completely sure that they 
 You have access to an actual Debian VM.
 It has git, gcc and bun installed.
 
-You have access to basic unix commands. You have access to the apply_patch via the sh command.
+You have access to basic unix commands including pwd, cd, git, gcc, g++, python3, ls, cat, echo, diff. 
+You have access to the apply_patch via the sh command.
 Alternately: to write to a file include a tag with the format #file:<filename>. Follow the syntax exactly. i.e. lowercase, with no spaces.
 This way you do not do a tool call and simply respond.
 
@@ -258,7 +259,7 @@ Above all - DO THE THING. Don't just talk about it.
             id: makeToolCallId("call"),
             object: "chat.completion",
             created: new Date().getTime(),
-            model: "gpt-oss:120b",
+            model: "gpt-oss:20b",
             choices: [
               {
                 index: 0,
