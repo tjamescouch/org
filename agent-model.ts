@@ -238,8 +238,6 @@ Any output after the tag, and before another tag, will be redirected to the file
 If multiple tags are present then multiple files will be written.
 
 Terminal responses are limited to ${this.maxShellReponseCharacters} characters. 
-DO NOT do a recursive list (ls -R) as this may result in a lot of characters.
-Instead navigate around and explore the directories.
 
 Prefer the above tagging approach for writing files longer than a few paragraphs.
 You may write to files with echo, apply_patch, patch, or the tagging approach.
