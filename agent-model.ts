@@ -449,7 +449,8 @@ Above all - DO THE THING. Don't just talk about it.
           }
         }
       }
-
+      // Feed back everything produced so far (assistant messages + tool outputs)
+      currentMessages = [...messages, ...responses];
       // Loop back: the next chatOnce() sees the tool outputs via currentMessages
     }
 
