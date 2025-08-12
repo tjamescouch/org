@@ -668,7 +668,9 @@ Do not quote other agents’ names as prefixes like "bob:" or "carol:".
       //const content =truncate(`${ functionName ? `Tool ${functionName}: ` : '' } Command: '${sanitizedCmd ?? rawCmd ?? cmd}' -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
       const content =truncate(JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
 
-      console.error(`\n\n\n******* sh ${cmd ?? rawCmd} -> `, content);
+      const c = cmd ?? rawCmd ?? '';
+      const cleanStdout = c.replace(/\\n/g, '\n');
+      console.warn(`\n\n\n******* sh ${cleanStdout} -> `, content);
       return {
         role: "tool",
         name: "sh",
