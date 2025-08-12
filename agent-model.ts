@@ -664,7 +664,7 @@ Do not quote other agents’ names as prefixes like "bob:" or "carol:".
         proc.exited,
       ]);
       //const content =truncate(`${ functionName ? `Tool ${functionName}: ` : '' } Command: '${sanitizedCmd ?? rawCmd ?? cmd}' -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
-      const content =truncate(JSON.stringify({ ok: code === 0, stdout: stdout?.replaceAll("\\n","\n"), stderr: stderr?.replaceAll("\\n","\n"), exit_code: code }), this.maxShellReponseCharacters);
+      const content =truncate(JSON.stringify({ ok: code === 0, stdout: stdout?.replace(/\\n/g, '\n'), stderr: stderr?.replace(/\\n/g, '\n'), exit_code: code }), this.maxShellReponseCharacters);
 
       console.error(`\n\n\n******* sh ${cmd ?? rawCmd} -> `, content );
       return {
