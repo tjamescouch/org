@@ -3,7 +3,7 @@ const withTimeout = <T>(p: Promise<T>, ms: number, label = "timeout"): Promise<T
     p,
     new Promise<never>((_, rej) => setTimeout(() => rej(new Error(label)), ms))
   ]) as any;
-import { chatOnce, type ChatMessage, type ToolCall, type ToolDef, type AbortDetector } from "./chat";
+import { chatOnce, summarizeOnce, type ChatMessage, type ToolCall, type ToolDef, type AbortDetector } from "./chat";
 import { Model } from "./model";
 import {  writeFileSync } from "fs";
 import { channelLock } from "./channel-lock";
@@ -237,10 +237,29 @@ Above all - DO THE THING. Don't just talk about it.
   }
 
   async receiveMessage(incoming: RoomMessage): Promise<void> {
+    // Keep a short tail for the LLM and add a dynamic summary system message
+    const tail = this.context.slice(-20); // recent context only
+    const summarizerSystem = {
+      role: "system" as const,
+      from: "System",
+      content:
+        "You are a succinct coordinator. Summarize the recent conversation as bullet points covering: current project goal, key constraints, files created/modified, tools/commands run and outcomes, and next concrete steps. Max 120 words. No code. No quotes.",
+      read: true,
+    };
+    const summaryText = await withTimeout(
+      summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ]),
+      15_000,
+      "summary timeout"
+    ).catch(() => "");
+
+    const dynamicSystem: ChatMessage | null = summaryText
+      ? { role: "system", from: "System", content: `Context summary:\n${summaryText}`, read: true }
+      : null;
+
     const fullMessageHistory: ChatMessage[] = [
       { role: "system", from: "System", content: this.system, read: false },
-      ...this.context,
-      { role: "system", from: "System", content: this.system, read: false },
+      ...(dynamicSystem ? [dynamicSystem] : []),
+      ...tail,
       { role: "user", from: incoming.from, content: incoming.content, read: false },
     ];
 

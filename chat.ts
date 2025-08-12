@@ -79,6 +79,79 @@ const formatMessage = (m: ChatMessage): any => {
 
 
 
+// Non-streaming summarizer: returns a single message string
+export async function summarizeOnce(
+  messages: ChatMessage[],
+  opts?: {
+    model?: string;
+    baseUrl?: string;
+    temperature?: number;
+    num_ctx?: number;
+    timeout_ms?: number;
+  }
+): Promise<string> {
+  const ollamaBaseUrl = opts?.baseUrl ?? BASE_URL;
+  const model = opts?.model ?? MODEL;
+  const timeout = Math.max(2000, Math.min(60_000, opts?.timeout_ms ?? 12_000));
+
+  // quick preflight
+  try {
+    const r1 = await fetch(`${ollamaBaseUrl}/api/version`, { signal: AbortSignal.timeout(1000) });
+    if (!r1.ok) throw new Error(`server responded ${r1.status}`);
+  } catch (e) {
+    return "";
+  }
+
+  const formatted = messages.map(formatMessage);
+  // Prefer native /api/chat for non-streaming; fall back to /v1 if needed
+  const bodies = [
+    {
+      path: "/api/chat",
+      body: {
+        model,
+        stream: false,
+        messages: formatted,
+        keep_alive: "20m",
+        options: { num_ctx: opts?.num_ctx ?? 4096, temperature: opts?.temperature ?? 0 },
+      }
+    },
+    {
+      path: "/v1/chat/completions",
+      body: {
+        model,
+        stream: false,
+        messages: formatted,
+        temperature: opts?.temperature ?? 0,
+      }
+    }
+  ];
+
+  for (const { path, body } of bodies) {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), timeout);
+    try {
+      const resp = await fetch(ollamaBaseUrl + path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: ac.signal,
+      });
+      clearTimeout(t);
+      if (!resp.ok) continue;
+      const json = await resp.json();
+      // /api/chat -> { message: { content } }, /v1 -> { choices: [{ message: { content } }]}
+      const viaApi = (json && json.message && typeof json.message.content === "string") ? json.message.content : null;
+      const viaV1  = (json && json.choices && json.choices[0] && json.choices[0].message && typeof json.choices[0].message.content === "string")
+        ? json.choices[0].message.content : null;
+      return (viaApi ?? viaV1 ?? "").trim();
+    } catch {
+      clearTimeout(t);
+      continue;
+    }
+  }
+  return "";
+}
+
 export async function chatOnce(
   name: string,
   messages: ChatMessage[],
