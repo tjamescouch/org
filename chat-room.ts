@@ -1,6 +1,6 @@
 // chat-room.ts — canonical room types and implementation (uses `content` payload)
 
-export type ChatRole = "system" | "user" | "assistant";
+export type ChatRole = "system" | "user" | "assistant" | "tool";
 
 export interface RoomMessage {
   ts: string;         // ISO timestamp

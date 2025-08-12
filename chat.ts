@@ -20,6 +20,7 @@ export const abortRegistry = {
 };
 import { TextDecoder } from "util";
 import { VERBOSE } from './constants';
+import type { ReadableStreamReadResult } from "stream/web";
 
 const BASE_URL = "http://192.168.56.1:11434"; // host-only IP
 const MODEL = "gpt-oss:20b";
@@ -171,6 +172,7 @@ export async function chatOnce(
     temperature?: number;
     model?: string;
     baseUrl?: string;
+    soc?: string;
     abortDetectors?: AbortDetector[];
   }
 ): Promise<AssistantMessage> {
@@ -425,7 +427,7 @@ export async function chatOnce(
       const agents = Array.from(new Set((messages || []).map(m => (m?.from || '').toLowerCase()).filter(Boolean)));
       let cut: { index: number; reason: string } | null = null;
       for (const det of abortRegistry.detectors) {
-        cut = det.check(contentBuf, { messages, agents });
+        cut = det.check(contentBuf, { messages, agents, soc: opts?.soc });
         if (cut) {
           contentBuf = contentBuf.slice(0, Math.max(0, cut.index)).trimEnd();
           try { reader.cancel(); } catch {}

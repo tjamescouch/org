@@ -41,10 +41,51 @@ const makeToolCallId = (prefix: "call" | "tool"): string => {
 class RegexAbortDetector implements AbortDetector {
   name = "regex";
   constructor(private patterns: RegExp[]) {}
-  check(text: string): { index: number; reason: string } | null {
+  check(text: string, ctx: { messages: ChatMessage[]; agents: string[]; soc?: string }): { index: number; reason: string } | null {
     for (const re of this.patterns) {
       const m = re.exec(text);
       if (m) return { index: m.index, reason: String(re) };
+    }
+    return null;
+  }
+}
+
+class CrossTurnRepetitionDetector implements AbortDetector {
+  name = "cross-turn";
+  constructor(private cfg = {
+    tailWords: 14,
+    minChars: 120,
+    minNoveltyRatio: 0.18,
+    sampleSocChars: 12000,
+  }) {}
+  private tokenize(s: string): string[] {
+    return String(s || "").toLowerCase().replace(/[^a-z0-9\s]+/g, " ").split(/\s+/).filter(Boolean);
+  }
+
+  check(text: string, ctx?: { soc?: string }): { index: number; reason: string } | null {
+    const soc: string = ctx && (ctx as any).soc ? String((ctx as any).soc) : "";
+    if (!soc || text.length < this.cfg.minChars) return null;
+
+    const toks = this.tokenize(text);
+    if (toks.length < this.cfg.tailWords) return null;
+
+    const tailStr = toks.slice(-this.cfg.tailWords).join(" ");
+    const socSlice = soc.slice(-this.cfg.sampleSocChars);
+
+    // Exact tail phrase seen in prior turns → cut where it begins
+    if (socSlice.includes(tailStr)) {
+      const idx = Math.max(0, text.toLowerCase().lastIndexOf(tailStr));
+      return { index: idx > 0 ? idx : Math.max(0, text.length - tailStr.length), reason: "cross-turn-tail-repeat" };
+    }
+
+    // Novelty of recent text vs prior SoC
+    const recentSet = new Set(toks.slice(-Math.min(160, toks.length)));
+    const socSet = new Set(this.tokenize(socSlice));
+    let overlap = 0;
+    for (const w of recentSet) if (socSet.has(w)) overlap++;
+    const novelty = 1 - (overlap / Math.max(1, recentSet.size));
+    if (novelty < this.cfg.minNoveltyRatio) {
+      return { index: text.length, reason: `cross-turn-low-novelty(${novelty.toFixed(2)})` };
     }
     return null;
   }
@@ -155,7 +196,7 @@ class MaxLengthAbortDetector implements AbortDetector {
 }
 
 export class AgentModel extends Model {
-  private readonly context: RoomMessage[] = [];
+  private context: RoomMessage[] = [];
   private readonly shellTimeout = 5 * 60; // seconds
   private audience: Audience = { kind: "group", target: "*" }; // default
   private fileToRedirectTo: string | undefined;
@@ -163,6 +204,8 @@ export class AgentModel extends Model {
   private maxMessagesInContext = 10;
   private system: string;
   private model: string;
+  private socText: string = "";
+  private readonly maxSocChars = 50_000;
 
   constructor(id: string, model: string) {
     super(id);
@@ -290,6 +333,15 @@ Above all - DO THE THING. Don't just talk about it.
       } else {
         console.error('lastMessage is undefined');
       }
+
+      // Append this turn’s assistant text into the rolling SoC
+      const assistantAggregate = messages
+        .filter(m => m.role === 'assistant' && m.from === this.id && typeof m.content === 'string')
+        .map(m => m.content as string)
+        .join("\n")
+        .slice(0, 8000);
+      if (assistantAggregate.trim().length > 0) this._appendSoC(assistantAggregate);
+
       this.cleanContext();
     } finally {
       release();
@@ -352,6 +404,7 @@ Above all - DO THE THING. Don't just talk about it.
       // Build per-hop abort detectors (model controls policy)
       const agents = Array.from(new Set(currentMessages.map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
       const detectors: AbortDetector[] = [
+        new CrossTurnRepetitionDetector(), 
         new AgentQuoteAbortDetector(agents),
         new RepetitionAbortDetector({ tailWords: 16, maxRepeats: 4, minWordsForNovelty: 160, minNoveltyRatio: 0.18 }),
         new ToolEchoFloodDetector(2),
@@ -364,7 +417,14 @@ Above all - DO THE THING. Don't just talk about it.
       ];
 
       const msg = (await withTimeout(
-        chatOnce(this.id, currentMessages, { tools: toolsForHop, tool_choice: toolChoiceForHop, num_ctx: 8192, abortDetectors: detectors, model: this.model }),
+        chatOnce(this.id, currentMessages, {
+          tools: toolsForHop,
+          tool_choice: toolChoiceForHop,
+          num_ctx: 8192,
+          abortDetectors: detectors,
+          model: this.model,
+          soc: this.socText,              // <— pass prior SoC
+        }),
         90_000,
         "chatOnce hop timeout"
       )) ?? { content: "Error" } as any;
@@ -716,5 +776,17 @@ Above all - DO THE THING. Don't just talk about it.
 
     this.context = [summaryMsg, ...tail];
     while (this.context.length > MAX) this.context.shift();
+  }
+
+  private _appendSoC(s: string) {
+    const clean = String(s || "")
+      .replace(/<think>.*?<\/think>/gs, "") // drop hidden reasoning if present
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!clean) return;
+    this.socText = (this.socText + " " + clean);
+    if (this.socText.length > this.maxSocChars) {
+      this.socText = this.socText.slice(-this.maxSocChars);
+    }
   }
 }
