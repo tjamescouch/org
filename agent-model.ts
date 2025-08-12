@@ -327,10 +327,20 @@ Above all - DO THE THING. Don't just talk about it.
       for (const message of messages) {
         this.context.push({
           ts: new Date().toISOString(),
-          role: (message.role === 'tool') ? 'user' : (message.from === this.id ? 'assistant' : 'user'),
+          role: message.role as any, // preserve 'tool' so the next turn sees actual tool outputs
           from: message.from,
           content: message.content,
           read: true,
+        });
+      }
+      const wroteThisTurn = messages.some(m => m.role === 'tool' && /=>\s*Written to file/i.test(String(m.content || '')));
+      if (!wroteThisTurn) {
+        this.context.push({
+          ts: new Date().toISOString(),
+          role: 'system',
+          from: 'System',
+          read: true,
+          content: 'No files were written in the last turn. In your next reply: either write the required files using the #file:<relative/path> tag followed by the full file content, or provide a brief plain‑text summary and explicit next step. Avoid repeating directory listings or re-reading the same files.'
         });
       }
 
@@ -726,7 +736,7 @@ Above all - DO THE THING. Don't just talk about it.
             from: this.id,
             role: "tool",
             read: true,
-            content: `\`\`\`${text}\`\`\`\n=> Written to file ${p}`
+            content: `=> Written to file ${p}`
           };
           console.log(`\n******* wrote file ${p}`);
           break;
