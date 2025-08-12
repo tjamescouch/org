@@ -65,12 +65,17 @@ export interface AssistantMessage {
   tool_calls?: ToolCall[];
 }
 
-const formatMessage = (message: ChatMessage): any => {
-  return {
-    ...message,
-    content: `${message.role === 'assistant' ? '' :  `${message.from}: `}${message.content}`,
-  };
-}
+const formatMessage = (m: ChatMessage): any => {
+  // Only send fields the API understands, and never prefix tool/system content
+  if (m.role === "tool") {
+    return { role: "tool", content: String(m.content ?? ""), name: m.name, tool_call_id: m.tool_call_id };
+  }
+  if (m.role === "system" || m.role === "assistant") {
+    return { role: m.role, content: String(m.content ?? "") };
+  }
+  // user: optionally include speaker label inside content for multi-agent context
+  return { role: "user", content: `${m.from}: ${String(m.content ?? "")}` };
+};
 
 
 export async function chatOnce(

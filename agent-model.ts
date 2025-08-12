@@ -311,6 +311,14 @@ Above all - DO THE THING. Don't just talk about it.
       return false;
     };
 
+    // Track recent tool call signatures across hops to avoid loops
+    const recentToolSigs: string[] = [];
+    const rememberSig = (sig: string) => {
+      recentToolSigs.push(sig);
+      if (recentToolSigs.length > 6) recentToolSigs.shift();
+    };
+    const seenRecently = (sig: string) => recentToolSigs.includes(sig);
+
     for (let hop = 0; hop < maxHops; hop++) {
       // Build per-hop abort detectors (model controls policy)
       const agents = Array.from(new Set(currentMessages.map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
@@ -394,18 +402,32 @@ Above all - DO THE THING. Don't just talk about it.
       // There *are* tool calls this hop: execute them and feed back results as role:"tool"
       let lastSig: string | undefined;
       for (const call of tool_calls) {
-        // Debounce identical back-to-back tool calls (prevents ls -1 loops)
-        const sig = `${call?.function?.name}|${typeof call?.function?.arguments === "object" ? JSON.stringify(call?.function?.arguments) : String(call?.function?.arguments ?? "")}`;
+        // Build a normalized signature for this call
+        let rawArgs = typeof call?.function?.arguments === "object" ? JSON.stringify(call?.function?.arguments) : String(call?.function?.arguments ?? "");
+        // Light normalization for shell commands to collapse trivial variants
+        if ((call?.function?.name || "") === "sh") {
+          try {
+            const parsed = JSON.parse(rawArgs);
+            if (parsed && typeof parsed.cmd === "string") {
+              const norm = parsed.cmd.replace(/\s+/g, " ").trim();
+              rawArgs = JSON.stringify({ ...parsed, cmd: norm });
+            }
+          } catch {}
+        }
+        const sig = `${call?.function?.name}|${rawArgs}`;
+
+        // Debounce identical back-to-back tool calls (same hop)
         if (lastSig && sig === lastSig) {
-          responses.push({
-            role: "assistant",
-            from: this.id,
-            read: true,
-            content: `Aborted duplicate tool call: ${call?.function?.name}`,
-          });
+          responses.push({ role: "assistant", from: this.id, read: true, content: `Aborted duplicate tool call (same-hop): ${call?.function?.name}` });
           break;
         }
+        // Debounce repeats seen in the last few hops
+        if (seenRecently(sig)) {
+          responses.push({ role: "assistant", from: this.id, read: true, content: `Skipping recently repeated tool call: ${call?.function?.name}` });
+          continue;
+        }
         lastSig = sig;
+        rememberSig(sig);
 
         // Execute the tool and append its role:"tool" result so the next hop can see it
         const toolMsg = await execTool(call); // { role:"tool", name, tool_call_id, content, from, read }
