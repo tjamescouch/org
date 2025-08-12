@@ -403,8 +403,8 @@ export async function chatOnce(
 
       // Suppress visible chain-of-thought; keep for detectors only
       if (reasonStr) {
-        if (firstThink) { firstThink = false; }
-        // (no stdout write)
+         if (firstThink) { firstThink = false; console.log('<think>'); }
+         Bun.stdout.write(reasonStr);
       }
       if (contentStr) {
         if (firstNotThink && !firstThink) { firstNotThink = false; }
@@ -415,7 +415,9 @@ export async function chatOnce(
           if (!suppressOutput) Bun.stdout.write(contentStr);
         }
       } else if (!reasonStr && parsed && parsed.done === true) {
-        done = true; break;
+        done = true; 
+        
+        break;
       }
 
       if (contentStr) contentBuf += contentStr;
@@ -431,6 +433,7 @@ export async function chatOnce(
           if (cut) {
             cutAt = Math.max(0, cut.index);
             suppressOutput = true; // continue reading but do not print further tokens
+            if (firstNotThink && !firstThink) { firstNotThink = false; console.log('\n</think>\n'); }
             console.error(`[chatOnce] soft-abort by ${det.name}: ${cut.reason} cutAt=${cutAt}`);
             break;
           }
