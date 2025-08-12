@@ -208,7 +208,7 @@ export async function chatOnce(
 
   // Single-endpoint strategy: OpenAI-compatible /v1/chat/completions (tool calling)
   let resp: Response | undefined;
-  const timeouts = [5000, 10000, 20000];
+  const timeouts = [10000, 20000, 40000];
   for (let attempt = 0; attempt < timeouts.length; attempt++) {
     const connectAC = new AbortController();
     const t = setTimeout(() => connectAC.abort(), timeouts[attempt]);
@@ -286,6 +286,9 @@ export async function chatOnce(
   let firstNotThink = true;
   // Accumulate partial lines across chunks (SSE / JSONL)
   let lineBuffer = "";
+  // Soft-abort state: keep reading to the end but suppress further terminal output
+  let cutAt: number | null = null;
+  let suppressOutput = false;
   // Accumulate tool call pieces across deltas (OpenAI streams name/arguments incrementally)
   const toolCallsAgg: { [k: number]: ToolCall } = {};
   // Squelch noisy/garbage fragments and show progress dots instead
@@ -398,17 +401,18 @@ export async function chatOnce(
       const reasonStr = typeof delta.reasoning === 'string' ? delta.reasoning : '';
       const contentStr = typeof delta.content === 'string' ? delta.content : '';
 
+      // Suppress visible chain-of-thought; keep for detectors only
       if (reasonStr) {
-        if (firstThink) { firstThink = false; console.log('<think>'); }
-        Bun.stdout.write(reasonStr);
+        if (firstThink) { firstThink = false; }
+        // (no stdout write)
       }
       if (contentStr) {
-        if (firstNotThink && !firstThink) { firstNotThink = false; console.log('\n</think>\n'); }
+        if (firstNotThink && !firstThink) { firstNotThink = false; }
         if (isGarbage(contentStr) || isGarbage(contentBuf.slice(-200) + contentStr)) {
           squelchedChars += contentStr.length;
           emitDot();
         } else {
-          Bun.stdout.write(contentStr);
+          if (!suppressOutput) Bun.stdout.write(contentStr);
         }
       } else if (!reasonStr && parsed && parsed.done === true) {
         done = true; break;
@@ -418,21 +422,20 @@ export async function chatOnce(
       if (reasonStr) thinkingBuf += reasonStr;
       if (delta.tool_calls) toolCalls = delta.tool_calls as ToolCall[];
 
-      // Generic, model-pluggable abort check
+      // Generic, model-pluggable abort check (soft-abort: do not cancel the stream)
       const agents = Array.from(new Set((messages || []).map(m => (m?.from || '').toLowerCase()).filter(Boolean)));
-      let cut: { index: number; reason: string } | null = null;
-      for (const det of abortRegistry.detectors) {
-        cut = det.check(contentBuf, { messages, agents, soc: opts?.soc });
-        if (cut) {
-          contentBuf = contentBuf.slice(0, Math.max(0, cut.index)).trimEnd();
-          try { reader.cancel(); } catch {}
-          done = true;
-          if (firstNotThink && !firstThink) { firstNotThink = false; console.log('\n</think>\n'); }
-          console.error(`[chatOnce] aborted stream by ${det.name}: ${cut.reason}`);
-          break;
+      if (cutAt === null) {
+        let cut: { index: number; reason: string } | null = null;
+        for (const det of abortRegistry.detectors) {
+          cut = det.check(contentBuf, { messages, agents, soc: opts?.soc });
+          if (cut) {
+            cutAt = Math.max(0, cut.index);
+            suppressOutput = true; // continue reading but do not print further tokens
+            console.error(`[chatOnce] soft-abort by ${det.name}: ${cut.reason} cutAt=${cutAt}`);
+            break;
+          }
         }
       }
-      if (done) break;
     }
   }
 
@@ -467,6 +470,9 @@ export async function chatOnce(
     Bun.stdout.write("\n");
   }
 
+  if (cutAt !== null) {
+    contentBuf = contentBuf.slice(0, cutAt).trimEnd();
+  }
   return {
     role: "assistant",
     content: contentBuf.trim(),

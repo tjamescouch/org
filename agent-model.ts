@@ -456,7 +456,7 @@ Do not quote other agents’ names as prefixes like "bob:" or "carol:".
           model: this.model,
           soc: this.socText,
         }),
-        90_000,
+        240_000,
         "chatOnce hop timeout"
       )) ?? { content: "Error" } as any;
 
