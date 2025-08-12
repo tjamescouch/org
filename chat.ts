@@ -341,9 +341,10 @@ export async function chatOnce(
           parsed = JSON.parse(payload);
         } catch {}
         let delta: any = {};
-        // OpenAI format: { choices: [{ delta: { content, ... } }] }
+        // OpenAI format: { choices: [{ delta: { ... } | message: { ... } }] }
         if (parsed.choices && Array.isArray(parsed.choices)) {
-          delta = parsed.choices?.[0]?.delta ?? {};
+          const ch = parsed.choices?.[0] ?? {};
+          delta = (ch.delta ?? ch.message ?? {});
         } else if (parsed.message) {
           // Ollama native: { message: { content, role, ... }, ... }
           delta = parsed.message;

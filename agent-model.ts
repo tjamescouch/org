@@ -248,7 +248,7 @@ Above all - DO THE THING. Don't just talk about it.
     };
     const summaryText = await withTimeout(
       summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ]),
-      150_000,
+      12_000,
       "summary timeout"
     ).catch(() => "");
 
