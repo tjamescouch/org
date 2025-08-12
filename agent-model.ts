@@ -301,7 +301,7 @@ Do not quote other agents’ names as prefixes like "bob:" or "carol:".
     };
     const summaryText = await withTimeout(
       summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ], { model: this.model }),
-      12_000,
+      180_000,
       "summary timeout"
     ).catch(() => "");
 
