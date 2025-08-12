@@ -304,6 +304,12 @@ Above all - DO THE THING. Don't just talk about it.
     const responses: ChatMessage[] = [];
     const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 8192 };
 
+    // --- Stuck breaker state ---
+    let breakerCooldown = 0;            // when > 0, next hops run with tools disabled
+    let breakerReason: string | null = null;
+    let totalToolCallsThisTurn = 0;     // cap tool calls per run
+    const MAX_TOOL_CALLS_PER_TURN = 6;
+
     // Start with the provided conversation
     let currentMessages: ChatMessage[] = [...messages];
 
@@ -339,6 +345,9 @@ Above all - DO THE THING. Don't just talk about it.
     const seenRecently = (sig: string) => recentToolSigs.includes(sig);
 
     for (let hop = 0; hop < maxHops; hop++) {
+      // Determine tool availability for this hop
+      const toolsForHop = (breakerCooldown > 0) ? [] : tools;
+      const toolChoiceForHop = (breakerCooldown > 0) ? ("none" as const) : ("auto" as const);
       // Build per-hop abort detectors (model controls policy)
       const agents = Array.from(new Set(currentMessages.map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
       const detectors: AbortDetector[] = [
@@ -354,7 +363,7 @@ Above all - DO THE THING. Don't just talk about it.
       ];
 
       const msg = (await withTimeout(
-        chatOnce(this.id, currentMessages, { ...toolOptions, abortDetectors: detectors }),
+        chatOnce(this.id, currentMessages, { tools: toolsForHop, tool_choice: toolChoiceForHop, num_ctx: 8192, abortDetectors: detectors }),
         90_000,
         "chatOnce hop timeout"
       )) ?? { content: "Error" } as any;
@@ -413,12 +422,18 @@ Above all - DO THE THING. Don't just talk about it.
           }
         }
 
+        breakerCooldown = 0; breakerReason = null;
         break; // finished; no more tools requested
       }
 
       // There *are* tool calls this hop: execute them and feed back results as role:"tool"
       let lastSig: string | undefined;
       for (const call of tool_calls) {
+        if (totalToolCallsThisTurn >= MAX_TOOL_CALLS_PER_TURN) {
+          breakerCooldown = 1; breakerReason = `cap ${MAX_TOOL_CALLS_PER_TURN} calls`;
+          responses.push({ role: "system", from: "System", read: true, content: `Tool cap reached (${MAX_TOOL_CALLS_PER_TURN}). Next reply: NO TOOLS. Provide a concise textual update and next 1–2 steps.` });
+          break;
+        }
         // Build a normalized signature for this call
         let rawArgs = typeof call?.function?.arguments === "object" ? JSON.stringify(call?.function?.arguments) : String(call?.function?.arguments ?? "");
         // Light normalization for shell commands to collapse trivial variants
@@ -436,11 +451,15 @@ Above all - DO THE THING. Don't just talk about it.
         // Debounce identical back-to-back tool calls (same hop)
         if (lastSig && sig === lastSig) {
           responses.push({ role: "assistant", from: this.id, read: true, content: `Aborted duplicate tool call (same-hop): ${call?.function?.name}` });
+          breakerCooldown = 1; breakerReason = `duplicate ${call?.function?.name}`;
+          responses.push({ role: "system", from: "System", read: true, content: `Loop detected (${call?.function?.name}). NEXT REPLY: **DO NOT CALL TOOLS**. Summarize what you just learned and propose the next concrete step in plain text.` });
           break;
         }
         // Debounce repeats seen in the last few hops
         if (seenRecently(sig)) {
-          responses.push({ role: "assistant", from: this.id, read: true, content: `Skipping recently repeated tool call: ${call?.function?.name} ${call?.function?.name}` });
+          responses.push({ role: "assistant", from: this.id, read: true, content: `Skipping recently repeated tool call: ${call?.function?.name}` });
+          breakerCooldown = 1; breakerReason = `repeat ${call?.function?.name}`;
+          responses.push({ role: "system", from: "System", read: true, content: `We already ran ${call?.function?.name} with these arguments. NEXT REPLY: **NO TOOLS**. Give a short textual conclusion based on prior output and suggest the next step.` });
           continue;
         }
         lastSig = sig;
@@ -449,6 +468,7 @@ Above all - DO THE THING. Don't just talk about it.
         // Execute the tool and append its role:"tool" result so the next hop can see it
         const toolMsg = await execTool(call); // { role:"tool", name, tool_call_id, content, from, read }
         responses.push(toolMsg);
+        totalToolCallsThisTurn++;
       }
 
       // Also handle tags **in the same hop** (don’t skip tools). This mirrors previous behavior.
@@ -468,13 +488,19 @@ Above all - DO THE THING. Don't just talk about it.
         }
       }
       // Feed back everything produced so far (assistant messages + tool outputs)
-      currentMessages = [...messages, ...responses];
+      const nextMsgs: ChatMessage[] = [...messages, ...responses];
+      if (breakerCooldown > 0) {
+        nextMsgs.push({ role: "system", from: "System", read: true, content: `Tool loop breaker engaged${breakerReason ? ` (${breakerReason})` : ''}. For the next reply: **DO NOT CALL TOOLS**. Provide a concise summary of progress and the next 1–2 steps in plain text.` });
+        breakerCooldown = Math.max(0, breakerCooldown - 1);
+      }
+      currentMessages = nextMsgs;
       // Loop back: the next chatOnce() sees the tool outputs via currentMessages
     }
 
     if (responses.length === 0) {
       responses.push({ role: "assistant", from: this.id, content: "(no content)", read: true });
     }
+    breakerCooldown = 0; breakerReason = null;
     return responses;
   }
 
