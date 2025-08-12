@@ -267,14 +267,16 @@ export async function chatOnce(
     const chunk = decoder.decode(value, { stream: true });
     for (const lineRaw of chunk.split("\n")) {
       const line = lineRaw.trim();
-      if (!line.startsWith("data:")) continue;
+      if (!line) continue;
+
+      // Ollama native streams JSON lines without the "data:" prefix; OpenAI-style uses "data: {json}"
+      const payload = line.startsWith("data:") ? line.slice(5).trim() : line;
 
       if(!namePrinted) {
         console.log(`\n\n**** ${name}:`);
         namePrinted = true;
       }
 
-      const payload = line.slice(5).trim();
       if (payload === "[DONE]") {
         done = true;
         break;
