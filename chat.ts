@@ -201,7 +201,7 @@ export async function chatOnce(
     model,
     stream: true,
     messages: formatted,
-    temperature: opts?.temperature ?? 0,
+    temperature: opts?.temperature ?? 1,
     tools: opts?.tools ?? [],
     tool_choice: opts?.tool_choice ?? (opts?.tools ? "auto" : undefined),
   } as any;
