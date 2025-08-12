@@ -294,6 +294,8 @@ export async function chatOnce(
   let namePrinted = false;
   let firstThink = true;
   let firstNotThink = true;
+  // Accumulate partial lines across chunks (SSE / JSONL)
+  let lineBuffer = "";
 
   while (!done) {
     if (Date.now() - startedAt > HARD_STOP_MS) {
@@ -316,100 +318,96 @@ export async function chatOnce(
 
     if (streamDone) break;
     const chunk = decoder.decode(value, { stream: true });
-    for (const lineRaw of chunk.split("\n")) {
-      const line = lineRaw.trim();
+    lineBuffer += chunk;
+
+    // Process only complete lines; keep remainder for next network chunk
+    for (;;) {
+      const nl = lineBuffer.indexOf('\n');
+      if (nl === -1) break;
+      let lineRaw = lineBuffer.slice(0, nl);
+      lineBuffer = lineBuffer.slice(nl + 1);
+      // Trim a single trailing CR but do not trim leading spaces (SSE spec)
+      const line = lineRaw.endsWith('\r') ? lineRaw.slice(0, -1) : lineRaw;
       if (!line) continue;
 
       // Ollama native streams JSON lines without the "data:" prefix; OpenAI-style uses "data: {json}"
-      const payload = line.startsWith("data:") ? line.slice(5).trim() : line;
+      const payload = line.startsWith('data:') ? line.slice(5).trim() : line;
 
-      if(!namePrinted) {
+      if (!namePrinted) {
         console.log(`\n\n**** ${name}:`);
         namePrinted = true;
       }
 
-      if (payload === "[DONE]") {
-        done = true;
+      if (payload === '[DONE]') { done = true; break; }
+
+      // Parse JSON payload; if it fails, prepend it back into the buffer and wait for more bytes
+      let parsed: any = undefined;
+      try { parsed = JSON.parse(payload); } catch {
+        // likely a partial JSON frame split across network chunks
+        lineBuffer = line + '\n' + lineBuffer; // restore and wait for the remainder
         break;
       }
 
-      try {
-        // Native Ollama /api/chat: emits objects with { message: { content, role, ... }, done, ... }
-        // Try to parse as either OpenAI or Ollama native
-        let parsed: any = {};
-        try {
-          parsed = JSON.parse(payload);
-        } catch {}
-        let delta: any = {};
-        // OpenAI format: { choices: [{ delta: { ... } | message: { ... } }] }
-        if (parsed.choices && Array.isArray(parsed.choices)) {
-          const ch = parsed.choices?.[0] ?? {};
-          delta = (ch.delta ?? ch.message ?? {});
-        } else if (parsed.message) {
-          // Ollama native: { message: { content, role, ... }, ... }
-          delta = parsed.message;
-        }
+      let delta: any = {};
+      if (parsed && parsed.choices && Array.isArray(parsed.choices)) {
+        const ch = parsed.choices?.[0] ?? {};
+        delta = (ch.delta ?? ch.message ?? {});
+      } else if (parsed && parsed.message) {
+        delta = parsed.message;
+      }
 
-        // Some Ollama builds emit { done: true } without a message
-        if (!parsed.message && parsed.done === true) {
+      // Some Ollama builds emit { done: true } without a message
+      if (!parsed?.message && parsed?.done === true) { done = true; break; }
+
+      // Coerce and guard writes; Ollama may emit non-string/empty fields on keepalive chunks
+      const reasonStr = typeof delta.reasoning === 'string' ? delta.reasoning : '';
+      const contentStr = typeof delta.content === 'string' ? delta.content : '';
+
+      if (reasonStr) {
+        if (firstThink) { firstThink = false; console.log('<think>'); }
+        Bun.stdout.write(reasonStr);
+      }
+      if (contentStr) {
+        if (firstNotThink && !firstThink) { firstNotThink = false; console.log('\n</think>\n'); }
+        Bun.stdout.write(contentStr);
+      } else if (!reasonStr && parsed && parsed.done === true) {
+        done = true; break;
+      }
+
+      if (contentStr) contentBuf += contentStr;
+      if (reasonStr) thinkingBuf += reasonStr;
+      if (delta.tool_calls) toolCalls = delta.tool_calls as ToolCall[];
+
+      // Generic, model-pluggable abort check
+      const agents = Array.from(new Set((messages || []).map(m => (m?.from || '').toLowerCase()).filter(Boolean)));
+      let cut: { index: number; reason: string } | null = null;
+      for (const det of abortRegistry.detectors) {
+        cut = det.check(contentBuf, { messages, agents });
+        if (cut) {
+          contentBuf = contentBuf.slice(0, Math.max(0, cut.index)).trimEnd();
+          try { reader.cancel(); } catch {}
           done = true;
+          if (firstNotThink && !firstThink) { firstNotThink = false; console.log('\n</think>\n'); }
+          console.error(`[chatOnce] aborted stream by ${det.name}: ${cut.reason}`);
           break;
         }
-
-        // Coerce and guard writes; Ollama may emit non-string/empty fields on keepalive chunks
-        const reasonStr = typeof delta.reasoning === "string" ? delta.reasoning : "";
-        const contentStr = typeof delta.content === "string" ? delta.content : "";
-
-        if (reasonStr) {
-          if (firstThink) {
-            firstThink = false;
-            console.log("<think>");
-          }
-          Bun.stdout.write(reasonStr);
-        }
-
-        if (contentStr) {
-          if (firstNotThink && !firstThink) {
-            firstNotThink = false;
-            console.log("\n</think>\n");
-          }
-          Bun.stdout.write(contentStr);
-        } else if (!reasonStr) {
-          // Neither content nor reasoning: if this is an Ollama heartbeat/done chunk, handle gracefully
-          if (parsed && parsed.done === true) {
-            done = true;
-            break;
-          }
-        }
-
-        if (contentStr) contentBuf += contentStr;
-        if (reasonStr) thinkingBuf += reasonStr;
-        if (delta.tool_calls) toolCalls = delta.tool_calls as ToolCall[];
-
-        // Generic, model-pluggable abort check
-        const agents = Array.from(new Set((messages || []).map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
-        let cut: { index: number; reason: string } | null = null;
-        for (const det of abortRegistry.detectors) {
-          cut = det.check(contentBuf, { messages, agents });
-          if (cut) {
-            // Trim content to before the offending pattern and stop streaming
-            contentBuf = contentBuf.slice(0, Math.max(0, cut.index)).trimEnd();
-            try { reader.cancel(); } catch {}
-            done = true;
-            if(firstNotThink && !firstThink) {
-              firstNotThink = false;
-              console.log("\n</think>\n");
-            }
-            console.error(`[chatOnce] aborted stream by ${det.name}: ${cut.reason}`);
-            break;
-          }
-        }
-        if (done) break;
-      } catch (e) {
-        console.warn("⚠️  Bad chunk:", e);
       }
+      if (done) break;
     }
+  }
 
+  // Best-effort: process a final line if the server ended without a trailing newline
+  if (!done && lineBuffer.trim().length > 0) {
+    try {
+      const payload = lineBuffer.startsWith('data:') ? lineBuffer.slice(5).trim() : lineBuffer;
+      const parsed: any = JSON.parse(payload);
+      const ch = parsed?.choices?.[0] ?? {};
+      const delta = (ch.delta ?? ch.message ?? parsed?.message ?? {});
+      const reasonStr = typeof delta.reasoning === 'string' ? delta.reasoning : '';
+      const contentStr = typeof delta.content === 'string' ? delta.content : '';
+      if (reasonStr) thinkingBuf += reasonStr;
+      if (contentStr) contentBuf += contentStr;
+    } catch {}
   }
 
   return {
