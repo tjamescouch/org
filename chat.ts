@@ -106,12 +106,20 @@ export async function chatOnce(
     stream: true, 
   };
 
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30*60*1000)
-  });
+  // Connection timeout: abort if we can't connect quickly
+  const connectAC = new AbortController();
+  const connectTimer = setTimeout(() => connectAC.abort(), 5_000);
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: connectAC.signal, // fast-fail on connect
+    });
+  } finally {
+    clearTimeout(connectTimer);
+  }
 
   if (!resp.ok) {
     const txt = await resp.text();
@@ -125,8 +133,20 @@ export async function chatOnce(
      Each chunk is a line:  data: { ...delta... }\n
      Last line:            data: [DONE]
   ------------------------------------------------------------ */
-  const reader = resp.body!.getReader();
+  let reader = resp.body!.getReader();
   const decoder = new TextDecoder("utf-8");
+
+  // Idle+hard-stop watchdogs to prevent hangs
+  const IDLE_MS = 15_000;     // abort if no chunks for 15s
+  const HARD_STOP_MS = 120_000; // absolute cap on streaming
+  const startedAt = Date.now();
+
+  async function readWithIdleTimeout(): Promise<ReadableStreamReadResult<Uint8Array>> {
+    return Promise.race([
+      reader.read(),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("idle-timeout")), IDLE_MS))
+    ]) as any;
+  }
 
   let contentBuf = "";
   let thinkingBuf = "";
@@ -139,7 +159,23 @@ export async function chatOnce(
   
 
   while (!done) {
-    const { value, done: streamDone } = await reader.read();
+    if (Date.now() - startedAt > HARD_STOP_MS) {
+      try { reader.cancel(); } catch {}
+      console.error("[chatOnce] aborted stream: hard-stop");
+      break;
+    }
+    let readResult: ReadableStreamReadResult<Uint8Array>;
+    try {
+      readResult = await readWithIdleTimeout();
+    } catch (e) {
+      if ((e as Error)?.message === "idle-timeout") {
+        try { reader.cancel(); } catch {}
+        console.error("[chatOnce] aborted stream: idle-timeout");
+        break;
+      }
+      throw e;
+    }
+    const { value, done: streamDone } = readResult;
 
     if (streamDone) break;
     const chunk = decoder.decode(value, { stream: true });

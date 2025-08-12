@@ -1,4 +1,9 @@
-import { chatOnce, type ChatMessage, type ToolCall, type ToolDef, type AbortDetector } from "./chat";
+const withTimeout = <T>(p: Promise<T>, ms: number, label = "timeout"): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<never>((_, rej) => setTimeout(() => rej(new Error(label)), ms))
+  ]) as any;
+import { chatOnce, type ChatMessage, type ToolCall, type ToolDef } from "./chat";
 import { Model } from "./model";
 import {  writeFileSync } from "fs";
 import { channelLock } from "./channel-lock";
@@ -32,80 +37,6 @@ const makeToolCallId = (prefix: "call" | "tool"): string => {
   return `${prefix}_${randPart()}_${randPart()}`;
 }
 
-/* ---------- Abort detectors (model-owned) -------------------- */
-class RegexAbortDetector implements AbortDetector {
-  name = "regex";
-  constructor(private patterns: RegExp[]) {}
-  check(text: string): { index: number; reason: string } | null {
-    for (const re of this.patterns) {
-      const m = re.exec(text);
-      if (m) return { index: m.index, reason: String(re) };
-    }
-    return null;
-  }
-}
-
-class AgentQuoteAbortDetector implements AbortDetector {
-  name = "agent-quote";
-  constructor(private agents: string[]) {}
-  check(text: string, _ctx: { messages: ChatMessage[]; agents: string[] }): { index: number; reason: string } | null {
-    if (!this.agents.length) return null;
-    const pattern = `(^|\\n)\\s*(?:${this.agents.map(s => s.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")).join("|")}):\\s`;
-    const re = new RegExp(pattern, "i");
-    const m = re.exec(text);
-    if (m) {
-      const cut = m.index;
-      return { index: cut, reason: "agent-quote" };
-    }
-    return null;
-  }
-}
-
-class RepetitionAbortDetector implements AbortDetector {
-  name = "repetition";
-  constructor(private cfg = {
-    tailWords: 12,
-    maxRepeats: 3,
-    minWordsForNovelty: 120,
-    minNoveltyRatio: 0.2,
-  }) {}
-  private tokenize(s: string): string[] {
-    return s.toLowerCase().replace(/[^a-z0-9\s]+/g, " ").split(/\s+/).filter(Boolean);
-  }
-  private escapeWord(w: string) {
-    return w.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&");
-  }
-  check(text: string): { index: number; reason: string } | null {
-    const toks = this.tokenize(text);
-    const total = toks.length;
-    if (total >= this.cfg.minWordsForNovelty) {
-      const uniq = new Set(toks).size;
-      const novelty = uniq / total;
-      if (novelty < this.cfg.minNoveltyRatio) {
-        return { index: text.length, reason: `low-novelty(${novelty.toFixed(2)})` };
-      }
-    }
-    const n = Math.min(this.cfg.tailWords, Math.max(3, Math.floor(total / 4)));
-    if (total >= n) {
-      const tail = toks.slice(total - n);
-      const pattern = "\\b" + tail.map(this.escapeWord).join("\\s+") + "\\b";
-      const re = new RegExp(pattern, "g");
-      let m: RegExpExecArray | null;
-      let count = 0;
-      let thirdIndex = -1;
-      while ((m = re.exec(text)) !== null) {
-        count++;
-        if (count === this.cfg.maxRepeats) { thirdIndex = m.index; break; }
-        if (re.lastIndex === m.index) re.lastIndex++;
-      }
-      if (count >= this.cfg.maxRepeats && thirdIndex >= 0) {
-        return { index: thirdIndex, reason: `phrase-loop(${n}w x${count})` };
-      }
-    }
-    return null;
-  }
-}
-
 export class AgentModel extends Model {
   private readonly context: RoomMessage[] = [];
   private readonly shellTimeout = 5 * 60; // seconds
@@ -125,8 +56,7 @@ Try to make decisions for yourself even if you're not completely sure that they 
 You have access to an actual Debian VM.
 It has git, gcc and bun installed.
 
-You have access to basic unix commands including pwd, cd, git, gcc, g++, python3, ls, cat, echo, diff. 
-You have access to the apply_patch via the sh command.
+You have access to basic unix commands. You have access to the apply_patch via the sh command.
 Alternately: to write to a file include a tag with the format #file:<filename>. Follow the syntax exactly. i.e. lowercase, with no spaces.
 This way you do not do a tool call and simply respond.
 
@@ -208,7 +138,7 @@ Above all - DO THE THING. Don't just talk about it.
       for (const message of messages) {
         this.context.push({
           ts: new Date().toISOString(),
-          role: (message.role === 'tool') ? 'tool' : (message.from === this.id ? 'assistant' : 'user'),
+          role: (message.role === 'tool') ? 'user' : (message.from === this.id ? 'assistant' : 'user'),
           from: message.from,
           content: message.content,
           read: true,
@@ -263,19 +193,8 @@ Above all - DO THE THING. Don't just talk about it.
     };
 
     for (let hop = 0; hop < maxHops; hop++) {
-      // Build per-model abort detectors
-      const agents = Array.from(new Set(currentMessages.map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
-      const detectors: AbortDetector[] = [
-        new AgentQuoteAbortDetector(agents),
-        new RepetitionAbortDetector(),
-        // seed with a couple of domain-specific regexes; customizable later
-        new RegexAbortDetector([
-          /we need to write file\b/i,
-          /\b(let's (run|try)|we need to)\b.{0,40}\bre-run\b/i,
-        ]),
-      ];
-
-      const msg = (await chatOnce(this.id, currentMessages, { ...toolOptions, abortDetectors: detectors })) ?? { content: "Error" } as any;
+      // Ask the model what to do next given the *internal* conversation
+      const msg = (await withTimeout(chatOnce(this.id, currentMessages, toolOptions), 90_000, "chatOnce hop timeout")) ?? { content: "Error" } as any;
 
       // Parse tags from assistant content
       const { clean: response, tags } = TagParser.parse(msg.content || "");
@@ -337,14 +256,14 @@ Above all - DO THE THING. Don't just talk about it.
 
       // There *are* tool calls this hop: execute them and feed back results as role:"tool"
       for (const call of tool_calls) {
-        currentMessages.push({
+        responses.push({
           role: "assistant",
           from: this.id,
           content: JSON.stringify({
             id: makeToolCallId("call"),
             object: "chat.completion",
             created: new Date().getTime(),
-            model: "gpt-oss:20b",
+            model: "gpt-oss:120b",
             choices: [
               {
                 index: 0,
@@ -373,10 +292,10 @@ Above all - DO THE THING. Don't just talk about it.
           reasoning: (msg as any).reasoning,
           read: true,
         });
+
         const toolMsg = await execTool(call); // { role:"tool", name, tool_call_id, content, from, read }
         // Append internally so the next assistant step can read it
-        currentMessages.push(toolMsg);
-
+        responses.push(toolMsg);
       }
 
       // Also handle tags **in the same hop** (don’t skip tools). This mirrors previous behavior.
@@ -399,7 +318,7 @@ Above all - DO THE THING. Don't just talk about it.
       // Loop back: the next chatOnce() sees the tool outputs via currentMessages
     }
 
-    return responses.concat(currentMessages);
+    return responses;
   }
 
 
@@ -429,12 +348,12 @@ Above all - DO THE THING. Don't just talk about it.
       // Ensure arguments are parsed safely and type matches expected signature
       const args = JSON.parse(call?.function?.arguments ?? '{"cmd": ""}') as { cmd: string };
       if (name === "sh" || name === "assistant") {
-        return { ...(await this._runShell(name, { ...args, rawCmd: args.cmd })), tool_call_id: call.id, role: "tool", name: "tool", from: this.id, read: false };
+        return { ...(await this._runShell(name, { ...args, rawCmd: args.cmd })), tool_call_id: call.id, role: "tool", name, from: this.id, read: false };
       }
       // unknown tool
-      return { role: "tool", name: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: false, err: `unknown tool: ${name} - try using the sh tool` }), from: this.id, read: false };
+      return { role: "tool", name, tool_call_id: call.id, content: JSON.stringify({ ok: false, err: `unknown tool: ${name} - try using the sh tool`, call }), from: this.id, read: false };
     } catch (err) {
-      return { role: "tool", name: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: false, err: String(err) }), from: this.id, read: false };
+      return { role: "tool", name, tool_call_id: call.id, content: JSON.stringify({ ok: false, err: String(err) }), from: this.id, read: false };
     }
   }
 
