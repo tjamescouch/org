@@ -1,4 +1,4 @@
-import { chatOnce, type ChatMessage, type ToolCall, type ToolDef } from "./chat";
+import { chatOnce, type ChatMessage, type ToolCall, type ToolDef, type AbortDetector } from "./chat";
 import { Model } from "./model";
 import {  writeFileSync } from "fs";
 import { channelLock } from "./channel-lock";
@@ -30,6 +30,80 @@ const makeToolCallId = (prefix: "call" | "tool"): string => {
 
   // join prefix with 2–3 random parts
   return `${prefix}_${randPart()}_${randPart()}`;
+}
+
+/* ---------- Abort detectors (model-owned) -------------------- */
+class RegexAbortDetector implements AbortDetector {
+  name = "regex";
+  constructor(private patterns: RegExp[]) {}
+  check(text: string): { index: number; reason: string } | null {
+    for (const re of this.patterns) {
+      const m = re.exec(text);
+      if (m) return { index: m.index, reason: String(re) };
+    }
+    return null;
+  }
+}
+
+class AgentQuoteAbortDetector implements AbortDetector {
+  name = "agent-quote";
+  constructor(private agents: string[]) {}
+  check(text: string, _ctx: { messages: ChatMessage[]; agents: string[] }): { index: number; reason: string } | null {
+    if (!this.agents.length) return null;
+    const pattern = `(^|\\n)\\s*(?:${this.agents.map(s => s.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")).join("|")}):\\s`;
+    const re = new RegExp(pattern, "i");
+    const m = re.exec(text);
+    if (m) {
+      const cut = m.index;
+      return { index: cut, reason: "agent-quote" };
+    }
+    return null;
+  }
+}
+
+class RepetitionAbortDetector implements AbortDetector {
+  name = "repetition";
+  constructor(private cfg = {
+    tailWords: 12,
+    maxRepeats: 3,
+    minWordsForNovelty: 120,
+    minNoveltyRatio: 0.2,
+  }) {}
+  private tokenize(s: string): string[] {
+    return s.toLowerCase().replace(/[^a-z0-9\s]+/g, " ").split(/\s+/).filter(Boolean);
+  }
+  private escapeWord(w: string) {
+    return w.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&");
+  }
+  check(text: string): { index: number; reason: string } | null {
+    const toks = this.tokenize(text);
+    const total = toks.length;
+    if (total >= this.cfg.minWordsForNovelty) {
+      const uniq = new Set(toks).size;
+      const novelty = uniq / total;
+      if (novelty < this.cfg.minNoveltyRatio) {
+        return { index: text.length, reason: `low-novelty(${novelty.toFixed(2)})` };
+      }
+    }
+    const n = Math.min(this.cfg.tailWords, Math.max(3, Math.floor(total / 4)));
+    if (total >= n) {
+      const tail = toks.slice(total - n);
+      const pattern = "\\b" + tail.map(this.escapeWord).join("\\s+") + "\\b";
+      const re = new RegExp(pattern, "g");
+      let m: RegExpExecArray | null;
+      let count = 0;
+      let thirdIndex = -1;
+      while ((m = re.exec(text)) !== null) {
+        count++;
+        if (count === this.cfg.maxRepeats) { thirdIndex = m.index; break; }
+        if (re.lastIndex === m.index) re.lastIndex++;
+      }
+      if (count >= this.cfg.maxRepeats && thirdIndex >= 0) {
+        return { index: thirdIndex, reason: `phrase-loop(${n}w x${count})` };
+      }
+    }
+    return null;
+  }
 }
 
 export class AgentModel extends Model {
@@ -189,8 +263,19 @@ Above all - DO THE THING. Don't just talk about it.
     };
 
     for (let hop = 0; hop < maxHops; hop++) {
-      // Ask the model what to do next given the *internal* conversation
-      const msg = (await chatOnce(this.id, currentMessages, toolOptions)) ?? { content: "Error" } as any;
+      // Build per-model abort detectors
+      const agents = Array.from(new Set(currentMessages.map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
+      const detectors: AbortDetector[] = [
+        new AgentQuoteAbortDetector(agents),
+        new RepetitionAbortDetector(),
+        // seed with a couple of domain-specific regexes; customizable later
+        new RegexAbortDetector([
+          /we need to write file\b/i,
+          /\b(let's (run|try)|we need to)\b.{0,40}\bre-run\b/i,
+        ]),
+      ];
+
+      const msg = (await chatOnce(this.id, currentMessages, { ...toolOptions, abortDetectors: detectors })) ?? { content: "Error" } as any;
 
       // Parse tags from assistant content
       const { clean: response, tags } = TagParser.parse(msg.content || "");

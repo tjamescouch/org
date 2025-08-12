@@ -1,3 +1,23 @@
+/** Pluggable abort detector API */
+export interface AbortDetector {
+  /** Human-friendly name */
+  name: string;
+  /**
+   * Inspect the accumulated assistant text and optionally request an abort.
+   * Return { index, reason } to cut the stream at `index`, or null to continue.
+   */
+  check(
+    text: string,
+    ctx: { messages: ChatMessage[]; agents: string[] }
+  ): { index: number; reason: string } | null;
+}
+
+/** Simple registry; models provide detectors at runtime via chatOnce opts */
+export const abortRegistry = {
+  detectors: [] as AbortDetector[],
+  set(list: AbortDetector[]) { this.detectors = list.slice(); },
+  add(detector: AbortDetector) { this.detectors.push(detector); },
+};
 import { TextDecoder } from "util";
 import { VERBOSE } from './constants';
 
@@ -63,9 +83,17 @@ export async function chatOnce(
     temperature?: number;
     model?: string;
     baseUrl?: string;
+    abortDetectors?: AbortDetector[];
   }
 ): Promise<AssistantMessage> {
   const url = `${opts?.baseUrl ?? BASE_URL}/v1/chat/completions`;
+
+  // Install model-provided abort detectors (if any)
+  if (opts?.abortDetectors && Array.isArray(opts.abortDetectors)) {
+    abortRegistry.set(opts.abortDetectors);
+  } else {
+    abortRegistry.set([]); // default: no detectors
+  }
 
   if (VERBOSE) console.error(messages.map(formatMessage));
 
@@ -107,6 +135,7 @@ export async function chatOnce(
   let namePrinted = false;
   let firstThink = true;
   let firstNotThink = true;
+  
   
 
   while (!done) {
@@ -158,6 +187,26 @@ export async function chatOnce(
         if (delta.content) contentBuf += delta.content;
         if (delta.reasoning) thinkingBuf += delta.reasoning;
         if (delta.tool_calls) toolCalls = delta.tool_calls as ToolCall[];
+
+        // Generic, model-pluggable abort check
+        const agents = Array.from(new Set((messages || []).map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
+        let cut: { index: number; reason: string } | null = null;
+        for (const det of abortRegistry.detectors) {
+          cut = det.check(contentBuf, { messages, agents });
+          if (cut) {
+            // Trim content to before the offending pattern and stop streaming
+            contentBuf = contentBuf.slice(0, Math.max(0, cut.index)).trimEnd();
+            try { reader.cancel(); } catch {}
+            done = true;
+            if(firstNotThink && !firstThink) {
+              firstNotThink = false;
+              console.log("\n</think>\n");
+            }
+            console.error(`[chatOnce] aborted stream by ${det.name}: ${cut.reason}`);
+            break;
+          }
+        }
+        if (done) break;
       } catch (e) {
         console.warn("⚠️  Bad chunk:", e);
       }
