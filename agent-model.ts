@@ -273,6 +273,10 @@ Use git and commit often.
 DO NOT PUSH ANYTHING TO GITHUB.
 
 Above all - DO THE THING. Don't just talk about it.
+Speak only in your own voice as "${this.id}" in the first person.
+Do not describe your intentions (e.g., "We need to respond as Bob").
+Do not narrate plans or roles; provide the final answer only.
+Do not quote other agents’ names as prefixes like "bob:" or "carol:".
 `;
   }
 
@@ -324,12 +328,15 @@ Above all - DO THE THING. Don't just talk about it.
 
     try {
       const messages = await this.runWithTools(fullMessageHistory, tools, (c) => this._execTool(c), 25);
-      for (const message of messages) {
+      for (const m of messages) {
+        const mappedRole = (m.role === 'tool')
+          ? 'tool'
+          : (m.from === this.id ? 'assistant' : 'user');
         this.context.push({
           ts: new Date().toISOString(),
-          role: message.role as any, // preserve 'tool' so the next turn sees actual tool outputs
-          from: message.from,
-          content: message.content,
+          role: mappedRole as any,
+          from: m.from,
+          content: m.content,
           read: true,
         });
       }
