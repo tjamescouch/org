@@ -324,11 +324,10 @@ Above all - DO THE THING. Don't just talk about it.
       const agents = Array.from(new Set(currentMessages.map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
       const detectors: AbortDetector[] = [
         new AgentQuoteAbortDetector(agents),
-        new RepetitionAbortDetector(),
-        new ToolEchoFloodDetector(2),   // abort on 3rd echoed tool-call JSON
-        new SpiralPhraseDetector(),     // early stop on “let’s run/try…”, etc.
-        new MaxLengthAbortDetector(8000), // hard cap on emitted chars
-        // Add quick project-specific regexes here as needed:
+        new RepetitionAbortDetector({ tailWords: 16, maxRepeats: 4, minWordsForNovelty: 160, minNoveltyRatio: 0.18 }),
+        new ToolEchoFloodDetector(2),
+        // new SpiralPhraseDetector(),     // disabled for now
+        new MaxLengthAbortDetector(8000),
         new RegexAbortDetector([
           /\bnow create new file\b/i,
           /\bit didn't show output\b/i,
@@ -628,7 +627,48 @@ Above all - DO THE THING. Don't just talk about it.
     this.cleanContext();
   }
 
-  private cleanContext() {
-    while (this.context.length > this.maxMessagesInContext) this.context.shift();
+  private cleanContext() { // If within limit, nothing to do
+    const MAX = this.maxMessagesInContext;
+    if (this.context.length <= MAX) return;
+
+    // Keep the most recent ~60% verbatim; summarize the older head into one system note
+    const keepTail = Math.floor(MAX * 0.6);
+    const dropCount = this.context.length - keepTail;
+    const head = this.context.slice(0, dropCount);
+    const tail = this.context.slice(dropCount);
+
+    // Deterministic, lightweight summary (no LLM): count tools, last cmd, files written, last few lines
+    let toolCount = 0; let lastCmd = ""; const filesWritten: string[] = [];
+    for (const m of head) {
+      const c = String(m.content || "");
+      if (m.role === 'tool') toolCount++;
+      const cmdMatch = c.match(/\b(?:sh|bash)\b[^\n\r]*/i);
+      if (cmdMatch) lastCmd = cmdMatch[0];
+      const fileMatch = c.match(/#file:([^\s\n\r]+)/);
+      if (fileMatch) filesWritten.push(fileMatch[1]);
+    }
+
+    const headPreview = head
+      .filter(m => m.role !== 'system')
+      .slice(-4)
+      .map(m => `${m.from}: ${String(m.content || "").replace(/\s+/g, ' ').slice(0, 140)}`)
+      .join("\n");
+
+    const summaryLines: string[] = [];
+    summaryLines.push(`[summary] Compressed ${head.length} earlier turns.`);
+    if (toolCount) summaryLines.push(`tools_used=${toolCount}` + (lastCmd ? ` last_cmd=\"${lastCmd.slice(0,120)}\"` : ''));
+    if (filesWritten.length) summaryLines.push(`files_written=${filesWritten.slice(-5).join(',')}`);
+    if (headPreview) summaryLines.push(`recent_head:\n${headPreview}`);
+
+    const summaryMsg = {
+      ts: new Date().toISOString(),
+      role: 'system' as const,
+      from: 'System',
+      content: summaryLines.join("\n"),
+      read: true,
+    };
+
+    this.context = [summaryMsg, ...tail];
+    while (this.context.length > MAX) this.context.shift();
   }
 }
