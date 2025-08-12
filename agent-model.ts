@@ -287,10 +287,10 @@ Above all - DO THE THING. Don't just talk about it.
           reasoning: (msg as any).reasoning,
           read: true,
         });
-
         const toolMsg = await execTool(call); // { role:"tool", name, tool_call_id, content, from, read }
         // Append internally so the next assistant step can read it
         currentMessages.push(toolMsg);
+
       }
 
       // Also handle tags **in the same hop** (don’t skip tools). This mirrors previous behavior.
@@ -313,7 +313,7 @@ Above all - DO THE THING. Don't just talk about it.
       // Loop back: the next chatOnce() sees the tool outputs via currentMessages
     }
 
-    return responses;
+    return responses.concat(currentMessages);
   }
 
 
@@ -346,7 +346,7 @@ Above all - DO THE THING. Don't just talk about it.
         return { ...(await this._runShell(name, { ...args, rawCmd: args.cmd })), tool_call_id: call.id, role: "tool", name: "tool", from: this.id, read: false };
       }
       // unknown tool
-      return { role: "tool", name: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: false, err: `unknown tool: ${name} - try using the sh tool`, call }), from: this.id, read: false };
+      return { role: "tool", name: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: false, err: `unknown tool: ${name} - try using the sh tool` }), from: this.id, read: false };
     } catch (err) {
       return { role: "tool", name: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: false, err: String(err) }), from: this.id, read: false };
     }
