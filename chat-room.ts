@@ -97,7 +97,7 @@ export class ChatRoom implements RoomAPI {
   }
 
   private async safeDeliver(model: RoomModel, msg: RoomMessage): Promise<void> {
-    const TIMEOUT_MS = 30_000;
+    const TIMEOUT_MS = 500_000;
     try {
       await Promise.race([
         model.receiveMessage(msg),

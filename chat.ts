@@ -221,7 +221,7 @@ export async function chatOnce(
 
   // Single-endpoint strategy: OpenAI-compatible /v1/chat/completions (tool calling)
   let resp: Response | undefined;
-  const timeouts = [10000, 20000, 40000];
+  const timeouts = [100000, 200000, 400000];
   for (let attempt = 0; attempt < timeouts.length; attempt++) {
     const connectAC = new AbortController();
     const t = setTimeout(() => connectAC.abort(), timeouts[attempt]);
