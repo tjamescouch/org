@@ -204,6 +204,7 @@ export async function chatOnce(
     temperature: opts?.temperature ?? 1,
     tools: opts?.tools ?? [],
     tool_choice: opts?.tool_choice ?? (opts?.tools ? "auto" : undefined),
+    keep_alive: "30m", // keep model warm between hops (Ollama extension)
   } as any;
 
   // Single-endpoint strategy: OpenAI-compatible /v1/chat/completions (tool calling)
@@ -262,8 +263,8 @@ export async function chatOnce(
   let firstReadResult: ReadableStreamReadResult<Uint8Array> = (resp as any)._org_firstChunk;
 
   // Idle+hard-stop watchdogs to prevent hangs
-  const IDLE_MS = 150_000;     // abort if no chunks for 150s
-  const HARD_STOP_MS = 120_000; // absolute cap on streaming
+  const IDLE_MS = 240_000;     // abort if no chunks for 240s
+  const HARD_STOP_MS = 300_000; // absolute cap on streaming (must exceed IDLE_MS)
   const startedAt = Date.now();
 
   async function readWithIdleTimeout(): Promise<ReadableStreamReadResult<Uint8Array>> {
