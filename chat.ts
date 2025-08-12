@@ -78,6 +78,8 @@ const formatMessage = (m: ChatMessage): any => {
 };
 
 
+let ollamaWarmedUp = false;
+
 export async function chatOnce(
   name: string,
   messages: ChatMessage[],
@@ -91,7 +93,9 @@ export async function chatOnce(
     abortDetectors?: AbortDetector[];
   }
 ): Promise<AssistantMessage> {
-  const url = `${opts?.baseUrl ?? BASE_URL}/v1/chat/completions`;
+  const ollamaBaseUrl = opts?.baseUrl ?? BASE_URL;
+  const model = opts?.model ?? MODEL;
+  const url = `${ollamaBaseUrl}/api/chat`;
 
   // Install model-provided abort detectors (if any)
   if (opts?.abortDetectors && Array.isArray(opts.abortDetectors)) {
@@ -102,35 +106,108 @@ export async function chatOnce(
 
   if (VERBOSE) console.error(messages.map(formatMessage));
 
-  const body = {
-    model: opts?.model ?? MODEL,
-    messages: messages.map(formatMessage),
-    tools: opts?.tools ?? [],
-    tool_choice: opts?.tool_choice ?? (opts?.tools ? "auto" : undefined),
-    temperature: opts?.temperature ?? 0.2,
-    stream: true, 
-  };
-
-  // Connection timeout: abort if we can't connect quickly
-  const connectAC = new AbortController();
-  const connectTimer = setTimeout(() => connectAC.abort(), 5_000);
-  let resp: Response;
-  try {
-    resp = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: connectAC.signal, // fast-fail on connect
-    });
-  } finally {
-    clearTimeout(connectTimer);
+  // Warmup call if first request since boot
+  if (!ollamaWarmedUp) {
+    try {
+      await fetch(ollamaBaseUrl + "/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          keep_alive: "30m",
+          stream: false,
+          messages: [{ role: "user", content: "ok" }],
+          options: { num_ctx: 8192 }
+        })
+      });
+      ollamaWarmedUp = true;
+    } catch (e) {
+      // ignore warmup errors
+    }
   }
 
-  if (!resp.ok) {
-    const txt = await resp.text();
-    const content = `HTTP ${resp.status} – ${resp.statusText}\n${txt}`;
-    console.error(content);
-    return { role: "assistant", content }; // degraded msg
+  const body = {
+    model,
+    messages: messages.map(formatMessage),
+    stream: true,
+    keep_alive: "30m",
+    options: { num_ctx: 8192 },
+    // (tools/tool_choice/temperature are not used by native /api/chat)
+  };
+
+  // Streaming handler with bounded backoff
+  let resp: Response | undefined;
+  const connectAC = new AbortController();
+  let connectTimer: NodeJS.Timeout | undefined;
+  const timeouts = [5000, 10000, 20000];
+  let attempt = 0;
+  let lastErr: any = undefined;
+  for (; attempt < timeouts.length; ++attempt) {
+    try {
+      connectTimer = setTimeout(() => connectAC.abort(), timeouts[attempt]);
+      resp = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: connectAC.signal,
+      });
+      clearTimeout(connectTimer);
+      if (!resp.ok) {
+        const txt = await resp.text();
+        const content = `HTTP ${resp.status} – ${resp.statusText}\n${txt}`;
+        console.error(content);
+        return { role: "assistant", content };
+      }
+      // Wait for first chunk with timeout
+      let reader = resp.body!.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let gotFirstChunk = false;
+      let firstChunkTimeout: NodeJS.Timeout;
+      let firstChunkPromise = reader.read();
+      let result: ReadableStreamReadResult<Uint8Array> | undefined;
+      let timedOut = false;
+      let p = new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
+        firstChunkTimeout = setTimeout(() => {
+          timedOut = true;
+          try { reader.cancel(); } catch {}
+          reject(new Error("first-chunk-timeout"));
+        }, timeouts[attempt]);
+        firstChunkPromise.then((r) => {
+          if (!timedOut) {
+            clearTimeout(firstChunkTimeout);
+            resolve(r);
+          }
+        }).catch((e) => {
+          clearTimeout(firstChunkTimeout);
+          reject(e);
+        });
+      });
+      result = await p;
+      // If we got a chunk, rewind the stream for normal consumption
+      // (not possible with native streams, so pass reader/result to main loop)
+      // Patch below: reader/result are reused
+      // Success: break out of retry loop
+      // Patch: pass reader/result/decoder to chunk loop
+      // Use a label to break out
+      resp._org_firstChunk = result;
+      resp._org_reader = reader;
+      resp._org_decoder = decoder;
+      break;
+    } catch (e) {
+      lastErr = e;
+      clearTimeout(connectTimer);
+      if (attempt < timeouts.length - 1) {
+        // Wait before retrying
+        await new Promise((resolve) => setTimeout(resolve, timeouts[attempt]));
+      }
+    }
+  }
+  if (!resp || resp._org_firstChunk === undefined) {
+    // All retries failed
+    return {
+      role: "assistant",
+      content: "Model is warming or unavailable, please retry later"
+    };
   }
 
   /* -----------------------------------------------------------
@@ -138,8 +215,10 @@ export async function chatOnce(
      Each chunk is a line:  data: { ...delta... }\n
      Last line:            data: [DONE]
   ------------------------------------------------------------ */
-  let reader = resp.body!.getReader();
-  const decoder = new TextDecoder("utf-8");
+  let reader = resp._org_reader;
+  const decoder = resp._org_decoder;
+  let firstRead = true;
+  let firstReadResult: ReadableStreamReadResult<Uint8Array> = resp._org_firstChunk;
 
   // Idle+hard-stop watchdogs to prevent hangs
   const IDLE_MS = 15_000;     // abort if no chunks for 15s
@@ -147,6 +226,10 @@ export async function chatOnce(
   const startedAt = Date.now();
 
   async function readWithIdleTimeout(): Promise<ReadableStreamReadResult<Uint8Array>> {
+    if (firstRead) {
+      firstRead = false;
+      return firstReadResult;
+    }
     return Promise.race([
       reader.read(),
       new Promise<never>((_, rej) => setTimeout(() => rej(new Error("idle-timeout")), IDLE_MS))
@@ -160,8 +243,6 @@ export async function chatOnce(
   let namePrinted = false;
   let firstThink = true;
   let firstNotThink = true;
-  
-  
 
   while (!done) {
     if (Date.now() - startedAt > HARD_STOP_MS) {
@@ -200,10 +281,20 @@ export async function chatOnce(
       }
 
       try {
-        const parsed = JSON.parse(payload) as {
-          choices: { delta: any; }[];
-        };
-        const delta = parsed.choices?.[0]?.delta ?? {};
+        // Native Ollama /api/chat: emits objects with { message: { content, role, ... }, done, ... }
+        // Try to parse as either OpenAI or Ollama native
+        let parsed: any = {};
+        try {
+          parsed = JSON.parse(payload);
+        } catch {}
+        let delta: any = {};
+        // OpenAI format: { choices: [{ delta: { content, ... } }] }
+        if (parsed.choices && Array.isArray(parsed.choices)) {
+          delta = parsed.choices?.[0]?.delta ?? {};
+        } else if (parsed.message) {
+          // Ollama native: { message: { content, role, ... }, ... }
+          delta = parsed.message;
+        }
 
         if (delta.reasoning) {
           if(firstThink) {
