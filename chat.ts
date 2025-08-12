@@ -221,7 +221,7 @@ export async function chatOnce(
   let firstReadResult: ReadableStreamReadResult<Uint8Array> = resp._org_firstChunk;
 
   // Idle+hard-stop watchdogs to prevent hangs
-  const IDLE_MS = 15_000;     // abort if no chunks for 15s
+  const IDLE_MS = 150_000;     // abort if no chunks for 150s
   const HARD_STOP_MS = 120_000; // absolute cap on streaming
   const startedAt = Date.now();
 
