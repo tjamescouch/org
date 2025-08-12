@@ -431,7 +431,7 @@ Above all - DO THE THING. Don't just talk about it.
       for (const call of tool_calls) {
         if (totalToolCallsThisTurn >= MAX_TOOL_CALLS_PER_TURN) {
           breakerCooldown = 1; breakerReason = `cap ${MAX_TOOL_CALLS_PER_TURN} calls`;
-          responses.push({ role: "system", from: "System", read: true, content: `Tool cap reached (${MAX_TOOL_CALLS_PER_TURN}). Next reply: NO TOOLS. Provide a concise textual update and next 1–2 steps.` });
+          responses.push({ role: "system", from: "System", read: true, content: `Tool cap reached (${MAX_TOOL_CALLS_PER_TURN}). Next reply: NO TOOLS. Provide a concise textual update and next 1-2 steps.` });
           break;
         }
         // Build a normalized signature for this call
