@@ -369,6 +369,7 @@ Above all - DO THE THING. Don't just talk about it.
     let breakerReason: string | null = null;
     let totalToolCallsThisTurn = 0;     // cap tool calls per run
     const MAX_TOOL_CALLS_PER_TURN = 10;
+    let wroteFileThisTurn = false;        // did we write a file via #file tag this turn?
 
     // Start with the provided conversation
     let currentMessages: ChatMessage[] = [...messages];
@@ -408,38 +409,37 @@ Above all - DO THE THING. Don't just talk about it.
       // Determine tool availability for this hop
       const toolsForHop = (breakerCooldown > 0) ? [] : tools;
       const toolChoiceForHop = (breakerCooldown > 0) ? ("none" as const) : ("auto" as const);
+
+      // Per-hop nudge: expose remaining tool calls and prefer #file writes for code
+      const remainingCalls = Math.max(0, MAX_TOOL_CALLS_PER_TURN - totalToolCallsThisTurn);
+      const nudgeMsg: ChatMessage = {
+        role: "system",
+        from: "System",
+        read: true,
+        content: `Tools remaining this turn: ${remainingCalls}. If you need to output code or long text, do not chat it—write it using the #file:<relative/path> tag followed by the file content. Avoid recursive listings like ls -R.`
+      };
+      const messagesForHop: ChatMessage[] = [...currentMessages, nudgeMsg];
+
       // Build per-hop abort detectors (model controls policy)
       const agents = Array.from(new Set(currentMessages.map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
       const detectors: AbortDetector[] = [
-        //new CrossTurnRepetitionDetector({
-        //  tailWords: 20,
-        //  minChars: 220,
-        //  minNoveltyRatio: 0.08,
-        //  sampleSocChars: 20000,
-        //}),
-        //new AgentQuoteAbortDetector(agents),
-        //new RepetitionAbortDetector({
-        //  tailWords: 20,
-        //  maxRepeats: 6,
-        //  minWordsForNovelty: 220,
-        //  minNoveltyRatio: 0.04,  // was ~0.18
-        //}),
-        //new ToolEchoFloodDetector(4),          // was 2
-        //// new SpiralPhraseDetector(),         // keep disabled for now
-        //new MaxLengthAbortDetector(12000),     // was 8000
-        //new RegexAbortDetector([
-        //  /\bnow create new file\b/i,
-        //  /\bit didn't show output\b/i,
-        //]),
+        new CrossTurnRepetitionDetector({ tailWords: 20, minChars: 220, minNoveltyRatio: 0.08, sampleSocChars: 20000 }),
+        new AgentQuoteAbortDetector(agents),
+        new RepetitionAbortDetector({ tailWords: 20, maxRepeats: 6, minWordsForNovelty: 220, minNoveltyRatio: 0.04 }),
+        new ToolEchoFloodDetector(4),
+        // new SpiralPhraseDetector(), // keep disabled for now
+        new MaxLengthAbortDetector(12000),
+        new RegexAbortDetector([ /\bnow create new file\b/i, /\bit didn't show output\b/i ]),
       ];
+
       const msg = (await withTimeout(
-        chatOnce(this.id, currentMessages, {
+        chatOnce(this.id, messagesForHop, {
           tools: toolsForHop,
           tool_choice: toolChoiceForHop,
           num_ctx: 8192,
           abortDetectors: detectors,
           model: this.model,
-          soc: this.socText,              // <— pass prior SoC
+          soc: this.socText,
         }),
         90_000,
         "chatOnce hop timeout"
@@ -490,6 +490,7 @@ Above all - DO THE THING. Don't just talk about it.
               this.fileToRedirectTo = t.value;
               const statusMsg = await this._deliver(t.content ?? "");
               if (statusMsg) responses.push(statusMsg);
+              wroteFileThisTurn = true;
             } else if (t.kind === "agent") {
               this.audience = { kind: "direct", target: t.value } as any;
               const delivered = await this._deliver(t.content ?? "");
@@ -556,6 +557,7 @@ Above all - DO THE THING. Don't just talk about it.
             this.fileToRedirectTo = t.value;
             const statusMsg = await this._deliver(t.content ?? "");
             if (statusMsg) responses.push(statusMsg);
+            wroteFileThisTurn = true;
           } else if (t.kind === "agent") {
             this.audience = { kind: "direct", target: t.value } as any;
             const delivered = await this._deliver(t.content ?? "");
@@ -566,6 +568,18 @@ Above all - DO THE THING. Don't just talk about it.
       }
       // Feed back everything produced so far (assistant messages + tool outputs)
       const nextMsgs: ChatMessage[] = [...messages, ...responses];
+
+      // Late-hop nudge: if tool calls are nearly exhausted and no file was written, push for #file output
+      const remainingAfterThisHop = Math.max(0, MAX_TOOL_CALLS_PER_TURN - totalToolCallsThisTurn);
+      if (remainingAfterThisHop <= 2 && !wroteFileThisTurn) {
+        nextMsgs.push({
+          role: "system",
+          from: "System",
+          read: true,
+          content: `Tool calls are nearly exhausted (${remainingAfterThisHop} left this turn). Stop calling tools unless strictly necessary. If you need to produce code, output it using the #file:<relative/path> tag followed by the file content.`
+        });
+      }
+
       if (breakerCooldown > 0) {
         nextMsgs.push({ role: "system", from: "System", read: true, content: `Tool loop breaker engaged${breakerReason ? ` (${breakerReason})` : ''}. For the next reply: **DO NOT CALL TOOLS**. Provide a concise summary of progress and the next 1–2 steps in plain text.` });
         breakerCooldown = Math.max(0, breakerCooldown - 1);
