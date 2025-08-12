@@ -298,28 +298,40 @@ export async function chatOnce(
           delta = parsed.message;
         }
 
-        if (delta.reasoning) {
-          if(firstThink) {
+        // Some Ollama builds emit { done: true } without a message
+        if (!parsed.message && parsed.done === true) {
+          done = true;
+          break;
+        }
+
+        // Coerce and guard writes; Ollama may emit non-string/empty fields on keepalive chunks
+        const reasonStr = typeof delta.reasoning === "string" ? delta.reasoning : "";
+        const contentStr = typeof delta.content === "string" ? delta.content : "";
+
+        if (reasonStr) {
+          if (firstThink) {
             firstThink = false;
             console.log("<think>");
           }
-          Bun.stdout.write(delta.reasoning);
-        } else if (delta.content) { 
-          if(firstNotThink && !firstThink) {
+          Bun.stdout.write(reasonStr);
+        }
+
+        if (contentStr) {
+          if (firstNotThink && !firstThink) {
             firstNotThink = false;
             console.log("\n</think>\n");
           }
-        } else {
-          if(firstNotThink && !firstThink) {
-            firstNotThink = false;
-            console.log("\n</think>\n");
+          Bun.stdout.write(contentStr);
+        } else if (!reasonStr) {
+          // Neither content nor reasoning: if this is an Ollama heartbeat/done chunk, handle gracefully
+          if (parsed && parsed.done === true) {
+            done = true;
+            break;
           }
         }
 
-        Bun.stdout.write(delta.content);
-
-        if (delta.content) contentBuf += delta.content;
-        if (delta.reasoning) thinkingBuf += delta.reasoning;
+        if (contentStr) contentBuf += contentStr;
+        if (reasonStr) thinkingBuf += reasonStr;
         if (delta.tool_calls) toolCalls = delta.tool_calls as ToolCall[];
 
         // Generic, model-pluggable abort check
