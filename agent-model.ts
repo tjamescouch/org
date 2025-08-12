@@ -3,7 +3,7 @@ const withTimeout = <T>(p: Promise<T>, ms: number, label = "timeout"): Promise<T
     p,
     new Promise<never>((_, rej) => setTimeout(() => rej(new Error(label)), ms))
   ]) as any;
-import { chatOnce, type ChatMessage, type ToolCall, type ToolDef } from "./chat";
+import { chatOnce, type ChatMessage, type ToolCall, type ToolDef, type AbortDetector } from "./chat";
 import { Model } from "./model";
 import {  writeFileSync } from "fs";
 import { channelLock } from "./channel-lock";
@@ -35,6 +35,123 @@ const makeToolCallId = (prefix: "call" | "tool"): string => {
 
   // join prefix with 2–3 random parts
   return `${prefix}_${randPart()}_${randPart()}`;
+}
+
+/* ---------- Abort detectors (model-owned, pluggable) -------------------- */
+class RegexAbortDetector implements AbortDetector {
+  name = "regex";
+  constructor(private patterns: RegExp[]) {}
+  check(text: string): { index: number; reason: string } | null {
+    for (const re of this.patterns) {
+      const m = re.exec(text);
+      if (m) return { index: m.index, reason: String(re) };
+    }
+    return null;
+  }
+}
+
+class AgentQuoteAbortDetector implements AbortDetector {
+  name = "agent-quote";
+  constructor(private agents: string[]) {}
+  private esc(s: string) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  check(text: string, ctx: { messages: ChatMessage[]; agents: string[] }): { index: number; reason: string } | null {
+    const list = (ctx?.agents?.length ? ctx.agents : this.agents).filter(Boolean);
+    if (!list.length) return null;
+    const pattern = `(^|\\n)\\s*(?:${list.map(this.esc).join("|")}):\\s`;
+    const re = new RegExp(pattern, "i");
+    const m = re.exec(text);
+    if (m) {
+      const cut = m.index;
+      return { index: cut, reason: "agent-quote" };
+    }
+    return null;
+  }
+}
+
+class RepetitionAbortDetector implements AbortDetector {
+  name = "repetition";
+  constructor(private cfg = {
+    tailWords: 12,
+    maxRepeats: 3,
+    minWordsForNovelty: 120,
+    minNoveltyRatio: 0.2,
+  }) {}
+  private tokenize(s: string): string[] {
+    return s.toLowerCase().replace(/[^a-z0-9\s]+/g, " ").split(/\s+/).filter(Boolean);
+  }
+  private esc(w: string) {
+    return w.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&");
+  }
+  check(text: string): { index: number; reason: string } | null {
+    const toks = this.tokenize(text);
+    const total = toks.length;
+    if (total >= this.cfg.minWordsForNovelty) {
+      const uniq = new Set(toks).size;
+      const novelty = uniq / total;
+      if (novelty < this.cfg.minNoveltyRatio) {
+        return { index: text.length, reason: `low-novelty(${novelty.toFixed(2)})` };
+      }
+    }
+    const n = Math.min(this.cfg.tailWords, Math.max(3, Math.floor(total / 4)));
+    if (total >= n) {
+      const tail = toks.slice(total - n);
+      const pattern = "\\b" + tail.map(this.esc).join("\\s+") + "\\b";
+      const re = new RegExp(pattern, "g");
+      let m: RegExpExecArray | null;
+      let count = 0;
+      let thirdIndex = -1;
+      while ((m = re.exec(text)) !== null) {
+        count++;
+        if (count === this.cfg.maxRepeats) { thirdIndex = m.index; break; }
+        if (re.lastIndex === m.index) re.lastIndex++;
+      }
+      if (count >= this.cfg.maxRepeats && thirdIndex >= 0) {
+        return { index: thirdIndex, reason: `phrase-loop(${n}w x${count})` };
+      }
+    }
+    return null;
+  }
+}
+
+class ToolEchoFloodDetector implements AbortDetector {
+  name = "tool-echo-flood";
+  constructor(private maxJsonEchoes = 2) {}
+  check(text: string): { index: number; reason: string } | null {
+    // Count likely tool-call JSON echoes in assistant content
+    const re = /"tool_calls"\s*:\s*\[/g;
+    let count = 0, m: RegExpExecArray | null;
+    while ((m = re.exec(text))) {
+      count++;
+      if (count > this.maxJsonEchoes) {
+        return { index: m.index, reason: `tool-call-json-echo>x${this.maxJsonEchoes}` };
+      }
+      if (re.lastIndex === m.index) re.lastIndex++;
+    }
+    return null;
+  }
+}
+
+class SpiralPhraseDetector implements AbortDetector {
+  name = "spiral-phrases";
+  // Abort on telltale spiral phrases at start of line
+  private re = /(^|\n)\s*(?:let(?:’|'|)s (?:run|try)|we need to (?:run|write|check)|it didn't show output\b|now create new file\b)/i;
+  check(text: string): { index: number; reason: string } | null {
+    const m = this.re.exec(text);
+    return m ? { index: m.index, reason: "telltale-phrase" } : null;
+  }
+}
+
+class MaxLengthAbortDetector implements AbortDetector {
+  name = "max-length";
+  constructor(private maxChars = 4000) {}
+  check(text: string): { index: number; reason: string } | null {
+    if (text.length > this.maxChars) {
+      return { index: this.maxChars, reason: `max-chars>${this.maxChars}` };
+    }
+    return null;
+  }
 }
 
 export class AgentModel extends Model {
@@ -193,8 +310,26 @@ Above all - DO THE THING. Don't just talk about it.
     };
 
     for (let hop = 0; hop < maxHops; hop++) {
-      // Ask the model what to do next given the *internal* conversation
-      const msg = (await withTimeout(chatOnce(this.id, currentMessages, toolOptions), 90_000, "chatOnce hop timeout")) ?? { content: "Error" } as any;
+      // Build per-hop abort detectors (model controls policy)
+      const agents = Array.from(new Set(currentMessages.map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
+      const detectors: AbortDetector[] = [
+        new AgentQuoteAbortDetector(agents),
+        new RepetitionAbortDetector(),
+        new ToolEchoFloodDetector(2),   // abort on 3rd echoed tool-call JSON
+        new SpiralPhraseDetector(),     // early stop on “let’s run/try…”, etc.
+        new MaxLengthAbortDetector(8000), // hard cap on emitted chars
+        // Add quick project-specific regexes here as needed:
+        new RegexAbortDetector([
+          /\bnow create new file\b/i,
+          /\bit didn't show output\b/i,
+        ]),
+      ];
+
+      const msg = (await withTimeout(
+        chatOnce(this.id, currentMessages, { ...toolOptions, abortDetectors: detectors }),
+        90_000,
+        "chatOnce hop timeout"
+      )) ?? { content: "Error" } as any;
 
       // Parse tags from assistant content
       const { clean: response, tags } = TagParser.parse(msg.content || "");
