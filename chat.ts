@@ -78,7 +78,6 @@ const formatMessage = (m: ChatMessage): any => {
 };
 
 
-let ollamaWarmedUp = false;
 
 export async function chatOnce(
   name: string,
@@ -97,6 +96,18 @@ export async function chatOnce(
   const model = opts?.model ?? MODEL;
   const url = `${ollamaBaseUrl}/api/chat`;
 
+  // Preflight Ollama and model list (fast)
+  try {
+    const r1 = await fetch(`${ollamaBaseUrl}/api/version`, { signal: AbortSignal.timeout(1000) });
+    if (!r1.ok) throw new Error(`server responded ${r1.status}`);
+    const r2 = await fetch(`${ollamaBaseUrl}/api/tags`, { signal: AbortSignal.timeout(2000) });
+    const tags = await r2.json();
+    const haveModel = Array.isArray((tags as any)?.models) && (tags as any).models.some((m: any) => m.name === model);
+    if (!haveModel) return { role: "assistant", content: `Model "${model}" not found on server.` };
+  } catch (e) {
+    return { role: "assistant", content: `Preflight failed: ${(e as Error).message}` };
+  }
+
   // Install model-provided abort detectors (if any)
   if (opts?.abortDetectors && Array.isArray(opts.abortDetectors)) {
     abortRegistry.set(opts.abortDetectors);
@@ -106,108 +117,75 @@ export async function chatOnce(
 
   if (VERBOSE) console.error(messages.map(formatMessage));
 
-  // Warmup call if first request since boot
-  if (!ollamaWarmedUp) {
-    try {
-      await fetch(ollamaBaseUrl + "/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          keep_alive: "30m",
-          stream: false,
-          messages: [{ role: "user", content: "ok" }],
-          options: { num_ctx: 8192 }
-        })
-      });
-      ollamaWarmedUp = true;
-    } catch (e) {
-      // ignore warmup errors
-    }
-  }
-
-  const body = {
+  // Shared body pieces
+  const formatted = messages.map(formatMessage);
+  const v1Body = {
     model,
-    messages: messages.map(formatMessage),
     stream: true,
+    messages: formatted,
+    temperature: opts?.temperature ?? 0,
+    tools: opts?.tools ?? [],
+    tool_choice: opts?.tool_choice ?? (opts?.tools ? "auto" : undefined),
+  } as any;
+  const apiBody = {
+    model,
+    stream: true,
+    messages: formatted,
     keep_alive: "30m",
     options: { num_ctx: 8192 },
-    // (tools/tool_choice/temperature are not used by native /api/chat)
-  };
+  } as any;
 
-  // Streaming handler with bounded backoff
+  // We'll try /v1/chat/completions first (tools supported), then fall back to /api/chat
+  type Prim = "v1" | "api";
+  let primary: Prim = "v1";
   let resp: Response | undefined;
-  const connectAC = new AbortController();
-  let connectTimer: NodeJS.Timeout | undefined;
   const timeouts = [5000, 10000, 20000];
   let attempt = 0;
-  let lastErr: any = undefined;
   for (; attempt < timeouts.length; ++attempt) {
+    const connectAC = new AbortController();
+    const t = setTimeout(() => connectAC.abort(), timeouts[attempt]);
     try {
-      connectTimer = setTimeout(() => connectAC.abort(), timeouts[attempt]);
-      resp = await fetch(url, {
+      const path = primary === "v1" ? "/v1/chat/completions" : "/api/chat";
+      const body = primary === "v1" ? v1Body : apiBody;
+      resp = await fetch(ollamaBaseUrl + path, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
         signal: connectAC.signal,
       });
-      clearTimeout(connectTimer);
+      clearTimeout(t);
       if (!resp.ok) {
         const txt = await resp.text();
-        const content = `HTTP ${resp.status} – ${resp.statusText}\n${txt}`;
-        console.error(content);
-        return { role: "assistant", content };
+        // If /v1 failed, try /api next
+        if (primary === "v1") { primary = "api"; attempt = -1; continue; }
+        return { role: "assistant", content: `HTTP ${resp.status} – ${resp.statusText}\n${txt}` };
       }
-      // Wait for first chunk with timeout
+      // Wait for first chunk with timeout; if it times out on v1, switch to api and retry
       let reader = resp.body!.getReader();
       const decoder = new TextDecoder("utf-8");
-      let gotFirstChunk = false;
-      let firstChunkTimeout: NodeJS.Timeout;
-      let firstChunkPromise = reader.read();
-      let result: ReadableStreamReadResult<Uint8Array> | undefined;
-      let timedOut = false;
-      let p = new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
-        firstChunkTimeout = setTimeout(() => {
-          timedOut = true;
-          try { reader.cancel(); } catch {}
-          reject(new Error("first-chunk-timeout"));
-        }, timeouts[attempt]);
-        firstChunkPromise.then((r) => {
-          if (!timedOut) {
-            clearTimeout(firstChunkTimeout);
-            resolve(r);
-          }
-        }).catch((e) => {
-          clearTimeout(firstChunkTimeout);
-          reject(e);
-        });
-      });
-      result = await p;
-      // If we got a chunk, rewind the stream for normal consumption
-      // (not possible with native streams, so pass reader/result to main loop)
-      // Patch below: reader/result are reused
-      // Success: break out of retry loop
-      // Patch: pass reader/result/decoder to chunk loop
-      // Use a label to break out
-      resp._org_firstChunk = result;
-      resp._org_reader = reader;
-      resp._org_decoder = decoder;
+      let firstReadTimedOut = false;
+      const first = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, rej) => setTimeout(() => { firstReadTimedOut = true; rej(new Error("first-chunk-timeout")); }, timeouts[attempt])),
+      ] as any);
+      if (firstReadTimedOut) throw new Error("first-chunk-timeout");
+      // success: stash reader/decoder/first
+      (resp as any)._org_firstChunk = first;
+      (resp as any)._org_reader = reader;
+      (resp as any)._org_decoder = decoder;
       break;
     } catch (e) {
-      lastErr = e;
-      clearTimeout(connectTimer);
-      if (attempt < timeouts.length - 1) {
-        // Wait before retrying
-        await new Promise((resolve) => setTimeout(resolve, timeouts[attempt]));
+      clearTimeout(t);
+      // If v1 is flaky, drop to api once; otherwise backoff
+      if (primary === "v1") {
+        primary = "api"; attempt = -1; continue;
       }
+      if (attempt < timeouts.length - 1) await new Promise(r => setTimeout(r, timeouts[attempt]));
     }
   }
-  if (!resp || resp._org_firstChunk === undefined) {
-    // All retries failed
-    return {
-      role: "assistant",
-      content: "Model is warming or unavailable, please retry later"
-    };
+
+  if (!resp || (resp as any)._org_firstChunk === undefined) {
+    return { role: "assistant", content: "Model is warming or unavailable, please retry later" };
   }
 
   /* -----------------------------------------------------------
@@ -215,10 +193,10 @@ export async function chatOnce(
      Each chunk is a line:  data: { ...delta... }\n
      Last line:            data: [DONE]
   ------------------------------------------------------------ */
-  let reader = resp._org_reader;
-  const decoder = resp._org_decoder;
+  let reader = (resp as any)._org_reader;
+  const decoder = (resp as any)._org_decoder;
   let firstRead = true;
-  let firstReadResult: ReadableStreamReadResult<Uint8Array> = resp._org_firstChunk;
+  let firstReadResult: ReadableStreamReadResult<Uint8Array> = (resp as any)._org_firstChunk;
 
   // Idle+hard-stop watchdogs to prevent hangs
   const IDLE_MS = 150_000;     // abort if no chunks for 150s
