@@ -670,7 +670,7 @@ Do not quote other agents’ names as prefixes like "bob:" or "carol:".
 
       const c = cmd ?? rawCmd ?? '';
       const cleanStdout = c.replace(/\\n/g, '\n');
-      console.warn(`\n\n\n******* sh ${cleanStdout} -> `, content);
+      console.error(`\n\n\n******* sh ${cleanStdout} -> `, content);
       return {
         role: "tool",
         name: "sh",
