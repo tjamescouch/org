@@ -1,16 +1,11 @@
 /** Pluggable abort detector API */
-export interface AbortDetector {
-  /** Human-friendly name */
+export type AbortDetector = {
   name: string;
-  /**
-   * Inspect the accumulated assistant text and optionally request an abort.
-   * Return { index, reason } to cut the stream at `index`, or null to continue.
-   */
   check(
     text: string,
-    ctx: { messages: ChatMessage[]; agents: string[] }
+    ctx: { messages: ChatMessage[]; agents: string[]; soc?: string }
   ): { index: number; reason: string } | null;
-}
+};
 
 /** Simple registry; models provide detectors at runtime via chatOnce opts */
 export const abortRegistry = {
@@ -167,13 +162,13 @@ export async function chatOnce(
   messages: ChatMessage[],
   opts?: {
     tools?: ToolDef[];
-    tool_choice?: "auto" | { type: "function"; function: { name: string } };
+    tool_choice?: "auto" | { type: "function"; function: { name: string } } | "none";
     num_ctx?: number;
     temperature?: number;
     model?: string;
     baseUrl?: string;
-    soc?: string;
     abortDetectors?: AbortDetector[];
+    soc?: string; // rolling stream-of-consciousness used for cross-turn repetition detection
   }
 ): Promise<AssistantMessage> {
   const ollamaBaseUrl = opts?.baseUrl ?? BASE_URL;

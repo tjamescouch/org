@@ -361,7 +361,7 @@ Above all - DO THE THING. Don't just talk about it.
     let breakerCooldown = 0;            // when > 0, next hops run with tools disabled
     let breakerReason: string | null = null;
     let totalToolCallsThisTurn = 0;     // cap tool calls per run
-    const MAX_TOOL_CALLS_PER_TURN = 6;
+    const MAX_TOOL_CALLS_PER_TURN = 10;
 
     // Start with the provided conversation
     let currentMessages: ChatMessage[] = [...messages];
@@ -404,18 +404,27 @@ Above all - DO THE THING. Don't just talk about it.
       // Build per-hop abort detectors (model controls policy)
       const agents = Array.from(new Set(currentMessages.map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
       const detectors: AbortDetector[] = [
-        new CrossTurnRepetitionDetector(), 
+        new CrossTurnRepetitionDetector({
+          tailWords: 20,
+          minChars: 220,
+          minNoveltyRatio: 0.08,
+          sampleSocChars: 20000,
+        }),
         new AgentQuoteAbortDetector(agents),
-        new RepetitionAbortDetector({ tailWords: 16, maxRepeats: 4, minWordsForNovelty: 160, minNoveltyRatio: 0.18 }),
-        new ToolEchoFloodDetector(2),
-        // new SpiralPhraseDetector(),     // disabled for now
-        new MaxLengthAbortDetector(8000),
+        new RepetitionAbortDetector({
+          tailWords: 20,
+          maxRepeats: 6,
+          minWordsForNovelty: 220,
+          minNoveltyRatio: 0.04,  // was ~0.18
+        }),
+        new ToolEchoFloodDetector(4),          // was 2
+        // new SpiralPhraseDetector(),         // keep disabled for now
+        new MaxLengthAbortDetector(12000),     // was 8000
         new RegexAbortDetector([
           /\bnow create new file\b/i,
           /\bit didn't show output\b/i,
         ]),
       ];
-
       const msg = (await withTimeout(
         chatOnce(this.id, currentMessages, {
           tools: toolsForHop,
