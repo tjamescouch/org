@@ -17,9 +17,9 @@ function waitForSignal(): Promise<void> {
 async function app() {
   const room = new ChatRoom();
 
-  const alice = new AgentModel("alice", "gpt-oss:20b");
-  const carol = new AgentModel("carol", "gpt-oss:20b");
-  const bob   = new AgentModel("bob", "gpt-oss:20b");
+  const alice = new AgentModel("alice", "gpt-oss:20b-64k");
+  const carol = new AgentModel("carol", "gpt-oss:20b-64k");
+  const bob   = new AgentModel("bob", "gpt-oss:20b-64k");
   room.addModel(alice);
   room.addModel(carol);
   room.addModel(bob);

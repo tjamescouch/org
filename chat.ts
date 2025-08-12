@@ -18,7 +18,6 @@ import { VERBOSE } from './constants';
 import type { ReadableStreamReadResult } from "stream/web";
 
 const BASE_URL = "http://192.168.56.1:11434"; // host-only IP
-// Default model can be overridden via env OLLAMA_MODEL
 const DEFAULT_MODEL = process.env.OLLAMA_MODEL || "deepseek-coder";
 
 // Patterns to suppress from terminal output (still kept in buffers)
@@ -113,11 +112,11 @@ export async function summarizeOnce(
   // OpenAI-compatible /v1/chat/completions (non-streaming)
   const v1Body = {
     model,
-    stream: false,
+    stream: true,
     messages: formatted,
-    temperature: opts?.temperature ?? 0,
+    temperature: opts?.temperature ?? 1,
     keep_alive: "20m",
-    num_ctx: 128000
+    num_ctx: 64000
   } as any;
 
   const ac = new AbortController();
@@ -192,7 +191,7 @@ export async function chatOnce(
     tools: opts?.tools ?? [],
     tool_choice: opts?.tool_choice ?? (opts?.tools ? "auto" : undefined),
     keep_alive: "30m",
-    num_ctx: 128000
+    num_ctx: 64000
     // some Ollama builds also accept num_ctx here; include if needed via options
   } as any;
 
@@ -212,6 +211,9 @@ export async function chatOnce(
       clearTimeout(t);
       if (!resp.ok) {
         const txt = await resp.text();
+
+	console.log(txt);
+
         return { role: "assistant", content: `HTTP ${resp.status} – ${resp.statusText}\n${txt}` };
       }
       // Wait for first chunk with timeout
