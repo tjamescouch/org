@@ -161,7 +161,7 @@ export class AgentModel extends Model {
   private audience: Audience = { kind: "group", target: "*" }; // default
   private fileToRedirectTo: string | undefined;
   private maxShellReponseCharacters: number = 25_000;
-  private maxMessagesInContext = 50;
+  private maxMessagesInContext = 10;
   private system: string;
 
   constructor(id: string) {
