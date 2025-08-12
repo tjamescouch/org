@@ -440,7 +440,7 @@ Above all - DO THE THING. Don't just talk about it.
         }
         // Debounce repeats seen in the last few hops
         if (seenRecently(sig)) {
-          responses.push({ role: "assistant", from: this.id, read: true, content: `Skipping recently repeated tool call: ${call?.function?.name}` });
+          responses.push({ role: "assistant", from: this.id, read: true, content: `Skipping recently repeated tool call: ${call?.function?.name} ${call?.function?.name}` });
           continue;
         }
         lastSig = sig;
