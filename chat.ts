@@ -127,6 +127,7 @@ export async function summarizeOnce(
         stream: false,
         messages: formatted,
         temperature: opts?.temperature ?? 0,
+	max_output_tokens: 100000
       }
     }
   ];
