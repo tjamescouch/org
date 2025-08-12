@@ -117,7 +117,7 @@ export async function summarizeOnce(
         stream: false,
         messages: formatted,
         keep_alive: "20m",
-        options: { num_ctx: opts?.num_ctx ?? 4096, temperature: opts?.temperature ?? 0 },
+        options: { num_ctx: opts?.num_ctx ?? 128000, temperature: opts?.temperature ?? 0 },
       }
     },
     {
