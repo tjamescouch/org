@@ -24,6 +24,15 @@ import { VERBOSE } from './constants';
 const BASE_URL = "http://192.168.56.1:11434"; // host-only IP
 const MODEL = "gpt-oss:20b";
 
+// Patterns to suppress from terminal output (still kept in buffers)
+const GARBAGE_RES: RegExp[] = [
+  /\b"tool_calls"\s*:\s*\[/i,                  // assistant echoing tool JSON
+  /\b"ok"\s*:\s*(true|false)\s*,\s*"stdout"/i, // quoted tool result blobs
+  /<\|start\|>/i,                                  // special markers some models leak
+  /functions\.sh\s+to=assistant/i,                // tool routing artifacts
+];
+const isGarbage = (s: string): boolean => GARBAGE_RES.some(re => re.test(s));
+
 // ---- Types (OpenAI-style) ----
 export type ChatRole = "system" | "user" | "assistant" | "tool";
 
@@ -282,6 +291,16 @@ export async function chatOnce(
   let lineBuffer = "";
   // Accumulate tool call pieces across deltas (OpenAI streams name/arguments incrementally)
   const toolCallsAgg: { [k: number]: ToolCall } = {};
+  // Squelch noisy/garbage fragments and show progress dots instead
+  let squelchedChars = 0;
+  let lastDotAt = 0;
+  const emitDot = () => {
+    const now = Date.now();
+    if (now - lastDotAt > 200) { // at most ~5 dots/sec
+      Bun.stdout.write(".");
+      lastDotAt = now;
+    }
+  };
   const ensureTool = (idx: number): ToolCall => {
     if (!toolCallsAgg[idx]) toolCallsAgg[idx] = { id: `call_${idx}`, type: "function", function: { name: "", arguments: "" }, index: idx };
     return toolCallsAgg[idx];
@@ -388,7 +407,12 @@ export async function chatOnce(
       }
       if (contentStr) {
         if (firstNotThink && !firstThink) { firstNotThink = false; console.log('\n</think>\n'); }
-        Bun.stdout.write(contentStr);
+        if (isGarbage(contentStr) || isGarbage(contentBuf.slice(-200) + contentStr)) {
+          squelchedChars += contentStr.length;
+          emitDot();
+        } else {
+          Bun.stdout.write(contentStr);
+        }
       } else if (!reasonStr && parsed && parsed.done === true) {
         done = true; break;
       }
@@ -440,6 +464,10 @@ export async function chatOnce(
       const agg = Object.values(toolCallsAgg);
       if (agg.length) toolCalls = agg;
     } catch {}
+  }
+
+  if (squelchedChars > 0) {
+    Bun.stdout.write("\n");
   }
 
   return {
