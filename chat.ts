@@ -399,8 +399,8 @@ export async function chatOnce(
       const contentStr = typeof delta.content === 'string' ? delta.content : '';
 
       if (reasonStr) {
-        if (firstThink) { firstThink = false; console.log('<think>'); }
-        Bun.stdout.write(reasonStr);
+        //if (firstThink) { firstThink = false; console.log('<think>'); }
+        //Bun.stdout.write(reasonStr);
       }
       if (contentStr) {
         if (firstNotThink && !firstThink) { firstNotThink = false; console.log('\n</think>\n'); }
@@ -427,7 +427,7 @@ export async function chatOnce(
           contentBuf = contentBuf.slice(0, Math.max(0, cut.index)).trimEnd();
           try { reader.cancel(); } catch {}
           done = true;
-          if (firstNotThink && !firstThink) { firstNotThink = false; console.log('\n</think>\n'); }
+          //if (firstNotThink && !firstThink) { firstNotThink = false; console.log('\n</think>\n'); }
           console.error(`[chatOnce] aborted stream by ${det.name}: ${cut.reason}`);
           break;
         }
