@@ -272,7 +272,7 @@ Above all - DO THE THING. Don't just talk about it.
     const release = await channelLock.waitForLock(15 * 60 * 1000);
 
     try {
-      const messages = await this.runWithTools(fullMessageHistory, tools, (c) => this._execTool(c), 15);
+      const messages = await this.runWithTools(fullMessageHistory, tools, (c) => this._execTool(c), 25);
       for (const message of messages) {
         this.context.push({
           ts: new Date().toISOString(),
