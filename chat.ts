@@ -111,19 +111,19 @@ export async function summarizeOnce(
   // Prefer native /api/chat for non-streaming; fall back to /v1 if needed
   const bodies = [
     {
-      path: "/api/chat",
-      body: {
-        model,
-        stream: false,
-        messages: formatted,
-        keep_alive: "20m",
-        options: { 
-					max_tokens: opts?.num_ctx ?? 128000,
-					max_output_tokens: 64000,
-          num_ctx: opts?.num_ctx ?? 128000, 
-					temperature: opts?.temperature ?? 1 
-				},
-      }
+      //path: "/api/chat",
+      //body: {
+      //  model,
+      //  stream: false,
+      //  messages: formatted,
+      //  keep_alive: "20m",
+      //  options: { 
+      //    max_tokens: opts?.num_ctx ?? 128000,
+      //    max_output_tokens: 128000,
+      //    num_ctx: opts?.num_ctx ?? 128000, 
+      //    temperature: opts?.temperature ?? 1 
+      //  },
+      //}
     },
     {
       path: "/v1/chat/completions",
@@ -133,9 +133,9 @@ export async function summarizeOnce(
         messages: formatted,
         keep_alive: "20m",
         temperature: opts?.temperature ?? 1,
-				max_tokens: opts?.num_ctx ?? 128000,
-				max_output_tokens: 64000,
-				num_ctx: opts?.num_ctx ?? 128000,
+        max_tokens: opts?.num_ctx ?? 128000,
+        max_output_tokens: 64000,
+        num_ctx: opts?.num_ctx ?? 128000,
       }
     }
   ];
@@ -214,9 +214,9 @@ export async function chatOnce(
     tools: opts?.tools ?? [],
     tool_choice: opts?.tool_choice ?? (opts?.tools ? "auto" : undefined),
     keep_alive: "30m", // keep model warm between hops (Ollama extension)
-		max_tokens: opts?.num_ctx ?? 128000,
-		max_output_tokens: 64000,
-		num_ctx: opts?.num_ctx ?? 128000,
+    max_tokens: opts?.num_ctx ?? 128000,
+    max_output_tokens: 128000,
+    num_ctx: opts?.num_ctx ?? 128000,
   } as any;
 
   // Single-endpoint strategy: OpenAI-compatible /v1/chat/completions (tool calling)
