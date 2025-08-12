@@ -283,7 +283,7 @@ Above all - DO THE THING. Don't just talk about it.
     maxHops: number
   ): Promise<ChatMessage[]> {
     const responses: ChatMessage[] = [];
-    const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 64000 };
+    const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 8192 };
 
     // Start with the provided conversation
     let currentMessages: ChatMessage[] = [...messages];
@@ -368,15 +368,14 @@ Above all - DO THE THING. Don't just talk about it.
         }
 
         const trimmed = String(response ?? "").trim();
-        if (trimmed.length > 0 && !looksLikeToolJson(trimmed)) {
-          responses.push({
-            role: "assistant",
-            from: this.id,
-            content: trimmed,
-            reasoning: (msg as any).reasoning,
-            read: true,
-          });
-        }
+        const finalText = trimmed.length > 0 ? trimmed : "(no content)";
+        responses.push({
+          role: "assistant",
+          from: this.id,
+          content: finalText,
+          reasoning: (msg as any).reasoning,
+          read: true,
+        });
 
         // Handle tags on the *final* hop (file/direct). These produce tool/direct messages but
         // do not change the fact that we are done.
@@ -455,6 +454,9 @@ Above all - DO THE THING. Don't just talk about it.
       // Loop back: the next chatOnce() sees the tool outputs via currentMessages
     }
 
+    if (responses.length === 0) {
+      responses.push({ role: "assistant", from: this.id, content: "(no content)", read: true });
+    }
     return responses;
   }
 
