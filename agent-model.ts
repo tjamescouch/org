@@ -10,6 +10,7 @@ import { channelLock } from "./channel-lock";
 import type { RoomMessage } from "./chat-room";
 import { TagParser } from "./tag-parser";
 import { extractToolCallsFromText } from "./tool-call-extractor";
+import { VERBOSE } from './constants';
 
 type Audience =
   | { kind: "group"; target: "*" } | { kind: "direct"; target: string }      // send only to a given model
@@ -173,7 +174,8 @@ Try to make decisions for yourself even if you're not completely sure that they 
 You have access to an actual Debian VM.
 It has git, gcc and bun installed.
 
-You have access to basic unix commands. You have access to the apply_patch via the sh command.
+You have access to basic unix commands including pwd, cd, git, gcc, g++, python3, ls, cat, echo, diff, grep, curl. 
+You have access to the apply_patch via the sh command.
 Alternately: to write to a file include a tag with the format #file:<filename>. Follow the syntax exactly. i.e. lowercase, with no spaces.
 This way you do not do a tool call and simply respond.
 
@@ -455,7 +457,8 @@ Above all - DO THE THING. Don't just talk about it.
 
   /* ------------------------------------------------------------ */
   private async _execTool(call: ToolCall): Promise<ChatMessage> {
-    console.error("************** CALL", call);
+    if (VERBOSE) console.error("************** CALL", call);
+
     const name: string = call?.function?.name ?? 'unknown';
     try {
       // Ensure arguments are parsed safely and type matches expected signature
@@ -464,7 +467,8 @@ Above all - DO THE THING. Don't just talk about it.
         return { ...(await this._runShell(name, { ...args, rawCmd: args.cmd })), tool_call_id: call.id, role: "tool", name, from: this.id, read: false };
       }
       // unknown tool
-      return { role: "tool", name, tool_call_id: call.id, content: JSON.stringify({ ok: false, err: `unknown tool: ${name} - try using the sh tool`, call }), from: this.id, read: false };
+      console.error(`******** Model attempted to use an unknown tool ${name}`);
+      return { role: "tool", name: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: false, err: `unknown tool: ${name} - try using the sh tool` }), from: this.id, read: false };
     } catch (err) {
       return { role: "tool", name, tool_call_id: call.id, content: JSON.stringify({ ok: false, err: String(err) }), from: this.id, read: false };
     }
