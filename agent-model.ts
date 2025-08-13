@@ -368,7 +368,7 @@ Be concise.
           summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ], { model: this.model }),
           180_000,
           "summary timeout"
-        ).catch(() => console.error("*********** MODEL TIMEOUT"));
+        ).catch(() => console.error("*********** summary timeout"));
         if (summaryText) this._lastSummarizeTurn = this._turnCounter;
       }
 
@@ -515,7 +515,7 @@ Be concise.
 
       let msg: any;
       const invokeChat = async (tempBump = 0) => {
-        return await withTimeout(
+        //return await withTimeout(
           chatOnce(this.id, messagesForHop, {
             tools: toolsForHop,
             tool_choice: toolChoiceForHop,
@@ -524,10 +524,10 @@ Be concise.
             model: this.model,
             soc: this.socText,
             temperature: (typeof (undefined as any) === "undefined" ? 1 : 1) + tempBump
-          }),
-          600_000,
-          "chatOnce hop timeout"
-        );
+          });
+        //  600_000,
+        //  "chatOnce hop timeout"
+        //);
       }
       msg = await invokeChat(0);
       const noTokens = !msg || (typeof msg.content === "string" ? msg.content.trim().length === 0 : true);
