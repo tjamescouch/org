@@ -767,9 +767,9 @@ Be concise.
 ok: ${result.ok}
 exit_code: ${result.exit_code}
 --- stdout ---
-${sOut}
+${CyanTag()}${sOut}${Reset()}
 --- stderr ---
-${sErr}
+${RedTag()}${sErr}${Reset()}
 `);
 
       return {
