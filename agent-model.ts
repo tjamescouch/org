@@ -219,6 +219,24 @@ class MaxLengthAbortDetector implements AbortDetector {
 }
 
 export class AgentModel extends Model {
+  /**
+   * Normalize history so that for this agent, all other agents' messages are mapped to role:"user"
+   * (while keeping system/tool intact).
+   */
+  private _viewForSelf(history: ChatMessage[]): ChatMessage[] {
+    const me = this.id;
+    return history.map(m => {
+      if (m.role === 'system' || m.role === 'tool') return m;
+      if ((m as any).from === me) {
+        return { ...m, role: 'assistant' as const };
+      } else {
+        const tag = (m as any).from ? `[${(m as any).from}] ` : '';
+        const c = String((m as any).content ?? '');
+        const prefixed = c.startsWith('[') ? c : (tag + c);
+        return { role: 'user', from: (m as any).from ?? 'User', content: prefixed, read: (m as any).read } as ChatMessage;
+      }
+    });
+  }
   private context: RoomMessage[] = [];
   private readonly shellTimeout = 60 * 60;
   private audience: Audience = { kind: "group", target: "*" }; // default
@@ -370,7 +388,8 @@ Be concise.
         this._defShellTool(),
       ];
 
-      const messages = await this.runWithTools(fullMessageHistory, tools, (c) => this._execTool(c), 25);
+      const normalizedHistory = this._viewForSelf(fullMessageHistory);
+      const messages = await this.runWithTools(normalizedHistory, tools, (c) => this._execTool(c), 25);
       for (const m of messages) {
         const mappedRole = (m.role === 'tool')
           ? 'tool'
@@ -478,7 +497,8 @@ Be concise.
         read: true,
         content: `Tools remaining this turn: ${remainingCalls}. If you need to output code or long text, do not chat it—write it using the #file:<relative/path> tag followed by the file content. Avoid recursive listings like ls -R.`
       };
-      const messagesForHop: ChatMessage[] = [...currentMessages, nudgeMsg];
+      const normalized = this._viewForSelf(currentMessages);
+      const messagesForHop: ChatMessage[] = [...normalized, nudgeMsg];
 
       // Build per-hop abort detectors (model controls policy)
       const agents = Array.from(new Set(currentMessages.map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
