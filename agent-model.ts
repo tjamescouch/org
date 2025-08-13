@@ -261,6 +261,7 @@ export class AgentModel extends Model {
     });
   }
   private context: RoomMessage[] = [];
+  private inbox: RoomMessage[] = [];
   private readonly shellTimeout = 60 * 60;
   private audience: Audience = { kind: "group", target: "*" }; // default
   private fileToRedirectTo: string | undefined;
@@ -358,7 +359,7 @@ Be concise.
   /* ------------------------------------------------------------ */
   async initialMessage(incoming: RoomMessage): Promise<void> {
     await waitWhilePaused();
-    this._push(incoming);
+    this._enqueue({ ...incoming, read: false });
     // Only the sender of the kickoff should print/broadcast it once.
     if (incoming.from !== this.id) return;
 
@@ -376,19 +377,18 @@ Be concise.
     const userJustInterjected = (Date.now() - __userInterrupt.ts) < 1500;
     if (PAUSED || userJustInterjected) {
       // Record the message for history but do not generate a response now.
-      this._push(incoming);
+      this._enqueue({ ...incoming, read: false });
       logLine(`${BrightYellowTag()}[skip] ${this.id}: user control active; skipping queued turn @ ${stamp()}${Reset()}`);
       return;
     }
     await waitWhilePaused();
-    this._push(incoming);
+    this._enqueue({ ...incoming, read: false });
 
     // Acquire the shared channel lock up-front so summarizeOnce and chatOnce do not overlap across agents
     const release = await channelLock.waitForLock(15 * 60 * 1000);
     // Guard again after acquiring the lock in case control changed while waiting
     if (Boolean((globalThis as any).__PAUSE_INPUT) || (Date.now() - __userInterrupt.ts) < 1500) {
       release();
-      this._push(incoming);
       logLine(`${BrightYellowTag()}[skip] ${this.id}: user control after lock; yielding${Reset()}`);
       return;
     }
@@ -427,12 +427,17 @@ Be concise.
         : null;
 
       const tail = this.context.slice(-20);
+      // Drain all unread messages for this agent; mark them as read inside context.
+      const unreadBatch = this._drainUnread();
       const fullMessageHistory: ChatMessage[] = [
         { role: "system", from: "System", content: this.system, read: false },
         ...(userFocusNudge ? [userFocusNudge] : []),
         ...(dynamicSystem ? [dynamicSystem] : []),
         ...tail,
-        { role: "user", from: incoming.from, content: incoming.content, read: false },
+        ...unreadBatch.map(m => {
+          const role = (m.role === 'system' || m.from === this.id) ? 'system' : 'user';
+          return { role: role as "user" | "system", from: m.from, content: m.content, read: false } as ChatMessage;
+        }),
       ];
 
       const tools: ToolDef[] = [
@@ -941,16 +946,38 @@ ${RedTag()}${sErr}${Reset()}
     }
     return response ?? { ts: Date.now().toString(), from: this.id, role: "system", read: true, content: "(deliver: no-op)" };
   }
-  private _push(msg: RoomMessage): void {
-    this.context.push({
+  // Queue incoming messages as unread; keep a copy in context with read:false.
+  private _enqueue(msg: RoomMessage): void {
+    const m: RoomMessage = {
       ts: new Date().toISOString(),
       role: msg.role === 'system' ? 'system' : (msg.from === this.id ? 'assistant' : 'user'),
       from: msg.from,
       content: msg.content,
-      read: true,
-    });
+      read: Boolean(msg.read) === true ? true : false, // default false unless explicitly true
+    };
+    // If not from self, consider unread (we let our own messages be read:true)
+    if (m.from !== this.id && m.role !== 'system') m.read = false;
+    this.context.push(m);
+    // Only queue non-system messages that are not from self
+    if (m.role !== 'system' && m.from !== this.id) this.inbox.push({ ...m, read: false });
     this.cleanContext();
   }
+
+  // Drain all unread messages for this agent; mark them as read inside context.
+  private _drainUnread(): RoomMessage[] {
+    const batch = this.inbox.splice(0);
+    if (batch.length) {
+      // Mark matching context entries as read
+      const set = new Set(batch.map(b => b.ts + '|' + b.from + '|' + b.content));
+      for (const m of this.context) {
+        const key = m.ts + '|' + m.from + '|' + m.content;
+        if (!m.read && set.has(key)) m.read = true;
+      }
+    }
+    return batch;
+  }
+
+  private _push(msg: RoomMessage): void { this._enqueue(msg); }
 
   private cleanContext() {
     const MAX = this.maxMessagesInContext;
