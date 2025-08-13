@@ -45,6 +45,9 @@ import { VERBOSE } from './constants';
 // Enable raw stream debug with: DEBUG_STREAM=1 bun main.ts
 const DEBUG_STREAM = process.env.DEBUG_STREAM === "1";
 const SHOW_THINK = process.env.SHOW_THINK === "1"; // show chain-of-thought when set
+// Kill-switches to troubleshoot "no output" situations
+const DISABLE_ABORT = process.env.DISABLE_ABORT === "1";             // disables all abort detectors & soft suppression
+const DISABLE_GARBAGE_FILTER = process.env.DISABLE_GARBAGE_FILTER === "1"; // prints everything even if it looks like tool JSON, etc.
 import type { ReadableStreamReadResult } from "stream/web";
 
 const BASE_URL = "http://192.168.56.1:11434"; // host-only IP
@@ -58,7 +61,7 @@ const GARBAGE_RES: RegExp[] = [
   /<\|start\|>/i,                                  // special markers some models leak
   /functions\.sh\s+to=assistant/i,                // tool routing artifacts
 ];
-const isGarbage = (s: string): boolean => GARBAGE_RES.some(re => re.test(s));
+const isGarbage = (s: string): boolean => DISABLE_GARBAGE_FILTER ? false : GARBAGE_RES.some(re => re.test(s));
 
 // ---- Types (OpenAI-style) ----
 export type ChatRole = "system" | "user" | "assistant" | "tool";
@@ -187,8 +190,10 @@ export async function chatOnce(
   const pf = await preflight(ollamaBaseUrl, model);
   if (pf) return { role: "assistant", content: pf };
 
-  // Install model-provided abort detectors (if any)
-  if (opts?.abortDetectors && Array.isArray(opts.abortDetectors)) {
+  // Install model-provided abort detectors (if any), unless disabled
+  if (DISABLE_ABORT) {
+    abortRegistry.set([]);
+  } else if (opts?.abortDetectors && Array.isArray(opts.abortDetectors)) {
     abortRegistry.set(opts.abortDetectors);
   } else {
     abortRegistry.set([]); // default: no detectors
@@ -431,15 +436,23 @@ export async function chatOnce(
       }
       if (contentStr) {
         if (firstNotThink && !firstThink) { firstNotThink = false; }
-        if (isGarbage(contentStr) || isGarbage(contentBuf.slice(-200) + contentStr)) {
-          squelchedChars += contentStr.length;
-          emitDot();
+
+        // When SHOW_THINK=1, bypass garbage/suppression filters to reveal raw CoT-like text.
+        if (SHOW_THINK) {
+          Bun.stdout.write(contentStr);
         } else {
-          if (!suppressOutput) {
-            Bun.stdout.write(contentStr);
-          } else {
-            // output suppressed by soft‑abort -> show progress dot
+          const looksGarbage =
+            isGarbage(contentStr) || isGarbage(contentBuf.slice(-200) + contentStr);
+          if (looksGarbage) {
+            squelchedChars += contentStr.length;
             emitDot();
+          } else {
+            if (!suppressOutput) {
+              Bun.stdout.write(contentStr);
+            } else {
+              // output suppressed by soft‑abort -> show progress dot
+              emitDot();
+            }
           }
         }
       } else if (!reasonStr && parsed && parsed.done === true) {
@@ -460,7 +473,7 @@ export async function chatOnce(
 
       // Generic, model-pluggable abort check (soft-abort: do not cancel the stream)
       const agents = Array.from(new Set((messages || []).map(m => (m?.from || '').toLowerCase()).filter(Boolean)));
-      if (cutAt === null) {
+      if (!DISABLE_ABORT && cutAt === null) {
         let cut: { index: number; reason: string } | null = null;
         for (const det of abortRegistry.detectors) {
           cut = det.check(contentBuf, { messages, agents, soc: opts?.soc });
@@ -515,6 +528,12 @@ export async function chatOnce(
 
   if (cutAt !== null) {
     contentBuf = contentBuf.slice(0, cutAt).trimEnd();
+  }
+  if (!namePrinted) {
+    console.log(`\n\n**** ${name}:`);
+  }
+  if (!contentBuf && SHOW_THINK && thinkingBuf) {
+    Bun.stdout.write("\n");
   }
   return {
     role: "assistant",
