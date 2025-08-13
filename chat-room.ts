@@ -22,6 +22,8 @@ export class ChatRoom {
 
   addModel(m: AgentModel) {
     this.models.push(m);
+    // Ensure the model knows which room it belongs to (required for file writes, logs, etc.)
+    try { (m as any).attachRoom?.(this); } catch {}
   }
 
   /**
