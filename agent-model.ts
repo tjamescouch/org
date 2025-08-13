@@ -779,7 +779,7 @@ Be concise.
 ok: ${result.ok}
 exit_code: ${result.exit_code}
 --- stdout ---
-${MagentaTag()}${sOut}${Reset()}
+${GreenTag()}${sOut}${Reset()}
 --- stderr ---
 ${RedTag()}${sErr}${Reset()}
 `);
