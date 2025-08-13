@@ -454,7 +454,7 @@ Do not narrate plans or roles; provide the final answer only.
       : "";
 
     logLine(`${CyanTag()} **** ${this.id} @ ${stamp()}${Reset()}\n${initialContent}`);
-    await this.broadcast(initialContent);
+    // (broadcast removed)
   }
 
   async receiveMessage(incoming: RoomMessage): Promise<void> {
@@ -985,12 +985,22 @@ ${RedTag()}${sErr}${Reset()}
     try {
       switch (kind) {
         case "group": {
-          await this.broadcast(String(msg ?? ""));
+          const roomAny: any = (this as any).__room || (this as any).room;
+          if (roomAny && typeof roomAny.broadcast === "function") {
+            await roomAny.broadcast(this.id, String(msg ?? ""));
+          } else {
+            logErr(`file write failed: Error: Model "${this.id}" is not attached to a ChatRoom`);
+          }
           response = { ts: Date.now().toString(), from: this.id, content: msg, read: true, role: "assistant" };
           break;
         }
         case "direct": {
-          await this.broadcast(String(msg ?? ""), target);
+          const roomAny: any = (this as any).__room || (this as any).room;
+          if (roomAny && typeof roomAny.broadcast === "function") {
+            await roomAny.broadcast(this.id, String(msg ?? ""), target);
+          } else {
+            logErr(`file write failed: Error: Model "${this.id}" is not attached to a ChatRoom`);
+          }
           response = { ts: Date.now().toString(), from: this.id, content: msg, read: true, role: "assistant" };
           break;
         }

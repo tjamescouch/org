@@ -333,10 +333,17 @@ async function askKickoffPrompt(defaultPrompt: string): Promise<string> {
 /* -------------------- app -------------------- */
 async function app() {
   const room = new ChatRoom();
-
-  // Ensure room exposes hasFreshUserMessage used by TurnManager
-  if (typeof (room as any).hasFreshUserMessage !== "function") {
-    (room as any).hasFreshUserMessage = () => false;
+  // Decorate room.broadcast to record recent user messages for the scheduler
+  {
+    const origBroadcast = (room as any).broadcast?.bind(room);
+    let lastUserTs = 0;
+    if (typeof origBroadcast === "function") {
+      (room as any).broadcast = async (from: string, content: string, to?: string) => {
+        if (String(from).toLowerCase() === "user") lastUserTs = Date.now();
+        return await origBroadcast(from, content, to);
+      };
+    }
+    (room as any).hasFreshUserMessage = () => Date.now() - lastUserTs < 2000;
   }
 
   // Build agents from CLI
