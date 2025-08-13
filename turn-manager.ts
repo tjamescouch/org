@@ -70,6 +70,18 @@ export class TurnManager {
       }
       return;
     }
+    // Global transport backpressure: if provider is saturated, defer this tick
+    try {
+      const t = (globalThis as any).__transport || (globalThis as any).__g?.__transport;
+      if (t && t.inflight && t.cap && t.inflight() >= t.cap) {
+        const now = Date.now();
+        if (!this.lastSkipLog || now - this.lastSkipLog > 1000) {
+          try { (globalThis as any).__log?.("[backpressure] transport saturated; deferring scheduling", "yellow"); } catch {}
+          this.lastSkipLog = now;
+        }
+        return;
+      }
+    } catch {}
 
     const n = this.agents.length;
     if (!n) return;

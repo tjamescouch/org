@@ -5,6 +5,31 @@ const waitWhilePaused = async () => {
 };
 // --- Lightweight wrappers for unified logging ---
 const __g: any = (globalThis as any) || {};
+// --- Global transport backpressure (limits concurrent provider calls) ---
+const MAX_CONCURRENCY = Math.max(1, Number(process.env.LM_MAX_CONCURRENCY || 1));
+const __transport = (__g.__transport ||= {
+  cap: MAX_CONCURRENCY,
+  in: 0,
+  q: [] as Array<() => void>,
+  inflight() { return this.in; },
+  async acquire(label = ""): Promise<() => Promise<void>> {
+    if (this.in < this.cap) {
+      this.in++;
+      return async () => {
+        this.in = Math.max(0, this.in - 1);
+        const n = this.q.shift();
+        n?.();
+      };
+    }
+    await new Promise<void>(res => this.q.push(res));
+    this.in++;
+    return async () => {
+      this.in = Math.max(0, this.in - 1);
+      const n = this.q.shift();
+      n?.();
+    };
+  }
+});
 const logLine = (s: string) => { (console.log)(s); };
 const logErr  = (s: string) => { ( console.error)(s); };
 const appendDirect = (s: string) => { ( ((x: string)=>console.log(x)))(s.endsWith("\n")?s:(s+"\n")); };
@@ -422,6 +447,12 @@ Do not narrate plans or roles; provide the final answer only.
   public async takeTurn(): Promise<boolean> {
     if (isPaused()) return false;
     if (this.inbox.length === 0) return false;
+    // Respect global transport backpressure: skip if provider pipe is saturated
+    try {
+      const inFlight = __transport?.inflight?.() ?? 0;
+      const cap = __transport?.cap ?? 1;
+      if (inFlight >= cap) return false;
+    } catch {}
 
     // If the user just interjected, let the normal receive path handle it after the skip window.
     const __userInterrupt = (globalThis as any).__userInterrupt || { ts: 0 };
@@ -514,11 +545,16 @@ Do not narrate plans or roles; provide the final answer only.
           read: true,
         };
         console.log(`${GreenTag()}Requesting summary${Reset()}`);
-        summaryText = await withTimeout(
-          summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ], { model: this.model }),
-          180_000,
-          "summary timeout"
-        ).catch(() => console.error("*********** summary timeout"));
+        {
+          const releaseNet = await __transport.acquire("summarize");
+          try {
+            summaryText = await withTimeout(
+              summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ], { model: this.model }),
+              180_000,
+              "summary timeout"
+            ).catch(() => console.error("*********** summary timeout"));
+          } finally { await releaseNet(); }
+        }
         if (summaryText) this._lastSummarizeTurn = this._turnCounter;
       }
 
@@ -681,19 +717,22 @@ Do not narrate plans or roles; provide the final answer only.
 
       let msg: any;
       const invokeChat = async (tempBump = 0) => {
-        return await withTimeout(
-          chatOnce(this.id, messagesForHop, {
-            tools: toolsForHop,
-            tool_choice: toolChoiceForHop,
-            num_ctx: 128000,
-            abortDetectors: detectors,
-            model: this.model,
-            soc: this.socText,
-            temperature: (typeof (undefined as any) === "undefined" ? 1 : 1) + tempBump
-          }),
-          600_000,
-          "chatOnce hop timeout"
-        ).catch(e => console.error(e));
+        const releaseNet = await __transport.acquire("chat");
+        try {
+          return await withTimeout(
+            chatOnce(this.id, messagesForHop, {
+              tools: toolsForHop,
+              tool_choice: toolChoiceForHop,
+              num_ctx: 128000,
+              abortDetectors: detectors,
+              model: this.model,
+              soc: this.socText,
+              temperature: (typeof (undefined as any) === "undefined" ? 1 : 1) + tempBump
+            }),
+            600_000,
+            "chatOnce hop timeout"
+          ).catch(e => console.error(e));
+        } finally { await releaseNet(); }
       }
       msg = await invokeChat(0);
       // If an interject was signaled during this hop, don't keep retrying; yield now.
