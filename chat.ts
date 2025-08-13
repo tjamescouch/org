@@ -48,7 +48,7 @@ import type { ReadableStreamReadResult } from "stream/web";
 
 const BASE_URL = "http://192.168.56.1:11434"; // host-only IP
 // Default model can be overridden via env OLLAMA_MODEL
-const DEFAULT_MODEL = process.env.OLLAMA_MODEL || "google/gemma-3-27b";
+const DEFAULT_MODEL = process.env.OLLAMA_MODEL || "openai/gpt-oss-20b";
 
 // Patterns to suppress from terminal output (still kept in buffers)
 const GARBAGE_RES: RegExp[] = [
