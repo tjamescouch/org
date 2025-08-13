@@ -2,6 +2,17 @@
 import type { ChatRoom } from "./chat-room";
 import type { AgentModel } from "./agent-model";
 
+// Time-bounded user-control gate (set by main.ts during interject)
+function userControlActive(): boolean {
+  const until: number = (globalThis as any).__USER_CONTROL_UNTIL || 0;
+  if (!until) return false;
+  const now = Date.now();
+  if (now < until) return true;
+  // TTL expired — clear it
+  (globalThis as any).__USER_CONTROL_UNTIL = 0;
+  return false;
+}
+
 export interface TurnManagerOpts {
   tickMs?: number;            // scheduler cadence
   turnTimeoutMs?: number;     // per-turn watchdog
@@ -16,6 +27,7 @@ export class TurnManager {
   private lastIdle: number[] = [];
   private lastProbe: number[] = [];   // last time we allowed a proactive turn per agent
   private paused = false;
+  private lastSkipLog = 0;
 
   constructor(private room: ChatRoom, private agents: AgentModel[], private opts: TurnManagerOpts = {}) {
     const n = agents.length;
@@ -43,6 +55,16 @@ export class TurnManager {
   /** One scheduling step */
   private async tick() {
     if (this.paused) return;
+
+    // Global, time-bounded pause when user is interjecting
+    if (userControlActive()) {
+      const now = Date.now();
+      if (!this.lastSkipLog || now - this.lastSkipLog > 1000) {
+        try { (globalThis as any).__log?.("[skip] user control active; skipping scheduler tick", "yellow"); } catch {}
+        this.lastSkipLog = now;
+      }
+      return;
+    }
 
     const n = this.agents.length;
     if (!n) return;

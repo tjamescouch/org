@@ -382,3 +382,223 @@ sudo ufw enable
 ## License
 
 MIT
+# org
+
+*A small CLI that orchestrates a group of LLM “agents” with turn‑based scheduling, a shell execution tool, and clean streaming to the terminal.*
+
+---
+
+## Table of Contents
+- [Highlights](#highlights)
+- [Architecture](#architecture)
+- [Requirements](#requirements)
+- [Quick Start](#quick-start)
+- [Interactive vs Script Mode](#interactive-vs-script-mode)
+- [Personas & Models (CLI)](#personas--models-cli)
+- [Turn Manager](#turn-manager)
+- [Tools & Actions](#tools--actions)
+- [Streaming & Console Output](#streaming--console-output)
+- [Security in the VM](#security-in-the-vm)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
+
+---
+
+## Highlights
+
+- **OpenAI‑compatible chat streaming** via `/v1/chat/completions` with SSE parsing.
+- **Turn‑based scheduling** (round‑robin) with a watchdog and lightweight **proactive ticks** to avoid stalls.
+- **Shell tool (`sh`)** to run POSIX commands inside the VM (stdout/stderr captured; line endings normalized).
+- **Interjections**: `i` to interject, `s` to send a system message, `q`/`Ctrl+C` to quit.
+- **Readable output**: timestamps, colors, and a periodic white‑on‑black banner that scrolls with the content.
+- **Personas**: choose which agents to start and which model each should use via CLI flags.
+
+> This README only lists features that are verifiably present in the codebase. “Tags” in generated text (e.g., inline lines that look like `******* sh ...`) are **not tools** by themselves; they are parsed as *actions* and may invoke the `sh` tool when recognized.
+
+---
+
+## Architecture
+
+```
+/org
+├─ main.ts                 # entry point: CLI/TUI, interject controls, scheduler bootstrap
+├─ turn-manager.ts         # round‑robin scheduler with watchdog + proactive ticks
+├─ chat.ts                 # chatOnce (streaming), summarizeOnce, SSE handling, tool harness
+├─ agent-model.ts          # AgentModel: inbox, context mgmt, sh tool, turn integration
+├─ extract-tool-calls.ts   # parses embedded action tags from text
+├─ channel-lock.ts         # ChannelLock for critical sections
+├─ model.ts                # base Model interfaces and RoomMessage
+└─ README.md
+```
+
+> Some files referenced in historical discussions (e.g., a Python tool model) may not be present or enabled; this document avoids claiming functionality that is not in the repository.
+
+---
+
+## Requirements
+
+Guest (VM):
+- Debian/Ubuntu ARM64 (tested on Debian 12)
+- **Bun** v1.2+
+- `git`, `curl`, `python3` (optional, for scripts you may call via `sh`)
+
+Host (or another server the VM can reach):
+- An **OpenAI‑compatible** server (e.g. **Ollama** or **LM Studio**) listening on a network interface the VM can reach.
+
+Environment examples (VM → Host‑only network):
+
+```bash
+# VM expects an OpenAI‑compatible base URL (Ollama or LM Studio)
+export OAI_BASE="http://192.168.56.1:11434"
+export OAI_MODEL="openai/gpt-oss-20b"    # default model id
+```
+
+> LM Studio also exposes `/v1/chat/completions`. If your app probes Ollama‑style endpoints like `/api/tags`, LM Studio will log warnings; this is normal and harmless.
+
+---
+
+## Quick Start
+
+```bash
+bun install
+
+# Default trio (alice, carol, bob) using the default model
+bun run main.ts
+
+# Pick models per‑persona
+bun run main.ts -a alice=openai/gpt-oss-120b -a carol=google/gemma-3-27b -a bob
+
+# Or CSV form
+bun run main.ts --agents "alice=gpt-oss:20b,carol,bob=lmstudio/my-local"
+```
+
+**Keys (interactive mode):**
+- `i` — Interject. Pauses streams, aborts current turns, prompts for your message, then resumes.
+- `s` — Send a system message.
+- `q` or `Ctrl+C` — Quit.
+
+Use `--no-interactive` for script mode, or `--interactive` to force interactive mode.
+
+---
+
+## Interactive vs Script Mode
+
+- **Interactive (default)**: enabled automatically when stdout & stdin are TTYs. Shows a periodic banner and handles `i/s/q` keys. Output is colored with timestamps.
+- **Script mode**: `--no-interactive`, or when piping input. No key handling or TUI interception; raw streaming is printed as it arrives. You can also pass a kickoff with `--prompt` or via stdin.
+
+Examples:
+
+```bash
+# Script mode with explicit prompt
+bun run main.ts --no-interactive --prompt "Scan the repo and propose the next task"
+
+# Pipe kickoff
+echo "List files and build" | bun run main.ts --no-interactive
+```
+
+---
+
+## Personas & Models (CLI)
+
+Flags (repeatable unless noted):
+
+```
+-a, --agent, --persona   name[=model]
+--agents                 CSV of name[=model]
+--default-model          model id used when not specified per agent
+--prompt                 kickoff prompt (script mode)
+--no-interactive         force script mode
+--interactive            force interactive mode
+```
+
+If no personas are provided, the default trio is used: **alice, carol, bob** (all with `--default-model` or the compiled default).
+
+---
+
+## Turn Manager
+
+The **Turn Manager** decouples message arrival from execution so agents take turns predictably.
+
+Default options (set in `main.ts`):
+
+```ts
+{
+  tickMs: 400,          // scheduler cadence (one agent per tick)
+  turnTimeoutMs: 8000,  // per‑turn watchdog; aborts stuck streams
+  idleBackoffMs: 1200,  // back off after a no‑op turn
+  proactiveMs: 2500,    // allow periodic proactive “tick” even with no unread
+}
+```
+
+How it works:
+- Each tick, one agent may run at most one turn.
+- Agents run when they have **unread** messages or when a **proactive** tick is due.
+- Interject pauses the scheduler, aborts streams, broadcasts your message and a short system nudge, then the scheduler resumes.
+
+---
+
+## Tools & Actions
+
+### Tools
+- **`sh`** — Executes a POSIX command inside the VM.
+  - Output is captured (stdout/stderr), and line endings are normalized (CRLF → `\n`, lone CR → `\n`).
+
+> If additional tools are introduced, declare them in `agent-model.ts` and wire them in `chat.ts`. This README avoids listing tools that are not present in the repository.
+
+### Actions (embedded tags in text)
+- The system can parse **embedded action tags** in assistant text (see `extract-tool-calls.ts`).
+- These are *not tools*; they are plain text cues. When a recognized action refers to `sh`, the corresponding shell command is executed via the same `sh` tool.
+
+---
+
+## Streaming & Console Output
+
+- Uses `/v1/chat/completions` with `stream: true`.
+- SSE deltas are reassembled into a single message at the end of a turn.
+- Tool calls are taken from the final JSON **and** from recognized embedded action tags.
+- Console output:
+  - **Timestamps** on each line.
+  - **Colors** for readability.
+  - **Line ending normalization** so build logs and compiler errors remain readable.
+  - A periodic **white‑on‑black banner** (`[q] Quit  [i] Interject  [s] System …`) that scrolls with content.
+
+---
+
+## Security in the VM
+
+- Run the VM with a **host‑only network** and bind your model server to that interface.
+- Optional: restrict egress to only the model host/port.
+
+```bash
+sudo ufw --force reset
+sudo ufw default deny outgoing
+sudo ufw allow out to 192.168.56.1 port 11434 proto tcp
+sudo ufw enable
+```
+
+---
+
+## Troubleshooting
+
+**No output / stalls**
+- Verify the VM can reach the host: `curl -sS http://<HOST-IP>:11434/v1/models`.
+- If turns run only once, ensure the **Turn Manager** is enabled and `proactiveMs` is set (prevents “first‑turn only” behavior).
+- Very long thoughts with no tokens: reduce `turnTimeoutMs` (defaults to 8s here) and rely on proactive ticks.
+
+**LM Studio warnings**
+- Messages like `Unexpected endpoint or method. (GET /api/tags)` are harmless when the server is OpenAI‑compatible but not Ollama; the app probes a few Ollama‑style endpoints for compatibility.
+
+**Prompt template issues**
+- Some community models require alternating roles. In LM Studio, disable/override the jinja template under *My Models → Prompt Template* if needed.
+
+**Interjects ignored**
+- Interject pauses the scheduler, aborts streams, and broadcasts a marked user message plus a concise system nudge. If models still ignore it, try reducing `idleBackoffMs` and confirm your chosen model supports the behaviors you expect.
+
+**Line endings look wrong**
+- Streams normalize `\r\n` → `\n` and lone `\r` → `\n`. If a tool prints without trailing newlines, partial lines may appear until it finishes.
+
+---
+
+## License
+
+MIT

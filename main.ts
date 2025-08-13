@@ -385,6 +385,8 @@ async function app() {
   // --- Interject & system message helpers (stronger)
   const startInterject = async () => {
     if (promptActive) return;
+    // Start a short TTL so the scheduler pauses while we abort streams & prompt.
+    (globalThis as any).__USER_CONTROL_UNTIL = Date.now() + 2000;
     (globalThis as any).__PAUSE_INPUT = true;
     try {
       try { tm.pause(); } catch {}
@@ -395,76 +397,74 @@ async function app() {
 
       const txt = await promptLine(`${C.cyan}[you] > ${C.reset}`);
       const raw = (txt ?? "").trim();
-      if (!raw) { (globalThis as any).__log(`interject (user) — (empty)`); (globalThis as any).__PAUSE_INPUT = false; try { setTimeout(() => tm.resume(), 600); } catch {} return; }
+      if (!raw) {
+        (globalThis as any).__log(`interject (user) — (empty)`);
+        (globalThis as any).__USER_CONTROL_UNTIL = Date.now() + 400;
+        (globalThis as any).__PAUSE_INPUT = false;
+        try { setTimeout(() => tm.resume(), 400); } catch {}
+        return;
+      }
 
-      // 1) A strong, machine-detectable prefix
       const marker = "[PRIORITY:USER-INTERRUPT]";
       const msg = `${marker} ${raw}`;
-
-      // 2) Hard nudge: NO TOOLS next reply
       const hardNudge =
         "PRIORITY NOTICE: The user just interjected. NEXT REPLY: DO NOT CALL TOOLS. " +
         "Respond directly to the user's latest message in 2–5 sentences. " +
         "No listings, no repeated commands, no planning—just answer the user.";
 
-      // 3) Broadcast + direct to each agent
       await room.broadcast("User", msg);
       await room.broadcast("System", hardNudge);
 
-      // --- Insert: Schedule a post-interject "resume" ping so agents restart after the skip window
-      try {
-        // Give AgentModel's 1.5s skip window time to elapse, then nudge again.
-        await setTimeoutPromise(1650);
-        // Light resume ping + re-broadcast the user's raw text (without the marker) to ensure a fresh turn triggers.
-        await room.broadcast("System", "Resume: user finished typing. Respond now in 1–3 sentences, no tools.");
-        await room.broadcast("User", raw);
-      } catch (e) {
-        (globalThis as any).__logError(`post-interject resume error: ${String(e)}`);
-      }
-
-      // If ChatRoom exposes a models list, also DM each agent to maximize salience
-      const rm: any = room as any;
-      if (Array.isArray(rm.models)) {
-        for (const m of rm.models) {
-          try {
-            await room.broadcast("User", `[to:${m.id}] ${msg}`);
-            await room.broadcast("System", `[to:${m.id}] ${hardNudge}`);
-          } catch {}
-        }
-      }
+      // Post-interject resume ping after the skip window
+      await setTimeoutPromise(1650);
+      await room.broadcast("System", "Resume: user finished typing. Respond now in 1–3 sentences, no tools.");
+      await room.broadcast("User", raw);
 
       (globalThis as any).__log(`[you] ${raw}`);
       (globalThis as any).__log(`sent interject`);
+
+      // Give the room a moment then release the gate.
+      (globalThis as any).__USER_CONTROL_UNTIL = Date.now() + 900;
       (globalThis as any).__PAUSE_INPUT = false;
       try { setTimeout(() => tm.resume(), 600); } catch {}
     } catch (e) {
+      (globalThis as any).__USER_CONTROL_UNTIL = 0;
       (globalThis as any).__PAUSE_INPUT = false;
       (globalThis as any).__logError(`interject error: ${String(e)}`);
       try { setTimeout(() => tm.resume(), 600); } catch {}
     }
   };
 
-const startSystemMessage = async () => {
-  if (promptActive) return;
-  (globalThis as any).__PAUSE_INPUT = true;
-  try {
-    try { tm.pause(); } catch {}
-    markUserInterject();
-    interruptChat();
-    await new Promise(r => setTimeout(r, 120));
-    const txt = await promptLine(`${C.cyan}[system] > ${C.reset}`);
-    const msg = (txt ?? "").trim();
-    if (!msg) { (globalThis as any).__log(`system message — (empty)`); (globalThis as any).__PAUSE_INPUT = false; try { setTimeout(() => tm.resume(), 600); } catch {} return; }
-    await room.broadcast("System", msg);
-    (globalThis as any).__log(`sent system message`);
-    (globalThis as any).__PAUSE_INPUT = false;
-    try { setTimeout(() => tm.resume(), 600); } catch {}
-  } catch (e) {
-    (globalThis as any).__PAUSE_INPUT = false;
-    (globalThis as any).__logError(`system message error: ${String(e)}`);
-    try { setTimeout(() => tm.resume(), 600); } catch {}
-  }
-};
+  const startSystemMessage = async () => {
+    if (promptActive) return;
+    (globalThis as any).__USER_CONTROL_UNTIL = Date.now() + 1500;
+    (globalThis as any).__PAUSE_INPUT = true;
+    try {
+      try { tm.pause(); } catch {}
+      markUserInterject();
+      interruptChat();
+      await new Promise(r => setTimeout(r, 120));
+      const txt = await promptLine(`${C.cyan}[system] > ${C.reset}`);
+      const msg = (txt ?? "").trim();
+      if (!msg) {
+        (globalThis as any).__log(`system message — (empty)`);
+        (globalThis as any).__USER_CONTROL_UNTIL = Date.now() + 400;
+        (globalThis as any).__PAUSE_INPUT = false;
+        try { setTimeout(() => tm.resume(), 400); } catch {}
+        return;
+      }
+      await room.broadcast("System", msg);
+      (globalThis as any).__log(`sent system message`);
+      (globalThis as any).__USER_CONTROL_UNTIL = Date.now() + 700;
+      (globalThis as any).__PAUSE_INPUT = false;
+      try { setTimeout(() => tm.resume(), 600); } catch {}
+    } catch (e) {
+      (globalThis as any).__USER_CONTROL_UNTIL = 0;
+      (globalThis as any).__PAUSE_INPUT = false;
+      (globalThis as any).__logError(`system message error: ${String(e)}`);
+      try { setTimeout(() => tm.resume(), 600); } catch {}
+    }
+  };
 
   // --- Single key handler
   function onKey(buf: Buffer) {
