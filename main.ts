@@ -17,9 +17,6 @@ import { setTimeout as setTimeoutPromise } from 'timers/promises'
 process.on("unhandledRejection", e => console.error("[unhandledRejection]", e));
 process.on("uncaughtException",  e => { console.error("[uncaughtException]", e); process.exitCode = 1; });
 
-setInterval(() => console.log(`\n${BrightRedTag()}[q] Quit [i] Interject [s] Send system message${Reset()}`), 20000)
-
-
 
 
 /* -------------------- args -------------------- */
@@ -49,6 +46,21 @@ const C = {
   blue:  "\x1b[34m", magenta:"\x1b[35m", cyan:  "\x1b[36m", gray:  "\x1b[90m",
 } as const;
 
+// --- Simple floating banner (periodic console log) ---
+let bannerTimer: NodeJS.Timeout | null = null;
+function startBanner() {
+  if (bannerTimer) return;
+  bannerTimer = setInterval(() => {
+    const t = new Date().toLocaleTimeString();
+    // plain white-on-black so it scrolls with content
+    console.log(`\n\x1b[97m\x1b[40m[q] Quit  [i] Interject  [s] Send system message  (Ctrl+C quits)  ${t}\x1b[0m`);
+  }, 20_000);
+}
+
+function stopBanner() {
+  if (bannerTimer) { clearInterval(bannerTimer); bannerTimer = null; }
+}
+
 
 // --- Timestamp and global logger utilities ---
 function ts() { return new Date().toLocaleTimeString(); }
@@ -75,6 +87,7 @@ function colorize(msg: string, color: string = "") { return `${color}${msg}${C.r
 let RAW_ENABLED = false;
 let keyHandler: ((buf: Buffer) => void) | null = null;
 let promptActive = false;
+let lastKeyHandler: ((buf: Buffer) => void) | null = null;
 
 function enableRaw() {
   if (!process.stdin.isTTY) return;
@@ -94,6 +107,7 @@ function attachKeys(handler: (buf: Buffer) => void) {
   if (!process.stdin.isTTY) return;
   if (keyHandler) return;
   keyHandler = handler;
+  lastKeyHandler = handler;
   process.stdin.on("data", keyHandler);
   enableRaw();
 }
@@ -102,6 +116,7 @@ function detachKeys() {
   if (!process.stdin.isTTY) return;
   if (!keyHandler) return;
   process.stdin.off("data", keyHandler);
+  // keep lastKeyHandler for later re-attachment
   keyHandler = null;
   disableRaw();
 }
@@ -221,20 +236,39 @@ function redraw(status = currentStatus) {
 }
 
 async function promptLine(q: string): Promise<string> {
-  // Temporarily disable raw key handler while we prompt
+  // Ensure we don't re-enter prompts
+  if (promptActive) return "";
   promptActive = true;
+
+  // Stop banner & detach raw key handler while we prompt
+  stopBanner();
   detachKeys();
+
+  // Make sure stdin is in cooked mode for readline
+  try { process.stdin.setRawMode?.(false); } catch {}
 
   return await new Promise<string>((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-    rl.question(q, (ans) => {
+    rl.setPrompt(q);
+    rl.prompt();
+
+    rl.on("line", (ans) => {
       rl.close();
+      try { process.stdout.write("\n"); } catch {}
       resolve(ans);
     });
+
+    // Allow Ctrl+C to cancel without killing the app
+    rl.on("SIGINT", () => {
+      rl.close();
+      try { process.stdout.write("\n"); } catch {}
+      resolve("");
+    });
   }).finally(() => {
+    // Resume banner & key handling
     promptActive = false;
-    // Re-attach raw key handling
-    if (INTERACTIVE && process.stdin.isTTY) attachKeys(onKey);
+    if (INTERACTIVE && process.stdin.isTTY && lastKeyHandler) attachKeys(lastKeyHandler);
+    startBanner();
   });
 }
 
@@ -333,34 +367,37 @@ async function app() {
   await room.broadcast("User", kickoffPrompt);
 
   // --- Interject & system message helpers (use promptLine and broadcast), capture room
-  const startInterject = async () => {
-    try {
-      interruptChat();
-      await new Promise(r => setTimeout(r, 120));
-      const txt = await promptLine(`${C.cyan}[you] > ${C.reset}`);
-      const msg = (txt ?? "").trim();
-      if (!msg) return;
-      await room.broadcast("User", msg);
-      await room.broadcast("System", "User interjected. Respond directly to the user now; avoid repeating listings or previous commands unless necessary.");
-      (globalThis as any).__log(`[you] ${msg}`);
-    } catch (e) {
-      (globalThis as any).__logError(`interject error: ${String(e)}`);
-    }
-  };
+const startInterject = async () => {
+  if (promptActive) return;
+  try {
+    interruptChat();
+    await new Promise(r => setTimeout(r, 120));
+    const txt = await promptLine(`${C.cyan}[you] > ${C.reset}`);
+    const msg = (txt ?? "").trim();
+    if (!msg) { (globalThis as any).__log(`interject (user) — (empty)`); return; }
+    await room.broadcast("User", msg);
+    await room.broadcast("System", "User interjected. Respond directly to the user now; avoid repeating listings or previous commands unless necessary.");
+    (globalThis as any).__log(`[you] ${msg}`);
+    (globalThis as any).__log(`sent interject`);
+  } catch (e) {
+    (globalThis as any).__logError(`interject error: ${String(e)}`);
+  }
+};
 
-  const startSystemMessage = async () => {
-    try {
-      interruptChat();
-      await new Promise(r => setTimeout(r, 120));
-      const txt = await promptLine(`${C.cyan}[system] > ${C.reset}`);
-      const msg = (txt ?? "").trim();
-      if (!msg) return;
-      await room.broadcast("System", msg);
-      (globalThis as any).__log(`sent system message`);
-    } catch (e) {
-      (globalThis as any).__logError(`system message error: ${String(e)}`);
-    }
-  };
+const startSystemMessage = async () => {
+  if (promptActive) return;
+  try {
+    interruptChat();
+    await new Promise(r => setTimeout(r, 120));
+    const txt = await promptLine(`${C.cyan}[system] > ${C.reset}`);
+    const msg = (txt ?? "").trim();
+    if (!msg) { (globalThis as any).__log(`system message — (empty)`); return; }
+    await room.broadcast("System", msg);
+    (globalThis as any).__log(`sent system message`);
+  } catch (e) {
+    (globalThis as any).__logError(`system message error: ${String(e)}`);
+  }
+};
 
   // --- Single key handler
   function onKey(buf: Buffer) {
