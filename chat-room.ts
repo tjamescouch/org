@@ -80,6 +80,42 @@ export class ChatRoom implements RoomAPI {
     await this.deliver(msg, to);
   }
 
+
+    // agent-model.ts (public surface)
+  public hasUnread(): boolean { return this.inbox.length > 0; }
+
+  // ChatRoom calls this instead of receiveMessage()
+  public enqueueFromRoom(msg: RoomMessage) { this._enqueue(msg); }
+
+  // TurnManager calls this to do one atomic turn (drain → decide → chatOnce/tools → deliver)
+  public async takeTurn(): Promise<boolean> {
+    // short-circuit: if user currently typing / pause flag set, do nothing
+    if ((globalThis as any).__PAUSE_INPUT) return false;
+
+    const unread = this._drainUnread();        // batch all unread
+    if (unread.length === 0) return false;     // nothing to do
+
+    // Build history (system + summary + tail + unread), then run your existing runWithTools(...)
+    const messages = this._buildHistory(unread);
+    const tools    = [ this._defShellTool() ];
+    const replies  = await this.runWithTools(messages, tools, (c)=>this._execTool(c), 25);
+
+    // Deliver final user-visible message (your existing _deliver)
+    const last = replies[replies.length - 1];
+    if (last?.content) await this._deliver(last.content);
+
+    // Update SoC, context, summarization, etc. (you already have these)
+    this._appendSoC(/*...*/);
+    this.cleanContext();
+
+    return true;
+  }
+
+  /** Optional: allow the manager to kill the current turn if the watchdog fires */
+  public abortCurrentTurn?(reason: string): void {
+    try { require("./chat").interruptChat(); } catch {}
+  }
+
   private makeMessage(from: string, content: string | undefined | null, recipient?: string): RoomMessage {
     const role: ChatRole = from === "System" ? "system" : "user";
     const safe = (content ?? "").toString();

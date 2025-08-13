@@ -8,6 +8,7 @@
 //   bun main.ts --agents "alice=gpt-oss:20b,carol,bob=lmstudio/my-local"
 
 import { AgentModel, BrightBlueTag, BrightRedTag, CyanTag, Reset, markUserInterject } from "./agent-model";
+import { TurnManager } from "./turn-manager";
 import { ChatRoom } from "./chat-room";
 import { interruptChat } from "./chat";
 import readline from "readline";
@@ -333,10 +334,23 @@ async function askKickoffPrompt(defaultPrompt: string): Promise<string> {
 async function app() {
   const room = new ChatRoom();
 
+  // Ensure room exposes hasFreshUserMessage used by TurnManager
+  if (typeof (room as any).hasFreshUserMessage !== "function") {
+    (room as any).hasFreshUserMessage = () => false;
+  }
+
   // Build agents from CLI
   const specs = parseAgentSpecs();
   const agents: AgentModel[] = specs.map(s => new AgentModel(s.name, s.model));
   for (const m of agents) room.addModel(m);
+
+  // Round‑robin scheduler decoupled from message arrival
+  const tm = new TurnManager(room as any, agents as any, {
+    tickMs: 450,
+    turnTimeoutMs: 30_000,
+    idleBackoffMs: 1200,
+  });
+  tm.start();
 
   const defaultKickoffPrompt =
     "Agents! Let's get to work on a new and fun project. The project is a sockets/tcp based p2p file transfer and chat app with no middle man. The only requirement is for it C++ compiled with gcc or g++. Check for existing files the workspace. Bob - you will do the coding, please run and test the code you write. Incrementally add new features and focus on extensibility. Carol - you will do the architecture documents and README. I will be the product person who makes the decisions.";
@@ -372,6 +386,7 @@ async function app() {
     if (promptActive) return;
     (globalThis as any).__PAUSE_INPUT = true;
     try {
+      try { tm.pause(); } catch {}
       // Let agents know to yield their current hop quickly
       markUserInterject();
       interruptChat();
@@ -379,7 +394,7 @@ async function app() {
 
       const txt = await promptLine(`${C.cyan}[you] > ${C.reset}`);
       const raw = (txt ?? "").trim();
-      if (!raw) { (globalThis as any).__log(`interject (user) — (empty)`); (globalThis as any).__PAUSE_INPUT = false; return; }
+      if (!raw) { (globalThis as any).__log(`interject (user) — (empty)`); (globalThis as any).__PAUSE_INPUT = false; try { setTimeout(() => tm.resume(), 600); } catch {} return; }
 
       // 1) A strong, machine-detectable prefix
       const marker = "[PRIORITY:USER-INTERRUPT]";
@@ -420,9 +435,11 @@ async function app() {
       (globalThis as any).__log(`[you] ${raw}`);
       (globalThis as any).__log(`sent interject`);
       (globalThis as any).__PAUSE_INPUT = false;
+      try { setTimeout(() => tm.resume(), 600); } catch {}
     } catch (e) {
       (globalThis as any).__PAUSE_INPUT = false;
       (globalThis as any).__logError(`interject error: ${String(e)}`);
+      try { setTimeout(() => tm.resume(), 600); } catch {}
     }
   };
 
@@ -430,18 +447,21 @@ const startSystemMessage = async () => {
   if (promptActive) return;
   (globalThis as any).__PAUSE_INPUT = true;
   try {
+    try { tm.pause(); } catch {}
     markUserInterject();
     interruptChat();
     await new Promise(r => setTimeout(r, 120));
     const txt = await promptLine(`${C.cyan}[system] > ${C.reset}`);
     const msg = (txt ?? "").trim();
-    if (!msg) { (globalThis as any).__log(`system message — (empty)`); (globalThis as any).__PAUSE_INPUT = false; return; }
+    if (!msg) { (globalThis as any).__log(`system message — (empty)`); (globalThis as any).__PAUSE_INPUT = false; try { setTimeout(() => tm.resume(), 600); } catch {} return; }
     await room.broadcast("System", msg);
     (globalThis as any).__log(`sent system message`);
     (globalThis as any).__PAUSE_INPUT = false;
+    try { setTimeout(() => tm.resume(), 600); } catch {}
   } catch (e) {
     (globalThis as any).__PAUSE_INPUT = false;
     (globalThis as any).__logError(`system message error: ${String(e)}`);
+    try { setTimeout(() => tm.resume(), 600); } catch {}
   }
 };
 
