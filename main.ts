@@ -38,7 +38,9 @@ const LOG_LIMIT = 2000; // ring buffer lines
 let logBuf: string[] = [];
 
 function appendLog(s: string) {
-  const lines = (s || "").replace(/\r\n/g, "\n").split(/\n/);
+  // Normalize CRLF and bare CR to LF so progress/overwrites don’t smash the footer
+  const norm = (s || "").replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
+  const lines = norm.split(/\n/);
   for (const line of lines) {
     logBuf.push(line);
     if (logBuf.length > LOG_LIMIT) logBuf.shift();
@@ -53,7 +55,9 @@ let streamBuf = "";
   // Allow our own TUI drawing to pass through unmodified
   if (TUI_DRAWING) return realWrite(chunk, encoding, cb);
   try {
-    const s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+    let s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+    // Convert CRLF and bare CR to LF so we treat carriage returns as newlines
+    s = s.replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
     streamBuf += s;
     // Flush on newline; keep partial lines buffered
     let idx;
@@ -71,6 +75,28 @@ let streamBuf = "";
   }
 } as any;
 
+// Mirror interception for stderr so error output can’t push the footer
+const realErrWrite = process.stderr.write.bind(process.stderr);
+let errBuf = "";
+(process.stderr as any).write = function (chunk: any, encoding?: any, cb?: any) {
+  if (TUI_DRAWING) return realErrWrite(chunk, encoding, cb);
+  try {
+    let s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+    s = s.replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
+    errBuf += s;
+    let idx;
+    while ((idx = errBuf.indexOf("\n")) !== -1) {
+      const line = errBuf.slice(0, idx);
+      errBuf = errBuf.slice(idx + 1);
+      appendLog(line);
+    }
+    if (typeof cb === 'function') cb();
+    return true;
+  } catch (e) {
+    return realErrWrite(chunk, encoding, cb);
+  }
+} as any;
+
 function drawHeader(status: string) {
   withTUIDraw(() => {
     const cols = process.stdout.columns || 80;
@@ -84,11 +110,19 @@ function drawBody() {
   withTUIDraw(() => {
     const rows = process.stdout.rows || 24;
     const bodyRows = Math.max(0, rows - 2);
-    process.stdout.write(`\x1b[2;1H`);
     const slice = logBuf.slice(-bodyRows);
     const fill = Array(Math.max(0, bodyRows - slice.length)).fill("");
-    const out = [...fill, ...slice].join("\n");
-    process.stdout.write(out);
+    const lines = [...fill, ...slice];
+
+    // Position at start of body and print exactly bodyRows lines, clearing each
+    process.stdout.write(`\x1b[2;1H`);
+    for (let i = 0; i < bodyRows; i++) {
+      const line = lines[i] ?? "";
+      // Clear entire line, print content, move to next row (except last line)
+      process.stdout.write(`\x1b[2K` + line + (i < bodyRows - 1 ? "\n" : ""));
+    }
+    // Ensure anything below gets cleared within the scroll region
+    process.stdout.write(`\x1b[0J`);
   });
 }
 
