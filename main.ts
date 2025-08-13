@@ -27,6 +27,12 @@ const C = {
   gray:  "\x1b[90m",
 };
 
+// --- VT100 scroll region helpers + guard to avoid intercept recursion
+let TUI_DRAWING = false;
+function withTUIDraw<T>(fn: () => T): T { TUI_DRAWING = true; try { return fn(); } finally { TUI_DRAWING = false; } }
+function setScrollRegion(top: number, bottom: number) { process.stdout.write(`\x1b[${top};${bottom}r`); }
+function clearScrollRegion() { process.stdout.write(`\x1b[r`); }
+
 /* -------------------- tiny TUI with pinned footer -------------------- */
 const LOG_LIMIT = 2000; // ring buffer lines
 let logBuf: string[] = [];
@@ -40,60 +46,95 @@ function appendLog(s: string) {
   redraw();
 }
 
-function drawHeader(status: string) {
-  const cols = process.stdout.columns || 80;
-  const text = `${C.bold}${C.cyan}${status}${C.reset}`;
-  const pad = Math.max(0, cols - stripAnsi(text).length);
-  process.stdout.write(CSI.home + text + " ".repeat(pad) + "\n");
-}
+// Intercept arbitrary writes to stdout (from other modules) and render via log buffer
+const realWrite = process.stdout.write.bind(process.stdout);
+let streamBuf = "";
+(process.stdout as any).write = function (chunk: any, encoding?: any, cb?: any) {
+  // Allow our own TUI drawing to pass through unmodified
+  if (TUI_DRAWING) return realWrite(chunk, encoding, cb);
+  try {
+    const s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+    streamBuf += s;
+    // Flush on newline; keep partial lines buffered
+    let idx;
+    while ((idx = streamBuf.indexOf("\n")) !== -1) {
+      const line = streamBuf.slice(0, idx);
+      streamBuf = streamBuf.slice(idx + 1);
+      appendLog(line);
+    }
+    // If caller passed a callback, call it now
+    if (typeof cb === 'function') cb();
+    return true;
+  } catch (e) {
+    // On error, fall back to real write
+    return realWrite(chunk, encoding, cb);
+  }
+} as any;
 
-function drawFooter() {
-  const cols = process.stdout.columns || 80;
-  const hint = `${C.gray}[q] quit  [i] interject  [s] system  (Ctrl+C to quit)${C.reset}`;
-  const pad = Math.max(0, cols - stripAnsi(hint).length);
-  // Move cursor to last row
-  const rows = process.stdout.rows || 24;
-  process.stdout.write(`\x1b[${rows};1H` + hint + " ".repeat(pad));
+function drawHeader(status: string) {
+  withTUIDraw(() => {
+    const cols = process.stdout.columns || 80;
+    const text = `${C.bold}${C.cyan}${status}${C.reset}`;
+    const pad = Math.max(0, cols - stripAnsi(text).length);
+    process.stdout.write(CSI.home + text + " ".repeat(pad) + "\n");
+  });
 }
 
 function drawBody() {
-  const rows = process.stdout.rows || 24;
-  const bodyRows = Math.max(0, rows - 2); // header + footer consume 2 lines
-  // Place cursor at row 2, col 1, clear to footer-1
-  process.stdout.write(`\x1b[2;1H`);
-  // Compute slice from the end
-  const slice = logBuf.slice(-bodyRows);
-  // Ensure exactly bodyRows lines printed to overwrite old content
-  const fill = Array(Math.max(0, bodyRows - slice.length)).fill("");
-  const out = [...fill, ...slice].join("\n");
-  process.stdout.write(out);
+  withTUIDraw(() => {
+    const rows = process.stdout.rows || 24;
+    const bodyRows = Math.max(0, rows - 2);
+    process.stdout.write(`\x1b[2;1H`);
+    const slice = logBuf.slice(-bodyRows);
+    const fill = Array(Math.max(0, bodyRows - slice.length)).fill("");
+    const out = [...fill, ...slice].join("\n");
+    process.stdout.write(out);
+  });
+}
+
+function drawFooter() {
+  withTUIDraw(() => {
+    const cols = process.stdout.columns || 80;
+    const hint = `${C.gray}[q] quit  [i] interject  [s] system  (Ctrl+C to quit)${C.reset}`;
+    const pad = Math.max(0, cols - stripAnsi(hint).length);
+    const rows = process.stdout.rows || 24;
+    process.stdout.write(`\x1b[${rows};1H` + hint + " ".repeat(pad));
+  });
 }
 
 function stripAnsi(s: string) { return s.replace(/[\u001b\u009b][[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, ""); }
 
 function redraw(status = currentStatus) {
-  process.stdout.write(CSI.hide + CSI.clear);
-  drawHeader(status);
-  drawBody();
-  drawFooter();
+  withTUIDraw(() => {
+    process.stdout.write(CSI.hide + CSI.clear);
+    const rows = process.stdout.rows || 24;
+    // Header at row 1, footer at last row -> body scroll region is 2..(rows-1)
+    setScrollRegion(2, Math.max(2, rows - 1));
+    drawHeader(status);
+    drawBody();
+    drawFooter();
+  });
 }
 
 let currentStatus = "org: multi-agent session";
 
 function promptLine(q: string): Promise<string> {
-  // Temporarily show cursor and place prompt on the line above the footer
   const rows = process.stdout.rows || 24;
-  process.stdout.write(`${CSI.show}\x1b[${rows - 1};1H\x1b[2K`);
+  withTUIDraw(() => { clearScrollRegion(); process.stdout.write(`${CSI.show}\x1b[${rows - 1};1H\x1b[2K`); });
   return new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-    rl.question(q, (ans) => { rl.close(); process.stdout.write(CSI.hide); redraw(); resolve(ans); });
+    rl.question(q, (ans) => {
+      rl.close();
+      withTUIDraw(() => { process.stdout.write(CSI.hide); redraw(); });
+      resolve(ans);
+    });
   });
 }
 
 async function gracefulQuit(room: any, keepAlive: any) {
   try { clearInterval(keepAlive); } catch {}
   try { if (typeof room?.shutdown === "function") await room.shutdown(); } catch (e) { appendLog(`${C.red}[shutdown error]${C.reset} ${String(e)}`); }
-  process.stdout.write(CSI.show + "\n");
+  withTUIDraw(() => { clearScrollRegion(); process.stdout.write(CSI.show + "\n"); });
   process.exit(0);
 }
 
@@ -192,9 +233,10 @@ async function app() {
   }
 
   // redraw on resize
-  process.stdout.on("resize", () => redraw());
+  process.stdout.on("resize", () => { withTUIDraw(() => { const rows = process.stdout.rows || 24; setScrollRegion(2, Math.max(2, rows - 1)); }); redraw(); });
 
-  // initial draw
+  // initial draw: set scroll region once
+  withTUIDraw(() => { const rows = process.stdout.rows || 24; setScrollRegion(2, Math.max(2, rows - 1)); });
   process.stdout.write(CSI.hide);
   redraw();
 }
