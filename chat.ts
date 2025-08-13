@@ -11,9 +11,11 @@ const now = () => Date.now();
 
 // Tip: set FORCE_V1=1 (or LMSTUDIO=1 / OPENAI_COMPAT=1) to skip Ollama /api preflight calls entirely.
 const FORCE_V1 =
-  process.env.FORCE_V1 === "1" ||
-  process.env.LMSTUDIO === "1" ||
-  process.env.OPENAI_COMPAT === "1";
+  process.env.FORCE_V1 !== "0" &&
+  (process.env.FORCE_V1 === "1" ||
+    process.env.LMSTUDIO === "1" ||
+    process.env.OPENAI_COMPAT === "1" ||
+    true);
 
 const isV1Server = (u: string) => {
   if (FORCE_V1) return true; // manual override
