@@ -312,6 +312,7 @@ async function app() {
     
   process.stdin.on("data", async (key: Buffer) => {
     // Ctrl+C (0x03 in ASCII)
+    console.log("Key press", key)
     if (key.toString() === "\u0003") {
       process.exit();
     }
