@@ -286,11 +286,8 @@ async function app() {
     (globalThis as any).__log(`Kickoff as ${specs[0]?.name || 'alice'}: ${kickoffPrompt}`);
   }
 
-  // Send the kickoff as the first agent's initial message
-  if (agents[0]) {
-    // Use a USER kickoff so the next model turn is assistant — avoids double-assistant and template rejections
-    await agents[0].initialMessage({ role: "user", ts: Date.now().toString(), from: "User", content: kickoffPrompt, read: false });
-  }
+  // Send the kickoff as a broadcast to the room instead of initialMessage
+  await room.broadcast("User", kickoffPrompt);
 
   // Interactive key controls only in TUI
   if (INTERACTIVE && process.stdin.isTTY) {
