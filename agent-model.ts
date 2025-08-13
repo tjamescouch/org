@@ -224,7 +224,7 @@ export class AgentModel extends Model {
   private audience: Audience = { kind: "group", target: "*" }; // default
   private fileToRedirectTo: string | undefined;
   private maxShellReponseCharacters: number = 25_000;
-  private maxMessagesInContext = 17;
+  private maxMessagesInContext = 27;
   private system: string;
   private model: string;
   private socText: string = "";
@@ -422,7 +422,7 @@ Be concise.
     maxHops: number
   ): Promise<ChatMessage[]> {
     const responses: ChatMessage[] = [];
-    const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 64000 };
+    const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 128000 };
 
     // --- Stuck breaker state ---
     let breakerCooldown = 0;            // when > 0, next hops run with tools disabled
@@ -497,7 +497,7 @@ Be concise.
         chatOnce(this.id, messagesForHop, {
           tools: toolsForHop,
           tool_choice: toolChoiceForHop,
-          num_ctx: 64000,
+          num_ctx: 128000,
           abortDetectors: detectors,
           model: this.model,
           soc: this.socText,

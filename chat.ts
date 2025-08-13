@@ -217,7 +217,7 @@ export async function chatOnce(
     tools: opts?.tools ?? [],
     tool_choice: opts?.tool_choice ?? (opts?.tools ? "auto" : undefined),
     keep_alive: "30m",
-    num_ctx: 64000
+    num_ctx: 128000
     // some Ollama builds also accept num_ctx here; include if needed via options
   } as any;
 
