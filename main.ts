@@ -12,6 +12,7 @@ import { ChatRoom } from "./chat-room";
 import { interruptChat } from "./chat";
 import readline from "readline";
 import { CSI } from "./tui"; // expects: clear, home, hide, show, rev, nrm
+import { setTimeout as setTimeoutPromise } from 'timers/promises'
 
 process.on("unhandledRejection", e => console.error("[unhandledRejection]", e));
 process.on("uncaughtException",  e => { console.error("[uncaughtException]", e); process.exitCode = 1; });
@@ -184,7 +185,7 @@ function redraw(status = currentStatus) {
   //});
 }
 
-function promptLine(q: string): Promise<string> {
+async function promptLine(q: string): Promise<string> {
   // if stdin is in raw mode (interactive key handler), disable temporarily
   const wasRawMode = isRawMode;
   !!(process.stdin as any).isRaw;
@@ -192,6 +193,8 @@ function promptLine(q: string): Promise<string> {
     process.stdin.setRawMode?.(false);
     isRawMode = false;
   }
+
+  await setTimeoutPromise(1000);
 
   return new Promise((resolve) => {
     const rl = readline.createInterface({
