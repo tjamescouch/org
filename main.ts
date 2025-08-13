@@ -367,17 +367,43 @@ async function app() {
   await room.broadcast("User", kickoffPrompt);
 
   // --- Interject & system message helpers (use promptLine and broadcast), capture room
-const startInterject = async () => {
+  // --- Interject & system message helpers (stronger)
+  const startInterject = async () => {
   if (promptActive) return;
   try {
     interruptChat();
-    await new Promise(r => setTimeout(r, 120));
+    await new Promise(r => setTimeout(r, 150)); // give streams a beat to abort
+
     const txt = await promptLine(`${C.cyan}[you] > ${C.reset}`);
-    const msg = (txt ?? "").trim();
-    if (!msg) { (globalThis as any).__log(`interject (user) — (empty)`); return; }
+    const raw = (txt ?? "").trim();
+    if (!raw) { (globalThis as any).__log(`interject (user) — (empty)`); return; }
+
+    // 1) A strong, machine-detectable prefix
+    const marker = "[PRIORITY:USER-INTERRUPT]";
+    const msg = `${marker} ${raw}`;
+
+    // 2) Hard nudge: NO TOOLS next reply
+    const hardNudge =
+      "PRIORITY NOTICE: The user just interjected. NEXT REPLY: DO NOT CALL TOOLS. " +
+      "Respond directly to the user's latest message in 2–5 sentences. " +
+      "No listings, no repeated commands, no planning—just answer the user.";
+
+    // 3) Broadcast + direct to each agent
     await room.broadcast("User", msg);
-    await room.broadcast("System", "User interjected. Respond directly to the user now; avoid repeating listings or previous commands unless necessary.");
-    (globalThis as any).__log(`[you] ${msg}`);
+    await room.broadcast("System", hardNudge);
+
+    // If ChatRoom exposes a models list, also DM each agent to maximize salience
+    const rm: any = room as any;
+    if (Array.isArray(rm.models)) {
+      for (const m of rm.models) {
+        try {
+          await room.broadcast("User", `[to:${m.id}] ${msg}`);
+          await room.broadcast("System", `[to:${m.id}] ${hardNudge}`);
+        } catch {}
+      }
+    }
+
+    (globalThis as any).__log(`[you] ${raw}`);
     (globalThis as any).__log(`sent interject`);
   } catch (e) {
     (globalThis as any).__logError(`interject error: ${String(e)}`);
