@@ -170,12 +170,12 @@ function drawBody(asString?: boolean): string | void {
 }
 
 function redraw(status = currentStatus) {
-  withTUIDraw(() => {
-    const header = drawHeader(status, true) as string; // string
-    const body = drawBody(true) as string;             // string
-    const soft = "\x1b[36m"; const reset = "\x1b[0m";
-    console.log(soft + header + "\n" + body + reset);
-  });
+  //withTUIDraw(() => {
+  //  const header = drawHeader(status, true) as string; // string
+  //  const body = drawBody(true) as string;             // string
+  //  const soft = "\x1b[36m"; const reset = "\x1b[0m";
+  //  console.log(soft + header + "\n" + body + reset);
+  //});
 }
 
 function promptLine(q: string): Promise<string> {
