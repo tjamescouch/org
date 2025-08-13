@@ -90,38 +90,48 @@ function appendLog(s: string) {
   redraw();
 }
 
-function drawHeader(status: string) {
-  withTUIDraw(() => {
-    const cols = process.stdout.columns || 80;
-    const controls = `${C.gray}[q] quit  [i] interject  [s] system  (Ctrl+C to quit)${C.reset}`;
-    const text = `${C.bold}${C.cyan}${status}${C.reset}  ${controls}`;
-    const pad = Math.max(0, cols - stripAnsi(text).length);
-    process.stdout.write(CSI.home + `\x1b[2K` + text + " ".repeat(pad) + "\n");
-  });
-}
+function drawHeader(status: string, asString?: boolean): string | void {
+  const cols = process.stdout.columns || 80;
+  const controls = `${C.gray}[q] quit  [i] interject  [s] system  (Ctrl+C to quit)${C.reset}`;
+  const text = `${C.bold}${C.cyan}${status}${C.reset}  ${controls}`;
+  const pad = Math.max(0, cols - stripAnsi(text).length);
+  if (asString) {
+    // Remove cursor movement/CSI for string output
+    return text + " ".repeat(pad);
+  } else {
+    withTUIDraw(() => {
+      process.stdout.write(CSI.home + `\x1b[2K` + text + " ".repeat(pad) + "\n");
+    });
+  }
 
-function drawBody() {
-  withTUIDraw(() => {
-    const rows = process.stdout.rows || 24;
-    const bodyRows = Math.max(0, rows - 2);
-    const slice = logBuf.slice(-bodyRows);
-    const fill = Array(Math.max(0, bodyRows - slice.length)).fill("");
-    const lines = [...fill, ...slice];
-    process.stdout.write(`\x1b[2;1H`);
-    for (let i = 0; i < bodyRows; i++) {
-      const line = lines[i] ?? "";
-      process.stdout.write(`\x1b[2K` + line + (i < bodyRows - 1 ? "\n" : ""));
-    }
-    process.stdout.write(`\x1b[0J`);
-  });
+function drawBody(asString?: boolean): string | void {
+  const rows = process.stdout.rows || 24;
+  const bodyRows = Math.max(0, rows - 2);
+  const slice = logBuf.slice(-bodyRows);
+  const fill = Array(Math.max(0, bodyRows - slice.length)).fill("");
+  const lines = [...fill, ...slice];
+  if (asString) {
+    // Just join lines for string output
+    return lines.join("\n");
+  } else {
+    withTUIDraw(() => {
+      process.stdout.write(`\x1b[2;1H`);
+      for (let i = 0; i < bodyRows; i++) {
+        const line = lines[i] ?? "";
+        process.stdout.write(`\x1b[2K` + line + (i < bodyRows - 1 ? "\n" : ""));
+      }
+      process.stdout.write(`\x1b[0J`);
+    });
+  }
 }
 
 function redraw(status = currentStatus) {
-  withTUIDraw(() => {
-    process.stdout.write(CSI.hide + CSI.clear);
-    drawHeader(status);
-    drawBody();
-  });
+  // Output using console.log with cyan color, header and body as string
+  const header = drawHeader(status, true); // string
+  const body = drawBody(true); // string
+  const cyan = '\x1b[36m';
+  const reset = '\x1b[0m';
+  console.log(cyan + header + '\n' + body + reset);
 }
 
 function promptLine(q: string): Promise<string> {
