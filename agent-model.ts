@@ -451,13 +451,13 @@ Be concise.
       // Build per-hop abort detectors (model controls policy)
       const agents = Array.from(new Set(currentMessages.map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
       const detectors: AbortDetector[] = [
-        //new CrossTurnRepetitionDetector({ tailWords: 20, minChars: 220, minNoveltyRatio: 0.08, sampleSocChars: 20000 }),
-        //new AgentQuoteAbortDetector(agents),
-        //new RepetitionAbortDetector({ tailWords: 20, maxRepeats: 6, minWordsForNovelty: 220, minNoveltyRatio: 0.04 }),
-        //new ToolEchoFloodDetector(4),
-        //// new SpiralPhraseDetector(), // keep disabled for now
-        //new MaxLengthAbortDetector(12000),
-        //new RegexAbortDetector([ /\bnow create new file\b/i, /\bit didn't show output\b/i ]),
+        new CrossTurnRepetitionDetector({ tailWords: 20, minChars: 220, minNoveltyRatio: 0.08, sampleSocChars: 20000 }),
+        new AgentQuoteAbortDetector(agents),
+        new RepetitionAbortDetector({ tailWords: 20, maxRepeats: 6, minWordsForNovelty: 220, minNoveltyRatio: 0.04 }),
+        new ToolEchoFloodDetector(4),
+        new SpiralPhraseDetector(), // keep disabled for now
+        new MaxLengthAbortDetector(12000),
+        new RegexAbortDetector([ /\bnow create new file\b/i, /\bit didn't show output\b/i ]),
       ];
 
       const msg = (await withTimeout(
