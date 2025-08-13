@@ -292,7 +292,7 @@ export async function chatOnce(
 
           if (contentStr) Bun.stdout.write(contentStr + "\n");
           if (!contentStr && reasoningStr && SHOW_THINK) {
-            Bun.stdout.write(`<think>${reasoningStr.replace("\n", '').trim()}</think>\n`);
+            Bun.stdout.write(`<think>${reasoningStr}</think>\n`);
           }
           _currentStreamAC = null;
           return { role: "assistant", content: contentStr.trim(), reasoning: reasoningStr, tool_calls: tc };
@@ -583,7 +583,7 @@ export async function chatOnce(
             const offset = contentBuf.length - textForDetectors.length;
             cutAt = Math.max(0, offset + cut.index);
             suppressOutput = true; // continue reading but do not print further tokens
-            if (firstNotThink && !firstThink) { firstNotThink = false; console.log('\n</think>\n'); }
+            if (firstNotThink && !firstThink) { firstNotThink = false; console.log('</think>'); }
             console.error(`[chatOnce] soft-abort by ${det.name}: ${cut.reason} cutAt=${cutAt}`);
             break;
           }
