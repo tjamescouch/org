@@ -4,7 +4,7 @@
 // - Colors preserved
 // - In script mode, no TUI interception—raw console output so streams without \n still appear
 
-import { AgentModel } from "./agent-model";
+import { AgentModel, CyanTag, Reset } from "./agent-model";
 import { ChatRoom } from "./chat-room";
 import { interruptChat } from "./chat";
 import readline from "readline";
@@ -298,7 +298,7 @@ async function app() {
       if (ch === "i") {
         interruptChat(); await new Promise(r => setTimeout(r, 100));
         currentStatus = "interject (user)"; redraw();
-        const txt = await promptLine(`${C.bold}[you] > ${C.reset}`);
+        const txt = await promptLine(`${CyanTag()}[you] >${Reset()}`);
         const msg = (txt ?? "").trim();
         if (msg) await room.broadcast("User", msg);
         if (msg) (globalThis as any).__log(`[you] ${msg}`);
@@ -308,7 +308,7 @@ async function app() {
       if (ch === "s") {
         interruptChat(); await new Promise(r => setTimeout(r, 100));
         currentStatus = "system message"; redraw();
-        const txt = await promptLine(`${C.bold}[system] > ${C.reset}`);
+        const txt = await promptLine(`${CyanTag()}[system] >${Reset()}`);
         const msg = (txt ?? "").trim();
         if (msg) await room.broadcast("System", msg);
         currentStatus = msg ? "sent system message" : "system: (empty)"; redraw();

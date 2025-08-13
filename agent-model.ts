@@ -4,10 +4,10 @@ const logLine = (s: string) => { (console.log)(s); };
 const logErr  = (s: string) => { ( console.error)(s); };
 const appendDirect = (s: string) => { ( ((x: string)=>console.log(x)))(s.endsWith("\n")?s:(s+"\n")); };
 const stamp = () => new Date().toLocaleTimeString();
-const Reset = () => "\x1b[0m";
-const CyanTag = () => "\x1b[36m";
-const YellowTag = () => "\x1b[33m";
-const RedTag = () => "\x1b[31m";
+export const Reset = () => "\x1b[0m";
+export const CyanTag = () => "\x1b[36m";
+export const YellowTag = () => "\x1b[33m";
+export const RedTag = () => "\x1b[31m";
 const withTimeout = <T>(p: Promise<T>, ms: number, label = "timeout"): Promise<T> =>
   Promise.race([
     p,
@@ -801,7 +801,7 @@ ${sErr}
             read: true,
             content: `=> Written to file ${p}`
           };
-          logLine(`${RedTag}******* wrote file ${p} @ ${stamp()}${Reset()}`);
+          logLine(`${RedTag()}******* wrote file ${p} @ ${stamp()}${Reset()}`);
           break;
         }
       }
