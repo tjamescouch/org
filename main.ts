@@ -108,7 +108,7 @@ let TUI_DRAWING = false; // guard to avoid intercept recursion
 const LOG_LIMIT = 2000; // ring buffer lines
 let logBuf: string[] = [];
 
-function withTUIDraw<T>(fn: () => T): T { TUI_DRAWING = true; try { return fn(); } finally { TUI_DRAWING = false; } }
+function withTUIDraw<T>(fn: () => T): T { try { return fn(); } finally {  } }
 function clearScrollRegion() { process.stdout.write(`\x1b[r`); }
 
 function stripAnsi(s: string) { return s.replace(/[\u001b\u009b][[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, ""); }
