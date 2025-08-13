@@ -93,7 +93,8 @@ function appendLog(s: string) {
 function drawHeader(status: string) {
   withTUIDraw(() => {
     const cols = process.stdout.columns || 80;
-    const text = `${C.bold}${C.cyan}${status}${C.reset}`;
+    const controls = `${C.gray}[q] quit  [i] interject  [s] system  (Ctrl+C to quit)${C.reset}`;
+    const text = `${C.bold}${C.cyan}${status}${C.reset}  ${controls}`;
     const pad = Math.max(0, cols - stripAnsi(text).length);
     process.stdout.write(CSI.home + `\x1b[2K` + text + " ".repeat(pad) + "\n");
   });

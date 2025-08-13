@@ -3,8 +3,6 @@ const __g: any = (globalThis as any) || {};
 const logLine = (s: string) => { (__g.__log ?? console.log)(s); };
 const logErr  = (s: string) => { (__g.__logError ?? console.error)(s); };
 const appendDirect = (s: string) => { (__g.__appendLog ?? ((x: string)=>console.log(x)))(s.endsWith("\n")?s:(s+"\n")); };
-// Helper for banner text (controls line)
-const bannerText = () => "\x1b[97m\x1b[40m[q] quit  [i] interject  [s] system  (Ctrl+C to quit)\x1b[0m";
 const stamp = () => new Date().toLocaleTimeString();
 const Reset = () => "\x1b[0m";
 const CyanTag = () => "\x1b[36m";
@@ -753,13 +751,11 @@ ${sErr}
         case "group": {
           await this.broadcast(String(msg ?? ""));
           response = { ts: Date.now().toString(), from: this.id, content: msg, read: true, role: "assistant" };
-          appendDirect(bannerText());
           break;
         }
         case "direct": {
           await this.broadcast(String(msg ?? ""), target);
           response = { ts: Date.now().toString(), from: this.id, content: msg, read: true, role: "assistant" };
-          appendDirect(bannerText());
           break;
         }
         case "file": {
@@ -787,14 +783,6 @@ ${sErr}
           response = {
             ts: Date.now().toString(),
             from: this.id,
-            content: msg,
-            read: true,
-            role: "assistant"
-          };
-          appendDirect(bannerText());
-          break;
-        }
-      }
             role: "tool",
             read: true,
             content: `=> Written to file ${p}`
