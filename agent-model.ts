@@ -515,6 +515,7 @@ Be concise.
 
       let msg: any;
       async function invokeChat(tempBump = 0) {
+        console.log('invoke chat');
         return await withTimeout(
           chatOnce(this.id, messagesForHop, {
             tools: toolsForHop,
