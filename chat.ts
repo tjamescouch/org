@@ -15,6 +15,8 @@ export const abortRegistry = {
 };
 import { TextDecoder } from "util";
 import { VERBOSE } from './constants';
+// Enable raw stream debug with: DEBUG_STREAM=1 bun main.ts
+const DEBUG_STREAM = process.env.DEBUG_STREAM === "1";
 import type { ReadableStreamReadResult } from "stream/web";
 
 const BASE_URL = "http://192.168.56.1:11434"; // host-only IP
@@ -113,11 +115,10 @@ export async function summarizeOnce(
   // OpenAI-compatible /v1/chat/completions (non-streaming)
   const v1Body = {
     model,
-    stream: true,
+    stream: false,            // non‑streaming summary
     messages: formatted,
-    temperature: opts?.temperature ?? 1,
+    temperature: opts?.temperature ?? 0, // deterministic summaries
     keep_alive: "20m",
-    num_ctx: 64000
   } as any;
 
   const ac = new AbortController();
@@ -132,9 +133,6 @@ export async function summarizeOnce(
     clearTimeout(t);
     if (!resp.ok) return "";
     const json = await resp.json();
-
-    console.log(json);
-
     const viaV1 = (json && json.choices && json.choices[0] && json.choices[0].message && typeof json.choices[0].message.content === "string")
       ? json.choices[0].message.content : null;
     return (viaV1 ?? "").trim();
@@ -320,6 +318,7 @@ export async function chatOnce(
 
     if (streamDone) break;
     const chunk = decoder.decode(value, { stream: true });
+    if (DEBUG_STREAM) console.error("RAW:", chunk.replace(/\r/g, "\\r").replace(/\n/g, "\\n"));
     lineBuffer += chunk;
 
     // Process only complete lines; keep remainder for next network chunk
@@ -330,6 +329,7 @@ export async function chatOnce(
       lineBuffer = lineBuffer.slice(nl + 1);
       // Trim a single trailing CR but do not trim leading spaces (SSE spec)
       const line = lineRaw.endsWith('\r') ? lineRaw.slice(0, -1) : lineRaw;
+      if (DEBUG_STREAM) console.error("LINE:", line);
       if (!line) continue;
 
       // Ollama native streams JSON lines without the "data:" prefix; OpenAI-style uses "data: {json}"
@@ -394,10 +394,13 @@ export async function chatOnce(
       const reasonStr = typeof delta.reasoning === 'string' ? delta.reasoning : '';
       const contentStr = typeof delta.content === 'string' ? delta.content : '';
 
-      // Suppress visible chain-of-thought; keep for detectors only
+      // Suppress visible chain‑of‑thought; keep for detectors only
       if (reasonStr) {
-         if (firstThink) { firstThink = false; console.log('<think>'); }
-         Bun.stdout.write(reasonStr);
+        if (firstThink) { firstThink = false; }
+        // no stdout write
+        // indicate suppression with a dot if there is no concurrent visible content
+        if (DEBUG_STREAM) console.error("[COT suppressed]", reasonStr.slice(0, 40));
+        emitDot();
       }
       if (contentStr) {
         if (firstNotThink && !firstThink) { firstNotThink = false; }
@@ -405,12 +408,23 @@ export async function chatOnce(
           squelchedChars += contentStr.length;
           emitDot();
         } else {
-          if (!suppressOutput) Bun.stdout.write(contentStr);
+          if (!suppressOutput) {
+            Bun.stdout.write(contentStr);
+          } else {
+            // output suppressed by soft‑abort -> show progress dot
+            emitDot();
+          }
         }
       } else if (!reasonStr && parsed && parsed.done === true) {
         done = true; 
         
         break;
+      }
+
+      // Print a dot immediately when output is suppressed by application logic
+      if (suppressOutput && contentStr && !(isGarbage(contentStr) || isGarbage(contentBuf.slice(-200) + contentStr))) {
+        // Only print a dot for suppressed normal output (not for garbage, which already emits a dot)
+        Bun.stdout.write(".");
       }
 
       if (contentStr) contentBuf += contentStr;
@@ -440,6 +454,7 @@ export async function chatOnce(
     try {
       const payload = lineBuffer.startsWith('data:') ? lineBuffer.slice(5).trim() : lineBuffer;
       const parsed: any = JSON.parse(payload);
+      if (DEBUG_STREAM) console.error("FINAL_LINE:", payload);
       const ch = parsed?.choices?.[0] ?? {};
       const delta = (ch.delta ?? ch.message ?? parsed?.message ?? {});
       const reasonStr = typeof delta.reasoning === 'string' ? delta.reasoning : '';
