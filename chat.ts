@@ -15,15 +15,14 @@ const FORCE_V1 =
   process.env.LMSTUDIO === "1" ||
   process.env.OPENAI_COMPAT === "1";
 
-// Consider servers that look OpenAI-compatible (/v1) or explicitly LM Studio/OpenAI hosts as "v1" (skip Ollama preflight)
 const isV1Server = (u: string) => {
+  if (FORCE_V1) return true; // manual override
   try {
-    // Normalize to allow host inference when a full URL is provided
     const hasV1 = /\/v1(\/|$)/i.test(u);
     const isKnownV1Host = /lmstudio|openai/i.test(u);
     return hasV1 || isKnownV1Host;
   } catch {
-    return /\/v1(\/|$)/i.test(u);
+    return false;
   }
 };
 
