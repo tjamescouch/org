@@ -64,7 +64,7 @@ function drawHeader(status: string) {
     const cols = process.stdout.columns || 80;
     const text = `${C.bold}${C.cyan}${status}${C.reset}`;
     const pad = Math.max(0, cols - stripAnsi(text).length);
-    process.stdout.write(CSI.hide + CSI.clear + CSI.home + text + " ".repeat(pad) + "\n");
+    process.stdout.write(CSI.home + `\x1b[2K` + text + " ".repeat(pad) + "\n");
   });
 }
 
@@ -87,10 +87,11 @@ function drawBody() {
 function drawFooter() {
   withTUIDraw(() => {
     const cols = process.stdout.columns || 80;
-    const hint = `${C.gray}[q] quit  [i] interject  [s] system  (Ctrl+C to quit)${C.reset}`;
-    const pad = Math.max(0, cols - stripAnsi(hint).length);
+    const hintText = `[q] quit  [i] interject  [s] system  (Ctrl+C to quit)`;
+    const hint = `\x1b[40m\x1b[97m${hintText}\x1b[0m`; // black bg + bright white fg
+    const pad = Math.max(0, cols - stripAnsi(hintText).length);
     const rows = process.stdout.rows || 24;
-    process.stdout.write(`\x1b[${rows};1H` + hint + " ".repeat(pad));
+    process.stdout.write(`\x1b[${rows};1H\x1b[2K` + hint + " ".repeat(pad));
   });
 }
 
@@ -126,6 +127,9 @@ function installInterceptors() {
   const realErr = process.stderr.write.bind(process.stderr);
   let outBuf = "", errBuf = "";
   let idleTimer: NodeJS.Timeout | null = null;
+
+  let pulseTimer: NodeJS.Timeout | null = null;
+
   const flushIdle = () => {
     if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
     if (outBuf) { const b = outBuf; outBuf = ""; appendLog(b); }
@@ -143,7 +147,6 @@ function installInterceptors() {
       outBuf = outBuf.slice(idx + 1);
       appendLog(line);
     }
-    if (!idleTimer) idleTimer = setTimeout(flushIdle, 150); // soft flush for non-\n streams
     if (typeof cb === 'function') cb();
     return true;
   };
@@ -158,13 +161,18 @@ function installInterceptors() {
       errBuf = errBuf.slice(idx + 1);
       appendLog(line);
     }
-    if (!idleTimer) idleTimer = setTimeout(flushIdle, 150);
     if (typeof cb === 'function') cb();
     return true;
   };
+
+  pulseTimer = setInterval(() => {
+    if ((outBuf || errBuf) && !TUI_DRAWING) redraw();
+  }, 80);
+
   uninstallInterceptors = () => {
     (process.stdout as any).write = realOut as any;
     (process.stderr as any).write = realErr as any;
+    if (pulseTimer) { clearInterval(pulseTimer); pulseTimer = null; }
     flushIdle();
   };
 }
