@@ -5,6 +5,8 @@ const logErr  = (s: string) => { ( console.error)(s); };
 const appendDirect = (s: string) => { ( ((x: string)=>console.log(x)))(s.endsWith("\n")?s:(s+"\n")); };
 const stamp = () => new Date().toLocaleTimeString();
 
+const SHOW_THINK = (process.env.SHOW_THINK === "1" || process.env.SHOW_THINK === "true");
+
 // --- Cooperative "user interrupt" flag (set from main on interject)
 const __userInterrupt = { ts: 0 };
 export function markUserInterject() { __userInterrupt.ts = Date.now(); }
@@ -368,6 +370,14 @@ Be concise.
     // Acquire the shared channel lock up-front so summarizeOnce and chatOnce do not overlap across agents
     const release = await channelLock.waitForLock(15 * 60 * 1000);
     try {
+      const isUserIncoming = String(incoming.from || "").toLowerCase() === "user";
+      const userFocusNudge: ChatMessage | null = isUserIncoming ? {
+        role: "system",
+        from: "System",
+        read: true,
+        content:
+          "The last message is from the end user. Respond directly to the user in 1–3 sentences. Avoid meta talk like 'we need to...' and do not include <think> sections. If a short action is required, state the next exact command or file to write. Do not call tools unless truly necessary."
+      } : null;
       // Only summarize when context length exceeds HIGH watermark and not on every turn
       this._turnCounter++;
       let summaryText = "";
@@ -396,6 +406,7 @@ Be concise.
       const tail = this.context.slice(-20);
       const fullMessageHistory: ChatMessage[] = [
         { role: "system", from: "System", content: this.system, read: false },
+        ...(userFocusNudge ? [userFocusNudge] : []),
         ...(dynamicSystem ? [dynamicSystem] : []),
         ...tail,
         { role: "user", from: incoming.from, content: incoming.content, read: false },
@@ -420,7 +431,7 @@ Be concise.
         });
       }
       const wroteThisTurn = messages.some(m => m.role === 'tool' && /=>\s*Written to file/i.test(String(m.content || '')));
-      if (!wroteThisTurn) {
+      if (!wroteThisTurn && !(String(incoming.from || "").toLowerCase() === "user")) {
         this.context.push({
           ts: new Date().toISOString(),
           role: 'system',
@@ -598,7 +609,7 @@ Be concise.
       // If there are *no* tool calls, this is a summary/final assistant message.
       if (!tool_calls || tool_calls.length === 0) {
         // Optionally surface chain-of-thought wrapper (kept as-is if present)
-        if ((msg as any).reasoning) {
+        if (SHOW_THINK && (msg as any).reasoning) {
           responses.push({
             role: "assistant",
             from: this.id,
@@ -609,7 +620,11 @@ Be concise.
         }
 
         const trimmed = String(response ?? "").trim();
-        const finalText = trimmed.length > 0 ? trimmed : "(no content)";
+        let finalText = trimmed;
+        if (!finalText) {
+          // If the user just spoke, provide a minimal acknowledgment to keep the loop moving.
+          finalText = "Got it — acknowledged. I’ll proceed based on your request.";
+        }
         responses.push({
           role: "assistant",
           from: this.id,
