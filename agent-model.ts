@@ -254,6 +254,15 @@ I have implemented the architecture documents.
 Prefer direct messages when the information is not important to other members of the group.
 Responses with no tags are sent to the entire group.
 
+Avoid accidentally writing to the end of the file when trying to switch back to communicating with the group.
+Instead use @group to expicitly switch back and prevent corrupting files.
+Examlple
+
+#file:notes.txt
+My awesome file
+@group
+I wrote notes.txt check it out.
+
 PLEASE use the file system.
 PLEASE write files to disk rather than just chatting about them with the group.
 PLEASE avoid overwriting existing files by accident. Check for and read existing files before writing to disk.
