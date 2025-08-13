@@ -1,8 +1,8 @@
 // --- Lightweight wrappers for unified logging ---
 const __g: any = (globalThis as any) || {};
-const logLine = (s: string) => { (__g.__log ?? console.log)(s); };
-const logErr  = (s: string) => { (__g.__logError ?? console.error)(s); };
-const appendDirect = (s: string) => { (__g.__appendLog ?? ((x: string)=>console.log(x)))(s.endsWith("\n")?s:(s+"\n")); };
+const logLine = (s: string) => { (console.log)(s); };
+const logErr  = (s: string) => { ( console.error)(s); };
+const appendDirect = (s: string) => { ( ((x: string)=>console.log(x)))(s.endsWith("\n")?s:(s+"\n")); };
 const stamp = () => new Date().toLocaleTimeString();
 const Reset = () => "\x1b[0m";
 const CyanTag = () => "\x1b[36m";
