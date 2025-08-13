@@ -26,6 +26,8 @@ export class TurnManager {
   private running: boolean[] = [];
   private lastIdle: number[] = [];
   private lastProbe: number[] = [];   // last time we allowed a proactive turn per agent
+  private noWorkTicks = 0;            // consecutive ticks with no scheduled work
+  private lastAnyWorkTs = Date.now(); // last time an agent actually ran
   private paused = false;
   private lastSkipLog = 0;
 
@@ -34,6 +36,8 @@ export class TurnManager {
     this.running = Array(n).fill(false);
     this.lastIdle = Array(n).fill(0);
     this.lastProbe = Array(n).fill(0);
+    this.noWorkTicks = 0;
+    this.lastAnyWorkTs = Date.now();
   }
 
   pause()  { this.paused = true; }
@@ -73,6 +77,8 @@ export class TurnManager {
     const userBurst = this.room.hasFreshUserMessage();
     const start = this.i;
 
+    let didSchedule = false;
+
     for (let step = 0; step < n; step++) {
       const k = (start + step) % n;
       const agent = this.agents[k];
@@ -97,10 +103,12 @@ export class TurnManager {
 
       try {
         const didWork = await agent.takeTurn();
+        didSchedule = true;
+        this.lastAnyWorkTs = Date.now();
+
         if (!didWork) {
           this.lastIdle[k] = Date.now();
         }
-        // If this was a proactive attempt (no unread before), record probe time
         if (!hasUnread && !userBurst) {
           this.lastProbe[k] = Date.now();
         }
@@ -113,6 +121,48 @@ export class TurnManager {
 
       this.i = (k + 1) % n;   // next round starts after this agent
       return;                 // one agent per tick
+    }
+
+    // If no agent was scheduled this tick, increment an idle counter and
+    // proactively "poke" the agents after a short period so the queue cannot
+    // drain into a dead state.
+    if (!didSchedule) {
+      this.noWorkTicks++;
+
+      const POKE_AFTER_TICKS = Math.max(8, Math.floor((this.opts.idleBackoffMs ?? 1000) / (this.opts.tickMs ?? 400)) + 6);
+      if (this.noWorkTicks >= POKE_AFTER_TICKS) {
+        this.noWorkTicks = 0;
+
+        // Issue a lightweight synthetic user message to each agent to create
+        // a single unread item. This avoids relying on system-role messages
+        // (which are not enqueued as unread by AgentModel._enqueue).
+        const nowIso = new Date().toISOString();
+        for (let k = 0; k < n; k++) {
+          try {
+            (this.agents[k] as any).enqueueFromRoom({
+              ts: nowIso,
+              role: "user",
+              from: "User",
+              content: "(resume)",
+              read: false,
+            });
+          } catch {}
+        }
+
+        try { (globalThis as any).__log?.("[watchdog] task queue drained — poked agents with (resume)", "yellow"); } catch {}
+      }
+    } else {
+      // Reset the idle counter on any scheduled work
+      this.noWorkTicks = 0;
+    }
+
+    // Starvation guard: if nothing has run for a while (no agent scheduled),
+    // re-arm probes so proactive turns can fire again.
+    const STARVE_MS = Math.max(5000, (this.opts.proactiveMs ?? 3000) * 2);
+    if (Date.now() - this.lastAnyWorkTs > STARVE_MS) {
+      for (let k = 0; k < n; k++) this.lastProbe[k] = 0;
+      this.lastAnyWorkTs = Date.now();
+      try { (globalThis as any).__log?.("[watchdog] starvation guard reset probes", "yellow"); } catch {}
     }
   }
 }
