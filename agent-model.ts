@@ -1,82 +1,3 @@
-  // --- TurnManager integration methods ---
-  public hasUnread(): boolean {
-    return this.inbox.length > 0;
-  }
-
-  public enqueueFromRoom(msg: RoomMessage) {
-    this._enqueue(msg);
-  }
-
-  public abortCurrentTurn(reason: string) {
-    try { require("./chat").interruptChat(); } catch {}
-  }
-
-  public async takeTurn(): Promise<boolean> {
-    if ((globalThis as any).__PAUSE_INPUT) return false;
-    if (this.inbox.length === 0) return false;
-
-    // Peek to detect whether the newest unread came from user
-    const peek = this.inbox[this.inbox.length - 1];
-    const isUserIncoming = String(peek?.from || "").toLowerCase() === "user";
-
-    // Acquire the global channel lock (mirrors receiveMessage)
-    const release = await channelLock.waitForLock(15 * 60 * 1000);
-    try {
-      if ((globalThis as any).__PAUSE_INPUT) return false;
-
-      // Optional user-focus nudge
-      const userFocusNudge: ChatMessage | null = isUserIncoming ? {
-        role: "system", from: "System", read: true,
-        content: "The last message is from the end user. Respond directly to the user in 1–3 sentences. Avoid meta talk and do not include <think>."
-      } : null;
-
-      // Summarize via hysteresis gate
-      this._turnCounter++;
-      let summaryText = "";
-      if (this.context.length > this.contextWM.high && (this._turnCounter - this._lastSummarizeTurn) >= 2) {
-        const tail = this.context.slice(-20);
-        const summarizerSystem: ChatMessage = { role: "system", from: "System", read: true, content: "You are a succinct coordinator. Summarize recent conversation (goal, constraints, files changed, tools run, next steps). Max 120 words." } as any;
-        try {
-          summaryText = await withTimeout(
-            summarizeOnce([ summarizerSystem, ...tail ], { model: this.model }),
-            180_000,
-            "summary timeout"
-          );
-          if (summaryText) this._lastSummarizeTurn = this._turnCounter;
-        } catch {}
-      }
-      const dynamicSystem: ChatMessage | null = summaryText ? { role: "system", from: "System", read: true, content: `Context summary:\n${summaryText}` } : null;
-
-      // Drain all unread now
-      const unreadBatch = this._drainUnread();
-      const tail = this.context.slice(-20);
-      const full: ChatMessage[] = [
-        { role: "system", from: "System", content: this.system, read: false },
-        ...(userFocusNudge ? [userFocusNudge] : []),
-        ...(dynamicSystem ? [dynamicSystem] : []),
-        ...tail,
-        ...unreadBatch.map(m => ({ role: (m.role === 'system' || m.from === this.id) ? 'system' : 'user', from: m.from, content: m.content, read: false } as ChatMessage)),
-      ];
-
-      const tools: ToolDef[] = [ this._defShellTool() ];
-      const normalized = this._viewForSelf(full);
-      const msgs = await this.runWithTools(normalized, tools, (c)=>this._execTool(c), 25);
-
-      // Persist to context and deliver last
-      for (const m of msgs) {
-        const mappedRole = (m.role === 'tool') ? 'tool' : (m.from === this.id ? 'assistant' : 'user');
-        this.context.push({ ts: new Date().toISOString(), role: mappedRole as any, from: m.from, content: m.content, read: true });
-      }
-      const last = msgs[msgs.length - 1];
-      if (last) await this._deliver(last.content ?? (last as any).reasoning ?? "");
-      const assistantAggregate = msgs.filter(m => m.role === 'assistant' && m.from === this.id && typeof m.content === 'string').map(m => m.content as string).join("\n").slice(0, 8000);
-      if (assistantAggregate.trim()) this._appendSoC(assistantAggregate);
-      this.cleanContext();
-      return true;
-    } finally {
-      try { release(); } catch {}
-    }
-  }
 // --- Global pause helpers (for user input) ---
 const isPaused = () => Boolean((globalThis as any).__PAUSE_INPUT);
 const waitWhilePaused = async () => {
@@ -451,11 +372,59 @@ Above all - DO THE THING. Don't just talk about it.
 Speak only in your own voice as "${this.id}" in the first person.
 Do not describe your intentions (e.g., "We need to respond as Bob").
 Do not narrate plans or roles; provide the final answer only.
-Do not quote other agents’ names as prefixes like "bob:" or "carol:".
+    Do not quote other agents’ names as prefixes like "bob:" or "carol:".
 
-Be concise.
-`;
+    Be concise.
+    `;
   }
+
+  //
+  // --- TurnManager integration methods ---
+  // These are called by turn-manager.ts. They must not double-lock.
+  //
+  // Return whether this agent has unread messages queued (non-system, not from self).
+  public hasUnread(): boolean {
+    return this.inbox.length > 0;
+  }
+
+  // Called by ChatRoom to enqueue raw room messages (keeps unread state)
+  public enqueueFromRoom(msg: RoomMessage) {
+    this._enqueue(msg);
+  }
+
+  // Called by TurnManager watchdog to abort a long-running streamed turn.
+  public abortCurrentTurn(reason: string) {
+    try {
+      // Best-effort: ask the streaming layer to abort
+      require("./chat").interruptChat();
+    } catch {}
+  }
+
+  // Called by the TurnManager scheduler to let the agent process its unread inbox.
+  // We DO NOT take the channel lock here: receiveMessage() already acquires it.
+  // We also avoid enqueuing more unread by using a synthetic system "tick" message.
+  public async takeTurn(): Promise<boolean> {
+    if (isPaused()) return false;
+    if (this.inbox.length === 0) return false;
+
+    // If the user just interjected, let the normal receive path handle it after the skip window.
+    const __userInterrupt = (globalThis as any).__userInterrupt || { ts: 0 };
+    if (Date.now() - (__userInterrupt.ts || 0) < 1500) {
+      return false;
+    }
+
+    const tick: RoomMessage = {
+      ts: new Date().toISOString(),
+      role: "system" as const,
+      from: "TurnManager",
+      content: "(tick)",
+      read: false,
+    };
+    await this.receiveMessage(tick);
+    return true;
+  }
+  //
+  // --- end TurnManager integration methods ---
 
   /* ------------------------------------------------------------ */
   async initialMessage(incoming: RoomMessage): Promise<void> {
