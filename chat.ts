@@ -193,8 +193,6 @@ export async function chatOnce(
   const ollamaBaseUrl = opts?.baseUrl ?? BASE_URL;
   const model = opts?.model ?? DEFAULT_MODEL;
 
-  console.log("I DO NOT GET PRINTED");
-
   // Use preflight cache and checks
   const pf = await preflight(ollamaBaseUrl, model);
   if (pf) return { role: "assistant", content: pf };
