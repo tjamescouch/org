@@ -280,6 +280,28 @@ export class AgentModel extends Model {
   };
   private _turnCounter = 0;
   private _lastSummarizeTurn = -1;
+  private _wakeTimer: ReturnType<typeof setTimeout> | null = null;
+  private _lastSkipLog = 0;
+  // Schedule a self-wake so the agent processes its unread inbox shortly after
+  // the interjection window elapses. This prevents endless "skip" loops.
+  private _scheduleWake(delayMs = 1700) {
+    try { if (this._wakeTimer) { clearTimeout(this._wakeTimer); this._wakeTimer = null; } } catch {}
+    this._wakeTimer = setTimeout(() => {
+      // Re-enter via receiveMessage with a lightweight synthetic system nudge.
+      const nudge: RoomMessage = {
+        ts: new Date().toISOString(),
+        role: 'system',
+        from: 'System',
+        read: false,
+        content: '(resume)'
+      } as any;
+      // Only trigger if we're not currently paused.
+      if (!(globalThis as any).__PAUSE_INPUT) {
+        // Fire and forget — unread backlog will be drained inside.
+        void this.receiveMessage(nudge);
+      }
+    }, Math.max(0, delayMs));
+  }
 
   constructor(id: string, model: string) {
     super(id);
@@ -378,7 +400,16 @@ Be concise.
     if (PAUSED || userJustInterjected) {
       // Record the message for history but do not generate a response now.
       this._enqueue({ ...incoming, read: false });
-      logLine(`${BrightYellowTag()}[skip] ${this.id}: user control active; skipping queued turn @ ${stamp()}${Reset()}`);
+
+      // Throttle noisy skip logs to once per ~900ms per agent
+      const now = Date.now();
+      if (now - this._lastSkipLog > 900) {
+        this._lastSkipLog = now;
+        logLine(`${BrightYellowTag()}[skip] ${this.id}: user control active; skipping queued turn @ ${stamp()}${Reset()}`);
+      }
+
+      // Ensure we resume shortly after the interjection window expires
+      this._scheduleWake(1700);
       return;
     }
     await waitWhilePaused();
@@ -389,7 +420,12 @@ Be concise.
     // Guard again after acquiring the lock in case control changed while waiting
     if (Boolean((globalThis as any).__PAUSE_INPUT) || (Date.now() - __userInterrupt.ts) < 1500) {
       release();
-      logLine(`${BrightYellowTag()}[skip] ${this.id}: user control after lock; yielding${Reset()}`);
+      const now = Date.now();
+      if (now - this._lastSkipLog > 900) {
+        this._lastSkipLog = now;
+        logLine(`${BrightYellowTag()}[skip] ${this.id}: user control after lock; yielding${Reset()}`);
+      }
+      this._scheduleWake(1700);
       return;
     }
     try {
