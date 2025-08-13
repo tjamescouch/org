@@ -202,37 +202,31 @@ function installInterceptors() {
   const realOut = process.stdout.write.bind(process.stdout);
   const realErr = process.stderr.write.bind(process.stderr);
   let outBuf = "", errBuf = "";
-  let pulseTimer: NodeJS.Timeout | null = null;
 
   (process.stdout as any).write = (chunk: any, enc?: any, cb?: any) => {
+    // Bypass recursion during guarded draws
     if (TUI_DRAWING) return realOut(chunk as any, enc as any, cb as any);
+    // Normalize line endings to avoid CR-sticking
     const s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
     const norm = s.replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
-    outBuf += norm;
-    let idx; while ((idx = outBuf.indexOf("\n")) !== -1) { const line = outBuf.slice(0, idx + 1); outBuf = outBuf.slice(idx + 1); appendLog(line); }
-    if (typeof cb === 'function') cb();
-    return true;
+    // Write directly to terminal; do NOT buffer/redraw here to avoid stalls
+    const ok = realOut(norm as any, enc as any, cb as any);
+    return ok;
   };
+
   (process.stderr as any).write = (chunk: any, enc?: any, cb?: any) => {
     if (TUI_DRAWING) return realErr(chunk as any, enc as any, cb as any);
     const s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
     const norm = s.replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
-    errBuf += norm;
-    let idx; while ((idx = errBuf.indexOf("\n")) !== -1) { const line = errBuf.slice(0, idx + 1); errBuf = errBuf.slice(idx + 1); appendLog(line); }
-    if (typeof cb === 'function') cb();
-    return true;
+    const ok = realErr(norm as any, enc as any, cb as any);
+    return ok;
   };
 
-  pulseTimer = setInterval(() => {
-    if ((outBuf || errBuf)) redraw();
-  }, 120);
+  // No pulse redraw; rendering happens via normal console output
 
   uninstallInterceptors = () => {
     (process.stdout as any).write = realOut as any;
     (process.stderr as any).write = realErr as any;
-    if (pulseTimer) { clearInterval(pulseTimer); pulseTimer = null; }
-    if (outBuf) { const b = outBuf; outBuf = ""; appendLog(b); }
-    if (errBuf) { const b = errBuf; errBuf = ""; appendLog(b); }
   };
 }
 
