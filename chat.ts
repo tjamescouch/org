@@ -44,6 +44,7 @@ import { TextDecoder } from "util";
 import { VERBOSE } from './constants';
 // Enable raw stream debug with: DEBUG_STREAM=1 bun main.ts
 const DEBUG_STREAM = process.env.DEBUG_STREAM === "1";
+const SHOW_THINK = process.env.SHOW_THINK === "1"; // show chain-of-thought when set
 import type { ReadableStreamReadResult } from "stream/web";
 
 const BASE_URL = "http://192.168.56.1:11434"; // host-only IP
@@ -417,13 +418,16 @@ export async function chatOnce(
       const reasonStr = typeof delta.reasoning === 'string' ? delta.reasoning : '';
       const contentStr = typeof delta.content === 'string' ? delta.content : '';
 
-      // Suppress visible chain‑of‑thought; keep for detectors only
+      // Chain‑of‑thought handling: show if SHOW_THINK=1, else suppress with a dot
       if (reasonStr) {
-        if (firstThink) { firstThink = false; }
-        // no stdout write
-        // indicate suppression with a dot if there is no concurrent visible content
-        if (DEBUG_STREAM) console.error("[COT suppressed]", reasonStr.slice(0, 40));
-        emitDot();
+        if (SHOW_THINK) {
+          if (firstThink) { firstThink = false; Bun.stdout.write("<think>"); }
+          Bun.stdout.write(reasonStr);
+        } else {
+          if (firstThink) { firstThink = false; }
+          if (DEBUG_STREAM) console.error("[COT suppressed]", reasonStr.slice(0, 40));
+          emitDot();
+        }
       }
       if (contentStr) {
         if (firstNotThink && !firstThink) { firstNotThink = false; }
@@ -502,6 +506,11 @@ export async function chatOnce(
 
   if (squelchedChars > 0) {
     Bun.stdout.write("\n");
+  }
+
+  // If we printed any visible CoT, close the tag
+  if (SHOW_THINK && !firstThink) {
+    Bun.stdout.write("\n</think>\n");
   }
 
   if (cutAt !== null) {

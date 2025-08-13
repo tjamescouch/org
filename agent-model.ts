@@ -213,6 +213,8 @@ export class AgentModel extends Model {
     // …and compress down to LOW (leave headroom for a 1-message summary)
     low: Math.max(Math.floor(this.maxMessagesInContext * 0.6), 6),
   };
+  private _turnCounter = 0;
+  private _lastSummarizeTurn = -1;
 
   constructor(id: string, model: string) {
     super(id);
@@ -300,26 +302,31 @@ Be concise.
     // Acquire the shared channel lock up-front so summarizeOnce and chatOnce do not overlap across agents
     const release = await channelLock.waitForLock(15 * 60 * 1000);
     try {
-      // Keep a short tail for the LLM and add a dynamic summary system message (non-streaming)
-      const tail = this.context.slice(-20);
-      const summarizerSystem = {
-        role: "system" as const,
-        from: "System",
-        content:
-          "You are a succinct coordinator. Summarize the recent conversation as bullet points covering: current project goal, key constraints, files created/modified, tools/commands run and outcomes, and next concrete steps. Max 120 words. No code. No quotes.",
-        read: true,
-      };
-
-      const summaryText = await withTimeout(
-        summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ], { model: this.model }),
-        180_000,
-        "summary timeout"
-      ).catch(() => "");
+      // Only summarize when context length exceeds HIGH watermark and not on every turn
+      this._turnCounter++;
+      let summaryText = "";
+      if (this.context.length > this.contextWM.high && (this._turnCounter - this._lastSummarizeTurn) >= 2) {
+        const tail = this.context.slice(-20);
+        const summarizerSystem = {
+          role: "system" as const,
+          from: "System",
+          content:
+            "You are a succinct coordinator. Summarize the recent conversation as bullet points covering: current project goal, key constraints, files created/modified, tools/commands run and outcomes, and next concrete steps. Max 120 words. No code. No quotes.",
+          read: true,
+        };
+        summaryText = await withTimeout(
+          summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ], { model: this.model }),
+          180_000,
+          "summary timeout"
+        ).catch(() => "");
+        if (summaryText) this._lastSummarizeTurn = this._turnCounter;
+      }
 
       const dynamicSystem: ChatMessage | null = summaryText
-        ? { role: "system", from: "System", content: `Context summary:\n${summaryText}`, read: true }
+        ? { role: "system", from: "System", content: `Context summary:\n${summaryText}` , read: true }
         : null;
 
+      const tail = this.context.slice(-20);
       const fullMessageHistory: ChatMessage[] = [
         { role: "system", from: "System", content: this.system, read: false },
         ...(dynamicSystem ? [dynamicSystem] : []),
@@ -469,15 +476,12 @@ Be concise.
       // Parse tags from assistant content
       const { clean: response, tags } = TagParser.parse(msg.content || "");
 
-      // Collect declared + embedded tool calls
-      const extractedToolCall = extractToolCallsFromText(msg.content ?? "").tool_calls[0];
+      // Collect declared + embedded tool calls (forward ALL extracted)
+      const extractedAll = extractToolCallsFromText(msg.content ?? "").tool_calls || [];
       const tool_calls = [
         ...(msg.tool_calls ?? []),
+        ...extractedAll,
       ];
-
-      if (extractedToolCall) {
-        tool_calls.push(extractedToolCall);
-      }
 
       // If there are *no* tool calls, this is a summary/final assistant message.
       if (!tool_calls || tool_calls.length === 0) {
