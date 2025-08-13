@@ -353,7 +353,7 @@ async function app() {
 
   // Round‑robin scheduler decoupled from message arrival
   const tm = new TurnManager(room as any, agents as any, {
-    tickMs: 400,             // fast scheduler cadence
+    tickMs: 800,             // slow scheduler cadence
     turnTimeoutMs: 8_000,    // shorter watchdog for snappier aborts
     idleBackoffMs: 1200,     // back off briefly after a no-op turn
     proactiveMs: 2500,       // allow a light proactive tick every ~2.5s per agent

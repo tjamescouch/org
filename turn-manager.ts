@@ -18,6 +18,7 @@ export interface TurnManagerOpts {
   turnTimeoutMs?: number;     // per-turn watchdog
   idleBackoffMs?: number;     // when agent has nothing to say
   proactiveMs?: number;       // allow a lightweight proactive turn this often even with no unread
+  pokeAfterMs?: number;       // after this idle time, poke agents once
 }
 
 export class TurnManager {
@@ -123,19 +124,12 @@ export class TurnManager {
       return;                 // one agent per tick
     }
 
-    // If no agent was scheduled this tick, increment an idle counter and
-    // proactively "poke" the agents after a short period so the queue cannot
-    // drain into a dead state.
     if (!didSchedule) {
-      this.noWorkTicks++;
-
-      const POKE_AFTER_TICKS = Math.max(8, Math.floor((this.opts.idleBackoffMs ?? 1000) / (this.opts.tickMs ?? 400)) + 6);
-      if (this.noWorkTicks >= POKE_AFTER_TICKS) {
-        this.noWorkTicks = 0;
-
-        // Issue a lightweight synthetic user message to each agent to create
-        // a single unread item. This avoids relying on system-role messages
-        // (which are not enqueued as unread by AgentModel._enqueue).
+      // Low-frequency watchdog: if *nothing* has run for a while, poke agents once.
+      const idleMs = Date.now() - this.lastAnyWorkTs;
+      const POKE_AFTER_MS = this.opts.pokeAfterMs ?? 30_000; // 30s default
+      if (idleMs >= POKE_AFTER_MS) {
+        this.lastAnyWorkTs = Date.now();
         const nowIso = new Date().toISOString();
         for (let k = 0; k < n; k++) {
           try {
@@ -148,12 +142,12 @@ export class TurnManager {
             });
           } catch {}
         }
-
-        try { (globalThis as any).__log?.("[watchdog] task queue drained — poked agents with (resume)", "yellow"); } catch {}
+        try { (globalThis as any).__log?.("[watchdog] idle ≥ 30s — poked agents with (resume)", "yellow"); } catch {}
       }
     } else {
-      // Reset the idle counter on any scheduled work
+      // Reset the idle timestamp whenever we schedule work
       this.noWorkTicks = 0;
+      this.lastAnyWorkTs = Date.now();
     }
 
     // Starvation guard: if nothing has run for a while (no agent scheduled),

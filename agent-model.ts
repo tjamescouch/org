@@ -545,7 +545,7 @@ Do not narrate plans or roles; provide the final answer only.
       ];
 
       const normalizedHistory = this._viewForSelf(fullMessageHistory);
-      const messages = await this.runWithTools(normalizedHistory, tools, (c) => this._execTool(c), 25);
+      const messages = await this.runWithTools(normalizedHistory, tools, (c) => this._execTool(c), 5);
       for (const m of messages) {
         const mappedRole = (m.role === 'tool')
           ? 'tool'
@@ -603,7 +603,7 @@ Do not narrate plans or roles; provide the final answer only.
     let breakerCooldown = 0;            // when > 0, next hops run with tools disabled
     let breakerReason: string | null = null;
     let totalToolCallsThisTurn = 0;     // cap tool calls per run
-    const MAX_TOOL_CALLS_PER_TURN = 10;
+    const MAX_TOOL_CALLS_PER_TURN = 6;
     let wroteFileThisTurn = false;        // did we write a file via #file tag this turn?
 
     // Start with the provided conversation
