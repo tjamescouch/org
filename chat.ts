@@ -8,7 +8,17 @@ export function interruptChat() {
 let _preflightOkUntil = 0;
 let _knownModels: Set<string> | null = null;
 const now = () => Date.now();
-const isV1Server = (u: string) => /\/v1(\/|$)/.test(u) || !/\/api(\/|$)/.test(u);
+// Consider servers that look OpenAI-compatible (/v1) or explicitly LM Studio/OpenAI hosts as "v1" (skip Ollama preflight)
+const isV1Server = (u: string) => {
+  try {
+    // Normalize to allow host inference when a full URL is provided
+    const hasV1 = /\/v1(\/|$)/i.test(u);
+    const isKnownV1Host = /lmstudio|openai/i.test(u);
+    return hasV1 || isKnownV1Host;
+  } catch {
+    return /\/v1(\/|$)/i.test(u);
+  }
+};
 
 async function preflight(baseUrl: string, model: string): Promise<string | null> {
   // Skip Ollama-specific checks for OpenAI/LM Studio style servers
@@ -51,6 +61,13 @@ import { VERBOSE } from './constants';
 // Enable raw stream debug with: DEBUG_STREAM=1 bun main.ts
 const DEBUG_STREAM = process.env.DEBUG_STREAM === "1";
 const SHOW_THINK = process.env.SHOW_THINK === "1"; // show chain-of-thought when set
+
+// Allow overriding connection/first-chunk timeouts: "4000,8000,15000"
+function getConnectTimeouts(): number[] {
+  const raw = (process.env.CHAT_CONNECT_TIMEOUTS_MS || "4000,8000,15000").trim();
+  const parts = raw.split(",").map(s => Math.max(500, Number(s.trim()) || 0)).filter(Boolean);
+  return parts.length ? parts : [4000, 8000, 15000];
+}
 // Kill-switches to troubleshoot "no output" situations
 const DISABLE_ABORT = process.env.DISABLE_ABORT === "1";             // disables all abort detectors & soft suppression
 const DISABLE_GARBAGE_FILTER = process.env.DISABLE_GARBAGE_FILTER === "1"; // prints everything even if it looks like tool JSON, etc.
@@ -224,7 +241,7 @@ export async function chatOnce(
 
   // Single-endpoint strategy: OpenAI-compatible /v1/chat/completions (tool calling)
   let resp: Response | undefined;
-  const timeouts = [1000000, 2000000, 4000000];
+  const timeouts = getConnectTimeouts();
   for (let attempt = 0; attempt < timeouts.length; attempt++) {
     const connectAC = new AbortController();
     _currentStreamAC = connectAC; // expose for external interrupt
@@ -240,22 +257,66 @@ export async function chatOnce(
       if (!resp.ok) {
         const txt = await resp.text();
 
-	console.log(txt);
+        console.log(txt);
 
         return { role: "assistant", content: `HTTP ${resp.status} – ${resp.statusText}\n${txt}` };
       }
-      // Wait for first chunk with timeout
+      // Print header as soon as we have HTTP 200 to show liveness
+      let namePrinted = false;
+      {
+        const ts = new Date().toLocaleTimeString();
+        console.log(`\n\x1b[36m**** ${name} @ ${ts}\x1b[0m:`);
+        namePrinted = true;
+      }
+
+      // Inspect content type once per request
+      const ctype = String(resp.headers.get("content-type") || "");
+      if (DEBUG_STREAM) console.error(`[chatOnce] content-type: ${ctype}`);
+
+      // Fast path: some servers reply with a single JSON (no SSE)
+      if (/application\/json/i.test(ctype) && !/text\/event-stream/i.test(ctype)) {
+        const json = await resp.json().catch(() => null as any);
+        if (json && json.choices && json.choices[0]) {
+          const ch = json.choices[0];
+          const msg = ch.message || ch.delta || {};
+          const contentStr = typeof msg.content === "string" ? msg.content : "";
+          const reasoningStr = typeof msg.reasoning === "string" ? msg.reasoning : "";
+          // tool calls may be fully present on non-streaming responses
+          const tc = Array.isArray(msg.tool_calls) ? msg.tool_calls : (Array.isArray(ch.tool_calls) ? ch.tool_calls : undefined);
+
+          if (contentStr) Bun.stdout.write(contentStr + "\n");
+          if (!contentStr && reasoningStr && SHOW_THINK) {
+            Bun.stdout.write(`<think>${reasoningStr}</think>\n`);
+          }
+          _currentStreamAC = null;
+          return { role: "assistant", content: contentStr.trim(), reasoning: reasoningStr, tool_calls: tc };
+        }
+        // If JSON but not in expected shape, fall through to stream reader (some servers still chunk JSON lines)
+      }
+
+      // Streaming/SSE path
       let reader = resp.body!.getReader();
       const decoder = new TextDecoder("utf-8");
+
+      // Show a subtle spinner/dot while waiting for the first bytes
+      let firstChunkArrived = false;
+      const waitDots = setInterval(() => {
+        if (!firstChunkArrived) { try { Bun.stdout.write("."); } catch {} }
+      }, 250);
+
       let firstReadTimedOut = false;
       const first = await Promise.race([
         reader.read(),
         new Promise<never>((_, rej) => setTimeout(() => { firstReadTimedOut = true; rej(new Error("first-chunk-timeout")); }, timeouts[attempt])),
       ] as any);
-      if (firstReadTimedOut) throw new Error("first-chunk-timeout");
+      firstChunkArrived = true;
+      clearInterval(waitDots);
+
       (resp as any)._org_firstChunk = first;
       (resp as any)._org_reader = reader;
       (resp as any)._org_decoder = decoder;
+      // keep namePrinted state for the outer loop
+      (resp as any)._org_namePrinted = namePrinted;
       break;
     } catch (e) {
       clearTimeout(t);
@@ -306,7 +367,7 @@ export async function chatOnce(
   let thinkingBuf = "";
   let toolCalls: ToolCall[] | undefined;
   let done = false;
-  let namePrinted = false;
+  let namePrinted = Boolean((resp as any)._org_namePrinted);
   let firstThink = true;
   let firstNotThink = true;
   let tokenCount = 0; // counts emitted non-empty content/reasoning units
@@ -388,11 +449,6 @@ export async function chatOnce(
       // Ollama native streams JSON lines without the "data:" prefix; OpenAI-style uses "data: {json}"
       const payload = line.startsWith('data:') ? line.slice(5).trim() : line;
 
-      if (!namePrinted) {
-        const ts = new Date().toLocaleTimeString();
-        console.log(`\n\x1b[36m**** ${name} @ ${ts}\x1b[0m:`);
-        namePrinted = true;
-      }
 
       if (payload === '[DONE]') { done = true; break; }
 
@@ -415,6 +471,10 @@ export async function chatOnce(
       // OpenAI finish reason appears on the choice, even when delta is empty
       const choice = parsed?.choices?.[0] ?? {};
       const finishReason = choice?.finish_reason as (string | null | undefined);
+      if (finishReason === "stop") {
+        done = true;
+        // continue to process any residual delta fields below before breaking out at loop end
+      }
 
       // Some Ollama builds emit { done: true } without a message
       if (!parsed?.message && parsed?.done === true) { 
