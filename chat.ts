@@ -8,6 +8,13 @@ export function interruptChat() {
 let _preflightOkUntil = 0;
 let _knownModels: Set<string> | null = null;
 const now = () => Date.now();
+
+// Tip: set FORCE_V1=1 (or LMSTUDIO=1 / OPENAI_COMPAT=1) to skip Ollama /api preflight calls entirely.
+const FORCE_V1 =
+  process.env.FORCE_V1 === "1" ||
+  process.env.LMSTUDIO === "1" ||
+  process.env.OPENAI_COMPAT === "1";
+
 // Consider servers that look OpenAI-compatible (/v1) or explicitly LM Studio/OpenAI hosts as "v1" (skip Ollama preflight)
 const isV1Server = (u: string) => {
   try {
