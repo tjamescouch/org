@@ -60,6 +60,19 @@ class RegexAbortDetector implements AbortDetector {
   }
 }
 
+class MetaTagLeakDetector implements AbortDetector {
+  name = "meta-tag-leak";
+  // Detects leaked framework/control tokens and channel|commentary artifacts
+  // Examples:
+  //   "<|start|>", "<|im_start|>", "<|assistant|>", "<|tool|>", "<channel|commentary>"
+  //   as well as any "<foo|commentary ...>" slack-style tag
+  private re = /<\|[^>]*\|>|<\s*[a-z0-9_-]+\s*\|\s*commentary\b[^>]*>/i;
+  check(text: string): { index: number; reason: string } | null {
+    const m = this.re.exec(text);
+    return m ? { index: m.index, reason: "meta/control-tag" } : null;
+  }
+}
+
 class CrossTurnRepetitionDetector implements AbortDetector {
   name = "cross-turn";
   constructor(private cfg = {
@@ -472,6 +485,7 @@ Be concise.
       const detectors: AbortDetector[] = [
         new CrossTurnRepetitionDetector({ tailWords: 20, minChars: 220, minNoveltyRatio: 0.08, sampleSocChars: 20000 }),
         new AgentQuoteAbortDetector(agents),
+        new MetaTagLeakDetector(),
         new RepetitionAbortDetector({ tailWords: 20, maxRepeats: 6, minWordsForNovelty: 220, minNoveltyRatio: 0.04 }),
         new ToolEchoFloodDetector(4),
         new SpiralPhraseDetector(), // keep disabled for now
