@@ -307,7 +307,7 @@ async function app() {
   await room.broadcast("User", kickoffPrompt);
 
   // Interactive key controls only in TUI
-  if (INTERACTIVE && process.stdin.isTTY) {
+  if (INTERACTIVE && process.stdin.isTTY && !isRawMode) {
     process.stdin.setRawMode?.(true);
     isRawMode = true;
     process.stdin.resume();
