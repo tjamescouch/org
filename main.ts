@@ -2,6 +2,7 @@
 
 import { AgentModel } from "./agent-model";
 import { ChatRoom } from "./chat-room";
+import { interruptChat } from "./chat";
 import readline from "readline";
 
 process.on("unhandledRejection", e => console.error("[unhandledRejection]", e));
@@ -67,6 +68,13 @@ async function app() {
 // Ctrl+C → pause and let user inject a message; Ctrl+D (EOF) → graceful exit
 process.on("SIGINT", async () => {
   try {
+    console.log("\n[Ctrl+C] Requesting pause...");
+    if (typeof (room as any).pause === 'function') (room as any).pause();
+    // Abort any in-flight streaming call so agents stop "talking over" the prompt
+    interruptChat();
+    // Give the stream a brief moment to settle
+    await new Promise(r => setTimeout(r, 100));
+
     const text = await promptInterject();
     if (text && text.trim().length) {
       await room.broadcast("User", text.trim());
@@ -75,6 +83,8 @@ process.on("SIGINT", async () => {
     }
   } catch (e) {
     console.error("[interject error]", e);
+  } finally {
+    if (typeof (room as any).resume === 'function') (room as any).resume();
   }
 });
 

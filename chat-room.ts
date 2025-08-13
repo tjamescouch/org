@@ -32,6 +32,15 @@ export class ChatRoom implements RoomAPI {
   private models = new Map<string, RoomModel>();
   private seqCounter = 0;
   private listeners = new Set<SeqListener>();
+  private paused = false;
+  private pauseWaiters: Array<() => void> = [];
+
+  pause() { this.paused = true; }
+  resume() { this.paused = false; this.pauseWaiters.splice(0).forEach(fn => { try { fn(); } catch {} }); }
+  private async waitIfPaused() {
+    if (!this.paused) return;
+    await new Promise<void>(resolve => this.pauseWaiters.push(resolve));
+  }
 
   addModel(model: RoomModel): void {
     if (this.models.has(model.id)) throw new Error(`Model id already exists: ${model.id}`);
@@ -104,6 +113,7 @@ export class ChatRoom implements RoomAPI {
         resolve();
       }, TIMEOUT_MS);
       try {
+        await this.waitIfPaused();
         await model.receiveMessage(msg);
       } catch {
         // swallow model errors to avoid crashing the room

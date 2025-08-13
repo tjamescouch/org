@@ -1,3 +1,9 @@
+// Global interrupt for the current streaming chat; SIGINT handler calls this
+let _currentStreamAC: AbortController | null = null;
+export function interruptChat() {
+  try { _currentStreamAC?.abort(); } catch {}
+  _currentStreamAC = null;
+}
 // --- Preflight cache and helpers ---
 let _preflightOkUntil = 0;
 let _knownModels: Set<string> | null = null;
@@ -220,6 +226,7 @@ export async function chatOnce(
   const timeouts = [1000000, 2000000, 4000000];
   for (let attempt = 0; attempt < timeouts.length; attempt++) {
     const connectAC = new AbortController();
+    _currentStreamAC = connectAC; // expose for external interrupt
     const t = setTimeout(() => connectAC.abort(), timeouts[attempt]);
     try {
       resp = await fetch(ollamaBaseUrl + "/v1/chat/completions", {
@@ -283,9 +290,14 @@ export async function chatOnce(
       firstRead = false;
       return firstReadResult;
     }
+    const abortP = _currentStreamAC?.signal ? new Promise<never>((_, rej) => {
+      const onAbort = () => { _currentStreamAC?.signal.removeEventListener('abort', onAbort as any); rej(new Error('interrupted')); };
+      _currentStreamAC!.signal.addEventListener('abort', onAbort, { once: true });
+    }) : undefined;
     return Promise.race([
       reader.read(),
-      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("idle-timeout")), IDLE_MS))
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('idle-timeout')), IDLE_MS)),
+      ...(abortP ? [abortP] : []),
     ]) as any;
   }
 
@@ -332,9 +344,15 @@ export async function chatOnce(
     try {
       readResult = await readWithIdleTimeout();
     } catch (e) {
-      if ((e as Error)?.message === "idle-timeout") {
+      const msg = (e as Error)?.message || '';
+      if (msg === 'idle-timeout') {
         try { reader.cancel(); } catch {}
-        console.error("[chatOnce] aborted stream: idle-timeout");
+        console.error('[chatOnce] aborted stream: idle-timeout');
+        break;
+      }
+      if (msg === 'interrupted') {
+        try { reader.cancel(); } catch {}
+        console.error('[chatOnce] aborted stream: interrupted');
         break;
       }
       throw e;
@@ -548,6 +566,7 @@ export async function chatOnce(
   if (!contentBuf && SHOW_THINK && thinkingBuf) {
     Bun.stdout.write("\n");
   }
+  _currentStreamAC = null;
   return {
     role: "assistant",
     content: contentBuf.trim(),
