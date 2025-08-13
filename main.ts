@@ -288,7 +288,8 @@ async function app() {
 
   // Send the kickoff as the first agent's initial message
   if (agents[0]) {
-    await agents[0].initialMessage({ role: "assistant", ts: Date.now().toString(), from: agents[0].id, content: kickoffPrompt, read: false });
+    // Use a USER kickoff so the next model turn is assistant — avoids double-assistant and template rejections
+    await agents[0].initialMessage({ role: "user", ts: Date.now().toString(), from: "User", content: kickoffPrompt, read: false });
   }
 
   // Interactive key controls only in TUI
