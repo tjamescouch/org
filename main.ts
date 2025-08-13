@@ -1,8 +1,8 @@
-// main.ts — Bun TUI: raw key controls + pinned footer + colored logging
-// Requirements:
-// 1) Ctrl+C should quit (graceful)
-// 2) Footer banner stays pinned at the very bottom
-// 3) Bots/tools outputs look nice and respect colors
+// main.ts — Interactive (curses) mode with --interactive, else script mode
+// - Ctrl+C quits
+// - Footer banner pinned only in interactive mode
+// - Colors preserved
+// - In script mode, no TUI interception—raw console output so streams without \n still appear
 
 import { AgentModel } from "./agent-model";
 import { ChatRoom } from "./chat-room";
@@ -13,32 +13,43 @@ import { CSI } from "./tui"; // expects: clear, home, hide, show, rev, nrm
 process.on("unhandledRejection", e => console.error("[unhandledRejection]", e));
 process.on("uncaughtException",  e => { console.error("[uncaughtException]", e); process.exitCode = 1; });
 
+/* -------------------- args -------------------- */
+const argv = Bun.argv.slice(2);
+function getArg(name: string): string | undefined {
+  const idx = argv.findIndex(a => a === name || a.startsWith(name + "="));
+  if (idx === -1) return undefined;
+  const v = argv[idx];
+  const eq = v.indexOf("=");
+  if (eq >= 0) return v.slice(eq + 1);
+  const next = argv[idx + 1];
+  if (next && !next.startsWith("-")) return next;
+  return "";
+}
+const HAS_FLAG = (f: string) => argv.includes(f) || argv.some(a => a.startsWith(f + "="));
+
+// Interactive (curses) mode ONLY if explicitly requested and TTY
+const INTERACTIVE = HAS_FLAG("--interactive") && !!process.stdout.isTTY && !!process.stdin.isTTY;
+const PROMPT_ARG = getArg("--prompt");
+
 /* -------------------- colors -------------------- */
 const C = {
-  reset: "\x1b[0m",
-  bold:  "\x1b[1m",
-  dim:   "\x1b[2m",
-  red:   "\x1b[31m",
-  green: "\x1b[32m",
-  yellow:"\x1b[33m",
-  blue:  "\x1b[34m",
-  magenta:"\x1b[35m",
-  cyan:  "\x1b[36m",
-  gray:  "\x1b[90m",
-};
+  reset: "\x1b[0m", bold:  "\x1b[1m", dim:   "\x1b[2m",
+  red:   "\x1b[31m", green: "\x1b[32m", yellow:"\x1b[33m",
+  blue:  "\x1b[34m", magenta:"\x1b[35m", cyan:  "\x1b[36m", gray:  "\x1b[90m",
+} as const;
 
-// --- VT100 scroll region helpers + guard to avoid intercept recursion
-let TUI_DRAWING = false;
+/* -------------------- minimal TUI (only when INTERACTIVE) -------------------- */
+let TUI_DRAWING = false; // guard to avoid intercept recursion
+const LOG_LIMIT = 2000; // ring buffer lines
+let logBuf: string[] = [];
+
 function withTUIDraw<T>(fn: () => T): T { TUI_DRAWING = true; try { return fn(); } finally { TUI_DRAWING = false; } }
 function setScrollRegion(top: number, bottom: number) { process.stdout.write(`\x1b[${top};${bottom}r`); }
 function clearScrollRegion() { process.stdout.write(`\x1b[r`); }
 
-/* -------------------- tiny TUI with pinned footer -------------------- */
-const LOG_LIMIT = 2000; // ring buffer lines
-let logBuf: string[] = [];
+function stripAnsi(s: string) { return s.replace(/[\u001b\u009b][[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, ""); }
 
 function appendLog(s: string) {
-  // Normalize CRLF and bare CR to LF so progress/overwrites don’t smash the footer
   const norm = (s || "").replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
   const lines = norm.split(/\n/);
   for (const line of lines) {
@@ -48,61 +59,12 @@ function appendLog(s: string) {
   redraw();
 }
 
-// Intercept arbitrary writes to stdout (from other modules) and render via log buffer
-const realWrite = process.stdout.write.bind(process.stdout);
-let streamBuf = "";
-(process.stdout as any).write = function (chunk: any, encoding?: any, cb?: any) {
-  // Allow our own TUI drawing to pass through unmodified
-  if (TUI_DRAWING) return realWrite(chunk, encoding, cb);
-  try {
-    let s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
-    // Convert CRLF and bare CR to LF so we treat carriage returns as newlines
-    s = s.replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
-    streamBuf += s;
-    // Flush on newline; keep partial lines buffered
-    let idx;
-    while ((idx = streamBuf.indexOf("\n")) !== -1) {
-      const line = streamBuf.slice(0, idx);
-      streamBuf = streamBuf.slice(idx + 1);
-      appendLog(line);
-    }
-    // If caller passed a callback, call it now
-    if (typeof cb === 'function') cb();
-    return true;
-  } catch (e) {
-    // On error, fall back to real write
-    return realWrite(chunk, encoding, cb);
-  }
-} as any;
-
-// Mirror interception for stderr so error output can’t push the footer
-const realErrWrite = process.stderr.write.bind(process.stderr);
-let errBuf = "";
-(process.stderr as any).write = function (chunk: any, encoding?: any, cb?: any) {
-  if (TUI_DRAWING) return realErrWrite(chunk, encoding, cb);
-  try {
-    let s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
-    s = s.replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
-    errBuf += s;
-    let idx;
-    while ((idx = errBuf.indexOf("\n")) !== -1) {
-      const line = errBuf.slice(0, idx);
-      errBuf = errBuf.slice(idx + 1);
-      appendLog(line);
-    }
-    if (typeof cb === 'function') cb();
-    return true;
-  } catch (e) {
-    return realErrWrite(chunk, encoding, cb);
-  }
-} as any;
-
 function drawHeader(status: string) {
   withTUIDraw(() => {
     const cols = process.stdout.columns || 80;
     const text = `${C.bold}${C.cyan}${status}${C.reset}`;
     const pad = Math.max(0, cols - stripAnsi(text).length);
-    process.stdout.write(CSI.home + text + " ".repeat(pad) + "\n");
+    process.stdout.write(CSI.hide + CSI.clear + CSI.home + text + " ".repeat(pad) + "\n");
   });
 }
 
@@ -113,15 +75,11 @@ function drawBody() {
     const slice = logBuf.slice(-bodyRows);
     const fill = Array(Math.max(0, bodyRows - slice.length)).fill("");
     const lines = [...fill, ...slice];
-
-    // Position at start of body and print exactly bodyRows lines, clearing each
     process.stdout.write(`\x1b[2;1H`);
     for (let i = 0; i < bodyRows; i++) {
       const line = lines[i] ?? "";
-      // Clear entire line, print content, move to next row (except last line)
       process.stdout.write(`\x1b[2K` + line + (i < bodyRows - 1 ? "\n" : ""));
     }
-    // Ensure anything below gets cleared within the scroll region
     process.stdout.write(`\x1b[0J`);
   });
 }
@@ -136,21 +94,16 @@ function drawFooter() {
   });
 }
 
-function stripAnsi(s: string) { return s.replace(/[\u001b\u009b][[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, ""); }
-
 function redraw(status = currentStatus) {
+  const rows = process.stdout.rows || 24;
   withTUIDraw(() => {
-    process.stdout.write(CSI.hide + CSI.clear);
-    const rows = process.stdout.rows || 24;
-    // Header at row 1, footer at last row -> body scroll region is 2..(rows-1)
-    setScrollRegion(2, Math.max(2, rows - 1));
+    const bottom = Math.max(2, rows - 1);
+    setScrollRegion(2, bottom);
     drawHeader(status);
     drawBody();
     drawFooter();
   });
 }
-
-let currentStatus = "org: multi-agent session";
 
 function promptLine(q: string): Promise<string> {
   const rows = process.stdout.rows || 24;
@@ -165,14 +118,82 @@ function promptLine(q: string): Promise<string> {
   });
 }
 
+// In interactive mode, intercept stdout/stderr so footer stays pinned
+let uninstallInterceptors: (() => void) | null = null;
+function installInterceptors() {
+  if (!INTERACTIVE) return;
+  const realOut = process.stdout.write.bind(process.stdout);
+  const realErr = process.stderr.write.bind(process.stderr);
+  let outBuf = "", errBuf = "";
+  let idleTimer: NodeJS.Timeout | null = null;
+  const flushIdle = () => {
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+    if (outBuf) { const b = outBuf; outBuf = ""; appendLog(b); }
+    if (errBuf) { const b = errBuf; errBuf = ""; appendLog(b); }
+  };
+  (process.stdout as any).write = (chunk: any, enc?: any, cb?: any) => {
+    if (TUI_DRAWING) return realOut(chunk, enc, cb);
+    let s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+    s = s.replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
+    outBuf += s;
+    // Flush full lines immediately; keep partials but also idle-flush so UI updates even without \n
+    let idx;
+    while ((idx = outBuf.indexOf("\n")) !== -1) {
+      const line = outBuf.slice(0, idx + 1);
+      outBuf = outBuf.slice(idx + 1);
+      appendLog(line);
+    }
+    if (!idleTimer) idleTimer = setTimeout(flushIdle, 150); // soft flush for non-\n streams
+    if (typeof cb === 'function') cb();
+    return true;
+  };
+  (process.stderr as any).write = (chunk: any, enc?: any, cb?: any) => {
+    if (TUI_DRAWING) return realErr(chunk, enc, cb);
+    let s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+    s = s.replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
+    errBuf += s;
+    let idx;
+    while ((idx = errBuf.indexOf("\n")) !== -1) {
+      const line = errBuf.slice(0, idx + 1);
+      errBuf = errBuf.slice(idx + 1);
+      appendLog(line);
+    }
+    if (!idleTimer) idleTimer = setTimeout(flushIdle, 150);
+    if (typeof cb === 'function') cb();
+    return true;
+  };
+  uninstallInterceptors = () => {
+    (process.stdout as any).write = realOut as any;
+    (process.stderr as any).write = realErr as any;
+    flushIdle();
+  };
+}
+
 async function gracefulQuit(room: any, keepAlive: any) {
   try { clearInterval(keepAlive); } catch {}
-  try { if (typeof room?.shutdown === "function") await room.shutdown(); } catch (e) { appendLog(`${C.red}[shutdown error]${C.reset} ${String(e)}`); }
-  withTUIDraw(() => { clearScrollRegion(); process.stdout.write(CSI.show + "\n"); });
+  try { if (typeof room?.shutdown === "function") await room.shutdown(); } catch (e) { if (INTERACTIVE) appendLog(`${C.red}[shutdown error]${C.reset} ${String(e)}`); else console.error("[shutdown error]", e); }
+  if (INTERACTIVE) withTUIDraw(() => { clearScrollRegion(); process.stdout.write(CSI.show + "\n"); });
+  if (uninstallInterceptors) uninstallInterceptors();
   process.exit(0);
 }
 
+/* -------------------- kickoff helpers -------------------- */
+async function readStdinAll(): Promise<string> {
+  if (process.stdin.isTTY) return "";
+  const chunks: Buffer[] = [];
+  for await (const c of process.stdin) chunks.push(Buffer.from(c));
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function askKickoffPrompt(defaultPrompt: string): Promise<string> {
+  if (!INTERACTIVE) return defaultPrompt; // no prompt in script mode
+  const entered = await promptLine(`${C.bold}${C.blue}Enter kickoff prompt${C.reset} [${defaultPrompt}]: `);
+  return (entered.trim() === "" ? defaultPrompt : entered.trim());
+}
+
 /* -------------------- app -------------------- */
+let currentStatus = "org: multi-agent session";
+
 async function app() {
   const room = new ChatRoom();
 
@@ -184,99 +205,76 @@ async function app() {
   const defaultKickoffPrompt =
     "Agents! Let's get to work on a new and fun project. The project is a sockets/tcp based p2p file transfer and chat app with no middle man. The only requirement is for it C++ compiled with gcc or g++. Check for existing files the workspace. Bob - you will do the coding, please run and test the code you write. Incrementally add new features and focus on extensibility. Carol - you will do the architecture documents and README. I will be the product person who makes the decisions.";
 
-  // kickoff prompt — SSH-keygen style (Enter to accept default)
-  currentStatus = "kickoff";
-  redraw();
-  const entered = await promptLine(`${C.bold}${C.blue}Enter kickoff prompt${C.reset} [${defaultKickoffPrompt}]: `);
-  const kickoffPrompt = (entered.trim() === "" ? defaultKickoffPrompt : entered.trim());
+  // Decide kickoff prompt source
+  let kickoffPrompt = defaultKickoffPrompt;
+  if (typeof PROMPT_ARG === "string" && PROMPT_ARG.length) {
+    kickoffPrompt = PROMPT_ARG;
+  } else {
+    const piped = await readStdinAll();
+    if (piped.trim().length) kickoffPrompt = piped.trim();
+    else if (INTERACTIVE) kickoffPrompt = await askKickoffPrompt(defaultKickoffPrompt);
+  }
 
-  currentStatus = "org: multi-agent session started";
-  redraw();
-  appendLog(`${C.magenta}Kickoff as Alice:${C.reset} ${kickoffPrompt}`);
+  // Start
+  const keepAlive = setInterval(() => { /* tick */ }, 60_000);
+
+  if (INTERACTIVE) {
+    // Setup TUI only now
+    installInterceptors();
+    const rows = process.stdout.rows || 24;
+    withTUIDraw(() => { const bottom = Math.max(2, rows - 1); setScrollRegion(2, bottom); });
+    currentStatus = "org: multi-agent session started";
+    redraw();
+    appendLog(`${C.magenta}Kickoff as Alice:${C.reset} ${kickoffPrompt}`);
+  } else {
+    // Script mode: print clear, raw lines
+    console.log(`${C.magenta}Kickoff as Alice:${C.reset} ${kickoffPrompt}`);
+  }
 
   await alice.initialMessage({ role: "assistant", ts: Date.now().toString(), from: "alice", content: kickoffPrompt, read: false });
 
-  // Keep the process alive
-  const keepAlive = setInterval(() => { /* tick */ }, 60_000);
-
-  // Override console to route through TUI and keep footer pinned
-  const realLog = console.log.bind(console);
-  const realErr = console.error.bind(console);
-  console.log = (...args: any[]) => appendLog(args.map(a => String(a)).join(" "));
-  console.error = (...args: any[]) => appendLog(args.map(a => String(a)).join(" "));
-
-  // --- Raw key control: q (quit), i (interject), s (system)
-  if (process.stdin.isTTY) {
+  // Interactive key controls only in TUI
+  if (INTERACTIVE && process.stdin.isTTY) {
     process.stdin.setRawMode?.(true);
     process.stdin.resume();
     process.stdin.on("data", async (buf: Buffer) => {
       const s = buf.toString("utf8");
-      // Ctrl+C should quit: many terminals send "\u0003"
-      if (s === "\u0003") {
-        currentStatus = "quitting…";
-        redraw();
+      if (s === "\u0003") { // Ctrl+C
+        currentStatus = "quitting…"; if (INTERACTIVE) redraw();
         await gracefulQuit(room, keepAlive);
         return;
       }
-      const ch = s.length === 1 ? s : "";  // single printable keys
-
+      const ch = s.length === 1 ? s : "";
       if (ch === "q") {
-        currentStatus = "quitting…";
-        redraw();
+        currentStatus = "quitting…"; if (INTERACTIVE) redraw();
         await gracefulQuit(room, keepAlive);
         return;
       }
-
       if (ch === "i") {
-        // Interrupt any in-flight generation, then prompt
-        interruptChat();
-        await new Promise(r => setTimeout(r, 100));
-        currentStatus = "interject (user)";
-        redraw();
+        interruptChat(); await new Promise(r => setTimeout(r, 100));
+        currentStatus = "interject (user)"; redraw();
         const txt = await promptLine(`${C.bold}[you] > ${C.reset}`);
         const msg = (txt ?? "").trim();
-        if (msg) {
-          await room.broadcast("User", msg);
-          currentStatus = "sent interject";
-        } else {
-          currentStatus = "interject: (empty)";
-        }
-        redraw();
+        if (msg) await room.broadcast("User", msg);
+        currentStatus = msg ? "sent interject" : "interject: (empty)"; redraw();
         return;
       }
-
       if (ch === "s") {
-        interruptChat();
-        await new Promise(r => setTimeout(r, 100));
-        currentStatus = "system message";
-        redraw();
+        interruptChat(); await new Promise(r => setTimeout(r, 100));
+        currentStatus = "system message"; redraw();
         const txt = await promptLine(`${C.bold}[system] > ${C.reset}`);
         const msg = (txt ?? "").trim();
-        if (msg) {
-          await room.broadcast("System", msg);
-          currentStatus = "sent system message";
-        } else {
-          currentStatus = "system: (empty)";
-        }
-        redraw();
+        if (msg) await room.broadcast("System", msg);
+        currentStatus = msg ? "sent system message" : "system: (empty)"; redraw();
         return;
       }
-
-      // Ctrl+D (\u0004) / EOF: we do not intercept; terminal behavior applies
     });
+    process.stdout.on("resize", () => { withTUIDraw(() => { const rows = process.stdout.rows || 24; setScrollRegion(2, Math.max(2, rows - 1)); }); redraw(); });
   }
-
-  // redraw on resize
-  process.stdout.on("resize", () => { withTUIDraw(() => { const rows = process.stdout.rows || 24; setScrollRegion(2, Math.max(2, rows - 1)); }); redraw(); });
-
-  // initial draw: set scroll region once
-  withTUIDraw(() => { const rows = process.stdout.rows || 24; setScrollRegion(2, Math.max(2, rows - 1)); });
-  process.stdout.write(CSI.hide);
-  redraw();
 }
 
 app().catch((e) => {
-  process.stdout.write(CSI.show);
-  console.error(`${C.red}App crashed:${C.reset} ${String(e)}`);
+  if (INTERACTIVE) { process.stdout.write(CSI.show); }
+  console.error("App crashed:", e);
   process.exit(1);
 });
