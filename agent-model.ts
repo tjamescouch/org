@@ -1,4 +1,3 @@
-const C = { reset: "\x1b[0m", bold: "\x1b[1m", dim: "\x1b[2m", red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", blue: "\x1b[34m", magenta: "\x1b[35m", cyan: "\x1b[36m", gray: "\x1b[90m" } as const;
 const withTimeout = <T>(p: Promise<T>, ms: number, label = "timeout"): Promise<T> =>
   Promise.race([
     p,
@@ -693,12 +692,10 @@ Be concise.
       const sOut = stdout.length > CLAMP ? stdout.slice(0, CLAMP) + "\n...[truncated]" : stdout;
       const sErr = stderr.length > CLAMP ? stderr.slice(0, CLAMP) + "\n...[truncated]" : stderr;
 
-      const okColor = result.ok ? "\x1b[32m" : "\x1b[31m"; // green/red
-      const hdr = `${C.cyan || "\x1b[36m"}******* sh${C.reset || "\x1b[0m"} ${cmd ?? rawCmd}`;
-      const humanLog = `\n${hdr}\n` +
-        `${okColor}ok:${C.reset || "\x1b[0m"} ${result.ok}  ${C.dim || "\x1b[2m"}exit_code:${C.reset || "\x1b[0m"} ${result.exit_code}\n` +
-        `${C.bold || "\x1b[1m"}--- stdout ---${C.reset || "\x1b[0m"}\n${sOut}\n` +
-        `${C.bold || "\x1b[1m"}--- stderr ---${C.reset || "\x1b[0m"}\n${sErr}\n`;
+      const humanLog = `\n\n\n******* sh ${cmd ?? rawCmd}\n` +
+        `ok: ${result.ok}\nexit_code: ${result.exit_code}\n` +
+        `--- stdout ---\n${sOut}\n` +
+        `--- stderr ---\n${sErr}\n`;
       console.error(humanLog);
 
       return {

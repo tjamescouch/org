@@ -49,13 +49,17 @@ const ESC = {
   enableWrap: "\x1b[?7h",
 };
 
+function bannerLine() {
+  // white-on-black, but it just scrolls with content now
+  return `\x1b[97m\x1b[40m[q] quit  [i] interject  [s] system  (Ctrl+C to quit)\x1b[0m`;
+}
+
 /* -------------------- minimal TUI (only when INTERACTIVE) -------------------- */
 let TUI_DRAWING = false; // guard to avoid intercept recursion
 const LOG_LIMIT = 2000; // ring buffer lines
 let logBuf: string[] = [];
 
 function withTUIDraw<T>(fn: () => T): T { TUI_DRAWING = true; try { return fn(); } finally { TUI_DRAWING = false; } }
-function setScrollRegion(top: number, bottom: number) { process.stdout.write(`\x1b[${top};${bottom}r`); }
 function clearScrollRegion() { process.stdout.write(`\x1b[r`); }
 
 function stripAnsi(s: string) { return s.replace(/[\u001b\u009b][[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, ""); }
@@ -95,31 +99,11 @@ function drawBody() {
   });
 }
 
-function drawFooter() {
-  withTUIDraw(() => {
-    const cols = process.stdout.columns || 80;
-    const rows = process.stdout.rows || 24;
-    const hintText = `[q] quit  [i] interject  [s] system  (Ctrl+C to quit)`;
-    const visibleLen = stripAnsi(hintText).length;
-    const pad = Math.max(0, cols - visibleLen);
-    const hint = `\x1b[40m\x1b[97m${hintText}${" ".repeat(pad)}\x1b[0m`;
-
-    // Go to last line, clear it, temporarily disable wrap, draw, park cursor at last col, re-enable wrap
-    process.stdout.write(
-      `${ESC.disableWrap}\x1b[${rows};1H\x1b[2K${hint}\x1b[${rows};${cols}H${ESC.enableWrap}`
-    );
-  });
-}
-
 function redraw(status = currentStatus) {
-  const rows = process.stdout.rows || 24;
   withTUIDraw(() => {
     process.stdout.write(CSI.hide + CSI.clear);
-    const bottom = Math.max(2, rows - 1);
-    setScrollRegion(2, bottom);
     drawHeader(status);
     drawBody();
-    drawFooter();
   });
 }
 
@@ -205,6 +189,8 @@ async function gracefulQuit(room: any, keepAlive: any) {
     process.stdout.write(ESC.show + ESC.altScreenOff + "\n");
   });
 
+  try { clearInterval(bannerTimer as any); } catch {}
+
   process.exit(0);
 }
 
@@ -249,12 +235,17 @@ async function app() {
   // Start
   const keepAlive = setInterval(() => { /* tick */ }, 60_000);
 
+  const bannerTimer = setInterval(() => {
+    const ts = new Date().toLocaleTimeString();
+    console.log(`${C.gray}[${ts}]${C.reset} ${bannerLine()}`);
+  }, 20_000);
+
   if (INTERACTIVE) {
     withTUIDraw(() => { process.stdout.write(ESC.altScreenOn + ESC.hide + CSI.clear); });
     // Setup TUI only now
     installInterceptors();
     const rows = process.stdout.rows || 24;
-    withTUIDraw(() => { const bottom = Math.max(2, rows - 1); setScrollRegion(2, bottom); });
+    withTUIDraw(() => { const bottom = Math.max(2, rows - 1); });
     currentStatus = "org: multi-agent session started";
     redraw();
     appendLog(`${C.magenta}Kickoff as Alice:${C.reset} ${kickoffPrompt}`);
@@ -301,7 +292,7 @@ async function app() {
         return;
       }
     });
-    process.stdout.on("resize", () => { withTUIDraw(() => { const rows = process.stdout.rows || 24; setScrollRegion(2, Math.max(2, rows - 1)); }); redraw(); });
+    process.stdout.on("resize", () => { redraw(); });
   }
 }
 
