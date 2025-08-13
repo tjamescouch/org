@@ -190,10 +190,7 @@ async function promptLine(q: string): Promise<string> {
   // if stdin is in raw mode (interactive key handler), disable temporarily
   const wasRawMode = isRawMode;
   !!(process.stdin as any).isRaw;
-  if (wasRawMode) {
-    process.stdin.setRawMode?.(false);
-    isRawMode = false;
-  }
+  process.stdin.setRawMode?.(true);
 
   await setTimeoutPromise(1000);
 
@@ -206,10 +203,8 @@ async function promptLine(q: string): Promise<string> {
     rl.question(q, (ans) => {
       rl.close();
       // restore raw mode if we changed it
-      if (wasRawMode) {
-        process.stdin.setRawMode?.(true);
-        isRawMode = true;
-      }
+      isRawMode = wasRawMode;
+      process.stdin.setRawMode?.(isRawMode);
       redraw();
       resolve(ans);
     });
@@ -269,7 +264,7 @@ async function readStdinAll(): Promise<string> {
 
 async function askKickoffPrompt(defaultPrompt: string): Promise<string> {
   if (!INTERACTIVE) return defaultPrompt; // no prompt in script mode
-  const entered = await promptLine(`${C.bold}${C.blue}Enter kickoff prompt${C.reset} [${defaultPrompt}]: `);
+  const entered = await promptLine(`${C.bold}${C.blue}< ${C.reset} [${defaultPrompt}]: `);
   return (entered.trim() === "" ? defaultPrompt : entered.trim());
 }
 
@@ -312,7 +307,6 @@ async function app() {
     
   process.stdin.on("data", async (key: Buffer) => {
     // Ctrl+C (0x03 in ASCII)
-    console.log("Key press", key)
     if (key.toString() === "\u0003") {
       process.exit();
     }
