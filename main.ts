@@ -27,8 +27,10 @@ function getArg(name: string): string | undefined {
 }
 const HAS_FLAG = (f: string) => argv.includes(f) || argv.some(a => a.startsWith(f + "="));
 
-// Interactive (curses) mode ONLY if explicitly requested and TTY
-const INTERACTIVE = HAS_FLAG("--interactive") && !!process.stdout.isTTY && !!process.stdin.isTTY;
+// Interactive (curses) mode by default when running on a TTY.
+// Use --no-interactive to force script mode. --interactive still forces it on.
+const INTERACTIVE =
+  (HAS_FLAG("--interactive") || (!HAS_FLAG("--no-interactive") && !!process.stdout.isTTY && !!process.stdin.isTTY));
 const PROMPT_ARG = getArg("--prompt");
 
 /* -------------------- colors -------------------- */
