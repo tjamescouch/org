@@ -124,18 +124,16 @@ function appendLog(s: string) {
 }
 
 function drawHeader(status: string, asString?: boolean): string | void {
+  // Pretty, single-line output with ANSI colors; no cursor moves, no CR juggling
   const cols = process.stdout.columns || 80;
   const controls = `${C.gray}[q] quit  [i] interject  [s] system  (Ctrl+C to quit)${C.reset}`;
-  const text = `${C.bold}${C.cyan}${status}${C.reset}  ${controls}`;
-  const pad = Math.max(0, cols - stripAnsi(text).length);
-  if (asString) {
-    // Remove cursor movement/CSI for string output
-    return text + " ".repeat(pad);
-  } else {
-    withTUIDraw(() => {
-      process.stdout.write(CSI.home + `\x1b[2K` + text + " ".repeat(pad) + "\n");
-    });
-  }
+  const line = `${C.bold}${C.cyan}${status}${C.reset}  ${controls}`;
+
+  // For string-mode callers, just return the colored line (no padding/newlines)
+  if (asString) return line;
+
+  // Log once; let it flow with the rest of the output. No extra CR/LFs.
+  console.log(line.length > cols ? line.slice(0, cols) : line);
 }
 
 
