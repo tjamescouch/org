@@ -347,7 +347,6 @@ Be concise.
   }
 
   async receiveMessage(incoming: RoomMessage): Promise<void> {
-    console.log('receive', incoming)
     this._push(incoming);
 
     // Acquire the shared channel lock up-front so summarizeOnce and chatOnce do not overlap across agents
@@ -443,6 +442,8 @@ Be concise.
   ): Promise<ChatMessage[]> {
     const responses: ChatMessage[] = [];
     const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 128000 };
+
+    console.log('runWithTools', messages);
 
     // --- Stuck breaker state ---
     let breakerCooldown = 0;            // when > 0, next hops run with tools disabled
