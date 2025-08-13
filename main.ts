@@ -1,4 +1,4 @@
-// main.ts — Bun: keepalive via timer + graceful shutdown
+// main.ts — Bun: interactive kickoff + interject + graceful shutdown
 
 import { AgentModel } from "./agent-model";
 import { ChatRoom } from "./chat-room";
@@ -8,12 +8,12 @@ import readline from "readline";
 process.on("unhandledRejection", e => console.error("[unhandledRejection]", e));
 process.on("uncaughtException",  e => { console.error("[uncaughtException]", e); process.exitCode = 1; });
 
-function waitForSignal(): Promise<void> {
-  return new Promise((resolve) => {
-    const done = () => resolve();
-    process.once("SIGINT", done);
-    process.once("SIGTERM", done);
-  });
+/* -------------------- interject state / helpers -------------------- */
+let _interjecting = false;
+let _lastSIGINT = 0;
+
+function isExitCommand(s: string) {
+  return /^(exit|quit|q)\s*$/i.test(s || "");
 }
 
 function createRL() {
@@ -28,10 +28,7 @@ async function promptInterject(): Promise<string> {
 }
 
 async function askKickoffPrompt(defaultPrompt: string): Promise<string> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const promptText = `Enter kickoff prompt [${defaultPrompt}]: `;
   return new Promise((resolve) => {
     rl.question(promptText, (answer) => {
@@ -41,12 +38,13 @@ async function askKickoffPrompt(defaultPrompt: string): Promise<string> {
   });
 }
 
+/* -------------------- app -------------------- */
 async function app() {
   const room = new ChatRoom();
 
   const alice = new AgentModel("alice", "gpt-oss:20b-64k");
   const carol = new AgentModel("carol", "gpt-oss:20b-64k");
-  const bob   = new AgentModel("bob", "gpt-oss:20b-64k");
+  const bob   = new AgentModel("bob",   "gpt-oss:20b-64k");
   room.addModel(alice);
   room.addModel(carol);
   room.addModel(bob);
@@ -64,57 +62,71 @@ async function app() {
     read: false,
   });
 
-  // --- Interactive interjection controls (Unix-style):
-// Ctrl+C → pause and let user inject a message; Ctrl+D (EOF) → graceful exit
-process.on("SIGINT", async () => {
-  try {
-    console.log("\n[Ctrl+C] Requesting pause...");
-    if (typeof (room as any).pause === 'function') (room as any).pause();
-    // Abort any in-flight streaming call so agents stop "talking over" the prompt
-    interruptChat();
-    // Give the stream a brief moment to settle
-    await new Promise(r => setTimeout(r, 100));
+  // Keep the process alive (Bun won't stay alive on a pending Promise alone)
+  const keepAlive = setInterval(() => { /* tick */ }, 60_000);
 
-    const text = await promptInterject();
-    if (text && text.trim().length) {
-      await room.broadcast("User", text.trim());
-    } else {
-      console.log("[interject] (empty)");
-    }
-  } catch (e) {
-    console.error("[interject error]", e);
-  } finally {
-    if (typeof (room as any).resume === 'function') (room as any).resume();
-  }
-});
+  // Don’t exit on Ctrl+D; just keep stdin flowing
+  if (process.stdin.isTTY) process.stdin.resume();
 
-// Detect EOF on stdin (Ctrl+D) and shut down
-if (process.stdin.isTTY) {
-  process.stdin.resume();
-  process.stdin.on("end", async () => {
-    console.log("\n[EOF] Ctrl+D detected – exiting.");
+  // Ctrl+C → interject: pause room, abort in-flight stream, prompt, inject, resume.
+  process.on("SIGINT", async () => {
+    const now = Date.now();
+    if (_interjecting || (now - _lastSIGINT) < 400) return; // debounce
+    _interjecting = true; _lastSIGINT = now;
+
     try {
-      if (typeof (room as any).shutdown === "function") await (room as any).shutdown();
+      console.log("\n[Ctrl+C] Pausing and opening interject prompt...");
+      if (typeof (room as any).pause === "function") (room as any).pause();
+
+      // Abort any in-flight streaming so agents stop talking over the prompt
+      interruptChat();
+      await new Promise(r => setTimeout(r, 120)); // let stream settle
+
+      const text = await promptInterject();
+      const msg = (text ?? "").trim();
+
+      if (!msg) {
+        console.log("[interject] (empty)");
+      } else if (isExitCommand(msg)) {
+        console.log("[bye]");
+        await shutdown(room, keepAlive);
+        process.exit(0);
+      } else {
+        // User message bypasses pause inside chat-room.ts
+        await room.broadcast("User", msg);
+        // Nudge the agents to respond to the user, not to rerun prior commands
+        await room.broadcast("System", "User interjected. Respond directly to the user's request; do not rerun previous commands unless necessary.");
+      }
+    } catch (e) {
+      console.error("[interject error]", e);
     } finally {
-      process.exit(0);
+      if (typeof (room as any).resume === "function") (room as any).resume();
+      _interjecting = false;
     }
+  });
+
+  // SIGTERM → graceful shutdown
+  process.on("SIGTERM", async () => {
+    console.log("\n[SIGTERM] shutting down...");
+    await shutdown(room, keepAlive);
+    process.exit(0);
   });
 }
 
-  // --- Bun-specific: a Promise alone won't keep the runtime alive.
-  // Hold a *real* handle. A ticking interval is simplest.
-  const keepAlive = setInterval(() => { /* tick to stay alive */ }, 60_000);
-
-  // Wait for Ctrl-C / SIGTERM
-  await waitForSignal();
-
-  clearInterval(keepAlive);
-
-  if (typeof (room as any).shutdown === "function") {
-    await (room as any).shutdown();
+async function shutdown(room: any, keepAlive: any) {
+  try {
+    clearInterval(keepAlive);
+  } catch {}
+  try {
+    if (typeof room?.shutdown === "function") {
+      await room.shutdown();
+    }
+  } catch (e) {
+    console.error("[shutdown error]", e);
   }
 }
 
+/* -------------------- boot -------------------- */
 app().catch((e) => {
   console.error("App crashed:", e);
   process.exit(1);
