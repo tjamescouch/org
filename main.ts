@@ -1,8 +1,11 @@
-// main.ts — Interactive (curses) mode with --interactive, else script mode
-// - Ctrl+C quits
-// - Footer banner pinned only in interactive mode
-// - Colors preserved
-// - In script mode, no TUI interception—raw console output so streams without \n still appear
+// main.ts — Interactive (curses) mode by default; script mode with --no-interactive
+// Adds flexible persona/model selection via CLI flags
+//   -a, --agent, --persona   name[=model]   (repeatable)
+//   --agents                 CSV of name[=model]
+//   --default-model          fallback model for agents without explicit model
+// Examples:
+//   bun main.ts -a alice=openai/gpt-oss-120b -a bob=google/gemma-3-27b -a carol
+//   bun main.ts --agents "alice=gpt-oss:20b,carol,bob=lmstudio/my-local"
 
 import { AgentModel, CyanTag, Reset } from "./agent-model";
 import { ChatRoom } from "./chat-room";
@@ -72,12 +75,51 @@ const ESC = {
 
 let currentStatus = "org: multi-agent session";
 
+/* -------------------- Personas / Models parsing -------------------- */
+interface AgentSpec { name: string; model: string; }
+const DEFAULT_MODEL = getArg("--default-model") || "openai/gpt-oss-120b";
 
-function redraw(status = currentStatus) {
-  // Output using console.log with cyan color, header and body as string
-  const cyan = '\x1b[36m';
-  const reset = '\x1b[0m';
-  console.log(cyan + status + reset);
+function parseAgentSpecs(): AgentSpec[] {
+  const specs: AgentSpec[] = [];
+  const seen = new Set<string>();
+
+  // gather from repeated flags: -a, --agent, --persona
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "-a" || a === "--agent" || a === "--persona") {
+      const val = argv[i + 1] && !argv[i + 1].startsWith("-") ? argv[++i] : "";
+      if (val) parseOne(val);
+    } else if (a.startsWith("-a=") || a.startsWith("--agent=") || a.startsWith("--persona=")) {
+      parseOne(a.slice(a.indexOf("=") + 1));
+    }
+  }
+
+  // --agents CSV (name[=model],name2[=model2])
+  const csv = getArg("--agents");
+  if (csv) {
+    csv.split(/\s*,\s*/).filter(Boolean).forEach(parseOne);
+  }
+
+  // If nothing provided, default trio
+  if (specs.length === 0) {
+    ["alice", "carol", "bob"].forEach(n => push({ name: n, model: DEFAULT_MODEL }));
+  }
+
+  return specs;
+
+  function parseOne(token: string) {
+    const m = token.match(/^([a-zA-Z0-9_\-]+)(?:=(.+))?$/);
+    if (!m) return;
+    const name = m[1];
+    const model = (m[2] && m[2].trim()) || DEFAULT_MODEL;
+    push({ name, model });
+  }
+  function push(spec: AgentSpec) {
+    const key = spec.name.toLowerCase();
+    if (seen.has(key)) return; // ignore duplicates; first wins
+    seen.add(key);
+    specs.push(spec);
+  }
 }
 
 /* -------------------- minimal TUI (only when INTERACTIVE) -------------------- */
@@ -87,7 +129,6 @@ let logBuf: string[] = [];
 
 function withTUIDraw<T>(fn: () => T): T { try { return fn(); } finally {  } }
 function clearScrollRegion() { process.stdout.write(`\x1b[r`); }
-
 function stripAnsi(s: string) { return s.replace(/[\u001b\u009b][[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, ""); }
 
 function appendLog(s: string) {
@@ -105,14 +146,35 @@ function drawHeader(status: string, asString?: boolean): string | void {
   const cols = process.stdout.columns || 80;
   const controls = `${C.gray}[q] quit  [i] interject  [s] system  (Ctrl+C to quit)${C.reset}`;
   const line = `${C.bold}${C.cyan}${status}${C.reset}  ${controls}`;
-
-  // For string-mode callers, just return the colored line (no padding/newlines)
   if (asString) return line;
-
-  // Log once; let it flow with the rest of the output. No extra CR/LFs.
   console.log(line.length > cols ? line.slice(0, cols) : line);
 }
 
+function drawBody(asString?: boolean): string | void {
+  const rows = process.stdout.rows || 24;
+  const bodyRows = Math.max(0, rows - 2);
+  const slice = logBuf.slice(-bodyRows);
+  const fill = Array(Math.max(0, bodyRows - slice.length)).fill("");
+  const lines = [...fill, ...slice];
+  if (asString) return lines.join("\n");
+  else {
+    withTUIDraw(() => {
+      process.stdout.write(`\x1b[2;1H`);
+      for (let i = 0; i < bodyRows; i++) {
+        const line = lines[i] ?? "";
+        process.stdout.write(`\x1b[2K` + line + (i < bodyRows - 1 ? "\n" : ""));
+      }
+      process.stdout.write(`\x1b[0J`);
+    });
+  }
+}
+
+function redraw(status = currentStatus) {
+  const header = drawHeader(status, true) as string; // string
+  const body = drawBody(true) as string;             // string
+  const soft = "\x1b[36m"; const reset = "\x1b[0m";
+  console.log(soft + header + "\n" + body + reset);
+}
 
 function promptLine(q: string): Promise<string> {
   const rows = process.stdout.rows || 24;
@@ -127,61 +189,42 @@ function promptLine(q: string): Promise<string> {
   });
 }
 
-// In interactive mode, intercept stdout/stderr so footer stays pinned
+// In interactive mode, intercept stdout/stderr so footer stays pinned-ish
 let uninstallInterceptors: (() => void) | null = null;
 function installInterceptors() {
   if (!INTERACTIVE) return;
   const realOut = process.stdout.write.bind(process.stdout);
   const realErr = process.stderr.write.bind(process.stderr);
   let outBuf = "", errBuf = "";
-  let idleTimer: NodeJS.Timeout | null = null;
-
   let pulseTimer: NodeJS.Timeout | null = null;
 
-  const flushIdle = () => {
-    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
-    if (outBuf) { const b = outBuf; outBuf = ""; appendLog(b); }
-    if (errBuf) { const b = errBuf; errBuf = ""; appendLog(b); }
-  };
   (process.stdout as any).write = (chunk: any, enc?: any, cb?: any) => {
-    if (TUI_DRAWING) return realOut(chunk, enc, cb);
-    let s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
-    s = s.replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
-    outBuf += s;
-    // Flush full lines immediately; keep partials but also idle-flush so UI updates even without \n
-    let idx;
-    while ((idx = outBuf.indexOf("\n")) !== -1) {
-      const line = outBuf.slice(0, idx + 1);
-      outBuf = outBuf.slice(idx + 1);
-      appendLog(line);
-    }
+    const s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+    const norm = s.replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
+    outBuf += norm;
+    let idx; while ((idx = outBuf.indexOf("\n")) !== -1) { const line = outBuf.slice(0, idx + 1); outBuf = outBuf.slice(idx + 1); appendLog(line); }
     if (typeof cb === 'function') cb();
     return true;
   };
   (process.stderr as any).write = (chunk: any, enc?: any, cb?: any) => {
-    if (TUI_DRAWING) return realErr(chunk, enc, cb);
-    let s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
-    s = s.replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
-    errBuf += s;
-    let idx;
-    while ((idx = errBuf.indexOf("\n")) !== -1) {
-      const line = errBuf.slice(0, idx + 1);
-      errBuf = errBuf.slice(idx + 1);
-      appendLog(line);
-    }
+    const s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+    const norm = s.replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
+    errBuf += norm;
+    let idx; while ((idx = errBuf.indexOf("\n")) !== -1) { const line = errBuf.slice(0, idx + 1); errBuf = errBuf.slice(idx + 1); appendLog(line); }
     if (typeof cb === 'function') cb();
     return true;
   };
 
   pulseTimer = setInterval(() => {
-    if ((outBuf || errBuf) && !TUI_DRAWING) redraw();
-  }, 50);
+    if ((outBuf || errBuf)) redraw();
+  }, 120);
 
   uninstallInterceptors = () => {
     (process.stdout as any).write = realOut as any;
     (process.stderr as any).write = realErr as any;
     if (pulseTimer) { clearInterval(pulseTimer); pulseTimer = null; }
-    flushIdle();
+    if (outBuf) { const b = outBuf; outBuf = ""; appendLog(b); }
+    if (errBuf) { const b = errBuf; errBuf = ""; appendLog(b); }
   };
 }
 
@@ -190,12 +233,6 @@ async function gracefulQuit(room: any, keepAlive: any) {
   try { if (typeof room?.shutdown === "function") await room.shutdown(); } catch (e) { if (INTERACTIVE) appendLog(`${C.red}[shutdown error]${C.reset} ${String(e)}`); else console.error("[shutdown error]", e); }
   if (INTERACTIVE) withTUIDraw(() => { clearScrollRegion(); process.stdout.write(CSI.show + "\n"); });
   if (uninstallInterceptors) uninstallInterceptors();
-
-  if (INTERACTIVE) withTUIDraw(() => {
-    clearScrollRegion();
-    process.stdout.write(ESC.show + ESC.altScreenOff + "\n");
-  });
-
   process.exit(0);
 }
 
@@ -214,14 +251,13 @@ async function askKickoffPrompt(defaultPrompt: string): Promise<string> {
 }
 
 /* -------------------- app -------------------- */
-
 async function app() {
   const room = new ChatRoom();
 
-  const alice = new AgentModel("alice", "openai/gpt-oss-120b");
-  const carol = new AgentModel("carol", "openai/gpt-oss-120b");
-  const bob   = new AgentModel("bob",   "openai/gpt-oss-120b");
-  room.addModel(alice); room.addModel(carol); room.addModel(bob);
+  // Build agents from CLI
+  const specs = parseAgentSpecs();
+  const agents: AgentModel[] = specs.map(s => new AgentModel(s.name, s.model));
+  for (const m of agents) room.addModel(m);
 
   const defaultKickoffPrompt =
     "Agents! Let's get to work on a new and fun project. The project is a sockets/tcp based p2p file transfer and chat app with no middle man. The only requirement is for it C++ compiled with gcc or g++. Check for existing files the workspace. Bob - you will do the coding, please run and test the code you write. Incrementally add new features and focus on extensibility. Carol - you will do the architecture documents and README. I will be the product person who makes the decisions.";
@@ -240,20 +276,18 @@ async function app() {
   const keepAlive = setInterval(() => { /* tick */ }, 60_000);
 
   if (INTERACTIVE) {
-    //withTUIDraw(() => { process.stdout.write(ESC.altScreenOn + ESC.hide + CSI.clear); });
-    // Setup TUI only now
     installInterceptors();
-    const rows = process.stdout.rows || 24;
-    withTUIDraw(() => { const bottom = Math.max(2, rows - 1); });
-    currentStatus = "org: multi-agent session started";
+    currentStatus = `org: session started — agents: ${specs.map(a => `${a.name}${a.model?`:${a.model}`:''}`).join(', ')}`;
     redraw();
-    appendLog(`${C.magenta}Kickoff as Alice:${C.reset} ${kickoffPrompt}`);
+    (globalThis as any).__log(`Kickoff as ${specs[0]?.name || 'alice'}: ${kickoffPrompt}`);
   } else {
-    // Script mode: print clear, raw lines
-    (globalThis as any).__log(`${C.magenta}Kickoff as Alice:${C.reset} ${kickoffPrompt}`);
+    (globalThis as any).__log(`Kickoff as ${specs[0]?.name || 'alice'}: ${kickoffPrompt}`);
   }
 
-  await alice.initialMessage({ role: "assistant", ts: Date.now().toString(), from: "alice", content: kickoffPrompt, read: false });
+  // Send the kickoff as the first agent's initial message
+  if (agents[0]) {
+    await agents[0].initialMessage({ role: "assistant", ts: Date.now().toString(), from: agents[0].id, content: kickoffPrompt, read: false });
+  }
 
   // Interactive key controls only in TUI
   if (INTERACTIVE && process.stdin.isTTY) {
