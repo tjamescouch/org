@@ -524,7 +524,7 @@ Be concise.
             model: this.model,
             soc: this.socText,
             temperature: (typeof (undefined as any) === "undefined" ? 1 : 1) + tempBump
-          }),
+          });
           //600_000,
           //"chatOnce hop timeout"
         //);
