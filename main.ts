@@ -186,7 +186,7 @@ function promptLine(q: string): Promise<string> {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
     rl.question(q, (ans) => {
       rl.close();
-      withTUIDraw(() => { process.stdout.write(CSI.hide); redraw(); });
+      redraw();
       resolve(ans);
     });
   });
