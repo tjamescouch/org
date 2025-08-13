@@ -390,7 +390,7 @@ export async function chatOnce(
 
       if (!namePrinted) {
         const ts = new Date().toLocaleTimeString();
-        console.log(`\n\n\x1b[36m**** ${name} @ ${ts}\x1b[0m:`);
+        console.log(`\n\x1b[36m**** ${name} @ ${ts}\x1b[0m:`);
         namePrinted = true;
       }
 
@@ -571,7 +571,7 @@ export async function chatOnce(
     contentBuf = contentBuf.slice(0, cutAt).trimEnd();
   }
   if (!namePrinted) {
-    console.log(`\n\n**** ${name}:`);
+    console.log(`\n**** ${name}:`);
   }
   if (!contentBuf && SHOW_THINK && thinkingBuf) {
     Bun.stdout.write("\n");
