@@ -626,7 +626,7 @@ export async function chatOnce(
 
   // If we printed any visible CoT, close the tag
   if (SHOW_THINK && !firstThink) {
-    Bun.stdout.write("\n</think>\n");
+    Bun.stdout.write("</think>");
   }
   // Ensure a newline after the streamed content for tidy terminal rendering
   if (namePrinted) {
