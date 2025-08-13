@@ -66,6 +66,7 @@ const GARBAGE_RES: RegExp[] = [
   /\b"ok"\s*:\s*(true|false)\s*,\s*"stdout"/i, // quoted tool result blobs
   /<\|start\|>/i,                                  // special markers some models leak
   /functions\.sh\s+to=assistant/i,                // tool routing artifacts
+  /<\s*[a-z0-9_-]+\s*\|\s*commentary\b[^>]*>/i,   // channel|commentary artifacts
 ];
 const isGarbage = (s: string): boolean => DISABLE_GARBAGE_FILTER ? false : GARBAGE_RES.some(re => re.test(s));
 
@@ -387,7 +388,8 @@ export async function chatOnce(
       const payload = line.startsWith('data:') ? line.slice(5).trim() : line;
 
       if (!namePrinted) {
-        console.log(`\n\n**** ${name}:`);
+        const ts = new Date().toLocaleTimeString();
+        console.log(`\n\n\x1b[36m**** ${name} @ ${ts}\x1b[0m:`);
         namePrinted = true;
       }
 
@@ -555,6 +557,10 @@ export async function chatOnce(
   // If we printed any visible CoT, close the tag
   if (SHOW_THINK && !firstThink) {
     Bun.stdout.write("\n</think>\n");
+  }
+  // Ensure a newline after the streamed content for tidy terminal rendering
+  if (namePrinted) {
+    Bun.stdout.write("\n");
   }
 
   if (cutAt !== null) {
