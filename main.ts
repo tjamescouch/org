@@ -77,7 +77,7 @@ let currentStatus = "org: multi-agent session";
 
 /* -------------------- Personas / Models parsing -------------------- */
 interface AgentSpec { name: string; model: string; }
-const DEFAULT_MODEL = getArg("--default-model") || "openai/gpt-oss-120b";
+const DEFAULT_MODEL = getArg("--default-model") || "openai/gpt-oss-20b";
 
 function parseAgentSpecs(): AgentSpec[] {
   const specs: AgentSpec[] = [];
