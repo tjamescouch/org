@@ -6,6 +6,7 @@ export interface TurnManagerOpts {
   tickMs?: number;            // scheduler cadence
   turnTimeoutMs?: number;     // per-turn watchdog
   idleBackoffMs?: number;     // when agent has nothing to say
+  proactiveMs?: number;       // allow a lightweight proactive turn this often even with no unread
 }
 
 export class TurnManager {
@@ -13,12 +14,14 @@ export class TurnManager {
   private timer: NodeJS.Timeout | null = null;
   private running: boolean[] = [];
   private lastIdle: number[] = [];
+  private lastProbe: number[] = [];   // last time we allowed a proactive turn per agent
   private paused = false;
 
   constructor(private room: ChatRoom, private agents: AgentModel[], private opts: TurnManagerOpts = {}) {
     const n = agents.length;
     this.running = Array(n).fill(false);
     this.lastIdle = Array(n).fill(0);
+    this.lastProbe = Array(n).fill(0);
   }
 
   pause()  { this.paused = true; }
@@ -52,21 +55,33 @@ export class TurnManager {
       const k = (start + step) % n;
       const agent = this.agents[k];
 
-      // Skip if already running, or recently idle-backed off
+      // Skip if already running
       if (this.running[k]) continue;
+      const now = Date.now();
       const backoff = this.opts.idleBackoffMs ?? 1000;
-      if (Date.now() - this.lastIdle[k] < backoff) continue;
+      const proactiveMs = this.opts.proactiveMs ?? 3000; // allow a periodic proactive tick
+      const hasUnread = agent.hasUnread();
+      const allowProactive = !hasUnread && !userBurst && (now - this.lastProbe[k] >= proactiveMs);
 
-      // Only schedule if agent has unread work OR we’re in a userBurst
-      if (!userBurst && !agent.hasUnread()) continue;
+      // Skip if neither unread nor eligible for a proactive tick
+      if (!userBurst && !hasUnread && !allowProactive) continue;
 
-      // Time-box the turn
+      // Respect idle backoff if we recently found nothing to do
+      if (now - this.lastIdle[k] < backoff) continue;
+
+      // Time-box the turn (shorter default than 30s for responsiveness)
       this.running[k] = true;
-      const watchdog = setTimeout(() => agent.abortCurrentTurn?.("watchdog"), this.opts.turnTimeoutMs ?? 30_000);
+      const watchdog = setTimeout(() => agent.abortCurrentTurn?.("watchdog"), this.opts.turnTimeoutMs ?? 8_000);
 
       try {
         const didWork = await agent.takeTurn();
-        if (!didWork) this.lastIdle[k] = Date.now();
+        if (!didWork) {
+          this.lastIdle[k] = Date.now();
+        }
+        // If this was a proactive attempt (no unread before), record probe time
+        if (!hasUnread && !userBurst) {
+          this.lastProbe[k] = Date.now();
+        }
       } catch {
         // swallow; the agent reports errors to the log
       } finally {
