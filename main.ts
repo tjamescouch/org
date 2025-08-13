@@ -18,6 +18,9 @@ process.on("uncaughtException",  e => { console.error("[uncaughtException]", e);
 
 setInterval(() => console.log(`\n${BrightRedTag()}[q] Quit [i] Interject [s] Send system message${Reset()}`), 20000)
 
+
+let isRawMode = false;
+
 /* -------------------- args -------------------- */
 const argv = Bun.argv.slice(2);
 function getArg(name: string): string | undefined {
@@ -183,8 +186,12 @@ function redraw(status = currentStatus) {
 
 function promptLine(q: string): Promise<string> {
   // if stdin is in raw mode (interactive key handler), disable temporarily
-  const wasRaw = !!(process.stdin as any).isRaw;
-  if (wasRaw) process.stdin.setRawMode?.(false);
+  const wasRawMode = isRawMode;
+  !!(process.stdin as any).isRaw;
+  if (wasRawMode) {
+    process.stdin.setRawMode?.(false);
+    isRawMode = false;
+  }
 
   return new Promise((resolve) => {
     const rl = readline.createInterface({
@@ -195,7 +202,10 @@ function promptLine(q: string): Promise<string> {
     rl.question(q, (ans) => {
       rl.close();
       // restore raw mode if we changed it
-      if (wasRaw) process.stdin.setRawMode?.(true);
+      if (wasRawMode) {
+        process.stdin.setRawMode?.(true);
+        isRawMode = true;
+      }
       redraw();
       resolve(ans);
     });
@@ -299,6 +309,7 @@ async function app() {
   // Interactive key controls only in TUI
   if (INTERACTIVE && process.stdin.isTTY) {
     process.stdin.setRawMode?.(true);
+    isRawMode = true;
     process.stdin.resume();
     process.stdin.on("data", async (buf: Buffer) => {
       const s = buf.toString("utf8");
