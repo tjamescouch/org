@@ -136,7 +136,7 @@ function drawHeader(status: string, asString?: boolean): string | void {
       process.stdout.write(CSI.home + `\x1b[2K` + text + " ".repeat(pad) + "\n");
     });
   }
-
+}
 
 
 function promptLine(q: string): Promise<string> {
