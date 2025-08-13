@@ -515,6 +515,8 @@ Be concise.
 
       let msg: any;
       async function invokeChat(tempBump = 0) {
+
+        console.log("I GET PRINTED");
         //return await withTimeout(
           return await chatOnce(this.id, messagesForHop, {
             tools: toolsForHop,
