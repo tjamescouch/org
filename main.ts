@@ -182,12 +182,20 @@ function redraw(status = currentStatus) {
 }
 
 function promptLine(q: string): Promise<string> {
-  const rows = process.stdout.rows || 24;
-  withTUIDraw(() => { clearScrollRegion(); process.stdout.write(`${CSI.show}\x1b[${rows - 1};1H\x1b[2K`); });
+  // if stdin is in raw mode (interactive key handler), disable temporarily
+  const wasRaw = !!(process.stdin as any).isRaw;
+  if (wasRaw) process.stdin.setRawMode?.(false);
+
   return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: true,
+    });
     rl.question(q, (ans) => {
       rl.close();
+      // restore raw mode if we changed it
+      if (wasRaw) process.stdin.setRawMode?.(true);
       redraw();
       resolve(ans);
     });
@@ -311,6 +319,12 @@ async function app() {
         const txt = await promptLine(`${CyanTag()}[you] >${Reset()}`);
         const msg = (txt ?? "").trim();
         if (msg) await room.broadcast("User", msg);
+        if (msg) {
+          await room.broadcast(
+            "System",
+            "User interjected. Respond directly to the user now; avoid repeating prior listings or commands unless strictly needed."
+          );
+        }
         if (msg) (globalThis as any).__log(`[you] ${msg}`);
         currentStatus = msg ? "sent interject" : "interject: (empty)"; redraw();
         return;
