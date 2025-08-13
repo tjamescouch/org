@@ -16,7 +16,7 @@ import { CSI } from "./tui"; // expects: clear, home, hide, show, rev, nrm
 process.on("unhandledRejection", e => console.error("[unhandledRejection]", e));
 process.on("uncaughtException",  e => { console.error("[uncaughtException]", e); process.exitCode = 1; });
 
-setInterval(() => console.log(`\n${BrightRedTag()}[q] Quit [i] Interject [s] System Message${Reset()}`), 20000)
+setInterval(() => console.log(`\n${BrightRedTag()}[q] Quit [i] Interject [s] Send system message${Reset()}`), 20000)
 
 /* -------------------- args -------------------- */
 const argv = Bun.argv.slice(2);
