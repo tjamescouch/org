@@ -395,6 +395,17 @@ async function app() {
       await room.broadcast("User", msg);
       await room.broadcast("System", hardNudge);
 
+      // --- Insert: Schedule a post-interject "resume" ping so agents restart after the skip window
+      try {
+        // Give AgentModel's 1.5s skip window time to elapse, then nudge again.
+        await setTimeoutPromise(1650);
+        // Light resume ping + re-broadcast the user's raw text (without the marker) to ensure a fresh turn triggers.
+        await room.broadcast("System", "Resume: user finished typing. Respond now in 1–3 sentences, no tools.");
+        await room.broadcast("User", raw);
+      } catch (e) {
+        (globalThis as any).__logError(`post-interject resume error: ${String(e)}`);
+      }
+
       // If ChatRoom exposes a models list, also DM each agent to maximize salience
       const rm: any = room as any;
       if (Array.isArray(rm.models)) {
