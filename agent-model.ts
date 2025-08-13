@@ -371,11 +371,27 @@ Be concise.
   }
 
   async receiveMessage(incoming: RoomMessage): Promise<void> {
+    // --- Fast-path: if the user has taken control, skip this turn entirely
+    const PAUSED = Boolean((globalThis as any).__PAUSE_INPUT);
+    const userJustInterjected = (Date.now() - __userInterrupt.ts) < 1500;
+    if (PAUSED || userJustInterjected) {
+      // Record the message for history but do not generate a response now.
+      this._push(incoming);
+      logLine(`${BrightYellowTag()}[skip] ${this.id}: user control active; skipping queued turn @ ${stamp()}${Reset()}`);
+      return;
+    }
     await waitWhilePaused();
     this._push(incoming);
 
     // Acquire the shared channel lock up-front so summarizeOnce and chatOnce do not overlap across agents
     const release = await channelLock.waitForLock(15 * 60 * 1000);
+    // Guard again after acquiring the lock in case control changed while waiting
+    if (Boolean((globalThis as any).__PAUSE_INPUT) || (Date.now() - __userInterrupt.ts) < 1500) {
+      release();
+      this._push(incoming);
+      logLine(`${BrightYellowTag()}[skip] ${this.id}: user control after lock; yielding${Reset()}`);
+      return;
+    }
     try {
       const isUserIncoming = String(incoming.from || "").toLowerCase() === "user";
       const userFocusNudge: ChatMessage | null = isUserIncoming ? {
