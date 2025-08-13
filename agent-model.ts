@@ -376,6 +376,7 @@ Be concise.
             "You are a succinct coordinator. Summarize the recent conversation as bullet points covering: current project goal, key constraints, files created/modified, tools/commands run and outcomes, and next concrete steps. Max 120 words. No code. No quotes.",
           read: true,
         };
+        console.log(`${GreenTag()}Requesting summary${Reset()}`);
         summaryText = await withTimeout(
           summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ], { model: this.model }),
           180_000,
@@ -779,7 +780,7 @@ Be concise.
 ok: ${result.ok}
 exit_code: ${result.exit_code}
 --- stdout ---
-${GreenTag()}${sOut}${Reset()}
+${CyanTag()}${sOut}${Reset()}
 --- stderr ---
 ${RedTag()}${sErr}${Reset()}
 `);
