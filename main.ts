@@ -40,6 +40,27 @@ const C = {
   blue:  "\x1b[34m", magenta:"\x1b[35m", cyan:  "\x1b[36m", gray:  "\x1b[90m",
 } as const;
 
+// --- Timestamp and global logger utilities ---
+function ts() { return new Date().toLocaleTimeString(); }
+function colorize(msg: string, color: string = "") { return `${color}${msg}${C.reset}`; }
+
+// Global append hook so other modules can log into the TUI buffer directly
+(globalThis as any).__appendLog = (line: string) => appendLog(line);
+
+// Global log functions used across the app (agent-model imports via globalThis)
+(globalThis as any).__log = (msg: string, color: keyof typeof C | "" = "") => {
+  const prefix = `${C.gray}[${ts()}]${C.reset} `;
+  const body = color ? colorize(msg, (C as any)[color] ?? "") : msg;
+  if (INTERACTIVE) appendLog(prefix + body + "\n");
+  else process.stdout.write(prefix + body + "\n");
+};
+(globalThis as any).__logError = (msg: string) => {
+  const prefix = `${C.gray}[${ts()}]${C.reset} `;
+  const body = `${C.red}${msg}${C.reset}`;
+  if (INTERACTIVE) appendLog(prefix + body + "\n");
+  else process.stderr.write(prefix + body + "\n");
+};
+
 const ESC = {
   altScreenOn: "\x1b[?1049h",
   altScreenOff: "\x1b[?1049l",
@@ -236,8 +257,7 @@ async function app() {
   const keepAlive = setInterval(() => { /* tick */ }, 60_000);
 
   const bannerTimer = setInterval(() => {
-    const ts = new Date().toLocaleTimeString();
-    console.log(`${C.gray}[${ts}]${C.reset} ${bannerLine()}`);
+    (globalThis as any).__log(bannerLine());
   }, 20_000);
 
   if (INTERACTIVE) {
@@ -251,7 +271,7 @@ async function app() {
     appendLog(`${C.magenta}Kickoff as Alice:${C.reset} ${kickoffPrompt}`);
   } else {
     // Script mode: print clear, raw lines
-    console.log(`${C.magenta}Kickoff as Alice:${C.reset} ${kickoffPrompt}`);
+    (globalThis as any).__log(`${C.magenta}Kickoff as Alice:${C.reset} ${kickoffPrompt}`);
   }
 
   await alice.initialMessage({ role: "assistant", ts: Date.now().toString(), from: "alice", content: kickoffPrompt, read: false });
@@ -279,6 +299,7 @@ async function app() {
         const txt = await promptLine(`${C.bold}[you] > ${C.reset}`);
         const msg = (txt ?? "").trim();
         if (msg) await room.broadcast("User", msg);
+        if (msg) (globalThis as any).__log(`[you] ${msg}`);
         currentStatus = msg ? "sent interject" : "interject: (empty)"; redraw();
         return;
       }
@@ -298,6 +319,6 @@ async function app() {
 
 app().catch((e) => {
   if (INTERACTIVE) { process.stdout.write(CSI.show); }
-  console.error("App crashed:", e);
+  (globalThis as any).__logError(`App crashed: ${String(e)}`);
   process.exit(1);
 });

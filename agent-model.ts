@@ -1,3 +1,13 @@
+// --- Lightweight wrappers for unified logging ---
+const __g: any = (globalThis as any) || {};
+const logLine = (s: string) => { (__g.__log ?? console.log)(s); };
+const logErr  = (s: string) => { (__g.__logError ?? console.error)(s); };
+const appendDirect = (s: string) => { (__g.__appendLog ?? ((x: string)=>console.log(x)))(s.endsWith("\n")?s:(s+"\n")); };
+const stamp = () => new Date().toLocaleTimeString();
+const Reset = () => "\x1b[0m";
+const CyanTag = () => "\x1b[36m";
+const YellowTag = () => "\x1b[33m";
+const RedTag = () => "\x1b[31m";
 const withTimeout = <T>(p: Promise<T>, ms: number, label = "timeout"): Promise<T> =>
   Promise.race([
     p,
@@ -301,7 +311,7 @@ Be concise.
       ? incoming.content
       : "";
 
-    console.log(`\n\n**** ${this.id}:\n${initialContent}`);
+    logLine(`${CyanTag()} **** ${this.id} @ ${stamp()}${Reset()}\n${initialContent}`);
     await this.broadcast(initialContent);
   }
 
@@ -375,7 +385,7 @@ Be concise.
       if (lastMessage) {
         await this._deliver((lastMessage.content ?? (lastMessage.reasoning ?? '')));
       } else {
-        console.error('lastMessage is undefined');
+        logErr('lastMessage is undefined');
       }
 
       // Append this turn’s assistant text into the rolling SoC
@@ -650,7 +660,7 @@ Be concise.
 
   /* ------------------------------------------------------------ */
   private async _execTool(call: ToolCall): Promise<ChatMessage> {
-    if (VERBOSE) console.error("************** CALL", call);
+    if (VERBOSE) logErr("************** CALL " + JSON.stringify(call));
 
     const name: string = call?.function?.name ?? 'unknown';
     try {
@@ -660,7 +670,7 @@ Be concise.
         return { ...(await this._runShell(name, { ...args, rawCmd: args.cmd })), tool_call_id: call.id, role: "tool", name, from: this.id, read: false };
       }
       // unknown tool
-      console.error(`******** Model attempted to use an unknown tool ${name}`);
+      logErr(`Model attempted unknown tool: ${name}`);
       return { role: "tool", name: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: false, err: `unknown tool: ${name} - try using the sh tool` }), from: this.id, read: false };
     } catch (err) {
       return { role: "tool", name, tool_call_id: call.id, content: JSON.stringify({ ok: false, err: String(err) }), from: this.id, read: false };
@@ -692,11 +702,14 @@ Be concise.
       const sOut = stdout.length > CLAMP ? stdout.slice(0, CLAMP) + "\n...[truncated]" : stdout;
       const sErr = stderr.length > CLAMP ? stderr.slice(0, CLAMP) + "\n...[truncated]" : stderr;
 
-      const humanLog = `\n\n\n******* sh ${cmd ?? rawCmd}\n` +
-        `ok: ${result.ok}\nexit_code: ${result.exit_code}\n` +
-        `--- stdout ---\n${sOut}\n` +
-        `--- stderr ---\n${sErr}\n`;
-      console.error(humanLog);
+      appendDirect(`${YellowTag()}******* sh ${cmd ?? rawCmd} @ ${stamp()}${Reset()}
+ok: ${result.ok}
+exit_code: ${result.exit_code}
+--- stdout ---
+${sOut}
+--- stderr ---
+${sErr}
+`);
 
       return {
         role: "tool",
@@ -705,7 +718,7 @@ Be concise.
       };
     } catch (e) {
       const content = `sh -c ${cmd} -> ` + JSON.stringify({ ok: false, err: e instanceof Error ? e.message : String(e) });
-      console.error(`\n\n\n******* sh ${cmd}\nok: false\nerror: ${e instanceof Error ? e.message : String(e)}\n`);
+      logErr(`sh ${cmd} failed: ${e instanceof Error ? e.message : String(e)}`);
       return {
         role: "tool",
         name: "sh",
@@ -718,7 +731,7 @@ Be concise.
 
   /* ---------- audience routing -------------------------------- */
   private _setAudience(modeStr: string) {
-    console.log("********* Setting chat mode: ", modeStr);
+    logLine(`[mode] ${modeStr}`);
     if (modeStr === "group") {
       this.audience = { kind: "group", target: "*" };
     } else if (modeStr.startsWith("direct:")) {
@@ -774,7 +787,7 @@ Be concise.
             read: true,
             content: `=> Written to file ${p}`
           };
-          console.log(`\n******* wrote file ${p}`);
+          logLine(`******* wrote file ${p} @ ${stamp()}`);
           break;
         }
       }
@@ -790,8 +803,7 @@ Be concise.
         read: true,
         content: `${JSON.stringify({ ok: false, err: String(e) })} Failed to write to file ${p}.`
       };
-      console.error(`\n******* file write failed: ${e}`);
-      console.error(e);
+      logErr(`file write failed: ${String(e)}`);
     } finally {
       if (this.fileToRedirectTo) this.audience = { kind: "group", target: "*" };
       this.fileToRedirectTo = undefined;
