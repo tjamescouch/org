@@ -1,7 +1,9 @@
 // Global interrupt for the current streaming chat; SIGINT handler calls this
 let _currentStreamAC: AbortController | null = null;
 export function interruptChat() {
-  try { _currentStreamAC?.abort(); } catch {}
+  try { _currentStreamAC?.abort(); } catch (e) {
+    console.error(e);
+  }
   _currentStreamAC = null;
 }
 // --- Preflight cache and helpers ---

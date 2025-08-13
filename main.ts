@@ -326,7 +326,8 @@ async function app() {
         return;
       }
       if (ch === "i") {
-        interruptChat(); await new Promise(r => setTimeout(r, 100));
+        interruptChat(); 
+        await new Promise(r => setTimeout(r, 100));
         currentStatus = "interject (user)"; redraw();
         const txt = await promptLine(`${CyanTag()}[you] >${Reset()}`);
         const msg = (txt ?? "").trim();
@@ -339,6 +340,9 @@ async function app() {
         }
         if (msg) (globalThis as any).__log(`[you] ${msg}`);
         currentStatus = msg ? "sent interject" : "interject: (empty)"; redraw();
+
+        isRawMode = false;
+        process.stdin.setRawMode?.(false);
         return;
       }
       if (ch === "s") {
