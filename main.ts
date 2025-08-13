@@ -13,6 +13,7 @@ import { interruptChat } from "./chat";
 import readline from "readline";
 import { CSI } from "./tui"; // expects: clear, home, hide, show, rev, nrm
 import { setTimeout as setTimeoutPromise } from 'timers/promises'
+import { jest } from "bun:test";
 
 process.on("unhandledRejection", e => console.error("[unhandledRejection]", e));
 process.on("uncaughtException",  e => { console.error("[uncaughtException]", e); process.exitCode = 1; });
@@ -308,6 +309,13 @@ async function app() {
 
   // Send the kickoff as a broadcast to the room instead of initialMessage
   await room.broadcast("User", kickoffPrompt);
+    
+  process.stdin.on("data", async (key: Buffer) => {
+    // Ctrl+C (0x03 in ASCII)
+    if (key.toString() === "\u0003") {
+      process.exit();
+    }
+  });
 
   // Interactive key controls only in TUI
   if (INTERACTIVE && process.stdin.isTTY && !isRawMode) {
