@@ -37,6 +37,7 @@ const withTimeout = <T>(p: Promise<T>, ms: number, label = "timeout"): Promise<T
     new Promise<never>((_, rej) => setTimeout(() => rej(new Error(label)), ms))
   ]) as any;
 import { chatOnce, summarizeOnce, type ChatMessage, type ToolCall, type ToolDef, type AbortDetector } from "./chat";
+import type { ChatRoom } from "./chat-room";
 import { Model } from "./model";
 import { channelLock } from "./channel-lock";
 import type { RoomMessage } from "./chat-room";
@@ -242,6 +243,21 @@ class MaxLengthAbortDetector implements AbortDetector {
 }
 
 export class AgentModel extends Model {
+  // --- ChatRoom attachment plumbing (allows ChatRoom.addModel to attach) ---
+  private __room?: ChatRoom;
+
+  /** Back-compat: expose as getter/setter so any existing `this.room` usage still works */
+  get room(): ChatRoom | undefined { return this.__room; }
+  set room(r: ChatRoom | undefined) { this.__room = r; }
+
+  /** Called by ChatRoom.addModel(...) */
+  public attachRoom(room: ChatRoom) { this.__room = room; }
+
+  /** Helper for code paths that require a room reference */
+  private roomOrThrow(): ChatRoom {
+    if (!this.__room) throw new Error(`Model "${this.id}" is not attached to a ChatRoom`);
+    return this.__room;
+  }
   /**
    * Normalize history so that for this agent, all other agents' messages are mapped to role:"user"
    * (while keeping system/tool intact).
