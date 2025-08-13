@@ -1,6 +1,6 @@
 # org
 
-A command-line tool for orchestrating a **group of LLMs** with tool-calling, safe execution inside a VM, and a simple “candidate vs current” workflow driven by Git.
+A command-line tool for orchestrating a group of LLMs with tool-calling, execution inside a VM, and a workflow driven by Git.
 
 ## Table of Contents
 - [Highlights](#highlights)
@@ -21,45 +21,46 @@ A command-line tool for orchestrating a **group of LLMs** with tool-calling, saf
 
 ## Highlights
 
-- **Chat Completions + Tools**: Uses Ollama’s `/v1/chat/completions` with streaming and OpenAI-style tools.
-- **Shell & Python tools**:  
-  - `sh` — run POSIX commands inside the VM (Bun spawn).  
+- Chat completions with tool-calling using Ollama’s `/v1/chat/completions` endpoint with streaming support.
+- Tools available:
+  - `sh` — run POSIX commands inside the VM (Bun spawn).
   - `python_run` — execute Python snippets with a timeout (Bun spawn).
-- **AgentModel**: Can switch **chat modes** via tool (`chat_mode` → `group` / `direct:<model>` / `file:<path>`), and call `sh`.
-- **PythonModel**: Uses tool calls to run Python, consumes tool output internally, responds with summarized results.
-- **Robust tool parsing**: `runWithTools` executes **declared** and **embedded** tool calls in the **same turn**.
-- **Streaming**: `chatOnce(stream:true)` accumulates SSE deltas to bypass Ollama’s 5-minute non-streaming timeout.
-- **Concurrency control**: `ChannelLock` to serialize critical sections.
-- **Safe runtime**: Runs in a VM with host-only access to Ollama; optional egress blocking with `ufw`.
-- **Candidate testing**: Run **current** and **candidate** generations concurrently; promote via Git **merge** and rollback via **git revert**.
+- AgentModel supports switching chat modes via the `chat_mode` tool (`group`, `direct:<model>`, or `file:<path>`).
+- PythonModel runs Python code via tool calls and summarizes output internally.
+- Personas and per-persona models can be specified via command line arguments.
+- Tool calls declared in the model response and embedded tool calls in the text are both executed within the same turn.
+- Streaming accumulates SSE deltas to handle Ollama’s non-streaming timeout.
+- Concurrency control is provided by `ChannelLock` to serialize critical sections.
+- Execution occurs inside a VM with host-only network access; optional egress blocking is configurable.
+- Banners and logging output are displayed as white on black text, flowing inline with the conversation.
 
 ## Architecture
 
 ```
 /org
-├─ main.ts                 # boots the chat room / registers models
-├─ chat.ts                 # chatOnce(streaming), runWithTools, types
-├─ agent-model.ts          # AgentModel: sh, chat_mode, audience routing
-├─ python-model.ts         # PythonModel: python_run tool (Bun-native)
-├─ model.ts                # base Model interface + RoomMessage, hooks
-├─ simple-context-model.ts # minimal context-preserving model
-├─ extract-tool-calls.ts   # extractor for embedded "tool_calls"
-├─ channel-lock.ts         # ChannelLock (dependency-free)
+├─ main.ts                 # initializes chat room, registers models, parses CLI for personas/models
+├─ chat.ts                 # handles chatOnce (streaming), runWithTools, and types
+├─ agent-model.ts          # AgentModel: sh, chat_mode tool, routing logic
+├─ python-model.ts         # PythonModel: python_run tool execution
+├─ model.ts                # base Model interface, RoomMessage, hooks
+├─ simple-context-model.ts # minimal context-preserving model implementation
+├─ extract-tool-calls.ts   # extracts embedded tool calls from text
+├─ channel-lock.ts         # provides ChannelLock for concurrency control
 ├─ ops/
 │  ├─ run.sh               # start in tmux
 │  ├─ stop.sh              # stop tmux session
 │  ├─ start-current.sh     # checkout main, run on :7001
 │  ├─ start-candidate.sh   # branch cand/<ts>, run on :7002
 │  ├─ fitness.sh           # candidate fitness gate
-│  ├─ promote.sh           # merge cand → main, tag, restart current
+│  ├─ promote.sh           # merge candidate → main, tag, restart current
 │  └─ rollback.sh          # revert last promote merge
 └─ README.md
 ```
 
 ## Requirements
 
-- **VM guest**: Debian 12 (ARM64) or similar, **Bun v1.2+**, `python3`, `tmux`, `git`, `curl`.
-- **Host**: Ollama ≥ 0.11 listening on host-only IP.
+- VM guest: Debian 12 (ARM64) or similar, Bun v1.2+, python3, tmux, git, curl.
+- Host: Ollama ≥ 0.11 listening on a host-only IP.
 
 Example host command:
 
@@ -93,33 +94,33 @@ bun run main.ts
 ## Tool Calling Flow
 
 1. `chatOnce` posts to `/v1/chat/completions` with `stream:true`.
-2. Streaming deltas are stitched until `[DONE]`.
+2. Streaming deltas are collected until completion.
 3. `runWithTools`:
-   - Reads model’s `tool_calls`.
-   - Parses embedded tool calls from text.
-   - Executes all tools in sequence.
-   - Appends results to the conversation.
+   - Reads the model’s declared `tool_calls`.
+   - Parses embedded tool calls from the response text.
+   - Executes all tools sequentially.
+   - Appends tool outputs back into the conversation.
 
-This ensures tags and tool calls in the same turn are processed.
+This process ensures both declared and embedded tool calls are handled within the same turn.
 
 ## Models
 
 ### AgentModel
 
 - Tools:
-  - `sh(cmd, timeout_s)`
-  - `chat_mode(mode)` → `group`, `direct:<modelId>`, or `file:<path>`
-- Keeps raw tool output hidden unless explicitly requested.
+  - `sh(command, timeout_s)`
+  - `chat_mode(mode)` — modes include `group`, `direct:<modelId>`, or `file:<path>`
+- Tool outputs are not shown by default unless requested.
 
 ### PythonModel
 
 - Tool:
   - `python_run(code, timeout_s)`
-- Summarizes output for the user, keeps raw data internal.
+- Processes Python code execution internally and returns summarized results.
 
 ## Concurrency
 
-`ChannelLock` provides a simple async lock:
+`ChannelLock` provides a simple async lock for serializing critical sections:
 
 ```ts
 const release = await lock.waitForLock(10000);
@@ -131,6 +132,8 @@ try {
 ```
 
 ## Streaming to Console
+
+Output from streaming responses and banners is displayed as white text on a black background, flowing inline with conversation content.
 
 **Bun:**
 
@@ -146,9 +149,9 @@ if (delta.content) process.stdout.write(delta.content);
 
 ## Security in VM
 
-- Host-only network adapter only.
-- Bind Ollama to host-only IP.
-- Optionally block all outgoing traffic except to host Ollama:
+- VM uses a host-only network adapter.
+- Ollama is bound to the host-only IP.
+- Optional firewall rules can restrict outbound traffic except to the Ollama host:
 
 ```bash
 sudo ufw --force reset
@@ -159,9 +162,9 @@ sudo ufw enable
 
 ## Troubleshooting
 
-- **Timeouts**: Always use `stream:true` and disable Bun’s fetch timeout.
-- **Missing tool calls**: Check `finish_reason` and embedded extraction.
-- **Race conditions**: Use `ChannelLock` for critical sections.
+- Use `stream:true` to avoid Ollama’s fetch timeout.
+- Verify tool calls are correctly detected via `finish_reason` and embedded extraction.
+- Use `ChannelLock` to prevent race conditions in critical sections.
 
 ## License
 
