@@ -4,6 +4,10 @@ const logLine = (s: string) => { (console.log)(s); };
 const logErr  = (s: string) => { ( console.error)(s); };
 const appendDirect = (s: string) => { ( ((x: string)=>console.log(x)))(s.endsWith("\n")?s:(s+"\n")); };
 const stamp = () => new Date().toLocaleTimeString();
+
+// --- Cooperative "user interrupt" flag (set from main on interject)
+const __userInterrupt = { ts: 0 };
+export function markUserInterject() { __userInterrupt.ts = Date.now(); }
 export const Reset = () => "\x1b[0m";
 export const CyanTag = () => "\x1b[36m";
 export const YellowTag = () => "\x1b[33m";
@@ -498,6 +502,16 @@ Be concise.
     const seenRecently = (sig: string) => recentToolSigs.includes(sig);
 
     for (let hop = 0; hop < maxHops; hop++) {
+      // If the user just interjected, yield this turn so the new message is handled ASAP.
+      if (Date.now() - __userInterrupt.ts < 1500) {
+        responses.push({
+          role: "system",
+          from: "System",
+          read: true,
+          content: "Turn interrupted by user interjection. Yielding to process the user's message."
+        });
+        break;
+      }
       // Determine tool availability for this hop
       const toolsForHop = (breakerCooldown > 0) ? [] : tools;
       const toolChoiceForHop = (breakerCooldown > 0) ? ("none" as const) : ("auto" as const);
@@ -543,6 +557,11 @@ Be concise.
         ).catch(e => console.error(e));
       }
       msg = await invokeChat(0);
+      // If an interject was signaled during this hop, don't keep retrying; yield now.
+      if (Date.now() - __userInterrupt.ts < 1500 && (!msg || (!msg.content && !msg.tool_calls))) {
+        responses.push({ role: "system", from: "System", read: true, content: "Yielding due to user interjection." });
+        break;
+      }
       const noTokens = !msg || (typeof msg.content === "string" ? msg.content.trim().length === 0 : true);
       const noTools = !msg?.tool_calls || (Array.isArray(msg.tool_calls) && msg.tool_calls.length === 0);
       if (noTokens && noTools) {

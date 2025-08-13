@@ -7,7 +7,7 @@
 //   bun main.ts -a alice=openai/gpt-oss-120b -a bob=google/gemma-3-27b -a carol
 //   bun main.ts --agents "alice=gpt-oss:20b,carol,bob=lmstudio/my-local"
 
-import { AgentModel, BrightBlueTag, BrightRedTag, CyanTag, Reset } from "./agent-model";
+import { AgentModel, BrightBlueTag, BrightRedTag, CyanTag, Reset, markUserInterject } from "./agent-model";
 import { ChatRoom } from "./chat-room";
 import { interruptChat } from "./chat";
 import readline from "readline";
@@ -371,6 +371,8 @@ async function app() {
   const startInterject = async () => {
   if (promptActive) return;
   try {
+    // Let agents know to yield their current hop quickly
+    markUserInterject();
     interruptChat();
     await new Promise(r => setTimeout(r, 150)); // give streams a beat to abort
 
@@ -413,6 +415,7 @@ async function app() {
 const startSystemMessage = async () => {
   if (promptActive) return;
   try {
+    markUserInterject();
     interruptChat();
     await new Promise(r => setTimeout(r, 120));
     const txt = await promptLine(`${C.cyan}[system] > ${C.reset}`);
