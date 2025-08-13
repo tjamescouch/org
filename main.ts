@@ -70,11 +70,6 @@ const ESC = {
   enableWrap: "\x1b[?7h",
 };
 
-function bannerLine() {
-  // white-on-black, but it just scrolls with content now
-  return `\x1b[97m\x1b[40m[q] quit  [i] interject  [s] system  (Ctrl+C to quit)\x1b[0m`;
-}
-
 /* -------------------- minimal TUI (only when INTERACTIVE) -------------------- */
 let TUI_DRAWING = false; // guard to avoid intercept recursion
 const LOG_LIMIT = 2000; // ring buffer lines
@@ -98,7 +93,8 @@ function appendLog(s: string) {
 function drawHeader(status: string) {
   withTUIDraw(() => {
     const cols = process.stdout.columns || 80;
-    const text = `${C.bold}${C.cyan}${status}${C.reset}`;
+    const controls = `${C.gray}[q] quit  [i] interject  [s] system  (Ctrl+C to quit)${C.reset}`;
+    const text = `${C.bold}${C.cyan}${status}${C.reset}  ${controls}`;
     const pad = Math.max(0, cols - stripAnsi(text).length);
     process.stdout.write(CSI.home + `\x1b[2K` + text + " ".repeat(pad) + "\n");
   });
@@ -210,8 +206,6 @@ async function gracefulQuit(room: any, keepAlive: any) {
     process.stdout.write(ESC.show + ESC.altScreenOff + "\n");
   });
 
-  try { clearInterval(bannerTimer as any); } catch {}
-
   process.exit(0);
 }
 
@@ -255,10 +249,6 @@ async function app() {
 
   // Start
   const keepAlive = setInterval(() => { /* tick */ }, 60_000);
-
-  const bannerTimer = setInterval(() => {
-    (globalThis as any).__log(bannerLine());
-  }, 20_000);
 
   if (INTERACTIVE) {
     withTUIDraw(() => { process.stdout.write(ESC.altScreenOn + ESC.hide + CSI.clear); });
