@@ -493,18 +493,45 @@ Be concise.
         new RegexAbortDetector([ /\bnow create new file\b/i, /\bit didn't show output\b/i ]),
       ];
 
-      const msg = (await withTimeout(
-        chatOnce(this.id, messagesForHop, {
-          tools: toolsForHop,
-          tool_choice: toolChoiceForHop,
-          num_ctx: 128000,
-          abortDetectors: detectors,
-          model: this.model,
-          soc: this.socText,
-        }),
-        600_000,
-        "chatOnce hop timeout"
-      )) ?? { content: "Error" } as any;
+      let msg: any;
+      async function invokeChat(tempBump = 0) {
+        return await withTimeout(
+          chatOnce(this.id, messagesForHop, {
+            tools: toolsForHop,
+            tool_choice: toolChoiceForHop,
+            num_ctx: 128000,
+            abortDetectors: detectors,
+            model: this.model,
+            soc: this.socText,
+            temperature: (typeof (undefined as any) === "undefined" ? 1 : 1) + tempBump
+          }),
+          600_000,
+          "chatOnce hop timeout"
+        );
+      }
+      msg = await invokeChat(0);
+      const noTokens = !msg || (typeof msg.content === "string" ? msg.content.trim().length === 0 : true);
+      const noTools = !msg?.tool_calls || (Array.isArray(msg.tool_calls) && msg.tool_calls.length === 0);
+      if (noTokens && noTools) {
+        try { (Bun.stdout as any)?.write?.("."); } catch {}
+        // Gentle retry with slightly wider sampling
+        msg = await invokeChat(0.3).catch(() => msg);
+      }
+      if (!msg) msg = { content: "Error" };
+
+      // Guard: treat a second empty as a first-class outcome and avoid enqueuing an empty assistant turn
+      {
+        const stillEmpty = !msg?.content || String(msg.content).trim().length === 0;
+        const stillNoTools = !msg?.tool_calls || (Array.isArray(msg.tool_calls) && msg.tool_calls.length === 0);
+        if (stillEmpty && stillNoTools) {
+          // Do not advance with an empty turn; inject a short system nudge and back off tools for one hop
+          breakerCooldown = 1; breakerReason = "empty-output";
+          responses.push({ role: "system", from: "System", read: true, content: "Previous model turn produced no content. Next reply: NO TOOLS. Provide a concise textual update (2–3 sentences) or propose the next concrete step." });
+          // Prepare for next loop iteration with currentMessages unchanged (plus nudge)
+          currentMessages = [...currentMessages, responses[responses.length - 1]];
+          continue;
+        }
+      }
 
       // Parse tags from assistant content
       const { clean: response, tags } = TagParser.parse(msg.content || "");

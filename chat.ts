@@ -309,6 +309,7 @@ export async function chatOnce(
   let namePrinted = false;
   let firstThink = true;
   let firstNotThink = true;
+  let tokenCount = 0; // counts emitted non-empty content/reasoning units
   // Accumulate partial lines across chunks (SSE / JSONL)
   let lineBuffer = "";
   // Soft-abort state: keep reading to the end but suppress further terminal output
@@ -452,13 +453,16 @@ export async function chatOnce(
         if (SHOW_THINK) {
           if (firstThink) { firstThink = false; Bun.stdout.write("<think>"); }
           Bun.stdout.write(reasonStr);
+          tokenCount++;
         } else {
           if (firstThink) { firstThink = false; }
           if (DEBUG_STREAM) console.error("[COT suppressed]", reasonStr.slice(0, 40));
           emitDot();
+          tokenCount++;
         }
       }
       if (contentStr) {
+        tokenCount++;
         if (firstNotThink && !firstThink) { firstNotThink = false; }
 
         // When SHOW_THINK=1, bypass garbage/suppression filters to reveal raw CoT-like text.
@@ -571,6 +575,10 @@ export async function chatOnce(
   }
   if (!contentBuf && SHOW_THINK && thinkingBuf) {
     Bun.stdout.write("\n");
+  }
+  // Surface a heartbeat so the user knows we reached end-of-stream without tokens
+  if (tokenCount === 0) {
+    try { Bun.stdout.write("."); } catch {}
   }
   _currentStreamAC = null;
   return {
