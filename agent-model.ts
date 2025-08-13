@@ -197,11 +197,11 @@ class MaxLengthAbortDetector implements AbortDetector {
 
 export class AgentModel extends Model {
   private context: RoomMessage[] = [];
-  private readonly shellTimeout = 5 * 60; // seconds
+  private readonly shellTimeout = 60 * 60;
   private audience: Audience = { kind: "group", target: "*" }; // default
   private fileToRedirectTo: string | undefined;
   private maxShellReponseCharacters: number = 25_000;
-  private maxMessagesInContext = 10;
+  private maxMessagesInContext = 17;
   private system: string;
   private model: string;
   private socText: string = "";

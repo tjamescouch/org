@@ -131,7 +131,7 @@ export async function summarizeOnce(
 ): Promise<string> {
   const ollamaBaseUrl = opts?.baseUrl ?? BASE_URL;
   const model = opts?.model ?? DEFAULT_MODEL;
-  const timeout = Math.max(2000, Math.min(60_000, opts?.timeout_ms ?? 12_000));
+  const timeout = Math.max(2000, Math.min(120_000, opts?.timeout_ms ?? 120_000));
 
   // Use preflight cache and checks
   const pf = await preflight(ollamaBaseUrl, model);
@@ -217,7 +217,7 @@ export async function chatOnce(
 
   // Single-endpoint strategy: OpenAI-compatible /v1/chat/completions (tool calling)
   let resp: Response | undefined;
-  const timeouts = [100000, 200000, 400000];
+  const timeouts = [1000000, 2000000, 4000000];
   for (let attempt = 0; attempt < timeouts.length; attempt++) {
     const connectAC = new AbortController();
     const t = setTimeout(() => connectAC.abort(), timeouts[attempt]);
