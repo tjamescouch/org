@@ -37,8 +37,14 @@ export class ChatRoom implements RoomAPI {
 
   pause() { this.paused = true; }
   resume() { this.paused = false; this.pauseWaiters.splice(0).forEach(fn => { try { fn(); } catch {} }); }
-  private async waitIfPaused() {
+
+/**
+ * Wait only when paused AND the message is not a human interject.
+ * Human interjects use from === "User" and should pass through while paused.
+ */
+  private async waitIfPausedFor(msg: RoomMessage) {
     if (!this.paused) return;
+    if ((msg.from || "").toLowerCase() === "user") return; // let interjects through
     await new Promise<void>(resolve => this.pauseWaiters.push(resolve));
   }
 
@@ -113,7 +119,7 @@ export class ChatRoom implements RoomAPI {
         resolve();
       }, TIMEOUT_MS);
       try {
-        await this.waitIfPaused();
+        await this.waitIfPausedFor(msg);
         await model.receiveMessage(msg);
       } catch {
         // swallow model errors to avoid crashing the room
