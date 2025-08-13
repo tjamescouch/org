@@ -7,7 +7,7 @@
 //   bun main.ts -a alice=openai/gpt-oss-120b -a bob=google/gemma-3-27b -a carol
 //   bun main.ts --agents "alice=gpt-oss:20b,carol,bob=lmstudio/my-local"
 
-import { AgentModel, BrightBlueTag, CyanTag, Reset } from "./agent-model";
+import { AgentModel, BrightBlueTag, BrightRedTag, CyanTag, Reset } from "./agent-model";
 import { ChatRoom } from "./chat-room";
 import { interruptChat } from "./chat";
 import readline from "readline";
@@ -15,6 +15,8 @@ import { CSI } from "./tui"; // expects: clear, home, hide, show, rev, nrm
 
 process.on("unhandledRejection", e => console.error("[unhandledRejection]", e));
 process.on("uncaughtException",  e => { console.error("[uncaughtException]", e); process.exitCode = 1; });
+
+setInterval(() => console.log(`${BrightRedTag()}[q] Quit [i] Interject [s] System Message${Reset()}`))
 
 /* -------------------- args -------------------- */
 const argv = Bun.argv.slice(2);
