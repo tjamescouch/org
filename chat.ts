@@ -292,7 +292,7 @@ export async function chatOnce(
 
           if (contentStr) Bun.stdout.write(contentStr + "\n");
           if (!contentStr && reasoningStr && SHOW_THINK) {
-            Bun.stdout.write(`<think>${reasoningStr}</think>\n`);
+            Bun.stdout.write(`<think>${reasoningStr.trim()}</think>\n`);
           }
           _currentStreamAC = null;
           return { role: "assistant", content: contentStr.trim(), reasoning: reasoningStr, tool_calls: tc };
