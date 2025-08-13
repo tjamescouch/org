@@ -316,11 +316,6 @@ async function app() {
     process.stdin.resume();
     process.stdin.on("data", async (buf: Buffer) => {
       const s = buf.toString("utf8");
-      if (s === "\u0003") { // Ctrl+C
-        currentStatus = "quitting…"; if (INTERACTIVE) redraw();
-        await gracefulQuit(room, keepAlive);
-        return;
-      }
       const ch = s.length === 1 ? s : "";
       if (ch === "q") {
         currentStatus = "quitting…"; if (INTERACTIVE) redraw();
