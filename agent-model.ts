@@ -225,9 +225,8 @@ Try to make decisions for yourself even if you're not completely sure that they 
 You have access to an actual Debian VM.
 It has git, gcc and bun installed.
 
-You have access to basic unix commands including pwd, cd, git, gcc, g++, python3, ls, cat, echo, diff, grep, curl. 
-You have access to the apply_patch via the sh command.
-Alternately: to write to a file include a tag with the format #file:<filename>. Follow the syntax exactly. i.e. lowercase, with no spaces.
+You have access to basic unix commands including pwd, cd, git, gcc, g++, python3, ls, cat, diff, grep, curl. 
+To write to a file include a tag with the format #file:<filename>. Follow the syntax exactly. i.e. lowercase, with no spaces.
 This way you do not do a tool call and simply respond.
 
 Example:
@@ -236,6 +235,7 @@ console.log("hello world");
 
 Any output after the tag, and before another tag, will be redirected to the file, so avoid accidentally including other output or code fences etc. Just include the desired content of the file.
 If multiple tags are present then multiple files will be written.
+You have access to the apply_patch via the sh command to make small modifications to files.
 
 Terminal responses are limited to ${this.maxShellReponseCharacters} characters. 
 
@@ -379,7 +379,7 @@ Be concise.
     maxHops: number
   ): Promise<ChatMessage[]> {
     const responses: ChatMessage[] = [];
-    const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 8192 };
+    const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 64000 };
 
     // --- Stuck breaker state ---
     let breakerCooldown = 0;            // when > 0, next hops run with tools disabled
@@ -453,12 +453,12 @@ Be concise.
         chatOnce(this.id, messagesForHop, {
           tools: toolsForHop,
           tool_choice: toolChoiceForHop,
-          num_ctx: 8192,
+          num_ctx: 64000,
           abortDetectors: detectors,
           model: this.model,
           soc: this.socText,
         }),
-        240_000,
+        600_000,
         "chatOnce hop timeout"
       )) ?? { content: "Error" } as any;
 
