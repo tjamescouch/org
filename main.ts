@@ -7,7 +7,7 @@
 //   bun main.ts -a alice=openai/gpt-oss-120b -a bob=google/gemma-3-27b -a carol
 //   bun main.ts --agents "alice=gpt-oss:20b,carol,bob=lmstudio/my-local"
 
-import { AgentModel, CyanTag, Reset } from "./agent-model";
+import { AgentModel, BrightBlueTag, CyanTag, Reset } from "./agent-model";
 import { ChatRoom } from "./chat-room";
 import { interruptChat } from "./chat";
 import readline from "readline";
@@ -148,7 +148,7 @@ function appendLog(s: string) {
 function drawHeader(status: string, asString?: boolean): string | void {
   // Pretty, single-line output with ANSI colors; no cursor moves, no CR juggling
   const cols = process.stdout.columns || 80;
-  const controls = `${C.gray}[q] quit  [i] interject  [s] system  (Ctrl+C to quit)${C.reset}`;
+  const controls = `${BrightBlueTag()}[q] quit  [i] interject  [s] system  (Ctrl+C to quit)${Reset()}`;
   const line = `${C.bold}${C.cyan}${status}${C.reset}  ${controls}`;
   if (asString) return line;
   console.log(line.length > cols ? line.slice(0, cols) : line);
