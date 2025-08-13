@@ -127,7 +127,11 @@ let TUI_DRAWING = false; // guard to avoid intercept recursion
 const LOG_LIMIT = 2000; // ring buffer lines
 let logBuf: string[] = [];
 
-function withTUIDraw<T>(fn: () => T): T { try { return fn(); } finally {  } }
+function withTUIDraw<T>(fn: () => T): T {
+  TUI_DRAWING = true;
+  try { return fn(); }
+  finally { TUI_DRAWING = false; }
+}
 function clearScrollRegion() { process.stdout.write(`\x1b[r`); }
 function stripAnsi(s: string) { return s.replace(/[\u001b\u009b][[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, ""); }
 
@@ -170,10 +174,12 @@ function drawBody(asString?: boolean): string | void {
 }
 
 function redraw(status = currentStatus) {
-  const header = drawHeader(status, true) as string; // string
-  const body = drawBody(true) as string;             // string
-  const soft = "\x1b[36m"; const reset = "\x1b[0m";
-  console.log(soft + header + "\n" + body + reset);
+  withTUIDraw(() => {
+    const header = drawHeader(status, true) as string; // string
+    const body = drawBody(true) as string;             // string
+    const soft = "\x1b[36m"; const reset = "\x1b[0m";
+    console.log(soft + header + "\n" + body + reset);
+  });
 }
 
 function promptLine(q: string): Promise<string> {
@@ -199,6 +205,7 @@ function installInterceptors() {
   let pulseTimer: NodeJS.Timeout | null = null;
 
   (process.stdout as any).write = (chunk: any, enc?: any, cb?: any) => {
+    if (TUI_DRAWING) return realOut(chunk as any, enc as any, cb as any);
     const s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
     const norm = s.replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
     outBuf += norm;
@@ -207,6 +214,7 @@ function installInterceptors() {
     return true;
   };
   (process.stderr as any).write = (chunk: any, enc?: any, cb?: any) => {
+    if (TUI_DRAWING) return realErr(chunk as any, enc as any, cb as any);
     const s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
     const norm = s.replace(/\r\n/g, "\n").replace(/\r(?!\n)/g, "\n");
     errBuf += norm;
@@ -278,7 +286,7 @@ async function app() {
   if (INTERACTIVE) {
     installInterceptors();
     currentStatus = `org: session started — agents: ${specs.map(a => `${a.name}${a.model?`:${a.model}`:''}`).join(', ')}`;
-    redraw();
+    withTUIDraw(() => redraw());
     (globalThis as any).__log(`Kickoff as ${specs[0]?.name || 'alice'}: ${kickoffPrompt}`);
   } else {
     (globalThis as any).__log(`Kickoff as ${specs[0]?.name || 'alice'}: ${kickoffPrompt}`);
