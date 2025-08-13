@@ -73,34 +73,11 @@ const ESC = {
 let currentStatus = "org: multi-agent session";
 
 
-function drawBody(asString?: boolean): string | void {
-  const rows = process.stdout.rows || 24;
-  const bodyRows = Math.max(0, rows - 2);
-  const slice = logBuf.slice(-bodyRows);
-  const fill = Array(Math.max(0, bodyRows - slice.length)).fill("");
-  const lines = [...fill, ...slice];
-  if (asString) {
-    // Just join lines for string output
-    return lines.join("\n");
-  } else {
-    withTUIDraw(() => {
-      process.stdout.write(`\x1b[2;1H`);
-      for (let i = 0; i < bodyRows; i++) {
-        const line = lines[i] ?? "";
-        process.stdout.write(`\x1b[2K` + line + (i < bodyRows - 1 ? "\n" : ""));
-      }
-      process.stdout.write(`\x1b[0J`);
-    });
-  }
-}
-
 function redraw(status = currentStatus) {
   // Output using console.log with cyan color, header and body as string
-  const header = drawHeader(status, true); // string
-  const body = drawBody(true); // string
   const cyan = '\x1b[36m';
   const reset = '\x1b[0m';
-  console.log(cyan + header + '\n' + body + reset);
+  console.log(cyan + status + reset);
 }
 
 /* -------------------- minimal TUI (only when INTERACTIVE) -------------------- */
