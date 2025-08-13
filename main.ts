@@ -170,6 +170,7 @@ function drawBody(asString?: boolean): string | void {
 }
 
 function redraw(status = currentStatus) {
+    const header = drawHeader(status, true) as string; // string
   //withTUIDraw(() => {
   //  const header = drawHeader(status, true) as string; // string
   //  const body = drawBody(true) as string;             // string
