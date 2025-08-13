@@ -801,7 +801,7 @@ ${sErr}
             read: true,
             content: `=> Written to file ${p}`
           };
-          logLine(`******* wrote file ${p} @ ${stamp()}`);
+          logLine(`${RedTag}******* wrote file ${p} @ ${stamp()}${Reset()}`);
           break;
         }
       }
