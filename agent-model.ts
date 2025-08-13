@@ -368,7 +368,7 @@ Be concise.
           summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ], { model: this.model }),
           180_000,
           "summary timeout"
-        ).catch(() => "");
+        ).catch(() => console.error("*********** MODEL TIMEOUT"));
         if (summaryText) this._lastSummarizeTurn = this._turnCounter;
       }
 
