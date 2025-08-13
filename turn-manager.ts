@@ -70,13 +70,14 @@ export class TurnManager {
       }
       return;
     }
-    // Global transport backpressure: if provider is saturated, defer this tick
+    // Global transport backpressure: if provider is busy, skip this tick
     try {
-      const t = (globalThis as any).__transport || (globalThis as any).__g?.__transport;
-      if (t && t.inflight && t.cap && t.inflight() >= t.cap) {
+      const t = (globalThis as any).__transport;
+      const busy = !!(t && typeof t.inflight === "function" && t.inflight() >= 1);
+      if (busy) {
         const now = Date.now();
         if (!this.lastSkipLog || now - this.lastSkipLog > 1000) {
-          try { (globalThis as any).__log?.("[backpressure] transport saturated; deferring scheduling", "yellow"); } catch {}
+          try { (globalThis as any).__log?.("[backpressure] provider busy — deferring scheduling", "yellow"); } catch {}
           this.lastSkipLog = now;
         }
         return;

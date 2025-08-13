@@ -5,26 +5,29 @@ const waitWhilePaused = async () => {
 };
 // --- Lightweight wrappers for unified logging ---
 const __g: any = (globalThis as any) || {};
-// --- Global transport backpressure (limits concurrent provider calls) ---
-const MAX_CONCURRENCY = Math.max(1, Number(process.env.LM_MAX_CONCURRENCY || 1));
-const __transport = (__g.__transport ||= {
-  cap: MAX_CONCURRENCY,
+// --- Global transport backpressure (hard cap = 1 network call) ---
+// Even if multiple agents/hops want to talk to the provider, we serialize
+// all outbound /v1/chat requests to avoid LM Studio queue growth.
+// NOTE: We deliberately ignore LM_MAX_CONCURRENCY here; cap is 1 by design.
+type ReleaseFn = () => Promise<void>;
+const __transport = ((globalThis as any).__transport ||= {
+  cap: 1,
   in: 0,
   q: [] as Array<() => void>,
   inflight() { return this.in; },
-  async acquire(label = ""): Promise<() => Promise<void>> {
+  async acquire(_label = ""): Promise<ReleaseFn> {
     if (this.in < this.cap) {
-      this.in++;
+      this.in = 1;
       return async () => {
-        this.in = Math.max(0, this.in - 1);
+        this.in = 0;
         const n = this.q.shift();
         n?.();
       };
     }
     await new Promise<void>(res => this.q.push(res));
-    this.in++;
+    this.in = 1;
     return async () => {
-      this.in = Math.max(0, this.in - 1);
+      this.in = 0;
       const n = this.q.shift();
       n?.();
     };
@@ -447,11 +450,10 @@ Do not narrate plans or roles; provide the final answer only.
   public async takeTurn(): Promise<boolean> {
     if (isPaused()) return false;
     if (this.inbox.length === 0) return false;
-    // Respect global transport backpressure: skip if provider pipe is saturated
+    // Absolute single-flight: if any network call is active, defer our turn
     try {
-      const inFlight = __transport?.inflight?.() ?? 0;
-      const cap = __transport?.cap ?? 1;
-      if (inFlight >= cap) return false;
+      const t = (globalThis as any).__transport;
+      if (t && typeof t.inflight === "function" && t.inflight() >= 1) return false;
     } catch {}
 
     // If the user just interjected, let the normal receive path handle it after the skip window.
@@ -735,6 +737,8 @@ Do not narrate plans or roles; provide the final answer only.
         } finally { await releaseNet(); }
       }
       msg = await invokeChat(0);
+      // Small pacing delay to avoid hammering the provider
+      await new Promise(r => setTimeout(r, 25));
       // If an interject was signaled during this hop, don't keep retrying; yield now.
       if (Date.now() - __userInterrupt.ts < 1500 && (!msg || (!msg.content && !msg.tool_calls))) {
         responses.push({ role: "system", from: "System", read: true, content: "Yielding due to user interjection." });

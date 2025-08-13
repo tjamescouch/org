@@ -6,7 +6,8 @@
 // Examples:
 //   bun main.ts -a alice=openai/gpt-oss-120b -a bob=google/gemma-3-27b -a carol
 //   bun main.ts --agents "alice=gpt-oss:20b,carol,bob=lmstudio/my-local"
-
+// Enforce single-flight networking across the app (and child modules)
+process.env.LM_MAX_CONCURRENCY = "1";
 import { AgentModel, BrightBlueTag, BrightRedTag, CyanTag, Reset, markUserInterject } from "./agent-model";
 import { TurnManager } from "./turn-manager";
 import { ChatRoom } from "./chat-room";
@@ -412,19 +413,7 @@ async function app() {
         return;
       }
 
-      const marker = "[PRIORITY:USER-INTERRUPT]";
-      const msg = `${marker} ${raw}`;
-      const hardNudge =
-        "PRIORITY NOTICE: The user just interjected. NEXT REPLY: DO NOT CALL TOOLS. " +
-        "Respond directly to the user's latest message in 2–5 sentences. " +
-        "No listings, no repeated commands, no planning—just answer the user.";
-
-      await room.broadcast("User", msg);
-      await room.broadcast("System", hardNudge);
-
-      // Post-interject resume ping after the skip window
-      await setTimeoutPromise(1650);
-      await room.broadcast("System", "Resume: user finished typing. Respond now in 1–3 sentences, no tools.");
+      // Send a single high-priority user message; avoid extra nudges that fan out work
       await room.broadcast("User", raw);
 
       (globalThis as any).__log(`[you] ${raw}`);
