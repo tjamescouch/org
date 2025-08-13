@@ -332,6 +332,14 @@ export async function chatOnce(
       if (DEBUG_STREAM) console.error("LINE:", line);
       if (!line) continue;
 
+      // Skip non-data SSE lines from OpenAI/LM Studio (e.g., event:, id:, retry:, or comment ":")
+      if (!line.startsWith('data:')) {
+        if (/^(event|id|retry):/i.test(line) || line.startsWith(':')) {
+          if (DEBUG_STREAM) console.error("SKIP:", line);
+          continue;
+        }
+      }
+
       // Ollama native streams JSON lines without the "data:" prefix; OpenAI-style uses "data: {json}"
       const payload = line.startsWith('data:') ? line.slice(5).trim() : line;
 
