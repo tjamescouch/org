@@ -13,7 +13,6 @@ import { interruptChat } from "./chat";
 import readline from "readline";
 import { CSI } from "./tui"; // expects: clear, home, hide, show, rev, nrm
 import { setTimeout as setTimeoutPromise } from 'timers/promises'
-import { jest } from "bun:test";
 
 process.on("unhandledRejection", e => console.error("[unhandledRejection]", e));
 process.on("uncaughtException",  e => { console.error("[uncaughtException]", e); process.exitCode = 1; });
@@ -21,7 +20,7 @@ process.on("uncaughtException",  e => { console.error("[uncaughtException]", e);
 setInterval(() => console.log(`\n${BrightRedTag()}[q] Quit [i] Interject [s] Send system message${Reset()}`), 20000)
 
 
-let isRawMode = false;
+
 
 /* -------------------- args -------------------- */
 const argv = Bun.argv.slice(2);
@@ -50,6 +49,7 @@ const C = {
   blue:  "\x1b[34m", magenta:"\x1b[35m", cyan:  "\x1b[36m", gray:  "\x1b[90m",
 } as const;
 
+
 // --- Timestamp and global logger utilities ---
 function ts() { return new Date().toLocaleTimeString(); }
 function colorize(msg: string, color: string = "") { return `${color}${msg}${C.reset}`; }
@@ -70,6 +70,41 @@ function colorize(msg: string, color: string = "") { return `${color}${msg}${C.r
   if (INTERACTIVE) appendLog(prefix + body + "\n");
   else process.stderr.write(prefix + body + "\n");
 };
+
+// --- Raw-mode & key handling (single handler; attach/detach safely)
+let RAW_ENABLED = false;
+let keyHandler: ((buf: Buffer) => void) | null = null;
+let promptActive = false;
+
+function enableRaw() {
+  if (!process.stdin.isTTY) return;
+  if (RAW_ENABLED) return;
+  process.stdin.setRawMode?.(true);
+  process.stdin.resume();
+  RAW_ENABLED = true;
+}
+
+function disableRaw() {
+  if (!RAW_ENABLED) return;
+  try { process.stdin.setRawMode?.(false); } catch {}
+  RAW_ENABLED = false;
+}
+
+function attachKeys(handler: (buf: Buffer) => void) {
+  if (!process.stdin.isTTY) return;
+  if (keyHandler) return;
+  keyHandler = handler;
+  process.stdin.on("data", keyHandler);
+  enableRaw();
+}
+
+function detachKeys() {
+  if (!process.stdin.isTTY) return;
+  if (!keyHandler) return;
+  process.stdin.off("data", keyHandler);
+  keyHandler = null;
+  disableRaw();
+}
 
 const ESC = {
   altScreenOn: "\x1b[?1049h",
@@ -153,7 +188,6 @@ function appendLog(s: string) {
 }
 
 function drawHeader(status: string, asString?: boolean): string | void {
-  console.log(status);
   return status;
 }
 
@@ -187,27 +221,20 @@ function redraw(status = currentStatus) {
 }
 
 async function promptLine(q: string): Promise<string> {
-  // if stdin is in raw mode (interactive key handler), disable temporarily
-  const wasRawMode = isRawMode;
-  !!(process.stdin as any).isRaw;
-  process.stdin.setRawMode?.(true);
+  // Temporarily disable raw key handler while we prompt
+  promptActive = true;
+  detachKeys();
 
-  await setTimeoutPromise(1000);
-
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      terminal: true,
-    });
+  return await new Promise<string>((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
     rl.question(q, (ans) => {
       rl.close();
-      // restore raw mode if we changed it
-      isRawMode = wasRawMode;
-      process.stdin.setRawMode?.(isRawMode);
-      redraw();
       resolve(ans);
     });
+  }).finally(() => {
+    promptActive = false;
+    // Re-attach raw key handling
+    if (INTERACTIVE && process.stdin.isTTY) attachKeys(onKey);
   });
 }
 
@@ -304,58 +331,55 @@ async function app() {
 
   // Send the kickoff as a broadcast to the room instead of initialMessage
   await room.broadcast("User", kickoffPrompt);
-    
-  process.stdin.on("data", async (key: Buffer) => {
-    // Ctrl+C (0x03 in ASCII)
-    if (key.toString() === "\u0003") {
-      process.exit();
+
+  // --- Interject & system message helpers (use promptLine and broadcast), capture room
+  const startInterject = async () => {
+    try {
+      interruptChat();
+      await new Promise(r => setTimeout(r, 120));
+      const txt = await promptLine(`${C.cyan}[you] > ${C.reset}`);
+      const msg = (txt ?? "").trim();
+      if (!msg) return;
+      await room.broadcast("User", msg);
+      await room.broadcast("System", "User interjected. Respond directly to the user now; avoid repeating listings or previous commands unless necessary.");
+      (globalThis as any).__log(`[you] ${msg}`);
+    } catch (e) {
+      (globalThis as any).__logError(`interject error: ${String(e)}`);
     }
-  });
+  };
 
-  // Interactive key controls only in TUI
-  if (INTERACTIVE && process.stdin.isTTY && !isRawMode) {
-    process.stdin.setRawMode?.(true);
-    isRawMode = true;
-    process.stdin.resume();
-    process.stdin.on("data", async (buf: Buffer) => {
-      const s = buf.toString("utf8");
-      const ch = s.length === 1 ? s : "";
-      if (ch === "q") {
-        currentStatus = "quitting…"; if (INTERACTIVE) redraw();
-        await gracefulQuit(room, keepAlive);
-        return;
-      }
-      if (ch === "i") {
-        interruptChat(); 
-        await new Promise(r => setTimeout(r, 100));
-        currentStatus = "interject (user)"; redraw();
-        const txt = await promptLine(`${CyanTag()}[you] >${Reset()}`);
-        const msg = (txt ?? "").trim();
-        if (msg) await room.broadcast("User", msg);
-        if (msg) {
-          await room.broadcast(
-            "System",
-            "User interjected. Respond directly to the user now; avoid repeating prior listings or commands unless strictly needed."
-          );
-        }
-        if (msg) (globalThis as any).__log(`[you] ${msg}`);
-        currentStatus = msg ? "sent interject" : "interject: (empty)"; redraw();
+  const startSystemMessage = async () => {
+    try {
+      interruptChat();
+      await new Promise(r => setTimeout(r, 120));
+      const txt = await promptLine(`${C.cyan}[system] > ${C.reset}`);
+      const msg = (txt ?? "").trim();
+      if (!msg) return;
+      await room.broadcast("System", msg);
+      (globalThis as any).__log(`sent system message`);
+    } catch (e) {
+      (globalThis as any).__logError(`system message error: ${String(e)}`);
+    }
+  };
 
-        isRawMode = false;
-        process.stdin.setRawMode?.(false);
-        return;
-      }
-      if (ch === "s") {
-        interruptChat(); await new Promise(r => setTimeout(r, 100));
-        currentStatus = "system message"; redraw();
-        const txt = await promptLine(`${CyanTag()}[system] >${Reset()}`);
-        const msg = (txt ?? "").trim();
-        if (msg) await room.broadcast("System", msg);
-        currentStatus = msg ? "sent system message" : "system: (empty)"; redraw();
-        return;
-      }
-    });
-    process.stdout.on("resize", () => { redraw(); });
+  // --- Single key handler
+  function onKey(buf: Buffer) {
+    if (promptActive) return; // ignore while prompting
+    const s = buf.toString("utf8");
+    if (s === "\u0003") { // Ctrl+C
+      process.exit(0);
+    }
+    if (s.length !== 1) return;
+    const ch = s;
+    if (ch === "q") process.exit(0);
+    if (ch === "i") void startInterject();
+    if (ch === "s") void startSystemMessage();
+  }
+
+  // Attach key handler in interactive mode
+  if (INTERACTIVE && process.stdin.isTTY) {
+    attachKeys(onKey);
+    process.stdout.on("resize", () => { /* no special redraw needed now */ });
   }
 }
 
