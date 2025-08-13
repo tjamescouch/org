@@ -443,8 +443,6 @@ Be concise.
     const responses: ChatMessage[] = [];
     const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 128000 };
 
-    console.log('runWithTools', messages);
-
     // --- Stuck breaker state ---
     let breakerCooldown = 0;            // when > 0, next hops run with tools disabled
     let breakerReason: string | null = null;
