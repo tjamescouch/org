@@ -313,6 +313,10 @@ export async function chatOnce(
       lastDotAt = now;
     }
   };
+  // Detector performance guards
+  const DET_CHECK_CHARS_THRESHOLD = 400; // run expensive detectors only after this many new chars
+  const DET_TAIL_WINDOW = 8000;          // pass only the last N chars to detectors
+  let detSinceChars = 0;                 // chars accumulated since last detector run
   const ensureTool = (idx: number): ToolCall => {
     if (!toolCallsAgg[idx]) toolCallsAgg[idx] = { id: `call_${idx}`, type: "function", function: { name: "", arguments: "" }, index: idx };
     return toolCallsAgg[idx];
@@ -467,18 +471,27 @@ export async function chatOnce(
         Bun.stdout.write(".");
       }
 
-      if (contentStr) contentBuf += contentStr;
+      if (contentStr) {
+        contentBuf += contentStr;
+        detSinceChars += contentStr.length;
+      }
       if (reasonStr) thinkingBuf += reasonStr;
       if (delta.tool_calls) toolCalls = delta.tool_calls as ToolCall[];
 
       // Generic, model-pluggable abort check (soft-abort: do not cancel the stream)
       const agents = Array.from(new Set((messages || []).map(m => (m?.from || '').toLowerCase()).filter(Boolean)));
-      if (!DISABLE_ABORT && cutAt === null) {
+      if (!DISABLE_ABORT && cutAt === null && detSinceChars >= DET_CHECK_CHARS_THRESHOLD) {
+        detSinceChars = 0; // reset the counter now
+        const textForDetectors = contentBuf.length > DET_TAIL_WINDOW
+          ? contentBuf.slice(-DET_TAIL_WINDOW)
+          : contentBuf;
         let cut: { index: number; reason: string } | null = null;
         for (const det of abortRegistry.detectors) {
-          cut = det.check(contentBuf, { messages, agents, soc: opts?.soc });
+          cut = det.check(textForDetectors, { messages, agents, soc: opts?.soc });
           if (cut) {
-            cutAt = Math.max(0, cut.index);
+            // Adjust cut.index to absolute index relative to contentBuf
+            const offset = contentBuf.length - textForDetectors.length;
+            cutAt = Math.max(0, offset + cut.index);
             suppressOutput = true; // continue reading but do not print further tokens
             if (firstNotThink && !firstThink) { firstNotThink = false; console.log('\n</think>\n'); }
             console.error(`[chatOnce] soft-abort by ${det.name}: ${cut.reason} cutAt=${cutAt}`);

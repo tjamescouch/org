@@ -678,11 +678,15 @@ Be concise.
       const result = { ok: code === 0, stdout, stderr, exit_code: code };
       const content = truncate(JSON.stringify(result), this.maxShellReponseCharacters);
 
-      // Human-friendly console log with REAL newlines (no JSON escaping)
+      // Limit console printing to avoid overwhelming the terminal and slowing the VM
+      const CLAMP = 12000; // chars per stream
+      const sOut = stdout.length > CLAMP ? stdout.slice(0, CLAMP) + "\n...[truncated]" : stdout;
+      const sErr = stderr.length > CLAMP ? stderr.slice(0, CLAMP) + "\n...[truncated]" : stderr;
+
       const humanLog = `\n\n\n******* sh ${cmd ?? rawCmd}\n` +
         `ok: ${result.ok}\nexit_code: ${result.exit_code}\n` +
-        `--- stdout ---\n${stdout}\n` +
-        `--- stderr ---\n${stderr}\n`;
+        `--- stdout ---\n${sOut}\n` +
+        `--- stderr ---\n${sErr}\n`;
       console.error(humanLog);
 
       return {
