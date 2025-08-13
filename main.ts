@@ -38,6 +38,15 @@ const C = {
   blue:  "\x1b[34m", magenta:"\x1b[35m", cyan:  "\x1b[36m", gray:  "\x1b[90m",
 } as const;
 
+const ESC = {
+  altScreenOn: "\x1b[?1049h",
+  altScreenOff: "\x1b[?1049l",
+  hide: "\x1b[?25l",
+  show: "\x1b[?25h",
+  disableWrap: "\x1b[?7l",
+  enableWrap: "\x1b[?7h",
+};
+
 /* -------------------- minimal TUI (only when INTERACTIVE) -------------------- */
 let TUI_DRAWING = false; // guard to avoid intercept recursion
 const LOG_LIMIT = 2000; // ring buffer lines
@@ -87,17 +96,23 @@ function drawBody() {
 function drawFooter() {
   withTUIDraw(() => {
     const cols = process.stdout.columns || 80;
-    const hintText = `[q] quit  [i] interject  [s] system  (Ctrl+C to quit)`;
-    const hint = `\x1b[40m\x1b[97m${hintText}\x1b[0m`; // black bg + bright white fg
-    const pad = Math.max(0, cols - stripAnsi(hintText).length);
     const rows = process.stdout.rows || 24;
-    process.stdout.write(`\x1b[${rows};1H\x1b[2K` + hint + " ".repeat(pad));
+    const hintText = `[q] quit  [i] interject  [s] system  (Ctrl+C to quit)`;
+    const visibleLen = stripAnsi(hintText).length;
+    const pad = Math.max(0, cols - visibleLen);
+    const hint = `\x1b[40m\x1b[97m${hintText}${" ".repeat(pad)}\x1b[0m`;
+
+    // Go to last line, clear it, temporarily disable wrap, draw, park cursor at last col, re-enable wrap
+    process.stdout.write(
+      `${ESC.disableWrap}\x1b[${rows};1H\x1b[2K${hint}\x1b[${rows};${cols}H${ESC.enableWrap}`
+    );
   });
 }
 
 function redraw(status = currentStatus) {
   const rows = process.stdout.rows || 24;
   withTUIDraw(() => {
+    process.stdout.write(CSI.hide + CSI.clear);
     const bottom = Math.max(2, rows - 1);
     setScrollRegion(2, bottom);
     drawHeader(status);
@@ -167,7 +182,7 @@ function installInterceptors() {
 
   pulseTimer = setInterval(() => {
     if ((outBuf || errBuf) && !TUI_DRAWING) redraw();
-  }, 80);
+  }, 50);
 
   uninstallInterceptors = () => {
     (process.stdout as any).write = realOut as any;
@@ -182,6 +197,12 @@ async function gracefulQuit(room: any, keepAlive: any) {
   try { if (typeof room?.shutdown === "function") await room.shutdown(); } catch (e) { if (INTERACTIVE) appendLog(`${C.red}[shutdown error]${C.reset} ${String(e)}`); else console.error("[shutdown error]", e); }
   if (INTERACTIVE) withTUIDraw(() => { clearScrollRegion(); process.stdout.write(CSI.show + "\n"); });
   if (uninstallInterceptors) uninstallInterceptors();
+
+  if (INTERACTIVE) withTUIDraw(() => {
+    clearScrollRegion();
+    process.stdout.write(ESC.show + ESC.altScreenOff + "\n");
+  });
+
   process.exit(0);
 }
 
@@ -227,6 +248,7 @@ async function app() {
   const keepAlive = setInterval(() => { /* tick */ }, 60_000);
 
   if (INTERACTIVE) {
+    withTUIDraw(() => { process.stdout.write(ESC.altScreenOn + ESC.hide + CSI.clear); });
     // Setup TUI only now
     installInterceptors();
     const rows = process.stdout.rows || 24;
