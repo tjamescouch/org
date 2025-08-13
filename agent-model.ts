@@ -283,6 +283,9 @@ Be concise.
   /* ------------------------------------------------------------ */
   async initialMessage(incoming: RoomMessage): Promise<void> {
     this._push(incoming);
+    // Only the sender of the kickoff should print/broadcast it once.
+    if (incoming.from !== this.id) return;
+
     const initialContent: string = (incoming && typeof incoming.content === "string")
       ? incoming.content
       : "";
@@ -293,8 +296,6 @@ Be concise.
 
   async receiveMessage(incoming: RoomMessage): Promise<void> {
     this._push(incoming);
-    const initialContent: string = (incoming && typeof incoming.content === "string") ? incoming.content : "";
-    console.log(`\n\n**** ${this.id}:\n${initialContent}`);
 
     // Acquire the shared channel lock up-front so summarizeOnce and chatOnce do not overlap across agents
     const release = await channelLock.waitForLock(15 * 60 * 1000);
