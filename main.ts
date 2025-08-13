@@ -146,12 +146,8 @@ function appendLog(s: string) {
 }
 
 function drawHeader(status: string, asString?: boolean): string | void {
-  // Pretty, single-line output with ANSI colors; no cursor moves, no CR juggling
-  const cols = process.stdout.columns || 80;
-  const controls = `${BrightBlueTag()}[q] quit  [i] interject  [s] system  (Ctrl+C to quit)${Reset()}`;
-  const line = `${C.bold}${C.cyan}${status}${C.reset}  ${controls}`;
-  if (asString) return line;
-  console.log(line.length > cols ? line.slice(0, cols) : line);
+  console.log(status);
+  return status;
 }
 
 function drawBody(asString?: boolean): string | void {
