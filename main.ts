@@ -369,61 +369,67 @@ async function app() {
   // --- Interject & system message helpers (use promptLine and broadcast), capture room
   // --- Interject & system message helpers (stronger)
   const startInterject = async () => {
-  if (promptActive) return;
-  try {
-    // Let agents know to yield their current hop quickly
-    markUserInterject();
-    interruptChat();
-    await new Promise(r => setTimeout(r, 150)); // give streams a beat to abort
+    if (promptActive) return;
+    (globalThis as any).__PAUSE_INPUT = true;
+    try {
+      // Let agents know to yield their current hop quickly
+      markUserInterject();
+      interruptChat();
+      await new Promise(r => setTimeout(r, 150)); // give streams a beat to abort
 
-    const txt = await promptLine(`${C.cyan}[you] > ${C.reset}`);
-    const raw = (txt ?? "").trim();
-    if (!raw) { (globalThis as any).__log(`interject (user) — (empty)`); return; }
+      const txt = await promptLine(`${C.cyan}[you] > ${C.reset}`);
+      const raw = (txt ?? "").trim();
+      if (!raw) { (globalThis as any).__log(`interject (user) — (empty)`); (globalThis as any).__PAUSE_INPUT = false; return; }
 
-    // 1) A strong, machine-detectable prefix
-    const marker = "[PRIORITY:USER-INTERRUPT]";
-    const msg = `${marker} ${raw}`;
+      // 1) A strong, machine-detectable prefix
+      const marker = "[PRIORITY:USER-INTERRUPT]";
+      const msg = `${marker} ${raw}`;
 
-    // 2) Hard nudge: NO TOOLS next reply
-    const hardNudge =
-      "PRIORITY NOTICE: The user just interjected. NEXT REPLY: DO NOT CALL TOOLS. " +
-      "Respond directly to the user's latest message in 2–5 sentences. " +
-      "No listings, no repeated commands, no planning—just answer the user.";
+      // 2) Hard nudge: NO TOOLS next reply
+      const hardNudge =
+        "PRIORITY NOTICE: The user just interjected. NEXT REPLY: DO NOT CALL TOOLS. " +
+        "Respond directly to the user's latest message in 2–5 sentences. " +
+        "No listings, no repeated commands, no planning—just answer the user.";
 
-    // 3) Broadcast + direct to each agent
-    await room.broadcast("User", msg);
-    await room.broadcast("System", hardNudge);
+      // 3) Broadcast + direct to each agent
+      await room.broadcast("User", msg);
+      await room.broadcast("System", hardNudge);
 
-    // If ChatRoom exposes a models list, also DM each agent to maximize salience
-    const rm: any = room as any;
-    if (Array.isArray(rm.models)) {
-      for (const m of rm.models) {
-        try {
-          await room.broadcast("User", `[to:${m.id}] ${msg}`);
-          await room.broadcast("System", `[to:${m.id}] ${hardNudge}`);
-        } catch {}
+      // If ChatRoom exposes a models list, also DM each agent to maximize salience
+      const rm: any = room as any;
+      if (Array.isArray(rm.models)) {
+        for (const m of rm.models) {
+          try {
+            await room.broadcast("User", `[to:${m.id}] ${msg}`);
+            await room.broadcast("System", `[to:${m.id}] ${hardNudge}`);
+          } catch {}
+        }
       }
-    }
 
-    (globalThis as any).__log(`[you] ${raw}`);
-    (globalThis as any).__log(`sent interject`);
-  } catch (e) {
-    (globalThis as any).__logError(`interject error: ${String(e)}`);
-  }
-};
+      (globalThis as any).__log(`[you] ${raw}`);
+      (globalThis as any).__log(`sent interject`);
+      (globalThis as any).__PAUSE_INPUT = false;
+    } catch (e) {
+      (globalThis as any).__PAUSE_INPUT = false;
+      (globalThis as any).__logError(`interject error: ${String(e)}`);
+    }
+  };
 
 const startSystemMessage = async () => {
   if (promptActive) return;
+  (globalThis as any).__PAUSE_INPUT = true;
   try {
     markUserInterject();
     interruptChat();
     await new Promise(r => setTimeout(r, 120));
     const txt = await promptLine(`${C.cyan}[system] > ${C.reset}`);
     const msg = (txt ?? "").trim();
-    if (!msg) { (globalThis as any).__log(`system message — (empty)`); return; }
+    if (!msg) { (globalThis as any).__log(`system message — (empty)`); (globalThis as any).__PAUSE_INPUT = false; return; }
     await room.broadcast("System", msg);
     (globalThis as any).__log(`sent system message`);
+    (globalThis as any).__PAUSE_INPUT = false;
   } catch (e) {
+    (globalThis as any).__PAUSE_INPUT = false;
     (globalThis as any).__logError(`system message error: ${String(e)}`);
   }
 };

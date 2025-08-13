@@ -1,3 +1,8 @@
+// --- Global pause helpers (for user input) ---
+const isPaused = () => Boolean((globalThis as any).__PAUSE_INPUT);
+const waitWhilePaused = async () => {
+  while (isPaused()) { await new Promise(r => setTimeout(r, 50)); }
+};
 // --- Lightweight wrappers for unified logging ---
 const __g: any = (globalThis as any) || {};
 const logLine = (s: string) => { (console.log)(s); };
@@ -352,6 +357,7 @@ Be concise.
 
   /* ------------------------------------------------------------ */
   async initialMessage(incoming: RoomMessage): Promise<void> {
+    await waitWhilePaused();
     this._push(incoming);
     // Only the sender of the kickoff should print/broadcast it once.
     if (incoming.from !== this.id) return;
@@ -365,6 +371,7 @@ Be concise.
   }
 
   async receiveMessage(incoming: RoomMessage): Promise<void> {
+    await waitWhilePaused();
     this._push(incoming);
 
     // Acquire the shared channel lock up-front so summarizeOnce and chatOnce do not overlap across agents
