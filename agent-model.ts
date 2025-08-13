@@ -347,6 +347,7 @@ Be concise.
   }
 
   async receiveMessage(incoming: RoomMessage): Promise<void> {
+    console.log('receive', incoming)
     this._push(incoming);
 
     // Acquire the shared channel lock up-front so summarizeOnce and chatOnce do not overlap across agents
