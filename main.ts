@@ -263,7 +263,7 @@ async function app() {
   const keepAlive = setInterval(() => { /* tick */ }, 60_000);
 
   if (INTERACTIVE) {
-    withTUIDraw(() => { process.stdout.write(ESC.altScreenOn + ESC.hide + CSI.clear); });
+    //withTUIDraw(() => { process.stdout.write(ESC.altScreenOn + ESC.hide + CSI.clear); });
     // Setup TUI only now
     installInterceptors();
     const rows = process.stdout.rows || 24;
