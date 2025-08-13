@@ -292,41 +292,44 @@ Be concise.
   }
 
   async receiveMessage(incoming: RoomMessage): Promise<void> {
-    // Keep a short tail for the LLM and add a dynamic summary system message
-    const tail = this.context.slice(-20); // recent context only
-    const summarizerSystem = {
-      role: "system" as const,
-      from: "System",
-      content:
-        "You are a succinct coordinator. Summarize the recent conversation as bullet points covering: current project goal, key constraints, files created/modified, tools/commands run and outcomes, and next concrete steps. Max 120 words. No code. No quotes.",
-      read: true,
-    };
-    const summaryText = await withTimeout(
-      summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ], { model: this.model }),
-      180_000,
-      "summary timeout"
-    ).catch(() => "");
-
-    const dynamicSystem: ChatMessage | null = summaryText
-      ? { role: "system", from: "System", content: `Context summary:\n${summaryText}`, read: true }
-      : null;
-
-    const fullMessageHistory: ChatMessage[] = [
-      { role: "system", from: "System", content: this.system, read: false },
-      ...(dynamicSystem ? [dynamicSystem] : []),
-      ...tail,
-      { role: "user", from: incoming.from, content: incoming.content, read: false },
-    ];
-
     this._push(incoming);
+    const initialContent: string = (incoming && typeof incoming.content === "string") ? incoming.content : "";
+    console.log(`\n\n**** ${this.id}:\n${initialContent}`);
 
-    const tools: ToolDef[] = [
-      this._defShellTool(),
-    ];
-
+    // Acquire the shared channel lock up-front so summarizeOnce and chatOnce do not overlap across agents
     const release = await channelLock.waitForLock(15 * 60 * 1000);
-
     try {
+      // Keep a short tail for the LLM and add a dynamic summary system message (non-streaming)
+      const tail = this.context.slice(-20);
+      const summarizerSystem = {
+        role: "system" as const,
+        from: "System",
+        content:
+          "You are a succinct coordinator. Summarize the recent conversation as bullet points covering: current project goal, key constraints, files created/modified, tools/commands run and outcomes, and next concrete steps. Max 120 words. No code. No quotes.",
+        read: true,
+      };
+
+      const summaryText = await withTimeout(
+        summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ], { model: this.model }),
+        180_000,
+        "summary timeout"
+      ).catch(() => "");
+
+      const dynamicSystem: ChatMessage | null = summaryText
+        ? { role: "system", from: "System", content: `Context summary:\n${summaryText}`, read: true }
+        : null;
+
+      const fullMessageHistory: ChatMessage[] = [
+        { role: "system", from: "System", content: this.system, read: false },
+        ...(dynamicSystem ? [dynamicSystem] : []),
+        ...tail,
+        { role: "user", from: incoming.from, content: incoming.content, read: false },
+      ];
+
+      const tools: ToolDef[] = [
+        this._defShellTool(),
+      ];
+
       const messages = await this.runWithTools(fullMessageHistory, tools, (c) => this._execTool(c), 25);
       for (const m of messages) {
         const mappedRole = (m.role === 'tool')

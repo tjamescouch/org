@@ -1,3 +1,30 @@
+// --- Preflight cache and helpers ---
+let _preflightOkUntil = 0;
+let _knownModels: Set<string> | null = null;
+const now = () => Date.now();
+const isV1Server = (u: string) => /\/v1(\/|$)/.test(u) || !/\/api(\/|$)/.test(u);
+
+async function preflight(baseUrl: string, model: string): Promise<string | null> {
+  // Skip Ollama-specific checks for OpenAI/LM Studio style servers
+  if (isV1Server(baseUrl)) return null;
+  const ttl = 5 * 60 * 1000; // 5 minutes
+  if (now() < _preflightOkUntil && _knownModels && _knownModels.size) {
+    if (_knownModels.has(model)) return null;
+  }
+  try {
+    const v = await fetch(`${baseUrl}/api/version`, { signal: AbortSignal.timeout(1000) });
+    if (!v.ok) throw new Error(`version ${v.status}`);
+    const t = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(2000) });
+    const tags = await t.json();
+    const models = Array.isArray(tags?.models) ? tags.models.map((m: any) => m.name) : [];
+    _knownModels = new Set(models);
+    _preflightOkUntil = now() + ttl;
+    if (!_knownModels.has(model)) return `Model "${model}" not found on server.`;
+    return null;
+  } catch (e: any) {
+    return `Preflight failed: ${e?.message || String(e)}`;
+  }
+}
 /** Pluggable abort detector API */
 export type AbortDetector = {
   name: string;
@@ -102,13 +129,9 @@ export async function summarizeOnce(
   const model = opts?.model ?? DEFAULT_MODEL;
   const timeout = Math.max(2000, Math.min(60_000, opts?.timeout_ms ?? 12_000));
 
-  // quick preflight
-  try {
-    const r1 = await fetch(`${ollamaBaseUrl}/api/version`, { signal: AbortSignal.timeout(1000) });
-    if (!r1.ok) throw new Error(`server responded ${r1.status}`);
-  } catch (e) {
-    return "";
-  }
+  // Use preflight cache and checks
+  const pf = await preflight(ollamaBaseUrl, model);
+  if (pf) return "";
 
   const formatted = messages.map(formatMessage);
 
@@ -159,17 +182,9 @@ export async function chatOnce(
   const ollamaBaseUrl = opts?.baseUrl ?? BASE_URL;
   const model = opts?.model ?? DEFAULT_MODEL;
 
-  // Preflight Ollama and model list (fast)
-  try {
-    const r1 = await fetch(`${ollamaBaseUrl}/api/version`, { signal: AbortSignal.timeout(1000) });
-    if (!r1.ok) throw new Error(`server responded ${r1.status}`);
-    const r2 = await fetch(`${ollamaBaseUrl}/api/tags`, { signal: AbortSignal.timeout(2000) });
-    const tags = await r2.json();
-    const haveModel = Array.isArray((tags as any)?.models) && (tags as any).models.some((m: any) => m.name === model);
-    if (!haveModel) return { role: "assistant", content: `Model "${model}" not found on server.` };
-  } catch (e) {
-    return { role: "assistant", content: `Preflight failed: ${(e as Error).message}` };
-  }
+  // Use preflight cache and checks
+  const pf = await preflight(ollamaBaseUrl, model);
+  if (pf) return { role: "assistant", content: pf };
 
   // Install model-provided abort detectors (if any)
   if (opts?.abortDetectors && Array.isArray(opts.abortDetectors)) {
