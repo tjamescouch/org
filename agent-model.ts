@@ -673,18 +673,26 @@ Be concise.
         new Response(proc.stderr).text(),
         proc.exited,
       ]);
-      //const content =truncate(`${ functionName ? `Tool ${functionName}: ` : '' } Command: '${sanitizedCmd ?? rawCmd ?? cmd}' -> ` + JSON.stringify({ ok: code === 0, stdout, stderr, exit_code: code }), this.maxShellReponseCharacters);
-      const content =truncate(JSON.stringify({ ok: code === 0, stdout: stdout?.replace(/\\n/g, '\n'), stderr: stderr?.replace(/\\n/g, '\n'), exit_code: code }), this.maxShellReponseCharacters);
 
-      console.error(`\n\n\n******* sh ${cmd ?? rawCmd} -> `, content );
+      // Machine-readable content for the model/conversation
+      const result = { ok: code === 0, stdout, stderr, exit_code: code };
+      const content = truncate(JSON.stringify(result), this.maxShellReponseCharacters);
+
+      // Human-friendly console log with REAL newlines (no JSON escaping)
+      const humanLog = `\n\n\n******* sh ${cmd ?? rawCmd}\n` +
+        `ok: ${result.ok}\nexit_code: ${result.exit_code}\n` +
+        `--- stdout ---\n${stdout}\n` +
+        `--- stderr ---\n${stderr}\n`;
+      console.error(humanLog);
+
       return {
         role: "tool",
         name: "sh",
         content,
       };
     } catch (e) {
-      const content =`sh -c ${cmd} -> ` + JSON.stringify({ ok: false, err: e instanceof Error ? e.message : String(e) })
-      console.error(`\n\n\n******* sh -> `, content);
+      const content = `sh -c ${cmd} -> ` + JSON.stringify({ ok: false, err: e instanceof Error ? e.message : String(e) });
+      console.error(`\n\n\n******* sh ${cmd}\nok: false\nerror: ${e instanceof Error ? e.message : String(e)}\n`);
       return {
         role: "tool",
         name: "sh",
