@@ -97,14 +97,20 @@ export class ChatRoom implements RoomAPI {
   }
 
   private async safeDeliver(model: RoomModel, msg: RoomMessage): Promise<void> {
-    const TIMEOUT_MS = 500_000;
-    try {
-      await Promise.race([
-        model.receiveMessage(msg),
-        new Promise<void>((resolve) => setTimeout(resolve, TIMEOUT_MS)),
-      ]);
-    } catch {
-      // swallow
-    }
+    const TIMEOUT_MS = 120_000; // 2 minutes hard cap per recipient
+    await new Promise<void>(async (resolve) => {
+      const t = setTimeout(() => {
+        // Timeout fires – resolve and drop this delivery without blocking others.
+        resolve();
+      }, TIMEOUT_MS);
+      try {
+        await model.receiveMessage(msg);
+      } catch {
+        // swallow model errors to avoid crashing the room
+      } finally {
+        clearTimeout(t);
+        resolve();
+      }
+    });
   }
 }

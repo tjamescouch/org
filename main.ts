@@ -15,6 +15,17 @@ function waitForSignal(): Promise<void> {
   });
 }
 
+function createRL() {
+  return readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+}
+
+async function promptInterject(): Promise<string> {
+  const rl = createRL();
+  return new Promise((resolve) => {
+    rl.question("\n[interject] > ", (answer) => { rl.close(); resolve(answer); });
+  });
+}
+
 async function askKickoffPrompt(defaultPrompt: string): Promise<string> {
   const rl = readline.createInterface({
     input: process.stdin,
@@ -51,6 +62,34 @@ async function app() {
     content: kickoffPrompt,
     read: false,
   });
+
+  // --- Interactive interjection controls (Unix-style):
+// Ctrl+C → pause and let user inject a message; Ctrl+D (EOF) → graceful exit
+process.on("SIGINT", async () => {
+  try {
+    const text = await promptInterject();
+    if (text && text.trim().length) {
+      await room.broadcast("User", text.trim());
+    } else {
+      console.log("[interject] (empty)");
+    }
+  } catch (e) {
+    console.error("[interject error]", e);
+  }
+});
+
+// Detect EOF on stdin (Ctrl+D) and shut down
+if (process.stdin.isTTY) {
+  process.stdin.resume();
+  process.stdin.on("end", async () => {
+    console.log("\n[EOF] Ctrl+D detected – exiting.");
+    try {
+      if (typeof (room as any).shutdown === "function") await (room as any).shutdown();
+    } finally {
+      process.exit(0);
+    }
+  });
+}
 
   // --- Bun-specific: a Promise alone won't keep the runtime alive.
   // Hold a *real* handle. A ticking interval is simplest.
