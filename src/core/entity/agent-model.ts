@@ -124,15 +124,19 @@ const truncate = (s: string, length: number): string => {
 }
 
 const makeToolCallId = (prefix: "call" | "tool"): string => {
-  const alphabet = "abcdefghijklmnopqrstuvwxyz";
-  // pick 2–3 random words/fragments from the alphabet
-  const randPart = () =>
-    alphabet[Math.floor(Math.random() * alphabet.length)] +
-    alphabet[Math.floor(Math.random() * alphabet.length)];
-
-  // join prefix with 2–3 random parts
+  // Source characters for random fragments.  Using a separate variable
+  // avoids TypeScript complaining about possibly undefined indices on
+  // strings when indexing into them with Math.random().
+  const alphabetArr = "abcdefghijklmnopqrstuvwxyz";
+  // pick 2–3 random letters from the alphabet and join them
+  const randPart = (): string => {
+    const first = alphabetArr[Math.floor(Math.random() * alphabetArr.length)];
+    const second = alphabetArr[Math.floor(Math.random() * alphabetArr.length)];
+    return `${first}${second}`;
+  };
+  // join prefix with two random parts
   return `${prefix}_${randPart()}_${randPart()}`;
-}
+};
 
 
 export class AgentModel extends Model {
@@ -140,8 +144,8 @@ export class AgentModel extends Model {
   private __room?: ChatRoom;
 
   /** Back-compat: expose as getter/setter so any existing `this.room` usage still works */
-  get room(): ChatRoom | undefined { return this.__room; }
-  set room(r: ChatRoom | undefined) { this.__room = r; }
+  override get room(): ChatRoom | undefined { return this.__room; }
+  override set room(r: ChatRoom | undefined) { this.__room = r; }
 
   /** Called by ChatRoom.addModel(...) */
   public attachRoom(room: ChatRoom) { this.__room = room; }
@@ -415,12 +419,23 @@ Do not narrate plans or roles; provide the final answer only.
         {
           const releaseNet = await __transport.acquire("summarize");
           try {
-            summaryText = await withTimeout(
-              summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ], { model: this.model }),
-              180_000,
-              "summary timeout"
-            ).catch(() => console.error("*********** summary timeout"));
-          } finally { await releaseNet(); }
+            try {
+              summaryText = await withTimeout(
+                summarizeOnce([
+                  summarizerSystem,
+                  ...tail,
+                  { role: "user", from: incoming.from, content: incoming.content, read: false }
+                ], { model: this.model }),
+                180_000,
+                "summary timeout"
+              );
+            } catch (err) {
+              console.error("*********** summary timeout");
+              summaryText = "";
+            }
+          } finally {
+            await releaseNet();
+          }
         }
         if (summaryText) this._lastSummarizeTurn = this._turnCounter;
       }
@@ -1053,7 +1068,9 @@ ${RedTag()}${sErr}${Reset()}
       const cmdMatch = c.match(/\b(?:sh|bash)\b[^\n\r]*/i);
       if (cmdMatch) lastCmd = cmdMatch[0];
       const fileMatch = c.match(/#file:([^\s\n\r]+)/);
-      if (fileMatch) filesWritten.push(fileMatch[1]);
+      if (fileMatch && fileMatch[1]) {
+        filesWritten.push(fileMatch[1]);
+      }
     }
 
     const headPreview = head

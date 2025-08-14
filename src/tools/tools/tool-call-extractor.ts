@@ -1,4 +1,4 @@
-import type { ToolCall } from "../../transport/chat";
+import type { ToolCall } from "../../types";
 
 export function extractToolCallsFromText(input: string): { tool_calls: ToolCall[]; cleaned: string } {
   const text = String(input);
