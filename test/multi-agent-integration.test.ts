@@ -1,3 +1,11 @@
+// Set environment variables BEFORE importing project code.  The transport layer
+// reads these variables at import time to construct its base URL and model,
+// so they must be defined up front.  We choose a fixed port here; the
+// corresponding mock server will be started on the same port within the test.
+const MOCK_PORT = 8800;
+process.env.OLLAMA_BASE_URL = `http://localhost:${MOCK_PORT}`;
+process.env.OLLAMA_MODEL = 'mock';
+
 import { test } from 'bun:test';
 import { ChatRoom } from '../src/core/chat-room';
 import { TurnManager } from '../src/core/turn-manager';
@@ -13,8 +21,10 @@ test('multi-agent integration with mock server', async () => {
     } as any;
   }
 
-  // Start a mock HTTP server that returns deterministic replies
-  const port = 6000 + Math.floor(Math.random() * 1000);
+  // Start a mock HTTP server that returns deterministic replies on the
+  // pre-defined port.  The port must match the environment variable set
+  // above (MOCK_PORT) so that transport/chat.ts uses our mock.
+  const port = MOCK_PORT;
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/api/version') {
       res.setHeader('content-type', 'application/json');
