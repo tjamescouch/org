@@ -136,14 +136,22 @@ class RegexAbortDetector implements AbortDetector {
 
 class MetaTagLeakDetector implements AbortDetector {
   name = "meta-tag-leak";
-  // Detects leaked framework/control tokens and channel|commentary artifacts
-  // Examples:
-  //   "<|start|>", "<|im_start|>", "<|assistant|>", "<|tool|>", "<channel|commentary>"
-  //   as well as any "<foo|commentary ...>" slack-style tag
-  private re = /<\|[^>]*\|>|<\s*[a-z0-9_-]+\s*\|\s*commentary\b[^>]*>/i;
+  // Matches tokens like <|start|>, <|im_start|>, <|assistant|>, <|tool|>, <|system|>,
+  // and also Slack-style "<channel|commentary>", as well as accidental continuations
+  // like "<|start|>functions".
+  private re = new RegExp(
+    [
+      String.raw`<\|\s*(?:im_)?(?:start|end|assistant|system|user|tool)\s*\|>`, // <|start|> etc
+      String.raw`<\s*[a-z0-9_-]+\s*\|\s*commentary\b[^>]*>`,                     // <channel|commentary>
+    ].join("|"),
+    "i"
+  );
+
   check(text: string): { index: number; reason: string } | null {
+    // Run on the *full buffer so far* (chat.ts should feed cumulative text)
     const m = this.re.exec(text);
-    return m ? { index: m.index, reason: "meta/control-tag" } : null;
+    if (m) return { index: Math.max(0, m.index), reason: "meta/control-tag" };
+    return null;
   }
 }
 
@@ -727,16 +735,32 @@ Do not narrate plans or roles; provide the final answer only.
       const messagesForHop: ChatMessage[] = [...normalized, nudgeMsg];
 
       // Build per-hop abort detectors (model controls policy)
-      const agents = Array.from(new Set(currentMessages.map(m => (m?.from || "").toLowerCase()).filter(Boolean)));
+      const agents = Array.from(new Set(currentMessages
+        .map(m => (m?.from || "").toLowerCase())
+        .filter(Boolean)));
+
       const detectors: AbortDetector[] = [
-        new CrossTurnRepetitionDetector({ tailWords: 20, minChars: 220, minNoveltyRatio: 0.08, sampleSocChars: 20000 }),
-        new AgentQuoteAbortDetector(agents),
+        // Keep: hard kill on true control-tag leaks
         new MetaTagLeakDetector(),
-        new RepetitionAbortDetector({ tailWords: 20, maxRepeats: 6, minWordsForNovelty: 220, minNoveltyRatio: 0.04 }),
-        new ToolEchoFloodDetector(4),
-        new SpiralPhraseDetector(), // keep disabled for now
-        new MaxLengthAbortDetector(12000),
-        new RegexAbortDetector([ /\bnow create new file\b/i, /\bit didn't show output\b/i ]),
+
+        // Keep: discourage quoting agents as dialogue — common hallucination start
+        new AgentQuoteAbortDetector(agents),
+
+        // Keep but relax: allow more JSON echoes before cutting
+        new ToolEchoFloodDetector(6),
+
+        // Relax repetition thresholds and require more text before judging novelty
+        new RepetitionAbortDetector({ tailWords: 24, maxRepeats: 5, minWordsForNovelty: 260, minNoveltyRatio: 0.03 }),
+
+        // Cross-turn repetition: require longer text and a very low novelty bar
+        new CrossTurnRepetitionDetector({ tailWords: 24, minChars: 280, minNoveltyRatio: 0.04, sampleSocChars: 30000 }),
+
+        // Bump max length ceiling so we don’t chop reasonable long-form outputs
+        new MaxLengthAbortDetector(20000),
+
+        // REMOVE for now (too chatty / false positives in your traces):
+        // new SpiralPhraseDetector(),
+        // new RegexAbortDetector([ /\bnow create new file\b/i, /\bit didn't show output\b/i ]),
       ];
 
       let msg: any;
