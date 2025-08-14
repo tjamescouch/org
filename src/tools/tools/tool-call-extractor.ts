@@ -83,11 +83,22 @@ export function extractToolCallsFromText(input: string): { tool_calls: ToolCall[
             const args = typeof x.function.arguments === "string"
               ? x.function.arguments
               : JSON.stringify(x.function.arguments ?? "");
-            calls.push({
+            // Emit a call structure that includes both a top-level name/arguments
+            // and a nested function property for backward compatibility.  The
+            // `type` and `index` fields are preserved when available.
+            const call: any = {
               id: typeof x.id === "string" ? x.id : "",
               name: x.function.name,
               arguments: args,
-            });
+              type: x.type ?? "function",
+            };
+            // Propagate index when present.
+            if (typeof x.index === "number") {
+              call.index = x.index;
+            }
+            // Provide a nested function shape expected by older code paths.
+            call.function = { name: x.function.name, arguments: args };
+            calls.push(call as any);
           }
         }
       }

@@ -13,8 +13,9 @@ async function run(): Promise<void> {
     throw new Error(`expected one tool call, got ${tool_calls.length}`);
   }
   const call = tool_calls[0];
-  if (call.name !== 'sh') {
-    throw new Error(`expected tool name 'sh', got ${call.name}`);
+  // Ensure both the top-level name and nested function.name are exposed
+  if ((call as any).name !== 'sh' || !(call as any).function || (call as any).function.name !== 'sh') {
+    throw new Error(`expected tool name 'sh', got ${(call as any).name}/${(call as any).function?.name}`);
   }
   // The cleaned output should retain the trailing message text and strip the JSON
   if (cleaned.trim() !== 'Hello world!') {
