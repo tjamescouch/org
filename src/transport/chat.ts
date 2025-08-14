@@ -1,8 +1,13 @@
+import { TextDecoder } from "util";
+import type { ReadableStreamReadResult } from "stream/web";
+import { VERBOSE } from "../constants";
+
 // /Users/jamescouch/dev/llm/org/chat.ts
 // Streaming chat client with immediate per-chunk meta-tag censorship.
 // - Censors leaked control/meta tags in the live stream (placeholder), keeps streaming.
 // - Still returns censored/censor_reason so logs can trim stored text.
 // - Heuristic whitelist when inside code fences (```).
+
 
 // Global interrupt for the current streaming chat; SIGINT handler calls this
 let _currentStreamAC: AbortController | null = null;
@@ -74,10 +79,6 @@ export const abortRegistry = {
   set(list: AbortDetector[]) { this.detectors = list.slice(); },
   add(detector: AbortDetector) { this.detectors.push(detector); },
 };
-
-import { TextDecoder } from "util";
-import { VERBOSE } from './src/constants';
-import type { ReadableStreamReadResult } from "stream/web";
 
 // Enable raw stream debug with: DEBUG_STREAM=1 bun main.ts
 const DEBUG_STREAM = process.env.DEBUG_STREAM === "1";
