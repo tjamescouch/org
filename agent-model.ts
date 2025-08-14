@@ -92,7 +92,7 @@ import { Model } from "./model";
 import { channelLock } from "./channel-lock";
 import type { RoomMessage } from "./chat-room";
 import { TagParser } from "./tag-parser";
-import { extractToolCallsFromText } from "./tool-call-extractor";
+import { extractToolCallsFromText } from "./src/tools/tools/tool-call-extractor";
 import { VERBOSE } from './constants';
 
 type Audience =

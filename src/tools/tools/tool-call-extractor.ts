@@ -65,16 +65,20 @@ export function extractToolCallsFromText(input: string): { tool_calls: ToolCall[
       const parsed = JSON.parse(arrayText);
       if (Array.isArray(parsed)) {
         for (const x of parsed) {
+          // Validate the shape of each potential tool call.  We only accept
+          // objects that specify type="function" and have a function with a
+          // string name.  Arguments may be a string or any other JSON value.
           if (x && x.type === "function" && x.function && typeof x.function.name === "string") {
-            // normalize arguments to string
+            // Normalize arguments: if already a string, use as-is; otherwise
+            // stringify the value.  This preserves original quotes when the
+            // argument is already a JSON string.
             const args = typeof x.function.arguments === "string"
               ? x.function.arguments
               : JSON.stringify(x.function.arguments ?? "");
             calls.push({
               id: typeof x.id === "string" ? x.id : "",
-              index: typeof x.index === "number" ? x.index : undefined,
-              type: "function",
-              function: { name: x.function.name, arguments: args },
+              name: x.function.name,
+              arguments: args,
             });
           }
         }
