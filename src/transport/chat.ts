@@ -258,12 +258,18 @@ export async function chatOnce(
   const ollamaBaseUrl = opts?.baseUrl ?? BASE_URL;
   const model = opts?.model ?? DEFAULT_MODEL;
 
-  // If we're talking to the mock model used in tests, short‑circuit and
-  // return a deterministic reply.  This avoids hitting any upstream
-  // provider and ensures the integration test completes quickly.  The
-  // mock server returns static 'ok', but we bypass the network call
-  // entirely here for efficiency.
-  if (model === "mock") {
+  // If we're talking to the mock model used in tests **and** there is no
+  // explicit base URL override, short‑circuit and return a deterministic
+  // reply.  This avoids hitting any upstream provider and ensures the
+  // integration tests that rely on a local model complete quickly.  When
+  // a base URL override is provided (either via opts.baseUrl or via
+  // environment variables), we still call the upstream server to allow
+  // mock HTTP servers to respond.  Without any override, default to the
+  // static "ok" response to avoid network calls entirely.
+  const hasBaseUrlOverride = Boolean(
+    opts?.baseUrl || process.env.OLLAMA_BASE_URL || process.env.OAI_BASE
+  );
+  if (model === "mock" && !hasBaseUrlOverride) {
     return { role: "assistant", content: "ok" };
   }
 
