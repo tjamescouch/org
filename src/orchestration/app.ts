@@ -10,11 +10,11 @@
 process.env.LM_MAX_CONCURRENCY = "1";
 import { AgentModel, BrightBlueTag, BrightRedTag, CyanTag, Reset, markUserInterject } from "../core/entity/agent-model";
 import { TurnManager } from "../core/turn-manager";
-import { ChatRoom } from "./chat-room";
-import { interruptChat } from "../../chat";
 import readline from "readline";
 import { CSI } from "../ui/tui"; // expects: clear, home, hide, show, rev, nrm
 import { setTimeout as setTimeoutPromise } from 'timers/promises'
+import { ChatRoom } from "../core/chat-room";
+import { interruptChat } from "../transport/chat";
 
 process.on("unhandledRejection", e => console.error("[unhandledRejection]", e));
 process.on("uncaughtException",  e => { console.error("[uncaughtException]", e); process.exitCode = 1; });
