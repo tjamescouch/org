@@ -1,6 +1,10 @@
 import { TextDecoder } from "util";
 import type { ReadableStreamReadResult } from "stream/web";
-import { VERBOSE } from "../constants";
+import {
+  VERBOSE,
+  BrightMagentaTag,
+  Reset,
+} from "../constants";
 
 // /Users/jamescouch/dev/llm/org/chat.ts
 // Streaming chat client with immediate per-chunk meta-tag censorship.
@@ -306,7 +310,9 @@ export async function chatOnce(
 
           if (contentStr) Bun.stdout.write(contentStr + "\n");
           if (!contentStr && reasoningStr && SHOW_THINK) {
-            Bun.stdout.write(`<think>${reasoningStr}</think>\n`);
+            // Print chain-of-thought in a bright magenta colour without
+            // <think> tags.  Use Reset() to restore default colour.
+            Bun.stdout.write(`${BrightMagentaTag()}${reasoningStr}${Reset()}\n`);
           }
           _currentStreamAC = null;
           return { role: "assistant", content: contentStr.trim(), reasoning: reasoningStr, tool_calls: tc };
@@ -503,7 +509,8 @@ export async function chatOnce(
       // Chain-of-thought
       if (reasonStr) {
         if (SHOW_THINK) {
-          Bun.stdout.write("<think>" + reasonStr + "</think>");
+          // Print chain-of-thought in bright magenta and reset colour
+          Bun.stdout.write(`${BrightMagentaTag()}${reasonStr}${Reset()}`);
           tokenCount++;
         } else {
           emitDot();

@@ -65,22 +65,6 @@ const SHOW_THINK = (process.env.SHOW_THINK === "1" || process.env.SHOW_THINK ===
 // --- Cooperative "user interrupt" flag (set from main on interject)
 const __userInterrupt = { ts: 0 };
 export function markUserInterject() { __userInterrupt.ts = Date.now(); }
-export const Reset = () => "\x1b[0m";
-export const CyanTag = () => "\x1b[36m";
-export const YellowTag = () => "\x1b[33m";
-export const RedTag = () => "\x1b[31m";
-export const GreenTag = () => "\x1b[32m";
-export const BlueTag = () => "\x1b[34m";
-export const MagentaTag = () => "\x1b[35m";
-export const WhiteTag = () => "\x1b[37m";
-export const BrightBlackTag = () => "\x1b[90m"; // gray
-export const BrightRedTag = () => "\x1b[91m";
-export const BrightGreenTag = () => "\x1b[92m";
-export const BrightYellowTag = () => "\x1b[93m";
-export const BrightBlueTag = () => "\x1b[94m";
-export const BrightMagentaTag = () => "\x1b[95m";
-export const BrightCyanTag = () => "\x1b[96m";
-export const BrightWhiteTag = () => "\x1b[97m";
 const withTimeout = <T>(p: Promise<T>, ms: number, label = "timeout"): Promise<T> =>
   Promise.race([
     p,
@@ -90,7 +74,25 @@ import { Model } from "./model";
 import { channelLock } from "../channel-lock";
 import { TagParser } from "../../tools/tools/tag-parser";
 import { extractToolCallsFromText } from "../../tools/tools/tool-call-extractor";
-import { VERBOSE } from '../../constants';
+import {
+  VERBOSE,
+  Reset,
+  CyanTag,
+  YellowTag,
+  RedTag,
+  GreenTag,
+  BlueTag,
+  MagentaTag,
+  WhiteTag,
+  BrightBlackTag,
+  BrightRedTag,
+  BrightGreenTag,
+  BrightYellowTag,
+  BrightBlueTag,
+  BrightMagentaTag,
+  BrightCyanTag,
+  BrightWhiteTag,
+} from '../../constants';
 
 import {
   AbortRegistry,
@@ -691,12 +693,14 @@ Do not narrate plans or roles; provide the final answer only.
 
       // If there are *no* tool calls, this is a summary/final assistant message.
       if (!tool_calls || tool_calls.length === 0) {
-        // Optionally surface chain-of-thought wrapper (kept as-is if present)
+        // Surface chain-of-thought when enabled.  Instead of wrapping
+        // the reasoning in <think> tags, colour it using a bright
+        // magenta tag to distinguish it from normal content.
         if (SHOW_THINK && (msg as any).reasoning) {
           responses.push({
             role: "assistant",
             from: this.id,
-            content: `<think>${(msg as any).reasoning}</think>`,
+            content: `${BrightMagentaTag()}${(msg as any).reasoning}${Reset()}`,
             reasoning: (msg as any).reasoning,
             read: true,
           });
