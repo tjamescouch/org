@@ -37,19 +37,19 @@ export class ChatRoom implements RoomAPI {
     const m = this.models.get(recipient);
     if (!m) return;
     const msg: RoomMessage = { role: "user", from, to: recipient, content };
-    // If the sender is the end user, record the timestamp for freshness tracking
-    if (from && from.toLowerCase() === "user") {
-      this.lastUserTs = Date.now();
-    }
+    // Always update the freshness timestamp on any message.  The turn
+    // manager uses this to schedule a burst of replies immediately
+    // following user or agent messages.
+    this.lastUserTs = Date.now();
     await m.receiveMessage(msg);
   }
 
   async broadcast(from: string, content: string): Promise<void> {
     const msg: RoomMessage = { role: "user", from, content };
-    // Track freshness if this broadcast originates from the end user
-    if (from && from.toLowerCase() === "user") {
-      this.lastUserTs = Date.now();
-    }
+    // Update the freshness timestamp unconditionally.  A broadcast from
+    // any sender indicates new activity and should trigger the
+    // scheduler to prioritize agents.
+    this.lastUserTs = Date.now();
     await Promise.all([...this.models.values()].map(m => m.receiveMessage(msg)));
   }
 
