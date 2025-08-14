@@ -1,3 +1,9 @@
+// /Users/jamescouch/dev/llm/org/chat.ts
+// Streaming chat client with immediate per-chunk meta-tag censorship.
+// - Censors leaked control/meta tags in the live stream (placeholder), keeps streaming.
+// - Still returns censored/censor_reason so logs can trim stored text.
+// - Heuristic whitelist when inside code fences (```).
+
 // Global interrupt for the current streaming chat; SIGINT handler calls this
 let _currentStreamAC: AbortController | null = null;
 export function interruptChat() {
@@ -6,6 +12,7 @@ export function interruptChat() {
   }
   _currentStreamAC = null;
 }
+
 // --- Preflight cache and helpers ---
 let _preflightOkUntil = 0;
 let _knownModels: Set<string> | null = null;
@@ -51,6 +58,7 @@ async function preflight(baseUrl: string, model: string): Promise<string | null>
     return `Preflight failed: ${e?.message || String(e)}`;
   }
 }
+
 /** Pluggable abort detector API */
 export type AbortDetector = {
   name: string;
@@ -66,8 +74,11 @@ export const abortRegistry = {
   set(list: AbortDetector[]) { this.detectors = list.slice(); },
   add(detector: AbortDetector) { this.detectors.push(detector); },
 };
+
 import { TextDecoder } from "util";
 import { VERBOSE } from './constants';
+import type { ReadableStreamReadResult } from "stream/web";
+
 // Enable raw stream debug with: DEBUG_STREAM=1 bun main.ts
 const DEBUG_STREAM = process.env.DEBUG_STREAM === "1";
 const SHOW_THINK = process.env.SHOW_THINK === "1"; // show chain-of-thought when set
@@ -78,107 +89,119 @@ function getConnectTimeouts(): number[] {
   const parts = raw.split(",").map(s => Math.max(500, Number(s.trim()) || 0)).filter(Boolean);
   return parts.length ? parts : [4000, 8000, 15000];
 }
+
 // Kill-switches to troubleshoot "no output" situations
 const DISABLE_ABORT = process.env.DISABLE_ABORT === "1";             // disables all abort detectors & soft suppression
 const DISABLE_GARBAGE_FILTER = process.env.DISABLE_GARBAGE_FILTER === "1"; // prints everything even if it looks like tool JSON, etc.
-import type { ReadableStreamReadResult } from "stream/web";
 
+// Connection defaults
 const BASE_URL = "http://192.168.56.1:11434"; // host-only IP
-// Default model can be overridden via env OLLAMA_MODEL
 const DEFAULT_MODEL = process.env.OLLAMA_MODEL || "openai/gpt-oss-20b";
 
 // Patterns to suppress from terminal output (still kept in buffers)
 const GARBAGE_RES: RegExp[] = [
   /\b"tool_calls"\s*:\s*\[/i,                  // assistant echoing tool JSON
   /\b"ok"\s*:\s*(true|false)\s*,\s*"stdout"/i, // quoted tool result blobs
-  /<\|start\|>/i,                                  // special markers some models leak
-  /functions\.sh\s+to=assistant/i,                // tool routing artifacts
-  /<\s*[a-z0-9_-]+\s*\|\s*commentary\b[^>]*>/i,   // channel|commentary artifacts
+  /<\|start\|>/i,                              // special markers some models leak
+  /functions\.sh\s+to=assistant/i,             // tool routing artifacts
+  /<\s*[a-z0-9_-]+\s*\|\s*commentary\b[^>]*>/i,// channel|commentary artifacts
 ];
 const isGarbage = (s: string): boolean => DISABLE_GARBAGE_FILTER ? false : GARBAGE_RES.some(re => re.test(s));
 
 // ---- Types (OpenAI-style) ----
 export type ChatRole = "system" | "user" | "assistant" | "tool";
-
 export interface ChatMessage {
   from: string;
   role: ChatRole;
   content: string;
   read: boolean;
-  name?: string;           // for tool messages
-  tool_call_id?: string;   // for tool messages
+  name?: string;
+  tool_call_id?: string;
   reasoning?: string;
   recipient?: string;
   ts?: string;
 }
-
 export interface ToolDef {
   type: "function";
-  function: {
-    name: string;
-    description?: string;
-    parameters: any; // JSON Schema
-  };
+  function: { name: string; description?: string; parameters: any };
 }
-
 export interface ToolCall {
   id: string;
   type: "function";
-  function: {
-    name: string;
-    arguments: string; // JSON string
-  };
+  function: { name: string; arguments: string };
   index?: number;
 }
-
 export interface AssistantMessage {
   role: "assistant";
   content?: string;
   reasoning?: string;
   tool_calls?: ToolCall[];
+  censored?: boolean;
+  censor_reason?: string;
 }
 
 const formatMessage = (m: ChatMessage): any => {
-  // Only send fields the API understands, and never prefix tool/system content
   if (m.role === "tool") {
     return { role: "tool", content: String(m.content ?? ""), name: m.name, tool_call_id: m.tool_call_id };
   }
   if (m.role === "system" || m.role === "assistant") {
     return { role: m.role, content: String(m.content ?? "") };
   }
-  // user: optionally include speaker label inside content for multi-agent context
   return { role: "user", content: `${m.from}: ${String(m.content ?? "")}` };
 };
 
+// ---------------- Immediate meta-tag censorship helpers ----------------
+const META_TAG_RE = new RegExp(
+  [
+    // <|start|>, <|end|>, <|assistant|>, <|system|>, with optional im_ and suffixes
+    String.raw`<\|\s*(?:im_)?(?:start|end|assistant|system|user|tool)(?:_[a-z0-9]+)?\s*\|>`,
+    // Continuations like "<|start|>functions"
+    String.raw`<\|\s*(?:im_)?(?:start|end|assistant|system|user|tool)[^>]*>?\s*\w+`,
+    // Slack-like <channel|commentary ...>
+    String.raw`<\s*[a-z0-9_-]+\s*\|\s*commentary\b[^>]*>`,
+  ].join("|"),
+  "i"
+);
+const META_PLACEHOLDER = "[censored: meta]";
 
+// Minimal code-fence tracker. We only toggle on triple backticks seen in streamed text.
+function countTicks(s: string) {
+  // Count occurrences of ``` not preceded by backslash
+  let count = 0;
+  const re = /(^|[^\\])```/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s))) {
+    count++;
+    if (re.lastIndex === m.index) re.lastIndex++;
+  }
+  return count;
+}
+function sanitizeChunk(s: string, inCodeBlock: boolean): { out: string; censored: boolean } {
+  if (!s) return { out: s, censored: false };
+  if (inCodeBlock) return { out: s, censored: false };
+  if (!META_TAG_RE.test(s)) return { out: s, censored: false };
+  const out = s.replace(META_TAG_RE, META_PLACEHOLDER);
+  return { out, censored: out !== s };
+}
 
-// Non-streaming summarizer: returns a single message string
+// ----------------- Non-streaming summarizer -----------------
 export async function summarizeOnce(
   messages: ChatMessage[],
-  opts?: {
-    model?: string;
-    baseUrl?: string;
-    temperature?: number;
-    num_ctx?: number;
-    timeout_ms?: number;
-  }
+  opts?: { model?: string; baseUrl?: string; temperature?: number; num_ctx?: number; timeout_ms?: number }
 ): Promise<string> {
   const ollamaBaseUrl = opts?.baseUrl ?? BASE_URL;
   const model = opts?.model ?? DEFAULT_MODEL;
   const timeout = Math.max(2000, Math.min(120_000, opts?.timeout_ms ?? 120_000));
 
-  // Use preflight cache and checks
   const pf = await preflight(ollamaBaseUrl, model);
   if (pf) return "";
 
   const formatted = messages.map(formatMessage);
-
-  // OpenAI-compatible /v1/chat/completions (non-streaming)
   const v1Body = {
     model,
-    stream: false,            // non‑streaming summary
+    stream: false,
     messages: formatted,
-    temperature: opts?.temperature ?? 0, // deterministic summaries
+    temperature: opts?.temperature ?? 0,
     keep_alive: "20m",
   } as any;
 
@@ -194,8 +217,8 @@ export async function summarizeOnce(
     clearTimeout(t);
     if (!resp.ok) return "";
     const json = await resp.json();
-    const viaV1 = (json && json.choices && json.choices[0] && json.choices[0].message && typeof json.choices[0].message.content === "string")
-      ? json.choices[0].message.content : null;
+    const viaV1 =
+      json?.choices?.[0]?.message?.content ?? null;
     return (viaV1 ?? "").trim();
   } catch {
     clearTimeout(t);
@@ -203,6 +226,7 @@ export async function summarizeOnce(
   }
 }
 
+// ----------------- Streaming chat -----------------
 export async function chatOnce(
   name: string,
   messages: ChatMessage[],
@@ -214,28 +238,21 @@ export async function chatOnce(
     model?: string;
     baseUrl?: string;
     abortDetectors?: AbortDetector[];
-    soc?: string; // rolling stream-of-consciousness used for cross-turn repetition detection
+    soc?: string;
   }
 ): Promise<AssistantMessage> {
   const ollamaBaseUrl = opts?.baseUrl ?? BASE_URL;
   const model = opts?.model ?? DEFAULT_MODEL;
 
-  // Use preflight cache and checks
   const pf = await preflight(ollamaBaseUrl, model);
   if (pf) return { role: "assistant", content: pf };
 
-  // Install model-provided abort detectors (if any), unless disabled
-  if (DISABLE_ABORT) {
-    abortRegistry.set([]);
-  } else if (opts?.abortDetectors && Array.isArray(opts.abortDetectors)) {
-    abortRegistry.set(opts.abortDetectors);
-  } else {
-    abortRegistry.set([]); // default: no detectors
-  }
+  if (DISABLE_ABORT) abortRegistry.set([]);
+  else if (opts?.abortDetectors) abortRegistry.set(opts.abortDetectors);
+  else abortRegistry.set([]);
 
   if (VERBOSE) console.error(messages.map(formatMessage));
 
-  // Shared body pieces
   const formatted = messages.map(formatMessage);
   const v1Body = {
     model,
@@ -245,16 +262,15 @@ export async function chatOnce(
     tools: opts?.tools ?? [],
     tool_choice: opts?.tool_choice ?? (opts?.tools ? "auto" : undefined),
     keep_alive: "30m",
-    num_ctx: 128000
-    // some Ollama builds also accept num_ctx here; include if needed via options
+    num_ctx: 128000,
   } as any;
 
-  // Single-endpoint strategy: OpenAI-compatible /v1/chat/completions (tool calling)
+  // Attempt the request with staged connect timeouts
   let resp: Response | undefined;
   const timeouts = getConnectTimeouts();
   for (let attempt = 0; attempt < timeouts.length; attempt++) {
     const connectAC = new AbortController();
-    _currentStreamAC = connectAC; // expose for external interrupt
+    _currentStreamAC = connectAC;
     const t = setTimeout(() => connectAC.abort(), timeouts[attempt]);
     try {
       resp = await fetch(ollamaBaseUrl + "/v1/chat/completions", {
@@ -266,32 +282,25 @@ export async function chatOnce(
       clearTimeout(t);
       if (!resp.ok) {
         const txt = await resp.text();
-
-        console.log(txt);
-
         return { role: "assistant", content: `HTTP ${resp.status} – ${resp.statusText}\n${txt}` };
       }
-      // Print header as soon as we have HTTP 200 to show liveness
-      let namePrinted = false;
+      // Print header to show liveness
       {
         const ts = new Date().toLocaleTimeString();
         console.log(`\x1b[36m**** ${name} @ ${ts}\x1b[0m:`);
-        namePrinted = true;
       }
 
-      // Inspect content type once per request
       const ctype = String(resp.headers.get("content-type") || "");
       if (DEBUG_STREAM) console.error(`[chatOnce] content-type: ${ctype}`);
 
-      // Fast path: some servers reply with a single JSON (no SSE)
+      // Non-streaming JSON response (fast-path)
       if (/application\/json/i.test(ctype) && !/text\/event-stream/i.test(ctype)) {
         const json = await resp.json().catch(() => null as any);
-        if (json && json.choices && json.choices[0]) {
+        if (json?.choices?.[0]) {
           const ch = json.choices[0];
           const msg = ch.message || ch.delta || {};
           const contentStr = typeof msg.content === "string" ? msg.content : "";
           const reasoningStr = typeof msg.reasoning === "string" ? msg.reasoning : "";
-          // tool calls may be fully present on non-streaming responses
           const tc = Array.isArray(msg.tool_calls) ? msg.tool_calls : (Array.isArray(ch.tool_calls) ? ch.tool_calls : undefined);
 
           if (contentStr) Bun.stdout.write(contentStr + "\n");
@@ -301,18 +310,13 @@ export async function chatOnce(
           _currentStreamAC = null;
           return { role: "assistant", content: contentStr.trim(), reasoning: reasoningStr, tool_calls: tc };
         }
-        // If JSON but not in expected shape, fall through to stream reader (some servers still chunk JSON lines)
       }
 
-      // Streaming/SSE path
       let reader = resp.body!.getReader();
       const decoder = new TextDecoder("utf-8");
 
-      // Show a subtle spinner/dot while waiting for the first bytes
       let firstChunkArrived = false;
-      const waitDots = setInterval(() => {
-        if (!firstChunkArrived) { try { Bun.stdout.write("."); } catch {} }
-      }, 250);
+      const waitDots = setInterval(() => { if (!firstChunkArrived) { try { Bun.stdout.write("."); } catch {} } }, 250);
 
       let firstReadTimedOut = false;
       const first = await Promise.race([
@@ -325,8 +329,6 @@ export async function chatOnce(
       (resp as any)._org_firstChunk = first;
       (resp as any)._org_reader = reader;
       (resp as any)._org_decoder = decoder;
-      // keep namePrinted state for the outer loop
-      (resp as any)._org_namePrinted = namePrinted;
       break;
     } catch (e) {
       clearTimeout(t);
@@ -342,26 +344,18 @@ export async function chatOnce(
     return { role: "assistant", content: "Model is warming or unavailable, please retry later" };
   }
 
-  /* -----------------------------------------------------------
-     Parse the SSE / chunked response:
-     Each chunk is a line:  data: { ...delta... }\n
-     Last line:            data: [DONE]
-  ------------------------------------------------------------ */
-  let reader = (resp as any)._org_reader;
-  const decoder = (resp as any)._org_decoder;
+  // Parse the SSE / chunked response
+  let reader = (resp as any)._org_reader as ReadableStreamDefaultReader<Uint8Array>;
+  const decoder = (resp as any)._org_decoder as TextDecoder;
   let firstRead = true;
   let firstReadResult: ReadableStreamReadResult<Uint8Array> = (resp as any)._org_firstChunk;
 
-  // Idle+hard-stop watchdogs to prevent hangs
-  const IDLE_MS = 240_000;     // abort if no chunks for 240s
-  const HARD_STOP_MS = 300_000; // absolute cap on streaming (must exceed IDLE_MS)
+  const IDLE_MS = 240_000;
+  const HARD_STOP_MS = 300_000;
   const startedAt = Date.now();
 
   async function readWithIdleTimeout(): Promise<ReadableStreamReadResult<Uint8Array>> {
-    if (firstRead) {
-      firstRead = false;
-      return firstReadResult;
-    }
+    if (firstRead) { firstRead = false; return firstReadResult; }
     const abortP = _currentStreamAC?.signal ? new Promise<never>((_, rej) => {
       const onAbort = () => { _currentStreamAC?.signal.removeEventListener('abort', onAbort as any); rej(new Error('interrupted')); };
       _currentStreamAC!.signal.addEventListener('abort', onAbort, { once: true });
@@ -377,35 +371,29 @@ export async function chatOnce(
   let thinkingBuf = "";
   let toolCalls: ToolCall[] | undefined;
   let done = false;
-  let namePrinted = Boolean((resp as any)._org_namePrinted);
-  let firstThink = true;
-  let firstNotThink = true;
-  let tokenCount = 0; // counts emitted non-empty content/reasoning units
+
+  // Code fence tracking for whitelist
+  let codeFenceParity = 0; // odd => inside code block
+
+  let tokenCount = 0;
   let censorReason: string | null = null;
-  // Accumulate partial lines across chunks (SSE / JSONL)
   let lineBuffer = "";
-  // Soft-abort state: keep reading to the end but suppress further terminal output
-  let cutAt: number | null = null;
+  let cutAt: number | null = null; // soft-abort indexing (kept for compatibility)
   let suppressOutput = false;
-  // Accumulate tool call pieces across deltas (OpenAI streams name/arguments incrementally)
+
+  // Accumulate tool call pieces across deltas
   const toolCallsAgg: { [k: number]: ToolCall } = {};
-  // Squelch noisy/garbage fragments and show progress dots instead
-  let squelchedChars = 0;
-  let lastDotAt = 0;
-  const emitDot = () => {
-    const now = Date.now();
-    if (now - lastDotAt > 200) { // at most ~5 dots/sec
-      Bun.stdout.write(".");
-      lastDotAt = now;
-    }
-  };
-  // Detector performance guards
-  const DET_CHECK_CHARS_THRESHOLD = 400; // run expensive detectors only after this many new chars
-  const DET_TAIL_WINDOW = 8000;          // pass only the last N chars to detectors
-  let detSinceChars = 0;                 // chars accumulated since last detector run
   const ensureTool = (idx: number): ToolCall => {
     if (!toolCallsAgg[idx]) toolCallsAgg[idx] = { id: `call_${idx}`, type: "function", function: { name: "", arguments: "" }, index: idx };
     return toolCallsAgg[idx];
+  };
+
+  // Squelch noisy fragments → dots
+  let squelchedChars = 0;
+  let lastDotAt = 0;
+  const emitDot = () => {
+    const n = Date.now();
+    if (n - lastDotAt > 200) { Bun.stdout.write("."); lastDotAt = n; }
   };
 
   while (!done) {
@@ -419,84 +407,58 @@ export async function chatOnce(
       readResult = await readWithIdleTimeout();
     } catch (e) {
       const msg = (e as Error)?.message || '';
-      if (msg === 'idle-timeout') {
-        try { reader.cancel(); } catch {}
-        console.error('[chatOnce] aborted stream: idle-timeout');
-        break;
-      }
-      if (msg === 'interrupted') {
-        try { reader.cancel(); } catch {}
-        console.error('[chatOnce] aborted stream: interrupted');
-        break;
-      }
+      if (msg === 'idle-timeout') { try { reader.cancel(); } catch {} ; console.error('[chatOnce] aborted stream: idle-timeout'); break; }
+      if (msg === 'interrupted') { try { reader.cancel(); } catch {} ; console.error('[chatOnce] aborted stream: interrupted'); break; }
       throw e;
     }
     const { value, done: streamDone } = readResult;
-
     if (streamDone) break;
+
     const chunk = decoder.decode(value, { stream: true });
     if (DEBUG_STREAM) console.error("RAW:", chunk.replace(/\r/g, "\\r").replace(/\n/g, "\\n"));
     lineBuffer += chunk;
 
-    // Process only complete lines; keep remainder for next network chunk
     for (;;) {
       const nl = lineBuffer.indexOf('\n');
       if (nl === -1) break;
       let lineRaw = lineBuffer.slice(0, nl);
       lineBuffer = lineBuffer.slice(nl + 1);
-      // Trim a single trailing CR but do not trim leading spaces (SSE spec)
       const line = lineRaw.endsWith('\r') ? lineRaw.slice(0, -1) : lineRaw;
       if (DEBUG_STREAM) console.error("LINE:", line);
       if (!line) continue;
 
-      // Skip non-data SSE lines from OpenAI/LM Studio (e.g., event:, id:, retry:, or comment ":")
       if (!line.startsWith('data:')) {
-        if (/^(event|id|retry):/i.test(line) || line.startsWith(':')) {
-          if (DEBUG_STREAM) console.error("SKIP:", line);
-          continue;
-        }
+        if (/^(event|id|retry):/i.test(line) || line.startsWith(':')) continue;
       }
 
-      // Ollama native streams JSON lines without the "data:" prefix; OpenAI-style uses "data: {json}"
       const payload = line.startsWith('data:') ? line.slice(5).trim() : line;
-
-
       if (payload === '[DONE]') { done = true; break; }
 
-      // Parse JSON payload; if it fails, prepend it back into the buffer and wait for more bytes
       let parsed: any = undefined;
       try { parsed = JSON.parse(payload); } catch {
-        // likely a partial JSON frame split across network chunks
-        lineBuffer = line + '\n' + lineBuffer; // restore and wait for the remainder
+        lineBuffer = line + '\n' + lineBuffer; // partial frame, wait for more
         break;
       }
 
       let delta: any = {};
-      if (parsed && parsed.choices && Array.isArray(parsed.choices)) {
-        const ch = parsed.choices?.[0] ?? {};
+      if (parsed?.choices && Array.isArray(parsed.choices)) {
+        const ch = parsed.choices[0] ?? {};
         delta = (ch.delta ?? ch.message ?? {});
       } else if (parsed && parsed.message) {
         delta = parsed.message;
       }
 
-      // OpenAI finish reason appears on the choice, even when delta is empty
       const choice = parsed?.choices?.[0] ?? {};
       const finishReason = choice?.finish_reason as (string | null | undefined);
-      if (finishReason === "stop") {
-        done = true;
-        // continue to process any residual delta fields below before breaking out at loop end
-      }
+      if (finishReason === "stop") { done = true; }
 
-      // Some Ollama builds emit { done: true } without a message
-      if (!parsed?.message && parsed?.done === true) { 
-        // finalize any aggregated tool calls
+      if (!parsed?.message && parsed?.done === true) {
         const agg = Object.values(toolCallsAgg);
         if (agg.length) toolCalls = agg;
-        done = true; 
-        break; 
+        done = true; break;
       }
 
-      // Merge tool call deltas (name/arguments may arrive piecewise)
+      // Merge tool call deltas
       if (delta && Array.isArray(delta.tool_calls)) {
         for (const d of delta.tool_calls as any[]) {
           const idx = typeof d.index === "number" ? d.index : 0;
@@ -512,31 +474,45 @@ export async function chatOnce(
         const agg = Object.values(toolCallsAgg);
         if (agg.length) toolCalls = agg;
         done = true;
-        // don't break before we print any last textual content below
       }
 
-      // Coerce and guard writes; Ollama may emit non-string/empty fields on keepalive chunks
-      const reasonStr = typeof delta.reasoning === 'string' ? delta.reasoning : '';
-      const contentStr = typeof delta.content === 'string' ? delta.content : '';
+      // Coerce fields
+      let reasonStr = typeof delta.reasoning === 'string' ? delta.reasoning : '';
+      let contentStr = typeof delta.content === 'string' ? delta.content : '';
 
-      // Chain‑of‑thought handling: show if SHOW_THINK=1, else suppress with a dot
+      // Track code fences (for whitelist)
+      if (reasonStr) codeFenceParity += countTicks(reasonStr);
+      if (contentStr) codeFenceParity += countTicks(contentStr);
+      const inCode = (codeFenceParity % 2) === 1;
+
+      // Immediate meta-tag censorship (per chunk) BEFORE printing/buffering
+      let censoredThisChunk = false;
+      if (reasonStr) {
+        const { out, censored } = sanitizeChunk(reasonStr, inCode);
+        reasonStr = out; censoredThisChunk = censoredThisChunk || censored;
+      }
+      if (contentStr) {
+        const { out, censored } = sanitizeChunk(contentStr, inCode);
+        contentStr = out; censoredThisChunk = censoredThisChunk || censored;
+      }
+      if (censoredThisChunk) {
+        censorReason = "meta/control-tag";
+      }
+
+      // Chain-of-thought
       if (reasonStr) {
         if (SHOW_THINK) {
-          if (firstThink) { firstThink = false; Bun.stdout.write("<think>"); }
-          Bun.stdout.write(reasonStr);
+          Bun.stdout.write("<think>" + reasonStr + "</think>");
           tokenCount++;
         } else {
-          if (firstThink) { firstThink = false; }
-          if (DEBUG_STREAM) console.error("[COT suppressed]", reasonStr.slice(0, 40));
           emitDot();
           tokenCount++;
         }
       }
+
+      // Content
       if (contentStr) {
         tokenCount++;
-        if (firstNotThink && !firstThink) { firstNotThink = false; }
-
-        // When SHOW_THINK=1, bypass garbage/suppression filters to reveal raw CoT-like text.
         if (SHOW_THINK) {
           Bun.stdout.write(contentStr);
         } else {
@@ -549,47 +525,29 @@ export async function chatOnce(
             if (!suppressOutput) {
               Bun.stdout.write(contentStr);
             } else {
-              // output suppressed by soft‑abort -> show progress dot
               emitDot();
             }
           }
         }
       } else if (!reasonStr && parsed && parsed.done === true) {
-        done = true; 
-        
-        break;
+        done = true; break;
       }
 
-      // Print a dot immediately when output is suppressed by application logic
-      if (suppressOutput && contentStr && !(isGarbage(contentStr) || isGarbage(contentBuf.slice(-200) + contentStr))) {
-        // Only print a dot for suppressed normal output (not for garbage, which already emits a dot)
-        Bun.stdout.write(".");
-      }
-
-      if (contentStr) {
-        contentBuf += contentStr;
-        detSinceChars += contentStr.length;
-      }
+      if (contentStr) contentBuf += contentStr;
       if (reasonStr) thinkingBuf += reasonStr;
       if (delta.tool_calls) toolCalls = delta.tool_calls as ToolCall[];
 
-      // Generic, model-pluggable abort check (soft-abort: do not cancel the stream)
+      // Generic pluggable detectors (soft-abort only; we already censored meta tags live)
       const agents = Array.from(new Set((messages || []).map(m => (m?.from || '').toLowerCase()).filter(Boolean)));
-      if (!DISABLE_ABORT && cutAt === null && detSinceChars >= DET_CHECK_CHARS_THRESHOLD) {
-        detSinceChars = 0; // reset the counter now
-        const textForDetectors = contentBuf.length > DET_TAIL_WINDOW
-          ? contentBuf.slice(-DET_TAIL_WINDOW)
-          : contentBuf;
+      if (!DISABLE_ABORT && cutAt === null && contentBuf.length >= 400) {
+        const textForDetectors = contentBuf.length > 8000 ? contentBuf.slice(-8000) : contentBuf;
         let cut: { index: number; reason: string } | null = null;
         for (const det of abortRegistry.detectors) {
           cut = det.check(textForDetectors, { messages, agents, soc: opts?.soc });
           if (cut) {
-            // Adjust cut.index to absolute index relative to contentBuf
             const offset = contentBuf.length - textForDetectors.length;
             cutAt = Math.max(0, offset + cut.index);
-            // Mark cut point for logs but keep streaming to terminal (no suppression)
-            censorReason = cut.reason || "policy";
-            if (firstNotThink && !firstThink) { firstNotThink = false; console.log('</think>'); }
+            censorReason = censorReason || cut.reason || "policy";
             console.error(`[chatOnce] soft-abort by ${det.name}: ${cut.reason} cutAt=${cutAt}`);
             break;
           }
@@ -598,7 +556,7 @@ export async function chatOnce(
     }
   }
 
-  // Best-effort: process a final line if the server ended without a trailing newline
+  // Final trailing frame if any
   if (!done && lineBuffer.trim().length > 0) {
     try {
       const payload = lineBuffer.startsWith('data:') ? lineBuffer.slice(5).trim() : lineBuffer;
@@ -606,10 +564,16 @@ export async function chatOnce(
       if (DEBUG_STREAM) console.error("FINAL_LINE:", payload);
       const ch = parsed?.choices?.[0] ?? {};
       const delta = (ch.delta ?? ch.message ?? parsed?.message ?? {});
-      const reasonStr = typeof delta.reasoning === 'string' ? delta.reasoning : '';
-      const contentStr = typeof delta.content === 'string' ? delta.content : '';
-      if (reasonStr) thinkingBuf += reasonStr;
-      if (contentStr) contentBuf += contentStr;
+      let reasonStr = typeof delta.reasoning === 'string' ? delta.reasoning : '';
+      let contentStr = typeof delta.content === 'string' ? delta.content : '';
+      if (reasonStr) {
+        const { out } = sanitizeChunk(reasonStr, (codeFenceParity % 2) === 1);
+        thinkingBuf += out;
+      }
+      if (contentStr) {
+        const { out } = sanitizeChunk(contentStr, (codeFenceParity % 2) === 1);
+        contentBuf += out;
+      }
       if (Array.isArray(delta.tool_calls)) {
         for (const d of delta.tool_calls as any[]) {
           const idx = typeof d.index === "number" ? d.index : 0;
@@ -629,17 +593,10 @@ export async function chatOnce(
   if (squelchedChars > 0) {
     Bun.stdout.write("\n");
   }
+  // Ensure a newline after the streamed content
+  Bun.stdout.write("\n");
 
-  // If we printed any visible CoT, close the tag
-  if (SHOW_THINK && !firstThink) {
-    Bun.stdout.write("</think>");
-  }
-  // Ensure a newline after the streamed content for tidy terminal rendering
-  if (namePrinted) {
-    Bun.stdout.write("\n");
-  }
-
-  let wasCensored = false;
+  let wasCensored = Boolean(censorReason);
   if (cutAt !== null) {
     wasCensored = true;
     contentBuf = contentBuf.slice(0, cutAt).trimEnd();
@@ -649,13 +606,7 @@ export async function chatOnce(
       Bun.stdout.write(`\n${Red}[${tsNote}] output after this point was censored from chat logs (${censorReason || "policy"})${Reset}\n`);
     } catch {}
   }
-  if (!namePrinted) {
-    console.log(`**** ${name}:`);
-  }
-  if (!contentBuf && SHOW_THINK && thinkingBuf) {
-    Bun.stdout.write("\n");
-  }
-  // Surface a heartbeat so the user knows we reached end-of-stream without tokens
+
   if (tokenCount === 0) {
     try { Bun.stdout.write("."); } catch {}
   }
@@ -665,8 +616,7 @@ export async function chatOnce(
     content: contentBuf.trim(),
     reasoning: thinkingBuf,
     tool_calls: toolCalls,
-    // metadata to inform upstream that the visible stream may exceed stored text
     censored: wasCensored,
     censor_reason: wasCensored ? (censorReason || "policy") : undefined,
-  } as any;
+  };
 }
