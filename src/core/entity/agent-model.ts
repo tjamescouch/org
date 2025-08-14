@@ -86,11 +86,8 @@ const withTimeout = <T>(p: Promise<T>, ms: number, label = "timeout"): Promise<T
     p,
     new Promise<never>((_, rej) => setTimeout(() => rej(new Error(label)), ms))
   ]) as any;
-import { chatOnce, summarizeOnce, type ChatMessage, type ToolCall, type ToolDef } from "../../chat";
-import type { ChatRoom } from "../../chat-room";
 import { Model } from "./model";
 import { channelLock } from "../channel-lock";
-import type { RoomMessage } from "../../chat-room";
 import { TagParser } from "../../tools/tools/tag-parser";
 import { extractToolCallsFromText } from "../../tools/tools/tool-call-extractor";
 import { VERBOSE } from '../../constants';
@@ -107,6 +104,9 @@ import {
   MaxLengthAbortDetector,
   SpiralPhraseDetector,
 } from "../abort-detectors";
+import type { ChatMessage, ToolCall, ToolDef } from "../../types";
+import type { ChatRoom, RoomMessage } from "../chat-room";
+import { chatOnce, summarizeOnce } from "../../transport/chat";
 
 type Audience =
   | { kind: "group"; target: "*" } | { kind: "direct"; target: string }      // send only to a given model
