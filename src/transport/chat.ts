@@ -100,8 +100,17 @@ const DISABLE_ABORT = process.env.DISABLE_ABORT === "1";             // disables
 const DISABLE_GARBAGE_FILTER = process.env.DISABLE_GARBAGE_FILTER === "1"; // prints everything even if it looks like tool JSON, etc.
 
 // Connection defaults
-const BASE_URL = "http://192.168.56.1:11434"; // host-only IP
-const DEFAULT_MODEL = process.env.OLLAMA_MODEL || "openai/gpt-oss-20b";
+// Determine the upstream base URL and model from environment variables so that
+// tests and alternative providers can override the defaults.  Fallbacks are
+// provided to maintain a working default when no overrides are supplied.
+const BASE_URL =
+  process.env.OLLAMA_BASE_URL ||
+  process.env.OAI_BASE ||
+  "http://127.0.0.1:11434";
+const DEFAULT_MODEL =
+  process.env.OLLAMA_MODEL ||
+  process.env.OAI_MODEL ||
+  "openai/gpt-oss-20b";
 
 // Patterns to suppress from terminal output (still kept in buffers)
 const GARBAGE_RES: RegExp[] = [
@@ -509,8 +518,10 @@ export async function chatOnce(
       // Chain-of-thought
       if (reasonStr) {
         if (SHOW_THINK) {
-          // Print chain-of-thought in bright magenta and reset colour
-          Bun.stdout.write(`${BrightMagentaTag()}${reasonStr}${Reset()}`);
+          // Print chain-of-thought in bright magenta followed by a newline to
+          // clearly separate it from the model’s final answer.  Reset the colour
+          // afterwards so subsequent output uses the default terminal colour.
+          Bun.stdout.write(`${BrightMagentaTag()}${reasonStr}${Reset()}\n`);
           tokenCount++;
         } else {
           emitDot();

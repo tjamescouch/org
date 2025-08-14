@@ -697,13 +697,15 @@ Do not narrate plans or roles; provide the final answer only.
         // the reasoning in <think> tags, colour it using a bright
         // magenta tag to distinguish it from normal content.
         if (SHOW_THINK && (msg as any).reasoning) {
-          responses.push({
-            role: "assistant",
-            from: this.id,
-            content: `${BrightMagentaTag()}${(msg as any).reasoning}${Reset()}`,
-            reasoning: (msg as any).reasoning,
-            read: true,
-          });
+        responses.push({
+          role: "assistant",
+          from: this.id,
+          // Append a newline after the coloured chain‑of‑thought so that the
+          // subsequent answer appears on a new line.
+          content: `${BrightMagentaTag()}${(msg as any).reasoning}${Reset()}\n`,
+          reasoning: (msg as any).reasoning,
+          read: true,
+        });
         }
 
         const trimmed = String(response ?? "").trim();
