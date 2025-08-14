@@ -381,6 +381,7 @@ export async function chatOnce(
   let firstThink = true;
   let firstNotThink = true;
   let tokenCount = 0; // counts emitted non-empty content/reasoning units
+  let censorReason: string | null = null;
   // Accumulate partial lines across chunks (SSE / JSONL)
   let lineBuffer = "";
   // Soft-abort state: keep reading to the end but suppress further terminal output
@@ -586,7 +587,8 @@ export async function chatOnce(
             // Adjust cut.index to absolute index relative to contentBuf
             const offset = contentBuf.length - textForDetectors.length;
             cutAt = Math.max(0, offset + cut.index);
-            suppressOutput = true; // continue reading but do not print further tokens
+            // Mark cut point for logs but keep streaming to terminal (no suppression)
+            censorReason = cut.reason || "policy";
             if (firstNotThink && !firstThink) { firstNotThink = false; console.log('</think>'); }
             console.error(`[chatOnce] soft-abort by ${det.name}: ${cut.reason} cutAt=${cutAt}`);
             break;
@@ -637,8 +639,15 @@ export async function chatOnce(
     Bun.stdout.write("\n");
   }
 
+  let wasCensored = false;
   if (cutAt !== null) {
+    wasCensored = true;
     contentBuf = contentBuf.slice(0, cutAt).trimEnd();
+    try {
+      const Red = "\x1b[31m"; const Reset = "\x1b[0m";
+      const tsNote = new Date().toLocaleTimeString();
+      Bun.stdout.write(`\n${Red}[${tsNote}] output after this point was censored from chat logs (${censorReason || "policy"})${Reset}\n`);
+    } catch {}
   }
   if (!namePrinted) {
     console.log(`**** ${name}:`);
@@ -656,5 +665,8 @@ export async function chatOnce(
     content: contentBuf.trim(),
     reasoning: thinkingBuf,
     tool_calls: toolCalls,
-  };
+    // metadata to inform upstream that the visible stream may exceed stored text
+    censored: wasCensored,
+    censor_reason: wasCensored ? (censorReason || "policy") : undefined,
+  } as any;
 }

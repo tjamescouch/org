@@ -813,6 +813,18 @@ Do not narrate plans or roles; provide the final answer only.
           msg.content = san.text;
         }
       }
+      // If chat.ts flagged the response as censored, record a small notice in context
+      if (msg && (msg as any).censored) {
+        try {
+          this.context.push({
+            ts: new Date().toISOString(),
+            role: "system" as const,
+            from: "System",
+            read: true,
+            content: `[notice] part of ${this.id}'s streamed output was censored from chat logs (${(msg as any).censor_reason || "policy"}).`
+          } as any);
+        } catch {}
+      }
       // Small pacing delay to avoid hammering the provider
       await new Promise(r => setTimeout(r, 25));
       // If an interject was signaled during this hop, don't keep retrying; yield now.
