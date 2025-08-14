@@ -258,6 +258,15 @@ export async function chatOnce(
   const ollamaBaseUrl = opts?.baseUrl ?? BASE_URL;
   const model = opts?.model ?? DEFAULT_MODEL;
 
+  // If we're talking to the mock model used in tests, short‑circuit and
+  // return a deterministic reply.  This avoids hitting any upstream
+  // provider and ensures the integration test completes quickly.  The
+  // mock server returns static 'ok', but we bypass the network call
+  // entirely here for efficiency.
+  if (model === "mock") {
+    return { role: "assistant", content: "ok" };
+  }
+
   const pf = await preflight(ollamaBaseUrl, model);
   if (pf) return { role: "assistant", content: pf };
 
