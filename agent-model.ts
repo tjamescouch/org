@@ -9,25 +9,47 @@ const __g: any = (globalThis as any) || {};
 // Even if multiple agents/hops want to talk to the provider, we serialize
 // all outbound /v1/chat requests to avoid LM Studio queue growth.
 // NOTE: We deliberately ignore LM_MAX_CONCURRENCY here; cap is 1 by design.
+// --- Global transport backpressure (strict single-flight + cooldown) ---
 type ReleaseFn = () => Promise<void>;
 const __transport = ((globalThis as any).__transport ||= {
   cap: 1,
   in: 0,
   q: [] as Array<() => void>,
+  _gate: Promise.resolve(),       // serialize acquires to avoid races
+  _coolUntil: 0,                  // millisecond timestamp for cooldown window
   inflight() { return this.in; },
+  cooling() { return Date.now() < this._coolUntil; },
+
   async acquire(_label = ""): Promise<ReleaseFn> {
+    // Serialize all acquires behind a microtask gate to prevent double-pass
+    let handoff!: () => void;
+    const wait = new Promise<void>(res => (handoff = res));
+    const prev = this._gate;
+    this._gate = (async () => { try { await prev; } finally { handoff(); } })();
+    await wait;
+
+    // Respect cooldown: callers wait here instead of piling requests in Studio
+    while (this.cooling()) {
+      await new Promise(r => setTimeout(r, 25));
+    }
+
     if (this.in < this.cap) {
       this.in = 1;
+      const released = false;
       return async () => {
-        this.in = 0;
+        if (this.in === 1) this.in = 0;
+        // small cooldown to defuse stampedes
+        this._coolUntil = Date.now() + 150;
         const n = this.q.shift();
         n?.();
       };
     }
+
     await new Promise<void>(res => this.q.push(res));
     this.in = 1;
     return async () => {
-      this.in = 0;
+      if (this.in === 1) this.in = 0;
+      this._coolUntil = Date.now() + 150;
       const n = this.q.shift();
       n?.();
     };

@@ -70,14 +70,15 @@ export class TurnManager {
       }
       return;
     }
-    // Global transport backpressure: if provider is busy, skip this tick
+    // Global transport backpressure: if provider is busy OR cooling, skip this tick
     try {
       const t = (globalThis as any).__transport;
       const busy = !!(t && typeof t.inflight === "function" && t.inflight() >= 1);
-      if (busy) {
+      const cooling = !!(t && typeof t.cooling === "function" && t.cooling());
+      if (busy || cooling) {
         const now = Date.now();
         if (!this.lastSkipLog || now - this.lastSkipLog > 1000) {
-          try { (globalThis as any).__log?.("[backpressure] provider busy — deferring scheduling", "yellow"); } catch {}
+          try { (globalThis as any).__log?.("[backpressure] provider busy/cooling — deferring scheduling", "yellow"); } catch {}
           this.lastSkipLog = now;
         }
         return;
