@@ -13,7 +13,7 @@ import { TurnManager } from "../core/turn-manager";
 import { ChatRoom } from "./chat-room";
 import { interruptChat } from "../../chat";
 import readline from "readline";
-import { CSI } from "../../tui"; // expects: clear, home, hide, show, rev, nrm
+import { CSI } from "../ui/tui"; // expects: clear, home, hide, show, rev, nrm
 import { setTimeout as setTimeoutPromise } from 'timers/promises'
 
 process.on("unhandledRejection", e => console.error("[unhandledRejection]", e));
