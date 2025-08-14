@@ -11,7 +11,15 @@ export function extractToolCallsFromText(input: string): { tool_calls: ToolCall[
     if (k === -1) { out += text.slice(i); break; }
 
     // copy bytes before this occurrence
-    out += text.slice(i, k);
+    // Copy bytes before this occurrence.  If the prefix consists solely of
+    // an opening brace (e.g. "{"), drop it so that the matching closing
+    // brace can be removed later.
+    const prefix = text.slice(i, k);
+    if (prefix.trim() === "{") {
+      // do not append the opening brace
+    } else {
+      out += prefix;
+    }
     let j = k + '"tool_calls"'.length;
 
     // skip spaces and colon
@@ -84,9 +92,15 @@ export function extractToolCallsFromText(input: string): { tool_calls: ToolCall[
         }
       }
       // remove the whole `"tool_calls": [ ... ]` segment from output
-      // also swallow any trailing whitespace
+      // also swallow any trailing whitespace.  If a closing brace immediately
+      // follows the array, skip it as well; we dropped its matching opening
+      // brace earlier.
       i = j;
       while (i < text.length && /\s/.test(text[i] ?? '')) i++;
+      if (i < text.length && text[i] === '}') {
+        i++;
+        while (i < text.length && /\s/.test(text[i] ?? '')) i++;
+      }
       continue;
     } catch {
       // if parsing fails, keep original bytes and move on
