@@ -1081,7 +1081,7 @@ Do not narrate plans or roles; provide the final answer only.
 ok: ${result.ok}
 exit_code: ${result.exit_code}
 --- stdout ---
-${CyanTag()}${sOut}${Reset()}
+${BrightGreenTag()}${sOut}${Reset()}
 --- stderr ---
 ${RedTag()}${sErr}${Reset()}
 `);
