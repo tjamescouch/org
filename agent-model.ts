@@ -138,11 +138,11 @@ class MetaTagLeakDetector implements AbortDetector {
   name = "meta-tag-leak";
   // Matches tokens like <|start|>, <|im_start|>, <|assistant|>, <|tool|>, <|system|>,
   // and also Slack-style "<channel|commentary>", as well as accidental continuations
-  // like "<|start|>functions".
+  // like "<|start|>functions", and allows optional suffixes (e.g. _header_id).
   private re = new RegExp(
     [
-      String.raw`<\|\s*(?:im_)?(?:start|end|assistant|system|user|tool)\s*\|>`, // <|start|> etc
-      String.raw`<\s*[a-z0-9_-]+\s*\|\s*commentary\b[^>]*>`,                     // <channel|commentary>
+      String.raw`<\|\s*(?:im_)?(?:start|end|assistant|system|user|tool)(?:_[a-z0-9]+)?\s*\|>`,
+      String.raw`<\s*[a-z0-9_-]+\s*\|\s*commentary\b[^>]*>`,
     ].join("|"),
     "i"
   );
@@ -153,6 +153,32 @@ class MetaTagLeakDetector implements AbortDetector {
     if (m) return { index: Math.max(0, m.index), reason: "meta/control-tag" };
     return null;
   }
+}
+/* ---------- Post-response sanitizer (belt-and-suspenders) ---------- */
+// Even if chat.ts doesn't cut the stream early, trim any control/meta tags
+// from the final assistant text so they never leak into the room context.
+function sanitizeAssistantText(text: string) {
+  const s = String(text ?? "");
+  if (!s) return { text: s, aborted: false, reason: "" };
+
+  // Robust meta/control tag catchers:
+  //  - <|start|>, <|end|>, <|assistant|>, etc., with optional suffixes like _header
+  //  - "<|start|>functions" style continuations
+  //  - Slack-like "<channel|commentary>"
+  //  - literal XML-ish tags like <think> (we let them pass if SHOW_THINK, but they aren't "control")
+  const meta = new RegExp(
+    [
+      String.raw`<\|\s*(?:im_)?(?:start|end|assistant|system|user|tool)(?:_[a-z0-9]+)?\s*\|>`, // <|start|> or <|assistant|>...
+      String.raw`<\s*[a-z0-9_-]+\s*\|\s*commentary\b[^>]*>`,                                   // <channel|commentary>
+    ].join("|"),
+    "i"
+  );
+  const m = meta.exec(s);
+  if (m) {
+    const idx = Math.max(0, m.index);
+    return { text: s.slice(0, idx).trimEnd(), aborted: true, reason: "meta/control-tag" };
+  }
+  return { text: s, aborted: false, reason: "" };
 }
 
 class CrossTurnRepetitionDetector implements AbortDetector {
@@ -740,27 +766,23 @@ Do not narrate plans or roles; provide the final answer only.
         .filter(Boolean)));
 
       const detectors: AbortDetector[] = [
-        // Keep: hard kill on true control-tag leaks
+        // Always keep: hard kill on true control-tag leaks
         new MetaTagLeakDetector(),
 
-        // Keep: discourage quoting agents as dialogue — common hallucination start
+        // Keep but gentle: discourage quoting agents as dialogue — common hallucination start
         new AgentQuoteAbortDetector(agents),
 
-        // Keep but relax: allow more JSON echoes before cutting
-        new ToolEchoFloodDetector(6),
+        // Gentle: JSON echo flood (allow several before cutting)
+        new ToolEchoFloodDetector(8),
 
-        // Relax repetition thresholds and require more text before judging novelty
-        new RepetitionAbortDetector({ tailWords: 24, maxRepeats: 5, minWordsForNovelty: 260, minNoveltyRatio: 0.03 }),
+        // Very relaxed repetition (only fires on egregious loops)
+        new RepetitionAbortDetector({ tailWords: 28, maxRepeats: 6, minWordsForNovelty: 320, minNoveltyRatio: 0.02 }),
 
-        // Cross-turn repetition: require longer text and a very low novelty bar
-        new CrossTurnRepetitionDetector({ tailWords: 24, minChars: 280, minNoveltyRatio: 0.04, sampleSocChars: 30000 }),
+        // Cross-turn repetition extremely lax; mostly a safety net
+        new CrossTurnRepetitionDetector({ tailWords: 28, minChars: 360, minNoveltyRatio: 0.03, sampleSocChars: 50000 }),
 
-        // Bump max length ceiling so we don’t chop reasonable long-form outputs
-        new MaxLengthAbortDetector(20000),
-
-        // REMOVE for now (too chatty / false positives in your traces):
-        // new SpiralPhraseDetector(),
-        // new RegexAbortDetector([ /\bnow create new file\b/i, /\bit didn't show output\b/i ]),
+        // Length ceiling primarily to protect runaway outputs
+        new MaxLengthAbortDetector(30000),
       ];
 
       let msg: any;
@@ -783,6 +805,14 @@ Do not narrate plans or roles; provide the final answer only.
         } finally { await releaseNet(); }
       }
       msg = await invokeChat(0);
+      // Belt-and-suspenders: trim any leaked control/meta tags from the assistant text.
+      if (msg && typeof msg.content === "string" && msg.content.length) {
+        const san = sanitizeAssistantText(msg.content);
+        if (san.aborted) {
+          try { (globalThis as any).__log?.(`[abort] ${this.id}: trimmed response due to ${san.reason}`, "yellow"); } catch {}
+          msg.content = san.text;
+        }
+      }
       // Small pacing delay to avoid hammering the provider
       await new Promise(r => setTimeout(r, 25));
       // If an interject was signaled during this hop, don't keep retrying; yield now.
@@ -796,6 +826,14 @@ Do not narrate plans or roles; provide the final answer only.
         try { (Bun.stdout as any)?.write?.("."); } catch {}
         // Gentle retry with slightly wider sampling
         msg = await invokeChat(0.3).catch(() => msg);
+      }
+      // Also sanitize the retried response, if any
+      if (msg && typeof msg.content === "string" && msg.content.length) {
+        const san2 = sanitizeAssistantText(msg.content);
+        if (san2.aborted) {
+          try { (globalThis as any).__log?.(`[abort] ${this.id}: trimmed response (retry) due to ${san2.reason}`, "yellow"); } catch {}
+          msg.content = san2.text;
+        }
       }
       if (!msg) msg = { content: "Error" };
 
