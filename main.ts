@@ -313,7 +313,9 @@ async function gracefulQuit(room: any, keepAlive: any) {
   try { clearInterval(keepAlive); } catch {}
   try { if (typeof room?.shutdown === "function") await room.shutdown(); } catch (e) { if (INTERACTIVE) appendLog(`${C.red}[shutdown error]${C.reset} ${String(e)}`); else console.error("[shutdown error]", e); }
   if (INTERACTIVE) withTUIDraw(() => { clearScrollRegion(); process.stdout.write(CSI.show + "\n"); });
-  if (uninstallInterceptors) uninstallInterceptors();
+  // stop floating banner
+  try { stopBanner(); } catch {}
+
   process.exit(0);
 }
 
@@ -354,8 +356,7 @@ async function app() {
 
   // Round‑robin scheduler decoupled from message arrival
   const tm = new TurnManager(room as any, agents as any, {
-    tickMs: 800,             // slow scheduler cadence
-    turnTimeoutMs: 8_000,    // shorter watchdog for snappier aborts
+    tickMs: 400,             // more responsive scheduler cadence    turnTimeoutMs: 8_000,    // shorter watchdog for snappier aborts
     idleBackoffMs: 1200,     // back off briefly after a no-op turn
     proactiveMs: 2500,       // allow a light proactive tick every ~2.5s per agent
   });
@@ -382,8 +383,12 @@ async function app() {
     currentStatus = `org: session started — agents: ${specs.map(a => `${a.name}${a.model?`:${a.model}`:''}`).join(', ')}`;
     withTUIDraw(() => redraw());
     (globalThis as any).__log(`Kickoff as ${specs[0]?.name || 'alice'}: ${kickoffPrompt}`);
+    // Show controls banner once immediately
+    console.log(`\n\x1b[97m\x1b[40m[q] Quit  [i] Interject  [s] Send system message  (Ctrl+C quits)  ${new Date().toLocaleTimeString()}\x1b[0m`);
   } else {
     (globalThis as any).__log(`Kickoff as ${specs[0]?.name || 'alice'}: ${kickoffPrompt}`);
+    // Show controls banner once immediately
+    console.log(`\n\x1b[97m\x1b[40m[q] Quit  [i] Interject  [s] Send system message  (Ctrl+C quits)  ${new Date().toLocaleTimeString()}\x1b[0m`);
   }
 
   // Send the kickoff as a broadcast to the room instead of initialMessage
@@ -479,6 +484,8 @@ async function app() {
   // Attach key handler in interactive mode
   if (INTERACTIVE && process.stdin.isTTY) {
     attachKeys(onKey);
+    // start a simple floating banner that scrolls with output
+    startBanner();
     process.stdout.on("resize", () => { /* no special redraw needed now */ });
   }
 }
