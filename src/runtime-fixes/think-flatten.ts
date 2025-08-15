@@ -1,9 +1,9 @@
 import { C } from "../ui/colors";
 
 /**
- * Coalesces the single-token lines that appear immediately after
- * "**** <agent> @ ..." into a single flattened line (fuchsia/pink),
- * then lets normal content flow.
+ * Coalesces the one-token CoT lines printed immediately after:
+ *   "**** <agent> @ <time>:"
+ * into a single, readable line. Works even if the header has ANSI colors.
  */
 (function installThinkFlattener() {
   if (process.env.SHOW_THINK !== "1") return;
@@ -15,23 +15,28 @@ import { C } from "../ui/colors";
     error: console.error.bind(console),
   };
 
+  const stripAnsi = (s: string) => s.replace(/\x1B\[[0-9;]*m/g, "");
   let inThinkBlock = false;
   let buf: string[] = [];
   let flushTimer: NodeJS.Timeout | null = null;
 
   const resetTimer = () => {
     if (flushTimer) clearTimeout(flushTimer);
-    flushTimer = setTimeout(() => flush(), 250);
+    flushTimer = setTimeout(() => flush(), 200);
   };
 
   const isTinyFragment = (s: string) => {
-    const t = s.trim();
+    const t = stripAnsi(s).trim();
     if (!t) return false;
-    // Skip diagnostics and headers.
     if (t.startsWith("[DEBUG]") || t.startsWith("[INFO ") || t.startsWith("[WARN ") || t.startsWith("[ERROR]")) return false;
     if (t.startsWith("assistant:") || t.startsWith("user:")) return false;
-    // Very short tokens typical of streamed CoT.
-    return /^[A-Za-z0-9'’\-.,:;()]+$/.test(t) && t.length <= 24;
+    // Alnum + light punctuation, up to a few words (typical streamed CoT tokens)
+    return /^[A-Za-z0-9'’\-.,:;()]+$/.test(t) && t.split(/\s+/).length <= 3;
+  };
+
+  const startBlockIfHeader = (s: string) => {
+    const t = stripAnsi(s).trim();
+    return /^\*{4}\s+\S+\s+@\s+.+?:\s*$/.test(t);
   };
 
   const flatten = (parts: string[]) =>
@@ -43,41 +48,36 @@ import { C } from "../ui/colors";
     const line = flatten(buf);
     buf = [];
     if (line) {
-      const colored = (C.think ?? C.debug ?? "") + line + (C.reset ?? "");
+      const col = (C.think ?? C.debug ?? "\x1b[38;5;213m"); // fuchsia fallback
+      const colored = col + line + (C.reset ?? "\x1b[0m");
       orig.log(colored);
     }
-  };
-
-  const startBlockIfHeader = (s: string) => {
-    // Example header: "**** alice @ 2:12:52 AM:"
-    return /^\*{4}\s+\S+\s+@\s+.+?:\s*$/.test(s.trim());
   };
 
   const wrap = (kind: "log" | "info" | "warn" | "error") => (...args: any[]) => {
     if (args.length === 1 && typeof args[0] === "string") {
       const s = args[0] as string;
 
-      // If we see the header, we *begin* a CoT block.
+      // Detect header line and begin a CoT block
       if (startBlockIfHeader(s)) {
-        flush();               // flush any previous block
-        inThinkBlock = true;   // begin new block
-        return orig[kind](s);  // pass header through
+        flush();
+        inThinkBlock = true;
+        return orig[kind](s);
       }
 
-      // While in a CoT block, collect tiny fragments.
+      // Buffer tiny token lines while in CoT block
       if (inThinkBlock && isTinyFragment(s)) {
-        buf.push(s.trim());
-        resetTimer();          // coalesce bursts
-        return;                // suppress immediate printing
+        buf.push(stripAnsi(s));
+        resetTimer();
+        return; // swallow here, emit on flush
       }
 
-      // Reaching a "normal" line: first flush CoT, then pass through.
+      // Any normal line ends the CoT block
       if (inThinkBlock) {
         flush();
         inThinkBlock = false;
       }
     }
-
     return orig[kind](...args);
   };
 

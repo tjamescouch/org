@@ -1,3 +1,4 @@
+import { installDebugHooks } from "../core/debug-hooks";
 import "../runtime-fixes/think-flatten";
 import "../runtime-fixes/safe-mode";
 import "../runtime-fixes/role-fix";
