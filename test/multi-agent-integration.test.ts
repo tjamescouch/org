@@ -12,6 +12,16 @@ import { AgentModel } from '../src/core/entity/agent-model';
 import { TurnManager } from '../src/core/turn-manager';
 import { Logger } from '../src/logger';
 
+// Relax global transport concurrency for this test.  AgentModel
+// registers a single-flight transport gate on the global object; by
+// increasing the cap we allow both agents to make concurrent network
+// calls during the test.  Without this, the default cap=1 causes
+// the second agent to wait for the first to finish, leading to
+// timeouts when the scheduler doesn’t give it another turn before
+// the test limit.
+(globalThis as any).__transport = (globalThis as any).__transport || { cap: 1 };
+(globalThis as any).__transport.cap = 2;
+
 /**
  * End‑to‑end integration test that spins up a mock HTTP provider and
  * verifies that two agents (alice and bob) both respond to a user
