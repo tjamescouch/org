@@ -1,3 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "[INFO] updating streaming CoT flattener (anchorless) + test"
+
+write() {
+  mkdir -p "$(dirname "$1")"
+  cat > "$1"
+  echo "[OK]  wrote $1"
+}
+
+# --- new flattener: anchorless + buffered ------------------------------------
+write src/core/utils/stdout-think-flatten.ts <<'TS'
 // Anchorless streaming CoT flattener for stdout.
 // - Detects "**** name @ time:" header.
 // - Collapses short one-word lines that follow (the think prelude) into
@@ -126,3 +139,36 @@ export function installStdoutThinkFlatten(): void {
 
   process.on("beforeExit", () => flush(true));
 }
+TS
+
+# --- unit test: no 'assistant:' anchor variant --------------------------------
+write test/think-flatten-stream.test.ts <<'TS'
+import { flattenThinkBlockOnce } from "../src/core/utils/stdout-think-flatten";
+
+test("flattens multi-line CoT prelude without assistant anchor", () => {
+  const sample =
+`**** alice @ 3:01:00 AM:
+We
+need
+to
+respond
+with
+greeting
+and
+follow
+-up
+.
+Simple
+.
+Hello! How are you doing today?`;
+
+  const [rewritten, changed] = flattenThinkBlockOnce(sample);
+  expect(changed).toBe(true);
+  expect(rewritten).toContain("**** alice @ 3:01:00 AM:");
+  expect(rewritten).toMatch(/We need to respond with greeting and follow -up \. Simple \.\nHello! How are you doing today\?/);
+});
+TS
+
+git add -A
+git commit -m "Stdout CoT flattener: anchorless streaming version + unit test" || true
+echo "[INFO] done. Now run:  bun test  &&  SHOW_THINK=1 ./run.sh"
