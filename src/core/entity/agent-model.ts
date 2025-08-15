@@ -1,3 +1,4 @@
+import { globalTurnMutex, shouldSerialize } from "./turn-mutex";
 // --- Global pause helpers (for user input) ---
 const isPaused = () => Boolean((globalThis as any).__PAUSE_INPUT);
 const waitWhilePaused = async () => {

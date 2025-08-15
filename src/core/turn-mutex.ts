@@ -1,6 +1,6 @@
-// Simple FIFO mutex to serialize chat calls (one agent at a time)
+// Tiny FIFO mutex to serialize LLM calls (round-robin).
 export class TurnMutex {
-  private queue: Array<() => void> = [];
+  private q: Array<() => void> = [];
   private locked = false;
 
   async acquire(): Promise<() => void> {
@@ -8,21 +8,19 @@ export class TurnMutex {
       this.locked = true;
       return () => this.release();
     }
-    return new Promise<() => void>((resolve) => {
-      this.queue.push(() => resolve(() => this.release()));
+    return new Promise((resolve) => {
+      this.q.push(() => resolve(() => this.release()));
     });
   }
 
   private release() {
-    const next = this.queue.shift();
+    const next = this.q.shift();
     if (next) next();
     else this.locked = false;
   }
 }
 
-// Singleton used app-wide (enabled only when SERIALIZE_CHAT=1)
-export const globalTurnMutex = new TurnMutex();
-
 export const shouldSerialize =
-  process.env.SERIALIZE_CHAT === "1" ||
-  process.env.SERIALIZE_STRATEGY === "rr";
+  process.env.SERIALIZE_CHAT === "1" || process.env.SERIALIZE_STRATEGY === "rr";
+
+export const globalTurnMutex = new TurnMutex();

@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+
+import { shouldSerialize } from "./src/core/turn-mutex";
+if (shouldSerialize) try { console.log("[INFO ] round-robin serializer: SERIALIZE_CHAT=1 (one LLM call at a time)"); } catch {}
 import "./src/runtime-fixes/bootstrap";
 
 // bootstrap (inserts BEFORE original code)
