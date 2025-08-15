@@ -1,3 +1,13 @@
+import { chatOnce, summarizeOnce, type ChatMessage, type ToolCall, type ToolDef, type AbortDetector } from "./chat";
+import type { ChatRoom } from "./chat-room";
+import { Model } from "./model";
+import { channelLock } from "./channel-lock";
+import type { RoomMessage } from "./chat-room";
+import { TagParser } from "./tag-parser";
+import { extractToolCallsFromText } from "./tools/tools/tool-call-extractor";
+import { VERBOSE } from './constants';
+import { Logger } from "./logger";
+
 // --- Global pause helpers (for user input) ---
 const isPaused = () => Boolean((globalThis as any).__PAUSE_INPUT);
 const waitWhilePaused = async () => {
@@ -55,9 +65,9 @@ const __transport = ((globalThis as any).__transport ||= {
     };
   }
 });
-const logLine = (s: string) => { (console.log)(s); };
-const logErr  = (s: string) => { ( console.error)(s); };
-const appendDirect = (s: string) => { ( ((x: string)=>console.log(x)))(s.endsWith("\n")?s:(s+"\n")); };
+const logLine = (s: string) => { (Logger.info)(s); };
+const logErr  = (s: string) => { ( Logger.error)(s); };
+const appendDirect = (s: string) => { ( ((x: string)=>Logger.info(x)))(s.endsWith("\n")?s:(s+"\n")); };
 const stamp = () => new Date().toLocaleTimeString();
 
 const SHOW_THINK = (process.env.SHOW_THINK === "1" || process.env.SHOW_THINK === "true");
@@ -86,14 +96,6 @@ const withTimeout = <T>(p: Promise<T>, ms: number, label = "timeout"): Promise<T
     p,
     new Promise<never>((_, rej) => setTimeout(() => rej(new Error(label)), ms))
   ]) as any;
-import { chatOnce, summarizeOnce, type ChatMessage, type ToolCall, type ToolDef, type AbortDetector } from "./chat";
-import type { ChatRoom } from "./chat-room";
-import { Model } from "./model";
-import { channelLock } from "./channel-lock";
-import type { RoomMessage } from "./chat-room";
-import { TagParser } from "./tag-parser";
-import { extractToolCallsFromText } from "./src/tools/tools/tool-call-extractor";
-import { VERBOSE } from './constants';
 
 type Audience =
   | { kind: "group"; target: "*" } | { kind: "direct"; target: string }      // send only to a given model
@@ -420,7 +422,7 @@ This way you do not do a tool call and simply respond.
 
 Example:
 #file:index.ts
-console.log("hello world");
+Logger.info("hello world");
 
 Any output after the tag, and before another tag, will be redirected to the file, so avoid accidentally including other output or code fences etc. Just include the desired content of the file.
 If multiple tags are present then multiple files will be written.
@@ -602,7 +604,7 @@ Do not narrate plans or roles; provide the final answer only.
             "You are a succinct coordinator. Summarize the recent conversation as bullet points covering: current project goal, key constraints, files created/modified, tools/commands run and outcomes, and next concrete steps. Max 120 words. No code. No quotes.",
           read: true,
         };
-        console.log(`${GreenTag()}Requesting summary${Reset()}`);
+        Logger.info(`${GreenTag()}Requesting summary${Reset()}`);
         {
           const releaseNet = await __transport.acquire("summarize");
           try {
@@ -610,7 +612,7 @@ Do not narrate plans or roles; provide the final answer only.
               summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ], { model: this.model }),
               180_000,
               "summary timeout"
-            ).catch(() => console.error("*********** summary timeout"));
+            ).catch(() => Logger.error("*********** summary timeout"));
           } finally { await releaseNet(); }
         }
         if (summaryText) this._lastSummarizeTurn = this._turnCounter;
@@ -801,7 +803,7 @@ Do not narrate plans or roles; provide the final answer only.
             }),
             600_000,
             "chatOnce hop timeout"
-          ).catch(e => console.error(e));
+          ).catch(e => Logger.error(e));
         } finally { await releaseNet(); }
       }
       msg = await invokeChat(0);

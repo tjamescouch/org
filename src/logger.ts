@@ -4,17 +4,26 @@
 // the current log level is DEBUG all messages are printed; when set to a
 // higher severity, debug and info messages will be suppressed.
 
-export enum LogLevel {
-  DEBUG = 0,
-  INFO = 1,
-  WARN = 2,
-  ERROR = 3,
-  NONE = 4,
-}
+export enum LogLevel { NONE, ERROR, WARN, INFO, DEBUG }
+const colours = {
+  [LogLevel.DEBUG]: "\x1b[96m",  // bright cyan (was fuchsia)
+  [LogLevel.INFO]:  "\x1b[32m",
+  [LogLevel.WARN]:  "\x1b[33m",
+  [LogLevel.ERROR]: "\x1b[31m",
+};
 
 export class Logger {
-  /** Current log level.  Defaults to DEBUG. */
-  private static currentLevel: LogLevel = LogLevel.DEBUG;
+  private static level: number = LogLevel.INFO;
+  static log(level: LogLevel, msg: string) {
+    if (level <= Logger.level) {
+      const colour = colours[level] ?? "";
+      console.log(`${colour}[${LogLevel[level]}]${msg}\x1b[0m`);
+    }
+  }
+  static debug(msg: string) { Logger.log(LogLevel.DEBUG, msg); }
+  static info(msg: string)  { Logger.log(LogLevel.INFO, msg); }
+  static warn(msg: string) { Logger.log(LogLevel.WARN, msg); }
+  static error(msg: string)  { Logger.log(LogLevel.ERROR, msg); }
 
   /** Set the current log level.  Accepts a LogLevel enum value or a
    * case-insensitive string such as 'debug', 'info', 'warn', 'error',
@@ -42,46 +51,13 @@ export class Logger {
       Logger.currentLevel = level;
     }
   }
-
-  /** Log a debug message.  Accepts any arguments acceptable to console.log. */
-  static debug(...args: any[]): void {
-    if (Logger.currentLevel <= LogLevel.DEBUG) {
-      try {
-        // Use console.error to ensure debug output appears in Bun test logs
-        console.error(...args);
-      } catch {
-        // ignore errors
-      }
-    }
-  }
-
-  /** Log an informational message. */
-  static info(...args: any[]): void {
-    if (Logger.currentLevel <= LogLevel.INFO) {
-      try { console.error(...args); } catch {}
-    }
-  }
-
-  /** Log a warning message. */
-  static warn(...args: any[]): void {
-    if (Logger.currentLevel <= LogLevel.WARN) {
-      try { console.error(...args); } catch {}
-    }
-  }
-
-  /** Log an error message. */
-  static error(...args: any[]): void {
-    if (Logger.currentLevel <= LogLevel.ERROR) {
-      try { console.error(...args); } catch {}
-    }
-  }
 }
 
 // Allow runtime configuration via environment variable LOG_LEVEL.  If set,
 // override the default DEBUG level accordingly.  Accepted values are the
 // same as those accepted by setLevel().  Any invalid value is ignored.
 (() => {
-  const envLevel = process.env.LOG_LEVEL;
+  const envLevel = process.env.LOG_LEVEL || LogLevel.INFO;
   if (envLevel) {
     Logger.setLevel(envLevel);
   }

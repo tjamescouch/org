@@ -14,13 +14,8 @@ export class ChannelLock {
   private lastAcquiredAt: number = 0;
 
   constructor() {
-    // Periodically detect and break potential deadlocks by forcibly
-    // releasing the lock if it has been held for too long.  This check
-    // runs every second.  If the lock has been held longer than
-    // DEADLOCK_MS and there are waiters queued, we assume a deadlock and
-    // forcibly release the lock.  After releasing, queued waiters will
-    // be processed normally via drain().
-    const DEADLOCK_MS = Number(process.env.LOCK_DEADLOCK_MS) || 1000;
+    //FIXME - Try to serialize by just doing one after the other. or putting one at the top of the queue
+    const DEADLOCK_MS = Number(process.env.LOCK_DEADLOCK_MS) || 1_200_000;
     setInterval(() => {
       try {
         if (this.locked && this.lastAcquiredAt && Date.now() - this.lastAcquiredAt >= DEADLOCK_MS && this.queue.length > 0) {
