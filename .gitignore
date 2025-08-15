@@ -9,3 +9,4 @@ bin
 build
 *.dat
 *.bin
+openai-patch.sh

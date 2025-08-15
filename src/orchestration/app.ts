@@ -1,3 +1,4 @@
+import { setupKeyInput } from "../ui/key-input";
 // main.ts — Interactive (curses) mode by default; script mode with --no-interactive
 // Adds flexible persona/model selection via CLI flags
 //   -a, --agent, --persona   name[=model]   (repeatable)
@@ -336,6 +337,7 @@ async function askKickoffPrompt(defaultPrompt: string): Promise<string> {
 /* -------------------- app -------------------- */
 async function app() {
   const room = new ChatRoom();
+setupKeyInput({ room, onQuit: () => process.exit(0) });
   // Decorate room.broadcast to record recent user messages for the scheduler
   {
     const origBroadcast = (room as any).broadcast?.bind(room);
