@@ -1,3 +1,7 @@
+import { installStdoutThinkFlatten } from "../core/utils/stdout-think-flatten";
+if (process.env.SHOW_THINK === "1") {
+  try { installStdoutThinkFlatten(); } catch {}
+}
 import "./src/runtime-fixes/bootstrap";
 import { installDebugHooks } from "../core/debug-hooks";
 import "../runtime-fixes/muted-colors";

@@ -1,21 +1,17 @@
-export const C = {
+export const Colors = {
+  // resets
   reset: "\x1b[0m",
-  bold:  "\x1b[1m",
+  dim:   "\x1b[2m",
 
-  // muted/darker
-  debug: "\x1b[38;5;244m",   // mid grey
-  info:  "\x1b[38;5;245m",   // light grey
-  warn:  "\x1b[38;5;178m",   // amber
-  error: "\x1b[38;5;160m",   // red
+  // speakers
+  user:   "\x1b[38;5;245m", // mid gray
+  agent:  "\x1b[38;5;252m", // soft white (not blown out)
+  system: "\x1b[38;5;244m", // gray
 
-  // roles
-  user:       "\x1b[38;5;252m",
-  assistant:  "\x1b[38;5;250m",
-
-  // chain-of-thought (darker fuchsia)
-  think: "\x1b[38;5;125m"
-} as const;
-
-export function colorOn(): boolean {
-  return process.env.NO_COLOR !== "1";
-}
+  // logs
+  debug: "\x1b[38;5;67m",   // muted steel blue
+  info:  "\x1b[38;5;66m",   // teal-ish
+  warn:  "\x1b[38;5;178m",  // amber
+  error: "\x1b[38;5;167m",  // dark red
+  think: "\x1b[38;5;171m",  // darker fuchsia for CoT
+};

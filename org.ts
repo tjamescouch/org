@@ -1,5 +1,6 @@
-import "./src/runtime-fixes/bootstrap";
 #!/usr/bin/env bun
+import "./src/runtime-fixes/bootstrap";
+
 // bootstrap (inserts BEFORE original code)
 import { installDebugHooks } from "./src/core/debug-hooks";
 import "./src/runtime-fixes/role-fix";
