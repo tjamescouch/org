@@ -13,52 +13,65 @@ const colours = {
 };
 
 export class Logger {
-  private static level: number = LogLevel.INFO;
+  /**
+   * The current log level.  Messages at a severity greater than this level
+   * will be suppressed.  By default, INFO messages and above are shown.
+   */
+  private static level: LogLevel = LogLevel.INFO;
+
+  /**
+   * Low-level logging helper.  When the given level is less than or equal
+   * to the current logger level, emit the message.  Each line is
+   * prefixed with the level name and coloured according to its severity.
+   */
   static log(level: LogLevel, msg: string) {
     if (level <= Logger.level) {
       const colour = colours[level] ?? "";
       console.log(`${colour}[${LogLevel[level]}]${msg}\x1b[0m`);
     }
   }
+
   static debug(msg: string) { Logger.log(LogLevel.DEBUG, msg); }
   static info(msg: string)  { Logger.log(LogLevel.INFO, msg); }
-  static warn(msg: string) { Logger.log(LogLevel.WARN, msg); }
-  static error(msg: string)  { Logger.log(LogLevel.ERROR, msg); }
+  static warn(msg: string)  { Logger.log(LogLevel.WARN, msg); }
+  static error(msg: string) { Logger.log(LogLevel.ERROR, msg); }
 
-  /** Set the current log level.  Accepts a LogLevel enum value or a
-   * case-insensitive string such as 'debug', 'info', 'warn', 'error',
-   * or 'none'.  Invalid strings are ignored. */
+  /**
+   * Set the logger's current level.  The level may be provided as a
+   * LogLevel enum or a case-insensitive string (e.g. 'debug', 'INFO').
+   * Unknown strings are ignored.  When called with an enum value, the
+   * level is set directly.
+   */
   static setLevel(level: LogLevel | string): void {
     if (typeof level === 'string') {
       const normalized = level.toUpperCase();
       switch (normalized) {
         case 'DEBUG':
-          Logger.currentLevel = LogLevel.DEBUG; break;
+          Logger.level = LogLevel.DEBUG; break;
         case 'INFO':
-          Logger.currentLevel = LogLevel.INFO; break;
+          Logger.level = LogLevel.INFO; break;
         case 'WARN':
         case 'WARNING':
-          Logger.currentLevel = LogLevel.WARN; break;
+          Logger.level = LogLevel.WARN; break;
         case 'ERROR':
-          Logger.currentLevel = LogLevel.ERROR; break;
+          Logger.level = LogLevel.ERROR; break;
         case 'NONE':
-          Logger.currentLevel = LogLevel.NONE; break;
+          Logger.level = LogLevel.NONE; break;
         default:
-          // ignore invalid strings
           return;
       }
     } else {
-      Logger.currentLevel = level;
+      Logger.level = level;
     }
   }
 }
 
-// Allow runtime configuration via environment variable LOG_LEVEL.  If set,
-// override the default DEBUG level accordingly.  Accepted values are the
-// same as those accepted by setLevel().  Any invalid value is ignored.
+// On startup, consult the LOG_LEVEL environment variable.  Accepted
+// values are the same as those accepted by setLevel().  If LOG_LEVEL
+// is undefined or empty, the default INFO level remains.
 (() => {
-  const envLevel = process.env.LOG_LEVEL || LogLevel.INFO;
-  if (envLevel) {
-    Logger.setLevel(envLevel);
+  const env = process.env.LOG_LEVEL;
+  if (env) {
+    Logger.setLevel(env);
   }
 })();

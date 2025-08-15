@@ -26,6 +26,14 @@ export class ChannelLock {
           // breaks the deadlock by allowing the next queued waiter to
           // proceed.  The current holder is effectively pre-empted.
           this.locked = false;
+          // When forcibly breaking a deadlock, rotate the queue so that
+          // requests are serialized in a different order.  This reduces the
+          // chance of repeating the same blocked pattern.  We move the
+          // head of the queue to the end before draining.
+          if (this.queue.length > 1) {
+            const head = this.queue.shift();
+            if (head) this.queue.push(head);
+          }
           this.drain();
         }
       } catch {}

@@ -353,9 +353,12 @@ export async function chatOnce(
 
           if (contentStr) Bun.stdout.write(contentStr + "\n");
           if (!contentStr && reasoningStr && SHOW_THINK) {
-            // Print chain-of-thought in a bright magenta colour without
-            // <think> tags.  Use Reset() to restore default colour.
-            Bun.stdout.write(`${BrightMagentaTag()}${reasoningStr}${Reset()}\n`);
+            // Flatten all whitespace in the reasoning string so it prints
+            // on a single line.  This avoids the haiku-like formatting
+            // that results from newline-delimited streaming.  After
+            // collapsing whitespace, trim leading/trailing spaces.
+            const flattened = reasoningStr.replace(/\s+/g, ' ').trim();
+            Bun.stdout.write(`${BrightMagentaTag()}${flattened}${Reset()}\n`);
           }
           _currentStreamAC = null;
           return { role: "assistant", content: contentStr.trim(), reasoning: reasoningStr, tool_calls: tc };
@@ -555,7 +558,12 @@ export async function chatOnce(
           // Print chain-of-thought in bright magenta followed by a newline to
           // clearly separate it from the model’s final answer.  Reset the colour
           // afterwards so subsequent output uses the default terminal colour.
-          Bun.stdout.write(`${BrightMagentaTag()}${reasonStr}${Reset()}\n`);
+          // Collapse whitespace within the chain-of-thought so it prints
+          // on one line.  Without this, streamed reasoning arrives
+          // separated by spaces and newlines, which makes the output look like
+          // poetry.  Trimming also removes leading/trailing spaces.
+          const flattenedReason = reasonStr.replace(/\s+/g, ' ').trim();
+          Bun.stdout.write(`${BrightMagentaTag()}${flattenedReason}${Reset()}\n`);
           tokenCount++;
         } else {
           emitDot();

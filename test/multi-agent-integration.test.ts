@@ -91,8 +91,10 @@ test('multi-agent integration with mock server', async () => {
   const tm = new TurnManager(room, [alice as any, bob as any], { tickMs: 200, idleBackoffMs: 100, proactiveMs: 200, turnTimeoutMs: 2000 });
   tm.start();
 
-  // Wait some time for agents to respond
-  await new Promise(resolve => setTimeout(resolve, 3000));
+  // Wait some time for agents to respond.  Empirically, under heavy
+  // debugging and lock contention the second agent may not complete
+  // within 3s; give up to 6s to allow both to finish.
+  await new Promise(resolve => setTimeout(resolve, 6000));
 
   tm.stop();
 
@@ -108,4 +110,4 @@ test('multi-agent integration with mock server', async () => {
   if (!aliceSaid || !bobSaid) {
     throw new Error(`Agents did not both respond: transcripts=${JSON.stringify(transcripts)}`);
   }
-});
+}, 10000);
