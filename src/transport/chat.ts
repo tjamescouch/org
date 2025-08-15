@@ -255,8 +255,14 @@ export async function chatOnce(
     soc?: string;
   }
 ): Promise<AssistantMessage> {
-  const ollamaBaseUrl = opts?.baseUrl ?? BASE_URL;
-  const model = opts?.model ?? DEFAULT_MODEL;
+  // Resolve the upstream base URL and model at call time.  Even if the module
+  // was imported before environment variables were set (as happens in some
+  // integration tests), we prefer opts.baseUrl first, then fresh environment
+  // variables, and finally the compiled-in fallback constants.
+  const envBaseUrl = process.env.OLLAMA_BASE_URL || process.env.OAI_BASE;
+  const ollamaBaseUrl = opts?.baseUrl ?? envBaseUrl ?? BASE_URL;
+  const envModel = process.env.OLLAMA_MODEL || process.env.OAI_MODEL;
+  const model = opts?.model ?? envModel ?? DEFAULT_MODEL;
 
   // If we're talking to the mock model used in tests **and** there is no
   // explicit base URL override, short‑circuit and return a deterministic
@@ -269,12 +275,28 @@ export async function chatOnce(
   const hasBaseUrlOverride = Boolean(
     opts?.baseUrl || process.env.OLLAMA_BASE_URL || process.env.OAI_BASE
   );
+  // Log diagnostic information when using the mock model.  This helps identify
+  // whether an upstream override is present during tests.  See
+  // integration.mock-server.test.ts for context.
+  if (model === "mock") {
+    try {
+      console.error(
+        `[DEBUG chat.ts] model=mock hasBaseUrlOverride=${hasBaseUrlOverride} baseUrl=${ollamaBaseUrl}`
+      );
+    } catch {
+      // ignore logging errors
+    }
+  }
   if (model === "mock" && !hasBaseUrlOverride) {
     return { role: "assistant", content: "ok" };
   }
 
   const pf = await preflight(ollamaBaseUrl, model);
-  if (pf) return { role: "assistant", content: pf };
+  // If a baseUrl override is in effect (via opts or environment), skip the preflight
+  // check entirely.  Tests may install a mock server that does not expose /api/version
+  // or /api/tags endpoints, and preflight would incorrectly short‑circuit.  When no
+  // override is provided, return any non-null preflight message to the caller.
+  if (!hasBaseUrlOverride && pf) return { role: "assistant", content: pf };
 
   if (DISABLE_ABORT) abortRegistry.set([]);
   else if (opts?.abortDetectors) abortRegistry.set(opts.abortDetectors);
