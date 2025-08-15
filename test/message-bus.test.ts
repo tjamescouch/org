@@ -1,11 +1,12 @@
 import { MessageBus } from '../src/core/message-bus';
+import { test } from 'bun:test';
 
 /**
  * Ensure that MessageBus correctly registers listeners, delivers
  * messages to all listeners, swallows listener errors, and honours
  * deregistration via off().
  */
-async function run(): Promise<void> {
+test('message bus registers, emits and deregisters listeners', async () => {
   const bus = new MessageBus();
   let count1 = 0;
   let count2 = 0;
@@ -43,9 +44,4 @@ async function run(): Promise<void> {
   if (count2 !== 3) {
     throw new Error(`listener2 should have been called three times: count2=${count2}`);
   }
-}
-
-run().catch(err => {
-  console.error(err);
-  process.exit(1);
 });

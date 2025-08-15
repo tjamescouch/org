@@ -1,4 +1,5 @@
 import { extractToolCallsFromText } from '../src/tools/tools/tool-call-extractor';
+import { test } from 'bun:test';
 
 /**
  * Test that the tool-call extractor correctly parses the tool_calls array from
@@ -6,7 +7,7 @@ import { extractToolCallsFromText } from '../src/tools/tools/tool-call-extractor
  * normalized result exposes the tool call structure and leaves other content
  * intact.
  */
-async function run(): Promise<void> {
+test('extract tool-calls and cleaned output', async () => {
   const input = '{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"sh","arguments":"{\\"cmd\\":\\"echo hi\\"}"}}]} Hello world!';
   const { tool_calls, cleaned } = extractToolCallsFromText(input);
   if (tool_calls.length !== 1) {
@@ -21,9 +22,4 @@ async function run(): Promise<void> {
   if (cleaned.trim() !== 'Hello world!') {
     throw new Error(`unexpected cleaned text: '${cleaned}'`);
   }
-}
-
-run().catch(err => {
-  console.error(err);
-  process.exit(1);
 });

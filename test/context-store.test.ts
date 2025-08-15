@@ -1,11 +1,12 @@
 import { ContextStore } from '../src/core/context-store';
+import { test } from 'bun:test';
 
 /**
  * Verify the ContextStore maintains a fixed‑size history and correctly
  * returns the most recent messages.  Also ensure that clearing the
  * history empties the store.
  */
-async function run(): Promise<void> {
+test('context store retains and clears messages', async () => {
   // Create a store that only keeps two messages.
   const store = new ContextStore(2);
   // Push three messages into the store.  The oldest should be evicted.
@@ -30,9 +31,4 @@ async function run(): Promise<void> {
   if (store.getRecent().length !== 0) {
     throw new Error('expected store to be empty after clear()');
   }
-}
-
-run().catch(err => {
-  console.error(err);
-  process.exit(1);
 });

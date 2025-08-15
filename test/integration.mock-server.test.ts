@@ -1,5 +1,6 @@
 import { chatOnce } from '../src/transport/chat';
 import * as http from 'http';
+import { test } from 'bun:test';
 
 /**
  * Integration test that starts a temporary mock server to simulate a chat
@@ -11,7 +12,7 @@ import * as http from 'http';
  * resilient to variable response times and returns the mocked
  * assistant content.
  */
-async function run(): Promise<void> {
+test('chatOnce handles random latency from mock server', async () => {
   // Pick a free port between 5000 and 9000.
   const port = 5000 + Math.floor(Math.random() * 4000);
 
@@ -80,9 +81,4 @@ async function run(): Promise<void> {
     // Ensure the server is closed regardless of test outcome
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
-}
-
-run().catch(err => {
-  console.error(err);
-  process.exit(1);
 });

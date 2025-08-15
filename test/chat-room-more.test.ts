@@ -1,5 +1,6 @@
 import { ChatRoom } from '../src/core/chat-room';
 import { Model } from '../src/core/entity/model';
+import { test } from 'bun:test';
 
 // A model that records received messages for inspection.
 class RecordingModel extends Model {
@@ -15,7 +16,7 @@ class RecordingModel extends Model {
  * broadcast delivery, and freshness tracking when messages originate
  * from the end user versus other agents.
  */
-async function run(): Promise<void> {
+test('chat-room fresh user message tracking and delivery', async () => {
   const room = new ChatRoom();
   const alice = new RecordingModel('alice');
   room.addModel(alice as any);
@@ -47,9 +48,4 @@ async function run(): Promise<void> {
   if (room.hasFreshUserMessage()) {
     throw new Error('freshness flag should be false after the window expires');
   }
-}
-
-run().catch(err => {
-  console.error(err);
-  process.exit(1);
 });

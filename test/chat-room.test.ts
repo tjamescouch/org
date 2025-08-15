@@ -1,5 +1,6 @@
 import { ChatRoom } from '../src/core/chat-room';
 import { Model } from '../src/core/entity/model';
+import { test } from 'bun:test';
 
 // A minimal model stub used to register with the ChatRoom. It does nothing
 // with incoming messages.
@@ -15,7 +16,7 @@ class Dummy extends Model {
  * immediately after a user message and false after the freshness window
  * expires.  The test uses a simple timeout to simulate the passage of time.
  */
-async function run(): Promise<void> {
+test('basic fresh user message tracking', async () => {
   const room = new ChatRoom();
   const dummy = new Dummy('dummy');
   // Add the dummy model to the room so that messages can be delivered
@@ -30,9 +31,4 @@ async function run(): Promise<void> {
   if (room.hasFreshUserMessage()) {
     throw new Error('hasFreshUserMessage() should return false after the freshness window expires');
   }
-}
-
-run().catch(err => {
-  console.error(err);
-  process.exit(1);
 });
