@@ -1,4 +1,3 @@
-import { test } from 'bun:test';
 import { ChatRoom } from '../src/core/chat-room';
 import { Model } from '../src/core/entity/model';
 
@@ -16,8 +15,7 @@ class RecordingModel extends Model {
  * broadcast delivery, and freshness tracking when messages originate
  * from the end user versus other agents.
  */
-
-test('chat-room fresh user message tracking and delivery', async () => {
+async function run(): Promise<void> {
   const room = new ChatRoom();
   const alice = new RecordingModel('alice');
   room.addModel(alice as any);
@@ -49,4 +47,9 @@ test('chat-room fresh user message tracking and delivery', async () => {
   if (room.hasFreshUserMessage()) {
     throw new Error('freshness flag should be false after the window expires');
   }
+}
+
+run().catch(err => {
+  console.error(err);
+  process.exit(1);
 });

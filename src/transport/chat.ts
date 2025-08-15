@@ -5,7 +5,6 @@ import {
   BrightMagentaTag,
   Reset,
 } from "../constants";
-import { Logger } from "../logger";
 
 // /Users/jamescouch/dev/llm/org/chat.ts
 // Streaming chat client with immediate per-chunk meta-tag censorship.
@@ -40,7 +39,7 @@ const isV1Server = (u: string) => {
   if (FORCE_V1) return true; // manual override
   try {
     const hasV1 = /\/v1(\/|$)/i.test(u);
-  const isKnownV1Host = /lmstudio|openai/i.test(u);
+    const isKnownV1Host = /lmstudio|openai/i.test(u);
     return hasV1 || isKnownV1Host;
   } catch {
     return false;
@@ -101,17 +100,8 @@ const DISABLE_ABORT = process.env.DISABLE_ABORT === "1";             // disables
 const DISABLE_GARBAGE_FILTER = process.env.DISABLE_GARBAGE_FILTER === "1"; // prints everything even if it looks like tool JSON, etc.
 
 // Connection defaults
-// Determine the upstream base URL and model from environment variables so that
-// tests and alternative providers can override the defaults.  Fallbacks are
-// provided to maintain a working default when no overrides are supplied.
-const BASE_URL =
-  process.env.OLLAMA_BASE_URL ||
-  process.env.OAI_BASE ||
-  "http://127.0.0.1:11434";
-const DEFAULT_MODEL =
-  process.env.OLLAMA_MODEL ||
-  process.env.OAI_MODEL ||
-  "openai/gpt-oss-20b";
+const BASE_URL = "http://192.168.56.1:11434"; // host-only IP
+const DEFAULT_MODEL = process.env.OLLAMA_MODEL || "openai/gpt-oss-20b";
 
 // Patterns to suppress from terminal output (still kept in buffers)
 const GARBAGE_RES: RegExp[] = [
@@ -256,44 +246,11 @@ export async function chatOnce(
     soc?: string;
   }
 ): Promise<AssistantMessage> {
-  // Resolve the upstream base URL and model at call time.  Even if the module
-  // was imported before environment variables were set (as happens in some
-  // integration tests), we prefer opts.baseUrl first, then fresh environment
-  // variables, and finally the compiled-in fallback constants.
-  const envBaseUrl = process.env.OLLAMA_BASE_URL || process.env.OAI_BASE;
-  const ollamaBaseUrl = opts?.baseUrl ?? envBaseUrl ?? BASE_URL;
-  const envModel = process.env.OLLAMA_MODEL || process.env.OAI_MODEL;
-  const model = opts?.model ?? envModel ?? DEFAULT_MODEL;
-
-  // If we're talking to the mock model used in tests **and** there is no
-  // explicit base URL override, short‑circuit and return a deterministic
-  // reply.  This avoids hitting any upstream provider and ensures the
-  // integration tests that rely on a local model complete quickly.  When
-  // a base URL override is provided (either via opts.baseUrl or via
-  // environment variables), we still call the upstream server to allow
-  // mock HTTP servers to respond.  Without any override, default to the
-  // static "ok" response to avoid network calls entirely.
-  const hasBaseUrlOverride = Boolean(
-    opts?.baseUrl || process.env.OLLAMA_BASE_URL || process.env.OAI_BASE
-  );
-  // Log diagnostic information when using the mock model.  This helps identify
-  // whether an upstream override is present during tests.  See
-  // integration.mock-server.test.ts for context.
-  if (model === "mock") {
-    Logger.debug(
-      `[DEBUG chat.ts] model=mock hasBaseUrlOverride=${hasBaseUrlOverride} baseUrl=${ollamaBaseUrl}`
-    );
-  }
-  if (model === "mock" && !hasBaseUrlOverride) {
-    return { role: "assistant", content: "ok" };
-  }
+  const ollamaBaseUrl = opts?.baseUrl ?? BASE_URL;
+  const model = opts?.model ?? DEFAULT_MODEL;
 
   const pf = await preflight(ollamaBaseUrl, model);
-  // If a baseUrl override is in effect (via opts or environment), skip the preflight
-  // check entirely.  Tests may install a mock server that does not expose /api/version
-  // or /api/tags endpoints, and preflight would incorrectly short‑circuit.  When no
-  // override is provided, return any non-null preflight message to the caller.
-  if (!hasBaseUrlOverride && pf) return { role: "assistant", content: pf };
+  if (pf) return { role: "assistant", content: pf };
 
   if (DISABLE_ABORT) abortRegistry.set([]);
   else if (opts?.abortDetectors) abortRegistry.set(opts.abortDetectors);
@@ -552,10 +509,8 @@ export async function chatOnce(
       // Chain-of-thought
       if (reasonStr) {
         if (SHOW_THINK) {
-          // Print chain-of-thought in bright magenta followed by a newline to
-          // clearly separate it from the model’s final answer.  Reset the colour
-          // afterwards so subsequent output uses the default terminal colour.
-          Bun.stdout.write(`${BrightMagentaTag()}${reasonStr}${Reset()}\n`);
+          // Print chain-of-thought in bright magenta and reset colour
+          Bun.stdout.write(`${BrightMagentaTag()}${reasonStr}${Reset()}`);
           tokenCount++;
         } else {
           emitDot();

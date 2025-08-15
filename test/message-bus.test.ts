@@ -1,4 +1,3 @@
-import { test } from 'bun:test';
 import { MessageBus } from '../src/core/message-bus';
 
 /**
@@ -6,7 +5,7 @@ import { MessageBus } from '../src/core/message-bus';
  * messages to all listeners, swallows listener errors, and honours
  * deregistration via off().
  */
-test('message bus registers, emits and deregisters listeners', () => {
+async function run(): Promise<void> {
   const bus = new MessageBus();
   let count1 = 0;
   let count2 = 0;
@@ -44,4 +43,9 @@ test('message bus registers, emits and deregisters listeners', () => {
   if (count2 !== 3) {
     throw new Error(`listener2 should have been called three times: count2=${count2}`);
   }
+}
+
+run().catch(err => {
+  console.error(err);
+  process.exit(1);
 });

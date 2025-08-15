@@ -65,50 +65,35 @@ const SHOW_THINK = (process.env.SHOW_THINK === "1" || process.env.SHOW_THINK ===
 // --- Cooperative "user interrupt" flag (set from main on interject)
 const __userInterrupt = { ts: 0 };
 export function markUserInterject() { __userInterrupt.ts = Date.now(); }
+export const Reset = () => "\x1b[0m";
+export const CyanTag = () => "\x1b[36m";
+export const YellowTag = () => "\x1b[33m";
+export const RedTag = () => "\x1b[31m";
+export const GreenTag = () => "\x1b[32m";
+export const BlueTag = () => "\x1b[34m";
+export const MagentaTag = () => "\x1b[35m";
+export const WhiteTag = () => "\x1b[37m";
+export const BrightBlackTag = () => "\x1b[90m"; // gray
+export const BrightRedTag = () => "\x1b[91m";
+export const BrightGreenTag = () => "\x1b[92m";
+export const BrightYellowTag = () => "\x1b[93m";
+export const BrightBlueTag = () => "\x1b[94m";
+export const BrightMagentaTag = () => "\x1b[95m";
+export const BrightCyanTag = () => "\x1b[96m";
+export const BrightWhiteTag = () => "\x1b[97m";
 const withTimeout = <T>(p: Promise<T>, ms: number, label = "timeout"): Promise<T> =>
   Promise.race([
     p,
     new Promise<never>((_, rej) => setTimeout(() => rej(new Error(label)), ms))
   ]) as any;
+import { chatOnce, summarizeOnce, type ChatMessage, type ToolCall, type ToolDef, type AbortDetector } from "./chat";
+import type { ChatRoom } from "./chat-room";
 import { Model } from "./model";
-import { channelLock } from "../channel-lock";
-import { TagParser } from "../../tools/tools/tag-parser";
-import { extractToolCallsFromText } from "../../tools/tools/tool-call-extractor";
-import {
-  VERBOSE,
-  Reset,
-  CyanTag,
-  YellowTag,
-  RedTag,
-  GreenTag,
-  BlueTag,
-  MagentaTag,
-  WhiteTag,
-  BrightBlackTag,
-  BrightRedTag,
-  BrightGreenTag,
-  BrightYellowTag,
-  BrightBlueTag,
-  BrightMagentaTag,
-  BrightCyanTag,
-  BrightWhiteTag,
-} from '../../constants';
-
-import {
-  AbortRegistry,
-  type AbortDetector,
-  sanitizeAssistantText,
-  MetaTagLeakDetector,
-  AgentQuoteAbortDetector,
-  ToolEchoFloodDetector,
-  RepetitionAbortDetector,
-  CrossTurnRepetitionDetector,
-  MaxLengthAbortDetector,
-  SpiralPhraseDetector,
-} from "../abort-detectors";
-import type { ChatMessage, ToolCall, ToolDef } from "../../types";
-import type { ChatRoom, RoomMessage } from "../chat-room";
-import { chatOnce, summarizeOnce } from "../../transport/chat";
+import { channelLock } from "./channel-lock";
+import type { RoomMessage } from "./chat-room";
+import { TagParser } from "./tag-parser";
+import { extractToolCallsFromText } from "./src/tools/tools/tool-call-extractor";
+import { VERBOSE } from './constants';
 
 type Audience =
   | { kind: "group"; target: "*" } | { kind: "direct"; target: string }      // send only to a given model
@@ -126,28 +111,228 @@ const truncate = (s: string, length: number): string => {
 }
 
 const makeToolCallId = (prefix: "call" | "tool"): string => {
-  // Source characters for random fragments.  Using a separate variable
-  // avoids TypeScript complaining about possibly undefined indices on
-  // strings when indexing into them with Math.random().
-  const alphabetArr = "abcdefghijklmnopqrstuvwxyz";
-  // pick 2–3 random letters from the alphabet and join them
-  const randPart = (): string => {
-    const first = alphabetArr[Math.floor(Math.random() * alphabetArr.length)];
-    const second = alphabetArr[Math.floor(Math.random() * alphabetArr.length)];
-    return `${first}${second}`;
-  };
-  // join prefix with two random parts
-  return `${prefix}_${randPart()}_${randPart()}`;
-};
+  const alphabet = "abcdefghijklmnopqrstuvwxyz";
+  // pick 2–3 random words/fragments from the alphabet
+  const randPart = () =>
+    alphabet[Math.floor(Math.random() * alphabet.length)] +
+    alphabet[Math.floor(Math.random() * alphabet.length)];
 
+  // join prefix with 2–3 random parts
+  return `${prefix}_${randPart()}_${randPart()}`;
+}
+
+/* ---------- Abort detectors (model-owned, pluggable) -------------------- */
+class RegexAbortDetector implements AbortDetector {
+  name = "regex";
+  constructor(private patterns: RegExp[]) {}
+  check(text: string, ctx: { messages: ChatMessage[]; agents: string[]; soc?: string }): { index: number; reason: string } | null {
+    for (const re of this.patterns) {
+      const m = re.exec(text);
+      if (m) return { index: m.index, reason: String(re) };
+    }
+    return null;
+  }
+}
+
+class MetaTagLeakDetector implements AbortDetector {
+  name = "meta-tag-leak";
+  // Matches tokens like <|start|>, <|im_start|>, <|assistant|>, <|tool|>, <|system|>,
+  // and also Slack-style "<channel|commentary>", as well as accidental continuations
+  // like "<|start|>functions", and allows optional suffixes (e.g. _header_id).
+  private re = new RegExp(
+    [
+      String.raw`<\|\s*(?:im_)?(?:start|end|assistant|system|user|tool)(?:_[a-z0-9]+)?\s*\|>`,
+      String.raw`<\s*[a-z0-9_-]+\s*\|\s*commentary\b[^>]*>`,
+    ].join("|"),
+    "i"
+  );
+
+  check(text: string): { index: number; reason: string } | null {
+    // Run on the *full buffer so far* (chat.ts should feed cumulative text)
+    const m = this.re.exec(text);
+    if (m) return { index: Math.max(0, m.index), reason: "meta/control-tag" };
+    return null;
+  }
+}
+/* ---------- Post-response sanitizer (belt-and-suspenders) ---------- */
+// Even if chat.ts doesn't cut the stream early, trim any control/meta tags
+// from the final assistant text so they never leak into the room context.
+function sanitizeAssistantText(text: string) {
+  const s = String(text ?? "");
+  if (!s) return { text: s, aborted: false, reason: "" };
+
+  // Robust meta/control tag catchers:
+  //  - <|start|>, <|end|>, <|assistant|>, etc., with optional suffixes like _header
+  //  - "<|start|>functions" style continuations
+  //  - Slack-like "<channel|commentary>"
+  //  - literal XML-ish tags like <think> (we let them pass if SHOW_THINK, but they aren't "control")
+  const meta = new RegExp(
+    [
+      String.raw`<\|\s*(?:im_)?(?:start|end|assistant|system|user|tool)(?:_[a-z0-9]+)?\s*\|>`, // <|start|> or <|assistant|>...
+      String.raw`<\s*[a-z0-9_-]+\s*\|\s*commentary\b[^>]*>`,                                   // <channel|commentary>
+    ].join("|"),
+    "i"
+  );
+  const m = meta.exec(s);
+  if (m) {
+    const idx = Math.max(0, m.index);
+    return { text: s.slice(0, idx).trimEnd(), aborted: true, reason: "meta/control-tag" };
+  }
+  return { text: s, aborted: false, reason: "" };
+}
+
+class CrossTurnRepetitionDetector implements AbortDetector {
+  name = "cross-turn";
+  constructor(private cfg = {
+    tailWords: 14,
+    minChars: 120,
+    minNoveltyRatio: 0.18,
+    sampleSocChars: 12000,
+  }) {}
+  private tokenize(s: string): string[] {
+    return String(s || "").toLowerCase().replace(/[^a-z0-9\s]+/g, " ").split(/\s+/).filter(Boolean);
+  }
+
+  check(text: string, ctx?: { soc?: string }): { index: number; reason: string } | null {
+    const soc: string = ctx && (ctx as any).soc ? String((ctx as any).soc) : "";
+    if (!soc || text.length < this.cfg.minChars) return null;
+
+    const toks = this.tokenize(text);
+    if (toks.length < this.cfg.tailWords) return null;
+
+    const tailStr = toks.slice(-this.cfg.tailWords).join(" ");
+    const socSlice = soc.slice(-this.cfg.sampleSocChars);
+
+    // Exact tail phrase seen in prior turns → cut where it begins
+    if (socSlice.includes(tailStr)) {
+      const idx = Math.max(0, text.toLowerCase().lastIndexOf(tailStr));
+      return { index: idx > 0 ? idx : Math.max(0, text.length - tailStr.length), reason: "cross-turn-tail-repeat" };
+    }
+
+    // Novelty of recent text vs prior SoC
+    const recentSet = new Set(toks.slice(-Math.min(160, toks.length)));
+    const socSet = new Set(this.tokenize(socSlice));
+    let overlap = 0;
+    for (const w of recentSet) if (socSet.has(w)) overlap++;
+    const novelty = 1 - (overlap / Math.max(1, recentSet.size));
+    if (novelty < this.cfg.minNoveltyRatio) {
+      return { index: text.length, reason: `cross-turn-low-novelty(${novelty.toFixed(2)})` };
+    }
+    return null;
+  }
+}
+
+class AgentQuoteAbortDetector implements AbortDetector {
+  name = "agent-quote";
+  constructor(private agents: string[]) {}
+  private esc(s: string) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  check(text: string, ctx: { messages: ChatMessage[]; agents: string[] }): { index: number; reason: string } | null {
+    const list = (ctx?.agents?.length ? ctx.agents : this.agents).filter(Boolean);
+    if (!list.length) return null;
+    const pattern = `(^|\\n)\\s*(?:${list.map(this.esc).join("|")}):\\s`;
+    const re = new RegExp(pattern, "i");
+    const m = re.exec(text);
+    if (m) {
+      const cut = m.index;
+      return { index: cut, reason: "agent-quote" };
+    }
+    return null;
+  }
+}
+
+class RepetitionAbortDetector implements AbortDetector {
+  name = "repetition";
+  constructor(private cfg = {
+    tailWords: 12,
+    maxRepeats: 3,
+    minWordsForNovelty: 120,
+    minNoveltyRatio: 0.2,
+  }) {}
+  private tokenize(s: string): string[] {
+    return s.toLowerCase().replace(/[^a-z0-9\s]+/g, " ").split(/\s+/).filter(Boolean);
+  }
+  private esc(w: string) {
+    return w.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&");
+  }
+  check(text: string): { index: number; reason: string } | null {
+    const toks = this.tokenize(text);
+    const total = toks.length;
+    if (total >= this.cfg.minWordsForNovelty) {
+      const uniq = new Set(toks).size;
+      const novelty = uniq / total;
+      if (novelty < this.cfg.minNoveltyRatio) {
+        return { index: text.length, reason: `low-novelty(${novelty.toFixed(2)})` };
+      }
+    }
+    const n = Math.min(this.cfg.tailWords, Math.max(3, Math.floor(total / 4)));
+    if (total >= n) {
+      const tail = toks.slice(total - n);
+      const pattern = "\\b" + tail.map(this.esc).join("\\s+") + "\\b";
+      const re = new RegExp(pattern, "g");
+      let m: RegExpExecArray | null;
+      let count = 0;
+      let thirdIndex = -1;
+      while ((m = re.exec(text)) !== null) {
+        count++;
+        if (count === this.cfg.maxRepeats) { thirdIndex = m.index; break; }
+        if (re.lastIndex === m.index) re.lastIndex++;
+      }
+      if (count >= this.cfg.maxRepeats && thirdIndex >= 0) {
+        return { index: thirdIndex, reason: `phrase-loop(${n}w x${count})` };
+      }
+    }
+    return null;
+  }
+}
+
+class ToolEchoFloodDetector implements AbortDetector {
+  name = "tool-echo-flood";
+  constructor(private maxJsonEchoes = 2) {}
+  check(text: string): { index: number; reason: string } | null {
+    // Count likely tool-call JSON echoes in assistant content
+    const re = /"tool_calls"\s*:\s*\[/g;
+    let count = 0, m: RegExpExecArray | null;
+    while ((m = re.exec(text))) {
+      count++;
+      if (count > this.maxJsonEchoes) {
+        return { index: m.index, reason: `tool-call-json-echo>x${this.maxJsonEchoes}` };
+      }
+      if (re.lastIndex === m.index) re.lastIndex++;
+    }
+    return null;
+  }
+}
+
+class SpiralPhraseDetector implements AbortDetector {
+  name = "spiral-phrases";
+  // Abort on telltale spiral phrases at start of line
+  private re = /(^|\n)\s*(?:let(?:’|'|)s (?:run|try)|we need to (?:run|write|check)|it didn't show output\b|now create new file\b)/i;
+  check(text: string): { index: number; reason: string } | null {
+    const m = this.re.exec(text);
+    return m ? { index: m.index, reason: "telltale-phrase" } : null;
+  }
+}
+
+class MaxLengthAbortDetector implements AbortDetector {
+  name = "max-length";
+  constructor(private maxChars = 4000) {}
+  check(text: string): { index: number; reason: string } | null {
+    if (text.length > this.maxChars) {
+      return { index: this.maxChars, reason: `max-chars>${this.maxChars}` };
+    }
+    return null;
+  }
+}
 
 export class AgentModel extends Model {
   // --- ChatRoom attachment plumbing (allows ChatRoom.addModel to attach) ---
   private __room?: ChatRoom;
 
   /** Back-compat: expose as getter/setter so any existing `this.room` usage still works */
-  override get room(): ChatRoom | undefined { return this.__room; }
-  override set room(r: ChatRoom | undefined) { this.__room = r; }
+  get room(): ChatRoom | undefined { return this.__room; }
+  set room(r: ChatRoom | undefined) { this.__room = r; }
 
   /** Called by ChatRoom.addModel(...) */
   public attachRoom(room: ChatRoom) { this.__room = room; }
@@ -421,23 +606,12 @@ Do not narrate plans or roles; provide the final answer only.
         {
           const releaseNet = await __transport.acquire("summarize");
           try {
-            try {
-              summaryText = await withTimeout(
-                summarizeOnce([
-                  summarizerSystem,
-                  ...tail,
-                  { role: "user", from: incoming.from, content: incoming.content, read: false }
-                ], { model: this.model }),
-                180_000,
-                "summary timeout"
-              );
-            } catch (err) {
-              console.error("*********** summary timeout");
-              summaryText = "";
-            }
-          } finally {
-            await releaseNet();
-          }
+            summaryText = await withTimeout(
+              summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ], { model: this.model }),
+              180_000,
+              "summary timeout"
+            ).catch(() => console.error("*********** summary timeout"));
+          } finally { await releaseNet(); }
         }
         if (summaryText) this._lastSummarizeTurn = this._turnCounter;
       }
@@ -591,17 +765,25 @@ Do not narrate plans or roles; provide the final answer only.
         .map(m => (m?.from || "").toLowerCase())
         .filter(Boolean)));
 
-      const detectors: AbortDetector[] = AbortRegistry.list.length
-        ? AbortRegistry.list
-        : [
-            new MetaTagLeakDetector(),
-            new AgentQuoteAbortDetector(agents),
-            new ToolEchoFloodDetector(8),
-            new RepetitionAbortDetector({ tailWords: 28, maxRepeats: 6, minWordsForNovelty: 320, minNoveltyRatio: 0.02 }),
-            new CrossTurnRepetitionDetector({ tailWords: 28, minChars: 360, minNoveltyRatio: 0.03, sampleSocChars: 50000 }),
-            new MaxLengthAbortDetector(30000),
-            new SpiralPhraseDetector(),
-          ];
+      const detectors: AbortDetector[] = [
+        // Always keep: hard kill on true control-tag leaks
+        new MetaTagLeakDetector(),
+
+        // Keep but gentle: discourage quoting agents as dialogue — common hallucination start
+        new AgentQuoteAbortDetector(agents),
+
+        // Gentle: JSON echo flood (allow several before cutting)
+        new ToolEchoFloodDetector(8),
+
+        // Very relaxed repetition (only fires on egregious loops)
+        new RepetitionAbortDetector({ tailWords: 28, maxRepeats: 6, minWordsForNovelty: 320, minNoveltyRatio: 0.02 }),
+
+        // Cross-turn repetition extremely lax; mostly a safety net
+        new CrossTurnRepetitionDetector({ tailWords: 28, minChars: 360, minNoveltyRatio: 0.03, sampleSocChars: 50000 }),
+
+        // Length ceiling primarily to protect runaway outputs
+        new MaxLengthAbortDetector(30000),
+      ];
 
       let msg: any;
       const invokeChat = async (tempBump = 0) => {
@@ -693,14 +875,12 @@ Do not narrate plans or roles; provide the final answer only.
 
       // If there are *no* tool calls, this is a summary/final assistant message.
       if (!tool_calls || tool_calls.length === 0) {
-        // Surface chain-of-thought when enabled.  Instead of wrapping
-        // the reasoning in <think> tags, colour it using a bright
-        // magenta tag to distinguish it from normal content.
+        // Optionally surface chain-of-thought wrapper (kept as-is if present)
         if (SHOW_THINK && (msg as any).reasoning) {
           responses.push({
             role: "assistant",
             from: this.id,
-            content: `${BrightMagentaTag()}${(msg as any).reasoning}${Reset()}`,
+            content: `<think>${(msg as any).reasoning}</think>`,
             reasoning: (msg as any).reasoning,
             read: true,
           });
@@ -1072,9 +1252,7 @@ ${RedTag()}${sErr}${Reset()}
       const cmdMatch = c.match(/\b(?:sh|bash)\b[^\n\r]*/i);
       if (cmdMatch) lastCmd = cmdMatch[0];
       const fileMatch = c.match(/#file:([^\s\n\r]+)/);
-      if (fileMatch && fileMatch[1]) {
-        filesWritten.push(fileMatch[1]);
-      }
+      if (fileMatch) filesWritten.push(fileMatch[1]);
     }
 
     const headPreview = head

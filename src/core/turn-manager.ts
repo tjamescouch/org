@@ -1,7 +1,6 @@
 // turn-manager.ts
 import type { ChatRoom } from "./chat-room";
 import type { AgentModel } from "./entity/agent-model";
-import { Logger } from "../logger";
 
 // Time-bounded user-control gate (set by main.ts during interject)
 function userControlActive(): boolean {
@@ -77,20 +76,12 @@ export class TurnManager {
       const busy = !!(t && typeof t.inflight === "function" && t.inflight() >= 1);
       const cooling = !!(t && typeof t.cooling === "function" && t.cooling());
       if (busy || cooling) {
-        // Previously, we would skip the entire scheduling tick when the
-        // transport was busy or cooling.  This caused downstream agents to
-        // starve when another agent was in-flight.  Instead of returning
-        // early, simply log the condition and continue.  The per-agent
-        // transport lock will still queue network requests appropriately.
         const now = Date.now();
         if (!this.lastSkipLog || now - this.lastSkipLog > 1000) {
-          try {
-            (globalThis as any).__log?.(
-              "[backpressure] provider busy/cooling — continuing scheduling", "yellow"
-            );
-          } catch {}
+          try { (globalThis as any).__log?.("[backpressure] provider busy/cooling — deferring scheduling", "yellow"); } catch {}
           this.lastSkipLog = now;
         }
+        return;
       }
     } catch {}
 
@@ -122,15 +113,6 @@ export class TurnManager {
       if (now - this.lastIdle[k] < backoff) continue;
 
       // Time-box the turn (shorter default than 30s for responsiveness)
-      {
-        // Debug: log scheduling decisions.  This helps identify which
-        // agents get turns during the multi-agent integration test.  We
-        // include basic state to understand why an agent is chosen.
-        Logger.debug(
-          `[DEBUG turn-manager] scheduling agent=${agent?.id} hasUnread=${hasUnread} ` +
-            `userBurst=${userBurst} allowProactive=${allowProactive} backoffElapsed=${now - this.lastIdle[k]}ms`
-        );
-      }
       this.running[k] = true;
       const watchdog = setTimeout(() => agent.abortCurrentTurn?.("watchdog"), this.opts.turnTimeoutMs ?? 8_000);
 

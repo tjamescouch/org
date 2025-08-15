@@ -1,4 +1,3 @@
-import { test } from 'bun:test';
 import { summarizeHistory } from '../src/core/summarizer';
 
 /**
@@ -6,7 +5,7 @@ import { summarizeHistory } from '../src/core/summarizer';
  * trailing messages, handling of omitted content fields, and length
  * truncation with an ellipsis.
  */
-test('summarizeHistory concatenates and truncates messages correctly', () => {
+async function run(): Promise<void> {
   const messages = [
     { role: 'user', content: 'Hello' },
     { role: 'assistant', content: 'world' },
@@ -38,4 +37,9 @@ test('summarizeHistory concatenates and truncates messages correctly', () => {
   if (!truncated.endsWith('…')) {
     throw new Error(`expected truncated summary to end with an ellipsis: '${truncated}'`);
   }
+}
+
+run().catch(err => {
+  console.error(err);
+  process.exit(1);
 });
