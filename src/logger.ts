@@ -1,14 +1,19 @@
 import { C, colorOn } from "./ui/colors";
 
-type Lvl = "DEBUG"|"INFO"|"WARN"|"ERROR";
-const want = (lvl: Lvl) => {
+export type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
+const order: Record<LogLevel, number> = { DEBUG:10, INFO:20, WARN:30, ERROR:40 };
+
+export const LOG_LEVELS: LogLevel[] = ["DEBUG","INFO","WARN","ERROR"];
+
+export function getLogLevel(): LogLevel {
   const env = (process.env.LOG_LEVEL ?? "INFO").toUpperCase();
-  const order: Record<Lvl,number> = { DEBUG:10, INFO:20, WARN:30, ERROR:40 };
-  return order[lvl] >= (order[env as Lvl] ?? 20);
-};
-const tint = (lvl: Lvl, s: string) => {
+  return (LOG_LEVELS as readonly string[]).includes(env) ? (env as LogLevel) : "INFO";
+}
+
+const want = (lvl: LogLevel) => order[lvl] >= order[getLogLevel()];
+const tint = (lvl: LogLevel, s: string) => {
   if (!colorOn()) return s;
-  const map: Record<Lvl,string> = { DEBUG:C.debug, INFO:C.info, WARN:C.warn, ERROR:C.error };
+  const map: Record<LogLevel,string> = { DEBUG:C.debug, INFO:C.info, WARN:C.warn, ERROR:C.error };
   return `${map[lvl]}${s}${C.reset}`;
 };
 
