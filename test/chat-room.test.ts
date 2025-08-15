@@ -1,6 +1,6 @@
+import { test } from 'bun:test';
 import { ChatRoom } from '../src/core/chat-room';
 import { Model } from '../src/core/entity/model';
-import { test } from 'bun:test';
 
 // A minimal model stub used to register with the ChatRoom. It does nothing
 // with incoming messages.

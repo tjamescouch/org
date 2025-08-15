@@ -1,12 +1,12 @@
-import { MessageBus } from '../src/core/message-bus';
 import { test } from 'bun:test';
+import { MessageBus } from '../src/core/message-bus';
 
 /**
  * Ensure that MessageBus correctly registers listeners, delivers
  * messages to all listeners, swallows listener errors, and honours
  * deregistration via off().
  */
-test('message bus registers, emits and deregisters listeners', async () => {
+test('message bus registers, emits and deregisters listeners', () => {
   const bus = new MessageBus();
   let count1 = 0;
   let count2 = 0;

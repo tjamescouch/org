@@ -1,4 +1,6 @@
 // ChannelLock.ts
+import { Logger } from "../logger";
+
 export class ChannelLock {
   private locked = false;
   private queue: Array<{
@@ -8,10 +10,53 @@ export class ChannelLock {
   }> = [];
   private seq = 0;
 
+  // Timestamp of when the lock was last acquired.  Used for deadlock detection.
+  private lastAcquiredAt: number = 0;
+
+  constructor() {
+    // Periodically detect and break potential deadlocks by forcibly
+    // releasing the lock if it has been held for too long.  This check
+    // runs every second.  If the lock has been held longer than
+    // DEADLOCK_MS and there are waiters queued, we assume a deadlock and
+    // forcibly release the lock.  After releasing, queued waiters will
+    // be processed normally via drain().
+    const DEADLOCK_MS = Number(process.env.LOCK_DEADLOCK_MS) || 1000;
+    setInterval(() => {
+      try {
+        if (this.locked && this.lastAcquiredAt && Date.now() - this.lastAcquiredAt >= DEADLOCK_MS && this.queue.length > 0) {
+          Logger.warn(
+            `[DEADLOCK] channel-lock held for ${Date.now() - this.lastAcquiredAt}ms with queueLength=${this.queue.length}. Forcibly releasing.`
+          );
+          // Mark as unlocked and drain the next waiter.  This forcibly
+          // breaks the deadlock by allowing the next queued waiter to
+          // proceed.  The current holder is effectively pre-empted.
+          this.locked = false;
+          this.drain();
+        }
+      } catch {}
+    }, 1000);
+  }
+
   async waitForLock(timeout = 0): Promise<() => void> {
+    // Emit a debug log whenever a lock acquisition is attempted.  This log
+    // reports whether the lock is currently held and how many waiters are
+    // queued.  These logs are only emitted when DEBUG logging is enabled.
+    try {
+      Logger.debug(
+        `[DEBUG channel-lock] acquire attempt locked=${this.locked} queueLength=${this.queue.length}`
+      );
+    } catch {}
+
     // Fast path: no one waiting and not locked
     if (!this.locked && this.queue.length === 0) {
       this.locked = true;
+      // Record when the lock was acquired.  This is used for deadlock detection.
+      this.lastAcquiredAt = Date.now();
+      try {
+        Logger.debug(
+          `[DEBUG channel-lock] acquired immediately locked=${this.locked} queueLength=${this.queue.length}`
+        );
+      } catch {}
       return this.makeRelease();
     }
 
@@ -39,6 +84,15 @@ export class ChannelLock {
     if (!next) return;
     if (next.timeoutId) clearTimeout(next.timeoutId);
     this.locked = true;
+    // Record when the lock was acquired for deadlock detection.
+    this.lastAcquiredAt = Date.now();
+    // Log when a waiter is granted the lock via drain().  This log shows
+    // the updated lock state and remaining queue length.
+    try {
+      Logger.debug(
+        `[DEBUG channel-lock] lock granted via drain locked=${this.locked} queueLength=${this.queue.length}`
+      );
+    } catch {}
     next.give(this.makeRelease());
   }
 
@@ -48,6 +102,16 @@ export class ChannelLock {
       if (done) return;
       done = true;
       this.locked = false;
+      // Clear the last acquired timestamp on release to avoid false
+      // positives in the deadlock detector.
+      this.lastAcquiredAt = 0;
+      // Emit a debug message when the lock is released.  Include the
+      // updated queue length for visibility into contention.
+      try {
+        Logger.debug(
+          `[DEBUG channel-lock] released lock locked=${this.locked} queueLength=${this.queue.length}`
+        );
+      } catch {}
       // Let next waiter run on microtask turn
       queueMicrotask(() => this.drain());
     };

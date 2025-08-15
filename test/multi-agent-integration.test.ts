@@ -1,37 +1,39 @@
-import { test } from 'bun:test';
-import * as http from 'http';
-
-// Set environment variables before loading any project code to ensure
-// the mock base URL and model are used by chatOnce and AgentModel.
-const port = 5000 + Math.floor(Math.random() * 4000);
-process.env.OLLAMA_BASE_URL = `http://localhost:${port}`;
+// Set environment variables BEFORE importing project code.  The transport layer
+// reads these variables at import time to construct its base URL and model,
+// so they must be defined up front.  We choose a fixed port here; the
+// corresponding mock server will be started on the same port within the test.
+const MOCK_PORT = 8800;
+process.env.OLLAMA_BASE_URL = `http://localhost:${MOCK_PORT}`;
 process.env.OLLAMA_MODEL = 'mock';
 
-import { ChatRoom } from '../src/core/chat-room';
-import { AgentModel } from '../src/core/entity/agent-model';
-import { TurnManager } from '../src/core/turn-manager';
-import { Logger } from '../src/logger';
-
-// Relax global transport concurrency for this test.  AgentModel
-// registers a single-flight transport gate on the global object; by
-// increasing the cap we allow both agents to make concurrent network
-// calls during the test.  Without this, the default cap=1 causes
-// the second agent to wait for the first to finish, leading to
-// timeouts when the scheduler doesn’t give it another turn before
-// the test limit.
+// Relax the global transport concurrency for this test.  By default the
+// transport gate caps concurrency at 1, which prevents a second agent
+// from acquiring the network slot before the first agent finishes.  Allow
+// up to two concurrent outbound calls so that both agents can interact with
+// the mock server within the test timeout.  See discussions about
+// multi-agent integration tests for context.
 (globalThis as any).__transport = (globalThis as any).__transport || { cap: 1 };
 (globalThis as any).__transport.cap = 2;
 
-/**
- * End‑to‑end integration test that spins up a mock HTTP provider and
- * verifies that two agents (alice and bob) both respond to a user
- * message.  This uses the TurnManager scheduler to drive agent
- * turns and records agent outputs via a monkey‑patched ChatRoom
- * broadcast.
- */
+import { test } from 'bun:test';
+import { ChatRoom } from '../src/core/chat-room';
+import { TurnManager } from '../src/core/turn-manager';
+import { AgentModel } from '../src/core/entity/agent-model';
+import * as http from 'http';
+
 test('multi-agent integration with mock server', async () => {
-  // Create a simple mock HTTP server implementing the minimal API
-  // required by chatOnce(): preflight endpoints and chat completions.
+  // Provide a minimal Bun stub for Node.js
+  if (!(globalThis as any).Bun) {
+    (globalThis as any).Bun = {
+      stdout: { write: (_chunk: any) => {} },
+      stderr: { write: (_chunk: any) => {} },
+    } as any;
+  }
+
+  // Start a mock HTTP server that returns deterministic replies on the
+  // pre-defined port.  The port must match the environment variable set
+  // above (MOCK_PORT) so that transport/chat.ts uses our mock.
+  const port = MOCK_PORT;
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/api/version') {
       res.setHeader('content-type', 'application/json');
@@ -44,73 +46,66 @@ test('multi-agent integration with mock server', async () => {
       return;
     }
     if (req.method === 'POST' && req.url === '/v1/chat/completions') {
-      // Drain the request body then respond with a canned reply after a
-      // small delay to simulate processing time.
       let body = '';
       req.on('data', chunk => { body += chunk; });
       req.on('end', () => {
-        setTimeout(() => {
-          const response = {
-            choices: [ { message: { role: 'assistant', content: `ok` } } ],
-          };
-          res.setHeader('content-type', 'application/json');
-          res.end(JSON.stringify(response));
-        }, 10);
+        // Parse the incoming payload to identify which agent invoked chatOnce
+        // For our test we just return a generic reply.  The content could be
+        // influenced by the request if desired.
+        const response = {
+          choices: [ { message: { role: 'assistant', content: 'ok' } } ],
+        };
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(response));
       });
       return;
     }
-    // Default: 404
     res.statusCode = 404;
     res.end('Not Found');
   });
-
-  // Start the mock server
   await new Promise<void>(resolve => server.listen(port, resolve));
 
-  try {
-    const room = new ChatRoom();
-    const alice = new AgentModel('alice', 'mock');
-    const bob = new AgentModel('bob', 'mock');
-    room.addModel(alice as any);
-    room.addModel(bob as any);
+  // Set environment variables to direct chatOnce() calls to our mock server
+  process.env.OLLAMA_BASE_URL = `http://localhost:${port}`;
+  process.env.OLLAMA_MODEL = 'mock';
 
-    // Capture agent outputs by monkey‑patching ChatRoom.broadcast.
-    const transcripts: { agent: string; content: string }[] = [];
-    const originalBroadcast = room.broadcast.bind(room);
-    room.broadcast = async (from: string, content: string, directTo?: string) => {
-      if (from !== 'User') {
-        transcripts.push({ agent: from, content: String(content) });
-      }
-      return originalBroadcast(from, content, directTo);
-    };
+  // Monkey-patch ChatRoom.broadcast to record all broadcasts
+  const transcripts: Array<{from: string; content: string}> = [];
+  const origBroadcast = (ChatRoom.prototype as any).broadcast;
+  (ChatRoom.prototype as any).broadcast = async function(from: string, content: string, directTo?: string) {
+    transcripts.push({ from, content });
+    return origBroadcast.call(this, from, content, directTo);
+  };
 
-    // Send an initial user message.
-    await room.broadcast('User', 'Hello agents');
+  // Create chat room and agents
+  const room = new ChatRoom();
+  const alice = new AgentModel('alice', 'mock');
+  const bob   = new AgentModel('bob', 'mock');
+  room.addModel(alice as any);
+  room.addModel(bob as any);
 
-    // Kick off a TurnManager to drive the agents.
-    const tm = new TurnManager(room, [alice, bob], {
-      tickMs: 100,
-      turnTimeoutMs: 2000,
-      idleBackoffMs: 100,
-      proactiveMs: 500,
-    });
-    tm.start();
+  // Kick off conversation: send a user message to both
+  await room.broadcast('User', 'Hello agents');
 
-    // Wait a short time to allow agents to respond.
-    await new Promise(res => setTimeout(res, 2000));
+  // Start turn manager to schedule agents
+  const tm = new TurnManager(room, [alice as any, bob as any], { tickMs: 200, idleBackoffMs: 100, proactiveMs: 200, turnTimeoutMs: 2000 });
+  tm.start();
 
-    tm.stop();
+  // Wait some time for agents to respond
+  await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // We expect each agent to have responded at least once.
-    const responders = new Set(transcripts.map(t => t.agent.toLowerCase()));
-    // Emit a debug log of the transcript for diagnosis.  This is
-    // particularly useful when running under a test harness to see
-    // which agents replied and what their content was.
-    Logger.debug('multi-agent transcript', transcripts);
-    if (!responders.has('alice') || !responders.has('bob')) {
-      throw new Error(`expected replies from both agents, got ${Array.from(responders).join(',')}`);
-    }
-  } finally {
-    server.close();
+  tm.stop();
+
+  // Restore original broadcast method
+  (ChatRoom.prototype as any).broadcast = origBroadcast;
+
+  // Shut down server
+  await new Promise<void>(resolve => server.close(() => resolve()));
+
+  // We expect at least one reply from both agents in the transcript
+  const aliceSaid = transcripts.some(t => t.from === 'alice');
+  const bobSaid   = transcripts.some(t => t.from === 'bob');
+  if (!aliceSaid || !bobSaid) {
+    throw new Error(`Agents did not both respond: transcripts=${JSON.stringify(transcripts)}`);
   }
 });

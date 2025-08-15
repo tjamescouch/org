@@ -1,6 +1,6 @@
+import { test } from 'bun:test';
 import { chatOnce } from '../src/transport/chat';
 import * as http from 'http';
-import { test } from 'bun:test';
 
 /**
  * Integration test that starts a temporary mock server to simulate a chat
@@ -13,6 +13,15 @@ import { test } from 'bun:test';
  * assistant content.
  */
 test('chatOnce handles random latency from mock server', async () => {
+  // Node.js does not define Bun by default.  Provide a minimal stub so that
+  // transport/chat.ts does not throw when writing to Bun.stdout.  In Bun
+  // environments this stub will be ignored because Bun is already defined.
+  if (!(globalThis as any).Bun) {
+    (globalThis as any).Bun = {
+      stdout: { write: (_chunk: any) => {} },
+      stderr: { write: (_chunk: any) => {} },
+    } as any;
+  }
   // Pick a free port between 5000 and 9000.
   const port = 5000 + Math.floor(Math.random() * 4000);
 
