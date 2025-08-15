@@ -1,3 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TEST="test/multi-agent-integration.test.ts"
+if [ ! -f "$TEST" ]; then
+  echo "ERROR: $TEST not found" >&2
+  exit 1
+fi
+
+cat > "$TEST" <<'TS'
 import { test, expect } from "bun:test";
 import { ChatRoom } from "../src/core/chat-room";
 import { Logger } from "../src/logger";
@@ -44,3 +54,6 @@ test("multi-agent integration with mock server", async () => {
   Logger.info(`[multi-agent] final assistant count = ${assistants}`);
   expect(assistants).toBeGreaterThanOrEqual(2);
 }, 20000);
+TS
+
+echo "✅ multi-agent test updated for API compatibility."
