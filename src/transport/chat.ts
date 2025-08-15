@@ -1,4 +1,7 @@
 import { TextDecoder } from "util";
+import { mkdir, appendFile } from "node:fs/promises";
+import { resolve as pathResolve } from "node:path";
+import { Buffer } from "node:buffer";
 import type { ReadableStreamReadResult } from "stream/web";
 import {
   VERBOSE,
@@ -406,6 +409,21 @@ export async function chatOnce(
   const IDLE_MS = 240_000;
   const HARD_STOP_MS = 300_000;
   const startedAt = Date.now();
+  const DEBUG_COT = process.env.DEBUG_COT === "1";
+  const COT_LOG_DIR = "logs";
+  const COT_LOG_PATH = DEBUG_COT ? pathResolve(COT_LOG_DIR, `cot-bytes-${Date.now()}.log`) : "";
+  const _cotLogInit = (async () => {
+    if (DEBUG_COT) {
+      try { await mkdir(COT_LOG_DIR, { recursive: true }); await appendFile(COT_LOG_PATH, `# cot-bytes log started ${new Date().toISOString()}\n`); } catch {}
+    }
+  })();
+  const cotLog = DEBUG_COT ? async (bytes: Uint8Array) => {
+    try {
+      await _cotLogInit;
+      const hex = Buffer.from(bytes).toString("hex").replace(/(..)/g, "$1 ");
+      await appendFile(COT_LOG_PATH, `HEX ${hex}\n`);
+    } catch {}
+  } : async (_: Uint8Array) => {};
 
   async function readWithIdleTimeout(): Promise<ReadableStreamReadResult<Uint8Array>> {
     if (firstRead) { firstRead = false; return firstReadResult; }
@@ -466,6 +484,7 @@ export async function chatOnce(
     }
     const { value, done: streamDone } = readResult;
     if (streamDone) break;
+    await cotLog(value as Uint8Array);
 
     const chunk = decoder.decode(value, { stream: true });
     if (DEBUG_STREAM) console.error("RAW:", chunk.replace(/\r/g, "\\r").replace(/\n/g, "\\n"));
