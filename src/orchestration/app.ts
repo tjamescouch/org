@@ -1,3 +1,4 @@
+import { printBanner } from "../ui/banner";
 import { setupKeyInput } from "../ui/key-input";
 // main.ts — Interactive (curses) mode by default; script mode with --no-interactive
 // Adds flexible persona/model selection via CLI flags
@@ -337,6 +338,7 @@ async function askKickoffPrompt(defaultPrompt: string): Promise<string> {
 /* -------------------- app -------------------- */
 async function app() {
   const room = new ChatRoom();
+printBanner({ safe: process.argv.includes("--safe") || process.argv.includes("-s") });
 setupKeyInput({ room, onQuit: () => process.exit(0) });
   // Decorate room.broadcast to record recent user messages for the scheduler
   {
