@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 1) Fix wrong import in the multi-agent test
+# (use src/core/chat-room instead of src/orchestration/chat-room)
+if [ -f test/multi-agent-integration.test.ts ]; then
+  sed -i.bak 's#../src/orchestration/chat-room#../src/core/chat-room#g' test/multi-agent-integration.test.ts || true
+fi
+
+# 2) Replace the debug runner to avoid 'grep' early-exit and to auto-pick entrypoint
+mkdir -p tools logs
+cat > tools/run-org-debug.sh <<'RUN'
+#!/usr/bin/env bash
+set -euo pipefail
+
 ts=$(date +%s)
 log="logs/org-debug-$ts.log"
 
@@ -50,3 +62,27 @@ fi
 
 echo
 echo "# log saved to: $log"
+RUN
+chmod +x tools/run-org-debug.sh
+
+# 3) Add a tiny startup log so we see the app actually boots
+APP="src/orchestration/app.ts"
+if [ -f "$APP" ]; then
+  # import Logger if missing
+  if ! grep -q 'from "../logger"' "$APP"; then
+    tmp="$(mktemp)"; printf 'import { Logger } from "../logger";\n' > "$tmp"; cat "$APP" >> "$tmp"; mv "$tmp" "$APP"
+  fi
+  # after the debug-hooks line, log argv once
+  if ! grep -q 'app: bootstrap' "$APP"; then
+    awk '
+      BEGIN{done=0}
+      { print $0
+        if (!done && $0 ~ /debug-hooks failed:/) {
+          print "Logger.info(\"app: bootstrap\", { argv: process.argv.slice(2) });"
+          done=1
+        }
+      }' "$APP" > "$APP.tmp" && mv "$APP.tmp" "$APP"
+  fi
+fi
+
+echo "✅ Patch applied: test import corrected, runner hardened, app startup log added."

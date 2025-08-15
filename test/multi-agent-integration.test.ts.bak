@@ -1,6 +1,6 @@
 // Robust multi-agent integration test: passes as soon as we see real chatter.
 import { test, expect } from "bun:test";
-import { ChatRoom } from "../src/core/chat-room"; // adjust if needed
+import { ChatRoom } from "../src/orchestration/chat-room"; // adjust if needed
 import { Logger } from "../src/logger";                    // adjust if needed
 
 function countAssistantMessages(history: Array<{role:string, content:string}>) {

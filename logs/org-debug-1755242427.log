@@ -1,0 +1,41 @@
+# --- env ---
+OAI_BASE=http://192.168.56.1:11434
+OAI_MODEL=mock
+LOG_LEVEL=DEBUG
+SHOW_THINK=1
+DEBUG_TRACE=1
+SAFE_MODE=0
+# running: bun run org.ts --prompt Debug smoke: please exchange greetings and one follow-up. --personas alice#mock#[You are concise],bob#mock#[You are helpful]
+
+[96m[DEBUG][DEBUG receive] agent=alice from=User role=user content=Debug smoke: please exchange greetings and one follow-up.[0m
+[96m[DEBUG][DEBUG receive] agent=bob from=User role=user content=Debug smoke: please exchange greetings and one follow-up.[0m
+[96m[DEBUG][DEBUG channel-lock] acquire attempt locked=false queueLength=0[0m
+[96m[DEBUG][DEBUG channel-lock] acquired immediately locked=true queueLength=0[0m
+[96m[DEBUG][DEBUG channel-lock] acquire attempt locked=true queueLength=0[0m
+[96m[DEBUG][DEBUG receiveMessage] agent=alice unread=1 historyLength=4[0m
+[96m[DEBUG][DEBUG runWithTools] agent=alice starting turn. lastMsgFrom=User lastMsgContent=[User] Debug smoke: please exchange greetings and one follow-up.[0m
+[96m[DEBUG][DEBUG runWithTools] agent=alice hop=0 currentMessages=4[0m
+[96m[DEBUG][DEBUG runWithTools] agent=alice calling chatOnce baseUrl=http://192.168.56.1:11434 model=mock[0m
+[96m[DEBUG][DEBUG chat.ts] model=mock hasBaseUrlOverride=true baseUrl=http://192.168.56.1:11434[0m
+[36m**** alice @ 1:20:28 AM[0m:
+[95mWe[0m
+[95mjust[0m
+[95mneed[0m
+[95mto[0m
+[95mreply[0m
+[95mgreeting[0m
+[95mand[0m
+[95mfollow[0m
+[95m-up[0m
+[95m.[0m
+[95mNo[0m
+[95mfile[0m
+[95mchanges[0m
+[95m.[0m
+Hello! How can I help you today?
+[96m[DEBUG][DEBUG agent-model] agent=alice outputs=assistant:[95mWe just need to reply greeting and follow-up. No file changes.[0m
+ | assistant:Hello! How can I help you today?[0m
+[96m[DEBUG][DEBUG receive] agent=alice from=alice role=user content=Hello! How can I help you today?[0m
+[96m[DEBUG][DEBUG receive] agent=bob from=alice role=user content=Hello! How can I help you today?[0m
+[96m[DEBUG][DEBUG channel-lock] acquire attempt locked=true queueLength=1[0m
+[96m[DEBUG][DEBUG channel-lock] acquire attempt locked=true queueLength=2[0m

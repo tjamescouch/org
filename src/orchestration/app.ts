@@ -1,6 +1,9 @@
+import "../runtime-fixes/role-fix";
+import { Logger } from "../logger";
 import { installDebugHooks } from "../core/debug-hooks";
 if (process.env.DEBUG_TRACE === "1") {
   installDebugHooks().catch(e => console.error("debug-hooks failed:", e));
+Logger.info("app: bootstrap", { argv: process.argv.slice(2) });
 }
 import { printBanner } from "../ui/banner";
 import { setupKeyInput } from "../ui/key-input";
