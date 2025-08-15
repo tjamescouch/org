@@ -12,3 +12,4 @@ build
 openai-patch.sh
 patch-debug.sh
 logs
+patch.sh
