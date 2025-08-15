@@ -10,3 +10,4 @@ build
 *.dat
 *.bin
 openai-patch.sh
+patch-debug.sh
