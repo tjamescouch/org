@@ -1,173 +1,104 @@
-// Anchorless streaming CoT flattener for stdout, plus optional byte/Unicode logging.
-//
-// Env:
-//   SHOW_THINK=1  -> enable flattener
-//   DEBUG_COT=1   -> log raw bytes/codepoints/flush decisions to logs/cot-bytes-*.log
-
 import fs from "fs";
+import path from "path";
+import { flattenThink } from "./think";
 
-// ---------- helpers ----------
-const ANSI = /\x1B\[[0-9;]*m/g;
-function stripAnsi(s: string) { return s.replace(ANSI, ""); }
-
-// Heuristic: a "normal" content line (not a dithering think token)
-function isBoundaryLine(raw: string): boolean {
-  const s = stripAnsi(raw).trim();
-  if (!s) return false;
-  if (s.length >= 24 && s.includes(" ")) return true;
-  if (/[.?!)]$/.test(s) && s.split(/\s+/).length >= 3) return true;
-  return false;
-}
-
-// The main single-pass rewrite
-export function flattenThinkBlockOnce(haystack: string): [string, boolean] {
-  const start = haystack.lastIndexOf("**** ");
-  if (start < 0) return [haystack, false];
-
-  const headerEnd = haystack.indexOf("\n", start);
-  if (headerEnd < 0) return [haystack, false];
-
-  const afterHeader = haystack.slice(headerEnd + 1);
-  const lines = afterHeader.split(/\r?\n/);
-
-  let boundaryIdx = -1;
-  for (let i = 0; i < lines.length; i += 1) {
-    if (isBoundaryLine(lines[i])) { boundaryIdx = i; break; }
-  }
-  if (boundaryIdx <= 0) return [haystack, false];
-
-  const thinkLines = lines.slice(0, boundaryIdx);
-  const rest = lines.slice(boundaryIdx).join("\n");
-
-  const flattened = thinkLines
-    .map(l => stripAnsi(l).trim())
-    .filter(Boolean)
-    .join(" ");
-
-  const rewritten =
-    haystack.slice(0, headerEnd + 1) +
-    flattened + "\n" +
-    rest;
-
-  return [rewritten, true];
-}
-
-// ---------- DEBUG_COT logging ----------
-function makeCotLogger() {
-  if (process.env.DEBUG_COT !== "1") return null;
-  fs.mkdirSync("logs", { recursive: true });
-  const path = `logs/cot-bytes-${Date.now()}.log`;
-  const ws = fs.createWriteStream(path, { flags: "a" });
-  const t0 = Date.now();
-  ws.write(`# CoT byte debug\n# file: ${path}\n`);
-
-  function writeLine(s: string) { ws.write(s + "\n"); }
-
-  function dump(label: string, chunk: any) {
-    try {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
-      const elapsed = Date.now() - t0;
-
-      const hex = buf.slice(0, 256).toString("hex").replace(/(..)/g, "$1 ").trim();
-      const textRaw = Buffer.isBuffer(chunk) ? buf.toString("utf8") : String(chunk);
-      const textEsc = textRaw.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
-      const cps = Array.from(textRaw).slice(0, 80)
-        .map(ch => ch.codePointAt(0)!.toString(16))
-        .join(" ");
-
-      writeLine(`[${elapsed}ms] ${label} len=${buf.length}`);
-      writeLine(`HEX ${hex}`);
-      writeLine(`TXT "${textEsc.slice(0,160)}"${textEsc.length>160 ? "…" : ""}`);
-      writeLine(`CP  ${cps}`);
-    } catch { /* ignore */ }
-  }
-
-  function note(msg: string) {
-    const elapsed = Date.now() - t0;
-    writeLine(`[${elapsed}ms] NOTE ${msg}`);
-  }
-
-  return { dump, note, end: () => ws.end() };
-}
-
-// ---------- install interceptor ----------
+/**
+ * Intercepts process.stdout.write so that when SHOW_THINK=1 we:
+ *  - buffer the CoT block (streamed a line at a time) and
+ *  - emit it once, flattened (single line)
+ * If DEBUG_COT=1 we also dump raw bytes of every write to logs/cot-bytes-*.log
+ */
 export function installStdoutThinkFlatten(): void {
-  if (process.env.SHOW_THINK !== "1") return;
+  const g: any = globalThis as any;
+  if (g.__think_flatten_installed) return;
+  g.__think_flatten_installed = true;
 
-  const out: any = process.stdout as any;
-  if (out.__orgThinkFlattenInstalled) return;
-  out.__orgThinkFlattenInstalled = true;
+  const enableFlatten = process.env.SHOW_THINK === "1";
+  const enableBytes   = process.env.DEBUG_COT === "1";
 
-  const dbg = makeCotLogger();
-  const logDump = dbg ? dbg.dump : (_l:string,_c:any)=>{};
-  const logNote = dbg ? dbg.note : (_s:string)=>{};
-
-  const origWrite = process.stdout.write.bind(process.stdout);
-  let buf = "";
-  let watchdog: NodeJS.Timeout | null = null;
-
-  function setWatchdog() {
-    if (watchdog) return;
-    watchdog = setTimeout(() => flush(true), 900).unref?.();
-  }
-  function clearWatchdog() {
-    if (watchdog) { clearTimeout(watchdog); watchdog = null; }
-  }
-
-  function insidePrelude(b: string): boolean {
-    const start = b.lastIndexOf("**** ");
-    if (start < 0) return false;
-    const headerEnd = b.indexOf("\n", start);
-    if (headerEnd < 0) return true;
-    const [, changed] = flattenThinkBlockOnce(b);
-    return !changed;
-  }
-
-  function flush(force = false) {
-    let changed = false;
-    let tries = 0;
-    do {
-      tries++;
-      let rewritten; [rewritten, changed] = flattenThinkBlockOnce(buf);
-      if (changed) {
-        logNote(`flatten applied (pass ${tries}), +${rewritten.length - buf.length} bytes delta`);
-        buf = rewritten;
-      }
-    } while (changed && tries < 3);
-
-    const hold = !force && insidePrelude(buf);
-    if (!hold) {
-      clearWatchdog();
-      if (buf) {
-        logNote(`FLUSH out len=${Buffer.byteLength(buf, "utf8")}`);
-        origWrite(buf);
-        buf = "";
-      }
-    } else {
-      logNote("HOLD (inside prelude)");
-      setWatchdog();
+  // lazy open byte-log
+  let byteLog: fs.WriteStream | null = null;
+  const openByteLog = () => {
+    if (!enableBytes) return null;
+    if (!byteLog) {
+      fs.mkdirSync("logs", { recursive: true });
+      const p = path.join("logs", `cot-bytes-${Date.now()}.log`);
+      byteLog = fs.createWriteStream(p, { flags: "a" });
+      byteLog.write(`# raw stdout bytes (${new Date().toISOString()})\n`);
     }
-  }
-
-  (process.stdout as any).write = function(chunk: any, enc?: any, cb?: any) {
-    try {
-      logDump("WRITE.chunk", chunk);
-
-      const s = typeof chunk === "string"
-        ? chunk
-        : Buffer.isBuffer(chunk) ? chunk.toString(enc || "utf8")
-        : String(chunk);
-
-      buf += s;
-
-      if (/\n$/.test(s)) flush(false);
-      if (typeof cb === "function") cb();
-      return true;
-    } catch {
-      return origWrite(chunk, enc, cb);
-    }
+    return byteLog;
   };
 
-  process.on("beforeExit", () => { try { flush(true); dbg?.end(); } catch {} });
-}
+  const originalWrite = process.stdout.write.bind(process.stdout);
 
+  // States for holding a think block between start/end
+  let holding = false;
+  let holdBuf = "";
+
+  const startMarker = /^(\*\*\*\* .+? @ .+?:)\s*$/m;   // "**** alice @ 3:01:00 AM:"
+  const isThinkNoise = (s: string) => startMarker.test(s);
+
+  const flushHold = () => {
+    if (!holding) return "";
+    holding = false;
+    const out = flattenThink(holdBuf); // collapse internal newlines/spaces
+    holdBuf = "";
+    return out;
+  };
+
+  const writeOut = (s: string) => originalWrite(s);
+
+  // Replacement writer
+  (process.stdout as any).write = ((chunk: any, enc?: any, cb?: any) => {
+    // ---- logging of raw bytes
+    if (enableBytes) {
+      const log = openByteLog();
+      if (log) {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), enc as BufferEncoding | undefined);
+        log.write(`\n-- chunk @ ${new Date().toISOString()}\n`);
+        log.write(`HEX: ${buf.toString("hex")}\n`);
+        log.write(`UTF8_ESCAPED: ${JSON.stringify(buf.toString("utf8"))}\n`);
+        log.write(`CODEPOINTS: ${Array.from(buf.values()).map(n=>n.toString(16).padStart(2,"0")).join(" ")}\n`);
+      }
+    }
+
+    let text = Buffer.isBuffer(chunk) ? chunk.toString(enc as BufferEncoding | undefined) : String(chunk);
+
+    if (!enableFlatten) {
+      return originalWrite(chunk, enc, cb);
+    }
+
+    // If we see a think "header" line, start holding subsequent output
+    if (isThinkNoise(text)) {
+      holding = true;
+      holdBuf = text;       // include the header line; flattener will keep it once
+      return true;          // swallow for now
+    }
+
+    // While holding, accumulate until we see a boundary where normal output resumes.
+    if (holding) {
+      // Heuristic: stop holding when we see a line that begins with '[' (our DEBUG lines)
+      // or a role label like "assistant:" or "user:" etc.
+      const boundary = /^\[(?:DEBUG|INFO|WARN|ERROR)\]|\b(?:assistant|user|system):/m.test(text);
+      if (boundary) {
+        const flushed = flushHold();
+        writeOut(flushed);    // emit flattened CoT
+        return originalWrite(text, enc, cb);
+      } else {
+        holdBuf += text;
+        return true;          // swallow while holding
+      }
+    }
+
+    return originalWrite(text, enc, cb);
+  }) as any;
+
+  // Best-effort cleanup on exit
+  process.on("exit", () => {
+    if (holding) {
+      const flushed = flushHold();
+      if (flushed) writeOut(flushed);
+    }
+    if (byteLog) byteLog.end();
+  });
+}

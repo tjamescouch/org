@@ -1,4 +1,5 @@
 import { installStdoutThinkFlatten } from "../core/utils/stdout-think-flatten";
+installStdoutThinkFlatten(); // SHOW_THINK=1 flattens CoT; DEBUG_COT=1 logs raw bytes
 installStdoutThinkFlatten();
 
 import { printBanner } from "../ui/banner";
