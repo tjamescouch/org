@@ -5,6 +5,7 @@ import {
   BrightMagentaTag,
   Reset,
 } from "../constants";
+import { Logger } from "../logger";
 
 // /Users/jamescouch/dev/llm/org/chat.ts
 // Streaming chat client with immediate per-chunk meta-tag censorship.
@@ -39,7 +40,7 @@ const isV1Server = (u: string) => {
   if (FORCE_V1) return true; // manual override
   try {
     const hasV1 = /\/v1(\/|$)/i.test(u);
-    const isKnownV1Host = /lmstudio|openai/i.test(u);
+  const isKnownV1Host = /lmstudio|openai/i.test(u);
     return hasV1 || isKnownV1Host;
   } catch {
     return false;
@@ -279,13 +280,9 @@ export async function chatOnce(
   // whether an upstream override is present during tests.  See
   // integration.mock-server.test.ts for context.
   if (model === "mock") {
-    try {
-      console.error(
-        `[DEBUG chat.ts] model=mock hasBaseUrlOverride=${hasBaseUrlOverride} baseUrl=${ollamaBaseUrl}`
-      );
-    } catch {
-      // ignore logging errors
-    }
+    Logger.debug(
+      `[DEBUG chat.ts] model=mock hasBaseUrlOverride=${hasBaseUrlOverride} baseUrl=${ollamaBaseUrl}`
+    );
   }
   if (model === "mock" && !hasBaseUrlOverride) {
     return { role: "assistant", content: "ok" };

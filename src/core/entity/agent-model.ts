@@ -109,6 +109,7 @@ import {
 import type { ChatMessage, ToolCall, ToolDef } from "../../types";
 import type { ChatRoom, RoomMessage } from "../chat-room";
 import { chatOnce, summarizeOnce } from "../../transport/chat";
+import { Logger } from "../../logger";
 
 type Audience =
   | { kind: "group"; target: "*" } | { kind: "direct"; target: string }      // send only to a given model
@@ -319,17 +320,31 @@ Do not narrate plans or roles; provide the final answer only.
   // We DO NOT take the channel lock here: receiveMessage() already acquires it.
   // We also avoid enqueuing more unread by using a synthetic system "tick" message.
   public async takeTurn(): Promise<boolean> {
-    if (isPaused()) return false;
-    if (this.inbox.length === 0) return false;
-    // Absolute single-flight: if any network call is active, defer our turn
+    // Skip if paused (user control).  Log the reason for debugging.
+    if (isPaused()) {
+      Logger.debug(`[DEBUG takeTurn] agent=${this.id} skip due to paused`);
+      return false;
+    }
+    // Skip if there are no unread messages.  Log the reason.
+    if (this.inbox.length === 0) {
+      Logger.debug(`[DEBUG takeTurn] agent=${this.id} skip due to empty inbox`);
+      return false;
+    }
+    // Absolute single-flight: if any network call is active, defer our turn.  Log busy/cooling conditions.
     try {
       const t = (globalThis as any).__transport;
-      if (t && typeof t.inflight === "function" && t.inflight() >= 1) return false;
+      if (t && typeof t.inflight === "function" && t.inflight() >= 1) {
+        // Do not skip the turn when the transport is busy; allow the agent to
+        // proceed and queue its network request via __transport.acquire.  We
+        // still emit a debug log to surface the busy condition.
+        Logger.debug(`[DEBUG takeTurn] agent=${this.id} continuing despite __transport busy (inflight=${t.inflight()})`);
+      }
     } catch {}
 
-    // If the user just interjected, let the normal receive path handle it after the skip window.
+    // If the user just interjected, let the normal receive path handle it after the skip window.  Log the skip.
     const __userInterrupt = (globalThis as any).__userInterrupt || { ts: 0 };
     if (Date.now() - (__userInterrupt.ts || 0) < 1500) {
+      Logger.debug(`[DEBUG takeTurn] agent=${this.id} skip due to userInterject`);
       return false;
     }
 
@@ -362,6 +377,14 @@ Do not narrate plans or roles; provide the final answer only.
   }
 
   async receiveMessage(incoming: RoomMessage): Promise<void> {
+    // Log the incoming message for debugging.  Print the sender, recipient (this.id), role and a snippet of the content.
+    try {
+      const from = String(incoming.from || "");
+      const contentSnippet = String(incoming.content || "").slice(0, 100);
+      Logger.debug(`[DEBUG receive] agent=${this.id} from=${from} role=${incoming.role} content=${contentSnippet}`);
+    } catch {
+      // ignore logging errors
+    }
     // --- Fast-path: if the user has taken control, skip this turn entirely
     const PAUSED = Boolean((globalThis as any).__PAUSE_INPUT);
     const userJustInterjected = (Date.now() - __userInterrupt.ts) < 1500;
@@ -464,8 +487,29 @@ Do not narrate plans or roles; provide the final answer only.
         this._defShellTool(),
       ];
 
+      // Debug: log that we are about to invoke runWithTools and show how many
+      // unread messages are being drained.  This helps identify whether
+      // runWithTools is being executed for each agent.
+      try {
+        Logger.debug(
+          `[DEBUG receiveMessage] agent=${this.id} unread=${unreadBatch.length} historyLength=${fullMessageHistory.length}`
+        );
+      } catch {}
+
       const normalizedHistory = this._viewForSelf(fullMessageHistory);
-      const messages = await this.runWithTools(normalizedHistory, tools, (c) => this._execTool(c), 5);
+      let messages: ChatMessage[] = [];
+      try {
+        messages = await this.runWithTools(normalizedHistory, tools, (c) => this._execTool(c), 5);
+      } catch (err) {
+        // Log any errors that occur during runWithTools.  This helps diagnose
+        // silent failures where an agent never produces output.
+        try {
+          Logger.error(
+            `[DEBUG receiveMessage] agent=${this.id} runWithTools threw ${err instanceof Error ? err.message : String(err)}`
+          );
+        } catch {}
+        messages = [];
+      }
       for (const m of messages) {
         const mappedRole = (m.role === 'tool')
           ? 'tool'
@@ -516,6 +560,15 @@ Do not narrate plans or roles; provide the final answer only.
     execTool: (call: ToolCall) => Promise<ChatMessage>, // returns a {role:"tool", name, tool_call_id, content}
     maxHops: number
   ): Promise<ChatMessage[]> {
+    // Log the start of a new runWithTools turn for debugging.  Include the agent id and a snippet of the last user message.
+    try {
+      const lastMsg = messages[messages.length - 1];
+      const lastSnippet = lastMsg ? String(lastMsg.content || "").slice(0, 100) : "";
+      Logger.debug(`[DEBUG runWithTools] agent=${this.id} starting turn. lastMsgFrom=${lastMsg?.from} lastMsgContent=${lastSnippet}`);
+    } catch {
+      // ignore logging errors
+    }
+
     const responses: ChatMessage[] = [];
     const toolOptions = { tools, tool_choice: "auto" as const, num_ctx: 128000 };
 
@@ -561,6 +614,14 @@ Do not narrate plans or roles; provide the final answer only.
     const seenRecently = (sig: string) => recentToolSigs.includes(sig);
 
     for (let hop = 0; hop < maxHops; hop++) {
+      // Debug: log the start of a hop.  This includes the hop index and
+      // whether a user interject was detected.  Provides visibility into
+      // multi-hop conversations.
+      try {
+        Logger.debug(
+          `[DEBUG runWithTools] agent=${this.id} hop=${hop} currentMessages=${currentMessages.length}`
+        );
+      } catch {}
       // If the user just interjected, yield this turn so the new message is handled ASAP.
       if (Date.now() - __userInterrupt.ts < 1500) {
         responses.push({
@@ -605,22 +666,47 @@ Do not narrate plans or roles; provide the final answer only.
 
       let msg: any;
       const invokeChat = async (tempBump = 0) => {
+        // Acquire the transport gate before issuing a chat request
         const releaseNet = await __transport.acquire("chat");
         try {
+          // Assemble options for chatOnce.  Always include the agent's model and
+          // other parameters.  If an upstream base URL override is present via
+          // environment variables, propagate it to chatOnce so that the
+          // transport layer will bypass the compiled-in fallback.  This
+          // explicitly sets opts.baseUrl based on the current process.env
+          // values rather than relying on module-level constants that may
+          // capture stale environment variables.  See multi-agent integration
+          // tests for context.
+          const chatOpts: any = {
+            tools: toolsForHop,
+            tool_choice: toolChoiceForHop,
+            num_ctx: 128000,
+            abortDetectors: detectors,
+            model: this.model,
+            soc: this.socText,
+            temperature: (typeof (undefined as any) === "undefined" ? 1 : 1) + tempBump,
+          };
+          const envBase = (process.env as any).OLLAMA_BASE_URL || (process.env as any).OAI_BASE;
+          if (envBase) {
+            chatOpts.baseUrl = envBase;
+          }
+          // Debug: log when we are about to invoke chatOnce with the
+          // constructed options.  This helps detect whether multiple agents
+          // attempt to call chatOnce and whether they are using the correct
+          // base URL.
+          try {
+            Logger.debug(
+              `[DEBUG runWithTools] agent=${this.id} calling chatOnce baseUrl=${chatOpts.baseUrl || 'default'} model=${chatOpts.model}`
+            );
+          } catch {}
           return await withTimeout(
-            chatOnce(this.id, messagesForHop, {
-              tools: toolsForHop,
-              tool_choice: toolChoiceForHop,
-              num_ctx: 128000,
-              abortDetectors: detectors,
-              model: this.model,
-              soc: this.socText,
-              temperature: (typeof (undefined as any) === "undefined" ? 1 : 1) + tempBump
-            }),
+            chatOnce(this.id, messagesForHop, chatOpts),
             600_000,
             "chatOnce hop timeout"
           ).catch(e => console.error(e));
-        } finally { await releaseNet(); }
+        } finally {
+          await releaseNet();
+        }
       }
       msg = await invokeChat(0);
       // Belt-and-suspenders: trim any leaked control/meta tags from the assistant text.
@@ -831,6 +917,24 @@ Do not narrate plans or roles; provide the final answer only.
 
     if (responses.length === 0) {
       responses.push({ role: "assistant", from: this.id, content: "(no content)", read: true });
+    }
+
+    // Debug: log a summary of the assistant outputs for this agent.  This helps
+    // identify whether both agents are producing messages during integration
+    // tests.  Only print if there is at least one assistant or tool message.
+    try {
+      const parts: string[] = [];
+      for (const m of responses) {
+        if (m.role === "assistant" || m.role === "tool") {
+          const content = String(m.content ?? "").slice(0, 200);
+          parts.push(`${m.role}:${content}`);
+        }
+      }
+      if (parts.length) {
+        Logger.debug(`[DEBUG agent-model] agent=${this.id} outputs=${parts.join(" | ")}`);
+      }
+    } catch {
+      // ignore debug logging errors
     }
     breakerCooldown = 0; breakerReason = null;
     return responses;
