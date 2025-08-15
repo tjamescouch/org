@@ -490,6 +490,8 @@ export async function chatOnce(
     if (DEBUG_STREAM) console.error("RAW:", chunk.replace(/\r/g, "\\r").replace(/\n/g, "\\n"));
     lineBuffer += chunk;
 
+    let firstContent = true;
+
     for (;;) {
       const nl = lineBuffer.indexOf('\n');
       if (nl === -1) break;
@@ -581,8 +583,7 @@ export async function chatOnce(
           // on one line.  Without this, streamed reasoning arrives
           // separated by spaces and newlines, which makes the output look like
           // poetry.  Trimming also removes leading/trailing spaces.
-          const flattenedReason = reasonStr.replace(/\s+/g, ' ').trim();
-          Bun.stdout.write(`${BrightMagentaTag()}${flattenedReason}${Reset()}\n`);
+          Bun.stdout.write(`${BrightMagentaTag()}${reasonStr}${Reset()}`);
           tokenCount++;
         } else {
           emitDot();
@@ -592,6 +593,10 @@ export async function chatOnce(
 
       // Content
       if (contentStr) {
+        if(firstContent) {
+          firstContent = false;
+          console.log("")
+        }
         tokenCount++;
         if (SHOW_THINK) {
           Bun.stdout.write(contentStr);
