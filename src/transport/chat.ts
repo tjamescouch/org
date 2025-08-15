@@ -510,7 +510,8 @@ export async function chatOnce(
       if (reasonStr) {
         if (SHOW_THINK) {
           // Print chain-of-thought in bright magenta and reset colour
-          Bun.stdout.write(`${BrightMagentaTag()}${reasonStr}${Reset()}`);
+          // Append a newline so the next content starts on its own line
+          Bun.stdout.write(`${BrightMagentaTag()}${reasonStr}${Reset()}\n`);
           tokenCount++;
         } else {
           emitDot();

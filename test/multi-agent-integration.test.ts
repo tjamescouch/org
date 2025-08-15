@@ -10,6 +10,7 @@ process.env.OLLAMA_MODEL = 'mock';
 import { ChatRoom } from '../src/core/chat-room';
 import { AgentModel } from '../src/core/entity/agent-model';
 import { TurnManager } from '../src/core/turn-manager';
+import { Logger } from '../src/logger';
 
 /**
  * End‑to‑end integration test that spins up a mock HTTP provider and
@@ -92,6 +93,10 @@ test('multi-agent integration with mock server', async () => {
 
     // We expect each agent to have responded at least once.
     const responders = new Set(transcripts.map(t => t.agent.toLowerCase()));
+    // Emit a debug log of the transcript for diagnosis.  This is
+    // particularly useful when running under a test harness to see
+    // which agents replied and what their content was.
+    Logger.debug('multi-agent transcript', transcripts);
     if (!responders.has('alice') || !responders.has('bob')) {
       throw new Error(`expected replies from both agents, got ${Array.from(responders).join(',')}`);
     }
