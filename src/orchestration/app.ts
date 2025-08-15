@@ -1,4 +1,6 @@
 import "../runtime-fixes/role-fix";
+import "../runtime-fixes/safe-mode";
+import "../runtime-fixes/role-fix";
 import { Logger } from "../logger";
 import { installDebugHooks } from "../core/debug-hooks";
 if (process.env.DEBUG_TRACE === "1") {

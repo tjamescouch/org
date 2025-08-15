@@ -1,3 +1,14 @@
+#!/usr/bin/env bun
+// bootstrap (inserts BEFORE original code)
+import { installDebugHooks } from "./src/core/debug-hooks";
+import "./src/runtime-fixes/role-fix";
+import "./src/runtime-fixes/safe-mode";
+import { Logger } from "./src/logger";
+if (process.env.DEBUG_TRACE === "1") {
+  installDebugHooks().catch(e => console.error("debug-hooks failed:", e));
+}
+Logger.info("org: bootstrap", { argv: process.argv.slice(2) });
+// --- original file follows ---
 import { installDebugHooks } from "./src/core/debug-hooks";
 import "./src/runtime-fixes/role-fix";
 import { Logger } from "./src/logger";
@@ -5,7 +16,6 @@ if (process.env.DEBUG_TRACE === "1") {
   installDebugHooks().catch(e => console.error("debug-hooks failed:", e));
 }
 Logger.info("org: bootstrap", { argv: process.argv.slice(2) });
-#!/usr/bin/env bun
 // org.ts — CLI entry point for the multi‑agent chat application.
 //
 // Usage patterns:

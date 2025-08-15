@@ -10,7 +10,7 @@ export OAI_MODEL="${OAI_MODEL:-mock}"
 export LOG_LEVEL="${LOG_LEVEL:-DEBUG}"
 export SHOW_THINK="${SHOW_THINK:-1}"
 export DEBUG_TRACE="${DEBUG_TRACE:-1}"
-SAFE_MODE="${SAFE_MODE:-}"
+SAFE_MODE="${SAFE_MODE:-0}"
 
 {
   echo "# --- env ---"
@@ -19,7 +19,7 @@ SAFE_MODE="${SAFE_MODE:-}"
   echo "LOG_LEVEL=$LOG_LEVEL"
   echo "SHOW_THINK=$SHOW_THINK"
   echo "DEBUG_TRACE=$DEBUG_TRACE"
-  echo "SAFE_MODE=${SAFE_MODE:-0}"
+  echo "SAFE_MODE=$SAFE_MODE"
 } | tee "$log"
 
 if command -v curl >/dev/null 2>&1; then
@@ -29,16 +29,13 @@ fi
 echo | tee -a "$log"
 
 entry="org.ts"
-if [ ! -f "$entry" ]; then
-  if   [ -f "src/orchestration/app.ts" ]; then entry="src/orchestration/app.ts"
-  elif [ -f "tui.ts" ]; then entry="tui.ts"; fi
-fi
+[ -f "$entry" ] || entry="src/orchestration/app.ts"
 
 cmd=(bun run "$entry"
   --prompt "Debug smoke: please exchange greetings and one follow-up."
   --personas "alice#${OAI_MODEL}#[You are concise],bob#${OAI_MODEL}#[You are helpful]"
 )
-[ "${SAFE_MODE:-0}" = "1" ] && cmd+=("--safe")
+[ "$SAFE_MODE" = "1" ] && cmd+=("--safe")
 
 echo "# running:" "${cmd[@]}" | tee -a "$log"
 echo | tee -a "$log"

@@ -1,7 +1,6 @@
 import { Logger } from "../logger";
 
 function coerceArgs(args: any[]) {
-  // receive(msg) OR receive(from, role, content, meta?)
   if (args.length === 1 && typeof args[0] === "object" && args[0]) {
     const m = args[0];
     if (m && m.role === "user" && m.from && m.from !== "User") {
