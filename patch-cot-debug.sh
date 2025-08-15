@@ -1,3 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "[INFO] add byte/Unicode debug logging for CoT stream (DEBUG_COT=1)"
+
+mkdir -p src/core/utils logs
+
+cat > src/core/utils/stdout-think-flatten.ts <<'TS'
 // Anchorless streaming CoT flattener for stdout, plus optional byte/Unicode logging.
 //
 // Env:
@@ -171,3 +179,10 @@ export function installStdoutThinkFlatten(): void {
   process.on("beforeExit", () => { try { flush(true); dbg?.end(); } catch {} });
 }
 
+TS
+
+# keep your existing test file(s) — no changes needed here
+
+git add -A
+git commit -m "debug(COT): byte/Unicode stream logger + flush/hold notes (DEBUG_COT=1)" || true
+echo "[INFO] Patch applied. Use: DEBUG_COT=1 SHOW_THINK=1 ./run.sh ; then open logs/cot-bytes-*.log"
