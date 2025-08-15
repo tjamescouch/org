@@ -1,3 +1,4 @@
+import "./src/runtime-fixes/bootstrap";
 import { installDebugHooks } from "../core/debug-hooks";
 import "../runtime-fixes/muted-colors";
 import "../runtime-fixes/think-flatten";

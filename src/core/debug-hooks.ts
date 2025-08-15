@@ -1,55 +1,84 @@
-export async function installDebugHooks(): Promise<void> {
-  const MAX = Number(process.env.LOCK_MAX_MS ?? 1300);
+let INSTALLED = false;
 
+export async function installDebugHooks(): Promise<void> {
+  if (INSTALLED) return; INSTALLED = true;
+  const lockMax = Number(process.env.LOCK_MAX_MS ?? 1400);
+  const chatTimeout = Number(process.env.CHAT_CALL_MAX_MS ?? 25000);
+  const serialize = (process.env.SERIALIZE_CHAT ?? "1") !== "0";
+
+  // 3a) ChannelLock watchdog with global registry scan
   try {
     const mod: any = await import("../core/channel-lock");
+    const reg: any[] = (mod.__orgRegistry ??= []);
     const proto = mod?.ChannelLock?.prototype;
-    if (!proto || proto.__orgPatched) return;
-
-    // Ensure a per-instance watchdog
-    const ensureWatchdog = (self: any) => {
-      if (self.__watchdog) return;
-      self.__watchdog = setInterval(() => {
-        // Start clock lazily if we notice a held lock with queue
-        if (self.locked && !self.__heldSince) self.__heldSince = Date.now();
-        if (self.locked && self.queue && self.queue.length > 0 && self.__heldSince) {
-          const age = Date.now() - self.__heldSince;
-          if (age > MAX) {
-            console.debug(`[DEADLOCK] channel-lock held for ${age}ms with queueLength=${self.queue.length}. Forcibly releasing.`);
-            self.locked = false;
-            self.__heldSince = null;
-            const next = self.queue.shift();
-            if (typeof next === "function") { try { next(); } catch {} }
-          }
+    if (proto && !proto.__orgPatch) {
+      const origAcquire = proto.acquire;
+      if (typeof origAcquire === "function") {
+        proto.acquire = function (...a: any[]) {
+          if (!this.__orgRegistered) { reg.push(this); this.__orgRegistered = true; }
+          const p = origAcquire.apply(this, a);
+          try { this.__heldSince = Date.now(); } catch {}
+          return p;
+        };
+      }
+      const unlockName = ["unlock","release","free","unlockAsync"].find(n => typeof proto[n] === "function");
+      if (unlockName) {
+        const origUnlock = proto[unlockName];
+        proto[unlockName] = function (...a: any[]) {
+          this.__heldSince = null;
+          return origUnlock.apply(this, a);
+        };
+      }
+      proto.__orgPatch = true;
+    }
+    if (!mod.__orgSweeper) {
+      mod.__orgSweeper = setInterval(() => {
+        for (const lk of mod.__orgRegistry as any[]) {
+          try {
+            if (lk && lk.locked && lk.queue && lk.queue.length > 0) {
+              if (!lk.__heldSince) lk.__heldSince = Date.now();
+              const age = Date.now() - lk.__heldSince;
+              if (age > lockMax) {
+                console.debug(`[DEADLOCK] channel-lock held for ${age}ms with queueLength=${lk.queue.length}. Forcibly releasing.`);
+                lk.locked = false;
+                lk.__heldSince = null;
+                const next = lk.queue.shift();
+                if (typeof next === "function") { try { next(); } catch {} }
+              }
+            }
+          } catch {}
         }
-      }, Math.min(MAX, 500));
-    };
-
-    const origAcquire = typeof proto.acquire === "function" ? proto.acquire : undefined;
-    const unlockName = ["unlock", "release", "free", "unlockAsync"].find(n => typeof proto[n] === "function");
-    const origUnlock = unlockName ? proto[unlockName] : undefined;
-
-    if (origAcquire) {
-      proto.acquire = function (...args: any[]) {
-        ensureWatchdog(this);
-        const out = origAcquire.apply(this, args);
-        // Try to start clock soon after acquire (covers immediate case)
-        setTimeout(() => { if (this.locked && !this.__heldSince) this.__heldSince = Date.now(); }, 0);
-        return out;
-      };
+      }, Math.min(500, lockMax));
+      console.info(`debug-hooks: ChannelLock watchdog active (MAX ${lockMax} ms)`);
     }
-
-    if (origUnlock) {
-      proto[unlockName!] = function (...args: any[]) {
-        this.__heldSince = null;
-        const out = origUnlock.apply(this, args);
-        return out;
-      };
-    }
-
-    proto.__orgPatched = true;
-    console.info("debug-hooks: ChannelLock watchdog active (MAX", MAX, "ms)");
   } catch (e) {
-    console.warn("debug-hooks: ChannelLock patch skipped:", (e as any)?.message ?? e);
+    console.warn("debug-hooks: ChannelLock watchdog skipped:", (e as any)?.message ?? e);
+  }
+
+  // 3b) chatOnce serialization (single flight) with timeout
+  try {
+    const chatMod: any = await import("../transport/chat");
+    if (serialize && chatMod && typeof chatMod.chatOnce === "function" && !chatMod.__orgGated) {
+      const orig = chatMod.chatOnce.bind(chatMod);
+      let inFlight = false; const waiters: Array<() => void> = [];
+      const gate = async <T>(fn: () => Promise<T>): Promise<T> => {
+        if (inFlight) await new Promise<void>(r => waiters.push(r));
+        inFlight = true;
+        try {
+          return await Promise.race([
+            fn(),
+            new Promise<T>((_, rej) => setTimeout(() => rej(new Error("chatOnce timeout")), chatTimeout)),
+          ]);
+        } finally {
+          inFlight = false;
+          waiters.shift()?.();
+        }
+      };
+      chatMod.chatOnce = (...a: any[]) => gate(() => orig(...a));
+      chatMod.__orgGated = true;
+      console.info(`debug-hooks: chatOnce serialized (timeout ${chatTimeout} ms)`);
+    }
+  } catch (e) {
+    console.warn("debug-hooks: serialize chat skipped:", (e as any)?.message ?? e);
   }
 }

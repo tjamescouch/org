@@ -1,3 +1,4 @@
+import "./src/runtime-fixes/bootstrap";
 #!/usr/bin/env bun
 // bootstrap (inserts BEFORE original code)
 import { installDebugHooks } from "./src/core/debug-hooks";
