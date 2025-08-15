@@ -320,6 +320,11 @@ Do not narrate plans or roles; provide the final answer only.
   // We DO NOT take the channel lock here: receiveMessage() already acquires it.
   // We also avoid enqueuing more unread by using a synthetic system "tick" message.
   public async takeTurn(): Promise<boolean> {
+    // Log the start of a takeTurn call.  Include the agent id and the size of
+    // the unread inbox at entry.  This helps track which agents are being
+    // considered by the scheduler and whether they have messages queued.
+    Logger.debug(`[DEBUG takeTurn] agent=${this.id} starting turn; inbox=${this.inbox.length}`);
+
     // Skip if paused (user control).  Log the reason for debugging.
     if (isPaused()) {
       Logger.debug(`[DEBUG takeTurn] agent=${this.id} skip due to paused`);
@@ -510,6 +515,15 @@ Do not narrate plans or roles; provide the final answer only.
         } catch {}
         messages = [];
       }
+      // Debug: log the result of runWithTools.  Record how many messages were
+      // produced and the roles of those messages.  This helps identify when
+      // an agent produces no output.
+      try {
+        const roles = messages.map(m => m.role).join(',');
+        Logger.debug(
+          `[DEBUG receiveMessage] agent=${this.id} runWithTools returned messages.length=${messages.length} roles=[${roles}]`
+        );
+      } catch {}
       for (const m of messages) {
         const mappedRole = (m.role === 'tool')
           ? 'tool'
@@ -709,6 +723,13 @@ Do not narrate plans or roles; provide the final answer only.
         }
       }
       msg = await invokeChat(0);
+      // Debug: log the result of chatOnce.  Capture the content for inspection.
+      try {
+        const content = (msg && typeof msg.content === 'string') ? msg.content : '';
+        Logger.debug(
+          `[DEBUG runWithTools] agent=${this.id} chatOnce returned content=${content}`
+        );
+      } catch {}
       // Belt-and-suspenders: trim any leaked control/meta tags from the assistant text.
       if (msg && typeof msg.content === "string" && msg.content.length) {
         const san = sanitizeAssistantText(msg.content);
