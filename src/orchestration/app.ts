@@ -1,3 +1,7 @@
+import { installDebugHooks } from "../core/debug-hooks";
+if (process.env.DEBUG_TRACE === "1") {
+  installDebugHooks().catch(e => console.error("debug-hooks failed:", e));
+}
 import { printBanner } from "../ui/banner";
 import { setupKeyInput } from "../ui/key-input";
 // main.ts — Interactive (curses) mode by default; script mode with --no-interactive
