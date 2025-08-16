@@ -21,7 +21,7 @@ export class ExecutionGate {
   }
 
   static async gate(msg: string): Promise<void> {
-    appendDirect(`${BrightRedTag()} Continue? [y/N] ******* ${msg}${Reset()}`);
+    appendDirect(`${BrightRedTag()} Continue? [y/N] ${msg}${Reset()}`);
 
     if (!process.stdin.isTTY && ExecutionGate.mode === ExecutionMode.SAFE) {
       throw new Error("Safe mode and non TTY are not compatible");
@@ -70,7 +70,7 @@ export function setupKeyInput(h: KeyHandlers) {
 // Pause for Enter when safe mode is enabled.  Returns a promise that
 // resolves once the user presses Enter.  If stdin is not a TTY this
 // resolves immediately.
-export function waitForEnter(msg: string): Promise<void> {
+function waitForEnter(msg: string): Promise<void> {
   if (process.stdin.isTTY) {
     return new Promise((resolve, reject) => {
       process.stdin.resume();
