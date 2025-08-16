@@ -2,6 +2,8 @@
 // A small single-flight gate with optional cooldown used to serialize
 // outbound transport calls (model -> provider) and avoid stampedes.
 
+import { ChannelLock } from "./channel-lock";
+
 export interface GateOptions {
   /** Minimum delay between completing one flight and allowing the next (ms). Default: 150ms */
   cooldownMs?: number;
@@ -40,38 +42,48 @@ export class TransportGate {
   private readonly maxInFlight: number;
   private lastRelease = 0;
   private readonly cooldownMs: number;
+  private readonly lock = new ChannelLock(); // ensures atomic check+increment
 
   constructor(opts?: GateOptions) {
     this.maxInFlight = Math.max(1, opts?.maxInFlight ?? 1);
     this.cooldownMs = Math.max(0, opts?.cooldownMs ?? 150);
   }
 
-  /** Wait until a slot is available and honor cooldown spacing. */
-  private async awaitSlot(signal?: AbortSignal) {
-    while (true) {
-      if (signal?.aborted) throw Object.assign(new Error("aborted"), { name: "AbortError" });
-      const now = Date.now();
-
-      const underLimit = this.inFlight < this.maxInFlight;
-      const cooledDown = now - this.lastRelease >= this.cooldownMs;
-
-      if (underLimit && (this.maxInFlight > 1 || cooledDown)) return;
-
-      await delay(15, signal); // avoid spin
-    }
-  }
-
   /** Acquire a flight slot; returns a release() you MUST call. */
   async acquire(signal?: AbortSignal): Promise<() => void> {
-    await this.awaitSlot(signal);
-    this.inFlight++;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.inFlight = Math.max(0, this.inFlight - 1);
-      this.lastRelease = Date.now();
-    };
+    while (true) {
+      if (signal?.aborted) {
+        throw Object.assign(new Error("aborted"), { name: "AbortError" });
+      }
+
+      // Serialize the check-and-increment to avoid the TOCTOU race
+      const unlock = await this.lock.waitForLock();
+      let granted = false;
+      try {
+        const now = Date.now();
+        const underLimit = this.inFlight < this.maxInFlight;
+        const cooledDown = now - this.lastRelease >= this.cooldownMs;
+        if (underLimit && (this.maxInFlight > 1 || cooledDown)) {
+          this.inFlight++;
+          granted = true;
+        }
+      } finally {
+        unlock();
+      }
+
+      if (granted) {
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          // Updates here need not be locked: acquisition is serialized.
+          this.inFlight = Math.max(0, this.inFlight - 1);
+          this.lastRelease = Date.now();
+        };
+      }
+
+      await delay(15, signal); // back off before retry
+    }
   }
 
   /** Run an async function under the gate. */

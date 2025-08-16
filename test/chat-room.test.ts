@@ -1,6 +1,16 @@
-import { test } from 'bun:test';
+import { describe, test, expect } from 'bun:test';
 import { ChatRoom } from '../src/core/chat-room';
 import { Model } from '../src/core/entity/model';
+
+function makeModel(id: string, inbox: any[]): Model {
+  return new (class extends Model {
+    constructor() { super(id); }
+    async receiveMessage(msg: any): Promise<void> {
+      inbox.push({ id: this.id, msg });
+    }
+  })();
+}
+
 
 // A minimal model stub used to register with the ChatRoom. It does nothing
 // with incoming messages.
