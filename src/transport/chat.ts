@@ -32,7 +32,7 @@ function pickBaseUrl(defaultBase?: string): string | undefined {
 }
 
 function isLikelyOpenAI(url: string): boolean {
-  return /openai|api\.openai|slack|v1\/chat/i.test(url);
+  return true;///openai|api\.openai|slack|v1\/chat/i.test(url);
 }
 
 export async function chatOnce(agentId: string, messages: ChatMessage[], opts: ChatOptions = {}): Promise<any> {
