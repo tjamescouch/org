@@ -9,6 +9,7 @@ bin
 build
 *.dat
 *.bin
+*.bak
 openai-patch.sh
 patch-debug.sh
 logs

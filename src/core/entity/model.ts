@@ -39,3 +39,14 @@ try {
     _MP.receiveMessage = function(msg: any) { try { return this.enqueueFromRoom?.(msg); } catch {} };
   }
 } catch {}
+
+// [force] delivery shims: funnel receiveMessage/onRoomMessage to enqueueFromRoom if provided
+try {
+  const _MP: any = (Model as any).prototype;
+  if (typeof _MP.onRoomMessage !== "function") {
+    _MP.onRoomMessage = function(msg: any) { try { return this.enqueueFromRoom?.(msg); } catch {} };
+  }
+  if (typeof _MP.receiveMessage !== "function") {
+    _MP.receiveMessage = function(msg: any) { try { return this.enqueueFromRoom?.(msg); } catch {} };
+  }
+} catch {}
