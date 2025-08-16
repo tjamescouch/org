@@ -1,4 +1,5 @@
 import ChatRoom from "../src/core/chat-room";
+import { __setOpenAIBaseForTests } from '../src/transport/chat';
 import AgentModel from "../src/core/entity/agent-model";
 import { TurnManager } from "../src/core/turn-manager";
 import { startMockLLMServer } from "./mock-llm";
@@ -17,6 +18,7 @@ async function waitUntil(pred: () => boolean, timeoutMs=4000, stepMs=25) {
  */
 test("routes via OpenAI base, then emits @group", async () => {
   const mock = await startMockLLMServer({ mode: "f" });
+__setOpenAIBaseForTests(mock.getBaseUrl ? mock.getBaseUrl() : (mock.baseUrl || mock.url || mock));
   const baseUrl = mock.baseUrl;
 
   const room = new ChatRoom();

@@ -9,8 +9,15 @@ import {
   Reset,
 } from "../constants";
 import { Logger } from "../ui/logger";
-import Logger from "../ui/logger";
 
+
+// ---- test-only base override (no monkey patching) ----
+let __OPENAI_BASE_OVERRIDE_FOR_TESTS: string | null = null;
+
+export function __setOpenAIBaseForTests(url: string | null) {
+  __OPENAI_BASE_OVERRIDE_FOR_TESTS = url;
+}
+// ------------------------------------------------------
 // /Users/jamescouch/dev/llm/org/chat.ts
 // Streaming chat client with immediate per-chunk meta-tag censorship.
 // - Censors leaked control/meta tags in the live stream (placeholder), keeps streaming.
