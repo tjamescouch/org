@@ -209,3 +209,83 @@ export function startToolCallsServer(): MockServer {
     getToolReqs: () => toolReqs,
   };
 }
+
+/**
+ * Install a scoped fetch proxy that redirects any request whose path contains
+ * `/chat/completions` to the local Bun server on `targetPort`. Returns a restore
+ * function to put the original fetch back.
+ *
+ * This avoids reliance on env-based base-URL plumbing and guarantees that the
+ * mock server is actually exercised by the client stack.
+ */
+
+/**
+ * Install a scoped fetch proxy that redirects ANY POST to the local mock server,
+ * unless it is already targeting the mock's host:port. We preserve method, headers,
+ * and forward a cloned body (works for Request and init-body variants).
+ *
+ * Options:
+ *   - verbose: log rewrites for debugging
+ */
+export function installFetchProxy(targetPort: number, opts?: { verbose?: boolean }): () => void {
+  const originalFetch = globalThis.fetch;
+  const verbose = !!opts?.verbose;
+
+  async function extractBody(input: RequestInfo, init?: RequestInit): Promise<BodyInit | null | undefined> {
+    try {
+      if (typeof input === "string" || input instanceof URL) {
+        const b = init?.body;
+        if (b == null) return undefined;
+        // Normalize to text for safety; server only needs JSON-ish structure.
+        try { return typeof b === "string" ? b : await (new Response(b as any)).text(); } catch { return b; }
+      } else {
+        const req = input as Request;
+        // clone() lets us read body even if original will also consume it later
+        try { return await req.clone().text(); } catch { return undefined; }
+      }
+    } catch { return undefined; }
+  }
+
+  function toURLString(input: RequestInfo): string | null {
+    try {
+      if (typeof input === "string") return input;
+      if (input instanceof URL) return input.toString();
+      return (input as Request).url ?? null;
+    } catch { return null; }
+  }
+
+  globalThis.fetch = (async (input: RequestInfo, init?: RequestInit): Promise<Response> => {
+    let urlStr = toURLString(input);
+    try {
+      const method = (init?.method ?? (typeof input !== "string" && !(input instanceof URL) ? (input as Request).method : undefined) ?? "GET").toUpperCase();
+
+      // Only intercept POSTs
+      if (method === "POST") {
+        const url = new URL(urlStr ?? "http://invalid/");
+        // Avoid infinite loop: do not proxy to the proxy
+        const isAlreadyMock = url.hostname === "127.0.0.1" && (url.port === String(targetPort) || url.port === "");
+        if (!isAlreadyMock) {
+          // Rewrite to the mock; any path is accepted by our server
+          const proxied = `http://127.0.0.1:${targetPort}${url.pathname || "/v1/chat/completions"}`;
+          const headers = (init?.headers ?? (typeof input !== "string" && !(input instanceof URL) ? (input as Request).headers : undefined));
+          const body = await extractBody(input, init);
+
+          if (verbose) {
+            try { console.debug?.(`[fetch-proxy] POST ${urlStr} -> ${proxied}`); } catch {}
+          }
+
+          return originalFetch(proxied, {
+            method: "POST",
+            headers,
+            body,
+          });
+        }
+      }
+    } catch {
+      // fall through
+    }
+    return originalFetch(input as any, init as any);
+  }) as typeof globalThis.fetch;
+
+  return () => { globalThis.fetch = originalFetch; };
+}

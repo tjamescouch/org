@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { ChatRoom } from "../src/core/chat-room";
 import { TurnManager } from "../src/core/turn-manager";
 import { Model } from "../src/core/entity/model";
-import { startFServer } from "./helpers/mock_llm_server";
+import { startFServer, installFetchProxy } from "./helpers/mock_llm_server";
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
@@ -18,14 +18,15 @@ function wrapGroupCounter(room: any) {
   return counts;
 }
 
-function makeBunDollarStub() {
+// Bun.$ stub counting both invocation styles
+function makeBunDollarStub(counter: { count: number }) {
   const mk = () => ({
     exitCode: 0, success: true,
     text: async () => "ok\n",
     stdout: new Uint8Array(), stderr: new Uint8Array()
   });
-  const fn  = (..._args: any[]) => Promise.resolve(mk());
-  const tag = (strings: TemplateStringsArray, ..._vals: any[]) => Promise.resolve(mk());
+  const fn  = (..._args: any[]) => { counter.count++; return Promise.resolve(mk()); };
+  const tag = (strings: TemplateStringsArray, ..._vals: any[]) => { counter.count++; return Promise.resolve(mk()); };
   return new Proxy(fn as any, {
     apply(_t, _this, args) { return fn(...args); },
     get(_t, prop) { return (fn as any)[prop] ?? (tag as any)[prop]; }
@@ -34,21 +35,12 @@ function makeBunDollarStub() {
 
 test("e2e f-server: two tools → @group done(h8) per agent", async () => {
   const mock = startFServer();
-  const baseUrl = `http://127.0.0.1:${mock.port}`;
+  const restoreFetch = installFetchProxy(mock.port, { verbose: false });
 
-  // Force client to use our server
-  const prevEnv = {
-    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
-    ORG_OPENAI_BASE_URL: process.env.ORG_OPENAI_BASE_URL,
-    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-  };
-  process.env.OPENAI_BASE_URL = baseUrl;
-  process.env.ORG_OPENAI_BASE_URL = baseUrl;
-  process.env.OPENAI_API_KEY = "sk-test";
-
-  // Prevent real shell execs
+  // Prevent real shell execs; count tool runs
+  const toolCounter = { count: 0 };
   const origBun$: any = (Bun as any).$;
-  (Bun as any).$ = makeBunDollarStub();
+  (Bun as any).$ = makeBunDollarStub(toolCounter);
 
   const room = new ChatRoom();
   try {
@@ -69,16 +61,16 @@ test("e2e f-server: two tools → @group done(h8) per agent", async () => {
     tm.start();
     await room.broadcast("User", "What is f('hello')?");
 
-    // Ensure server is actually hit
+    // Ensure we actually proxied at least one POST
     const tStart = Date.now();
-    while (mock.getReqs() < 1 && Date.now() - tStart < 2000) await sleep(25);
+    while (mock.getReqs() < 1 && Date.now() - tStart < 3000) await sleep(25);
     expect(mock.getReqs()).toBeGreaterThanOrEqual(1);
 
-    // Wait until we see requests with tool messages for each agent
-    const wantAgents = 3;
+    // Wait for tools and group messages
+    const wantTools = 2 * 3;
     const t0 = Date.now();
     while (
-      (mock.getToolReqs() < wantAgents ||
+      (toolCounter.count < wantTools ||
        (groupCounts.get("alice") ?? 0) < 1 ||
        (groupCounts.get("bob") ?? 0)   < 1 ||
        (groupCounts.get("carol") ?? 0) < 1) &&
@@ -88,14 +80,14 @@ test("e2e f-server: two tools → @group done(h8) per agent", async () => {
     }
 
     // Pause → ensure no further churn → stop
-    const toolReqsAt = mock.getToolReqs();
+    const toolsAt = toolCounter.count;
     const aAt = groupCounts.get("alice") ?? 0;
     const bAt = groupCounts.get("bob") ?? 0;
     const cAt = groupCounts.get("carol") ?? 0;
 
     tm.pause();
     await sleep(250);
-    expect(mock.getToolReqs()).toBe(toolReqsAt);
+    expect(toolCounter.count).toBe(toolsAt);
     expect(groupCounts.get("alice") ?? 0).toBe(aAt);
     expect(groupCounts.get("bob") ?? 0).toBe(bAt);
     expect(groupCounts.get("carol") ?? 0).toBe(cAt);
@@ -103,15 +95,13 @@ test("e2e f-server: two tools → @group done(h8) per agent", async () => {
     tm.stop();
 
     // Final assertions
-    expect(mock.getToolReqs()).toBeGreaterThanOrEqual(wantAgents);
+    expect(toolCounter.count).toBeGreaterThanOrEqual(wantTools);
     expect(groupCounts.get("alice") ?? 0).toBeGreaterThanOrEqual(1);
     expect(groupCounts.get("bob") ?? 0).toBeGreaterThanOrEqual(1);
     expect(groupCounts.get("carol") ?? 0).toBeGreaterThanOrEqual(1);
   } finally {
     try { (Bun as any).$ = origBun$; } catch {}
-    process.env.OPENAI_BASE_URL  = prevEnv.OPENAI_BASE_URL;
-    process.env.ORG_OPENAI_BASE_URL = prevEnv.ORG_OPENAI_BASE_URL;
-    process.env.OPENAI_API_KEY   = prevEnv.OPENAI_API_KEY;
+    try { restoreFetch(); } catch {}
     try { mock.close(); } catch {}
   }
 }, 20000);

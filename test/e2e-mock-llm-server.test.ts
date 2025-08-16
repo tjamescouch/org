@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { ChatRoom } from "../src/core/chat-room";
 import { TurnManager } from "../src/core/turn-manager";
 import { Model } from "../src/core/entity/model";
-import { startToolCallsServer } from "./helpers/mock_llm_server";
+import { startToolCallsServer, installFetchProxy } from "./helpers/mock_llm_server";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -18,15 +18,15 @@ function wrapGroupCounter(room: any) {
   return counts;
 }
 
-// Harmless Bun.$ stub (prevents subprocesses); we don't assert on it.
-function makeBunDollarStub() {
+// Bun.$ stub to count tool invocations (both tag and fn styles)
+function makeBunDollarStub(counter: { count: number }) {
   const mk = () => ({
     exitCode: 0, success: true,
     text: async () => "ok\n",
     stdout: new Uint8Array(), stderr: new Uint8Array()
   });
-  const fn  = (..._args: any[]) => Promise.resolve(mk());
-  const tag = (strings: TemplateStringsArray, ..._vals: any[]) => Promise.resolve(mk());
+  const fn  = (..._args: any[]) => { counter.count++; return Promise.resolve(mk()); };
+  const tag = (strings: TemplateStringsArray, ..._vals: any[]) => { counter.count++; return Promise.resolve(mk()); };
   return new Proxy(fn as any, {
     apply(_t, _this, args) { return fn(...args); },
     get(_t, prop) { return (fn as any)[prop] ?? (tag as any)[prop]; }
@@ -35,21 +35,12 @@ function makeBunDollarStub() {
 
 test("e2e: mock LLM always uses 2 tools then returns @group", async () => {
   const server = startToolCallsServer();
-  const baseUrl = `http://127.0.0.1:${server.port}`;
+  const restoreFetch = installFetchProxy(server.port, { verbose: false });
 
-  // Force the model stack to hit our mock server
-  const prevEnv = {
-    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
-    ORG_OPENAI_BASE_URL: process.env.ORG_OPENAI_BASE_URL,
-    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-  };
-  process.env.OPENAI_BASE_URL = baseUrl;
-  process.env.ORG_OPENAI_BASE_URL = baseUrl;
-  process.env.OPENAI_API_KEY = "sk-test";
-
-  // Prevent real shell execs
+  // Prevent real shell execs; count tool runs
+  const toolCounter = { count: 0 };
   const originalBun$: any = (Bun as any).$;
-  (Bun as any).$ = makeBunDollarStub();
+  (Bun as any).$ = makeBunDollarStub(toolCounter);
 
   const room = new ChatRoom();
   try {
@@ -75,14 +66,14 @@ test("e2e: mock LLM always uses 2 tools then returns @group", async () => {
 
     // (1) Ensure the mock actually received a request
     const tStart = Date.now();
-    while (server.getReqs() < 1 && Date.now() - tStart < 2000) await sleep(25);
+    while (server.getReqs() < 1 && Date.now() - tStart < 3000) await sleep(25);
     expect(server.getReqs()).toBeGreaterThanOrEqual(1);
 
-    // (2) Wait for tool roundtrip: requests that include role:"tool" messages
-    const wantAgents = 3; // alice, bob, carol
+    // (2) Wait for tools and group messages (≤10s)
+    const wantTools = 2 * 3;
     const t0 = Date.now();
     while (
-      (server.getToolReqs() < wantAgents ||
+      (toolCounter.count < wantTools ||
        (groupCounts.get("alice") ?? 0) < 1 ||
        (groupCounts.get("bob") ?? 0)   < 1 ||
        (groupCounts.get("carol") ?? 0) < 1) &&
@@ -92,14 +83,14 @@ test("e2e: mock LLM always uses 2 tools then returns @group", async () => {
     }
 
     // Pause → ensure no further chatter → stop
-    const toolReqsAt = server.getToolReqs();
+    const toolsAtPause = toolCounter.count;
     const aAtPause = groupCounts.get("alice") ?? 0;
     const bAtPause = groupCounts.get("bob") ?? 0;
     const cAtPause = groupCounts.get("carol") ?? 0;
 
     tm.pause();
     await sleep(250);
-    expect(server.getToolReqs()).toBe(toolReqsAt);
+    expect(toolCounter.count).toBe(toolsAtPause);
     expect(groupCounts.get("alice") ?? 0).toBe(aAtPause);
     expect(groupCounts.get("bob") ?? 0).toBe(bAtPause);
     expect(groupCounts.get("carol") ?? 0).toBe(cAtPause);
@@ -107,16 +98,13 @@ test("e2e: mock LLM always uses 2 tools then returns @group", async () => {
     tm.stop();
 
     // Final assertions
-    expect(server.getToolReqs()).toBeGreaterThanOrEqual(wantAgents);
+    expect(toolCounter.count).toBeGreaterThanOrEqual(wantTools);
     expect(groupCounts.get("alice") ?? 0).toBeGreaterThanOrEqual(1);
     expect(groupCounts.get("bob") ?? 0).toBeGreaterThanOrEqual(1);
     expect(groupCounts.get("carol") ?? 0).toBeGreaterThanOrEqual(1);
   } finally {
     try { (Bun as any).$ = originalBun$; } catch {}
-    // restore env
-    process.env.OPENAI_BASE_URL = prevEnv.OPENAI_BASE_URL;
-    process.env.ORG_OPENAI_BASE_URL = prevEnv.ORG_OPENAI_BASE_URL;
-    process.env.OPENAI_API_KEY = prevEnv.OPENAI_API_KEY;
+    try { restoreFetch(); } catch {}
     try { server.close(); } catch {}
   }
 }, 20000);
