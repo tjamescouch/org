@@ -287,3 +287,48 @@ if (this.paused) return;
     try { console.debug?.("[tm/watchdog] error:", String(e && (e.stack || e))); } catch {}
   }
 };
+
+// [confirm-rotation hook]
+// This runtime hook advances the round-robin pointer while the process waits
+// on a user confirmation prompt (SAFE tool approval). It avoids starvation
+// when one agent (e.g., Alice) is stalled on approval, allowing others to run.
+try {
+  const P: any = (TurnManager as any).prototype;
+  if (!P.__confirmRotationHookInstalled) {
+    P.__confirmRotationHookInstalled = true;
+
+    const _start = P.start;
+    const _stop  = P.stop;
+
+    P.start = function(...args: any[]) {
+      const rv = _start.apply(this, args);
+      try {
+        // Poll modestly; keep overhead minimal.
+        const self = this as any;
+        if (!self.__confirmRotateTimer) {
+          self.__confirmRotateTimer = setInterval(() => {
+            try {
+              if ((globalThis as any).__AWAITING_CONFIRM && Array.isArray(self.agents) && self.agents.length > 1) {
+                // Advance round-robin cursor; different builds name it differently.
+                if (typeof self._rr === "number")      { self._rr = (self._rr + 1) % self.agents.length; }
+                else if (typeof self.rr === "number")  { self.rr  = (self.rr  + 1) % self.agents.length; }
+                else if (typeof self.cursor === "number") { self.cursor = (self.cursor + 1) % self.agents.length; }
+              }
+            } catch {}
+          }, 75);
+        }
+      } catch {}
+      return rv;
+    };
+
+    P.stop = function(...args: any[]) {
+      try {
+        if ((this as any).__confirmRotateTimer) {
+          clearInterval((this as any).__confirmRotateTimer);
+          (this as any).__confirmRotateTimer = null;
+        }
+      } catch {}
+      return _stop.apply(this, args);
+    };
+  }
+} catch {}
