@@ -1,4 +1,5 @@
 import { globalTurnMutex, shouldSerialize } from "../core/turn-mutex";
+import { installSafeMode } from "../runtime/safe-mode";
 import { installStdoutBytesTap } from "../core/utils/stdout-bytes-tap";
 import { installStdoutThinkFlatten } from "../core/utils/stdout-think-flatten";
 if (shouldSerialize) {
@@ -21,3 +22,4 @@ export async function bootstrapApp(argv: string[]) {
   // The actual app entrypoint is in org.ts; we keep this tiny to guarantee
   // stdout hooks are active first.
 }
+if (process.env.SAFE_MODE === "1" || process.argv.includes("--safe")) installSafeMode();
