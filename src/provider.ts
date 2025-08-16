@@ -1,4 +1,5 @@
 import type { ChatMessage, ToolCall } from './types';
+import { sleep } from './utils/sleep';
 
 /** A tiny provider abstraction so we can swap mock for real later. */
 export interface Provider {
@@ -15,6 +16,8 @@ export interface Provider {
  */
 export class MockProvider implements Provider {
   async chat(messages: ChatMessage[], _opts: { model: string }) {
+    await sleep(1000);
+
     const last = messages[messages.length - 1];
     const text = String(last?.content || '').toLowerCase();
     const calls: ToolCall[] = [];
