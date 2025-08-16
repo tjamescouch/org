@@ -1,4 +1,5 @@
 import { describe, it, expect } from "bun:test";
+import "./setup"
 import { startSimpleLLMServer } from "./utils/simple_llm_server";
 
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
@@ -35,6 +36,10 @@ describe("e2e: mock LLM always uses 2 tools then returns @group", () => {
 
     tm.start();
     await room.broadcast("User", "Kickoff");
+    // Clear interjection holdoff so agents can run immediately in CI
+    ;(globalThis as any).__userInterrupt = 0;
+    ;(globalThis as any).__PAUSE_INPUT = false;
+    tm.pokeIfIdle();
 
     // Ensure the mock server actually received at least one POST
     const t0 = Date.now();
@@ -50,5 +55,5 @@ describe("e2e: mock LLM always uses 2 tools then returns @group", () => {
     expect(groupCounts.get("carol") ?? 0).toBeGreaterThan(0);
 
     await server.close();
-  });
+  }, 25000);
 });

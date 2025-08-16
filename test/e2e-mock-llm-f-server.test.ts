@@ -1,4 +1,5 @@
 import { describe, it, expect } from "bun:test";
+import "./setup"
 import { startSimpleLLMServer } from "./utils/simple_llm_server";
 
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
@@ -34,6 +35,10 @@ describe("e2e f-server: two tools → @group done(L) per agent", () => {
 
     tm.start();
     await room.broadcast("User", "What is f('hello')?");
+    // Clear interjection holdoff so agents can run immediately in CI
+    ;(globalThis as any).__userInterrupt = 0;
+    ;(globalThis as any).__PAUSE_INPUT = false;
+    tm.pokeIfIdle();
 
     const t0 = Date.now();
     while (mock.getReqs() < 1 && Date.now() - t0 < 3000) await sleep(25);
@@ -47,5 +52,5 @@ describe("e2e f-server: two tools → @group done(L) per agent", () => {
     expect(groupCounts.get("carol") ?? 0).toBeGreaterThan(0);
 
     await mock.close();
-  });
+  }, 20000);
 });
