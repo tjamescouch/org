@@ -98,6 +98,7 @@ export class ChannelLock {
       if (timeout > 0) {
         me.timeoutId = setTimeout(() => {
           // Remove from queue if still waiting
+          console.error("Chanel lock TIMEOUT");
           const i = this.queue.findIndex(q => q.id === me.id);
           if (i >= 0) this.queue.splice(i, 1);
           reject(new Error("ChannelLock timeout"));

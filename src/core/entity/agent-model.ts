@@ -2,7 +2,9 @@ import { globalTurnMutex, shouldSerialize } from "./turn-mutex";
 // --- Global pause helpers (for user input) ---
 const isPaused = () => Boolean((globalThis as any).__PAUSE_INPUT);
 const waitWhilePaused = async () => {
-  while (isPaused()) { await new Promise(r => setTimeout(r, 50)); }
+  while (isPaused()) { 
+    await new Promise(r => setTimeout(r, 50)); 
+  }
 };
 // --- Lightweight wrappers for unified logging ---
 const __g: any = (globalThis as any) || {};
@@ -415,7 +417,7 @@ Do not narrate plans or roles; provide the final answer only.
     this._enqueue({ ...incoming, read: false });
 
     // Acquire the shared channel lock up-front so summarizeOnce and chatOnce do not overlap across agents
-    const release = await channelLock.waitForLock(15 * 60 * 1000);
+    const release = await channelLock.waitForLock(10 * 1000);
     // Guard again after acquiring the lock in case control changed while waiting
     if (Boolean((globalThis as any).__PAUSE_INPUT) || (Date.now() - __userInterrupt.ts) < 1500) {
       release();
