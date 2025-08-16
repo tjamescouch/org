@@ -40,6 +40,12 @@ async function main() {
   const agentObjs = agents.map(({id, model}) => new Agent(id, model, provider));
 
   const sched = new RoundRobinScheduler(agentObjs, maxTools);
+
+  // NEW: wire agent -> scheduler speak callback
+  for (const a of agentObjs) {
+    a.setOnSpeak((fromId, text) => sched.speak(fromId, text));
+  }
+
   const input = new InputController(sched);
 
   await input.askInitial();
@@ -49,4 +55,3 @@ async function main() {
 }
 
 main().catch(err => { Logger.error(err); process.exit(1); });
-

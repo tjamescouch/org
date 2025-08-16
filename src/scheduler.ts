@@ -1,5 +1,6 @@
 import { Agent } from './agent';
 
+/** Focus: round-robin scheduling and simple group broadcast. */
 export class RoundRobinScheduler {
   private agents: Agent[];
   private maxTools: number;
@@ -11,8 +12,16 @@ export class RoundRobinScheduler {
     this.maxTools = maxToolsPerTurn;
   }
 
+  /** Enqueue a user prompt to all agents. */
   broadcastUserPrompt(text: string) {
     for (const a of this.agents) a.receiveUserPrompt(text);
+  }
+
+  /** Called by agents when they "speak". Fan out to everyone else. */
+  speak(fromId: string, text: string) {
+    for (const a of this.agents) {
+      if (a['id'] !== fromId) a.receiveUserPrompt(`${fromId}: ${text}`);
+    }
   }
 
   pause() { this.paused = true; }
@@ -31,6 +40,7 @@ export class RoundRobinScheduler {
         }
       }
       if (!anyWork) {
+        // brief idle wait to avoid busy spin
         await new Promise(r => setTimeout(r, 50));
       }
     }
@@ -38,4 +48,3 @@ export class RoundRobinScheduler {
 
   stop() { this.running = false; }
 }
-
