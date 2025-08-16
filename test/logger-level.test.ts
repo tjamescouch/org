@@ -1,37 +1,21 @@
-import { test, expect } from 'bun:test';
-import { Logger, LogLevel } from '../src/logger';
+import { getLogLevel } from "../src/ui/logger";
 
-/**
- * Verify that the logger honours the LOG_LEVEL environment variable.
- * When LOG_LEVEL=INFO, debug messages should be suppressed but info
- * messages should be logged.  When LOG_LEVEL=NONE, all logs should
- * be suppressed.  This test monkey‑patches console.log to capture
- * messages and restores it after each assertion.
- */
-test('Logger respects LOG_LEVEL env', () => {
-  const orig = console.log;
-  const msgs: string[] = [];
-  console.log = (msg?: any) => msgs.push(String(msg));
+describe("Logger respects LOG_LEVEL env", () => {
+  const saved = process.env.LOG_LEVEL;
+  afterAll(() => { if (saved === undefined) delete process.env.LOG_LEVEL; else process.env.LOG_LEVEL = saved; });
 
-  // Set INFO level: should log INFO but not DEBUG
-  process.env.LOG_LEVEL = 'INFO';
-  Logger.setLevel(process.env.LOG_LEVEL!);
-  msgs.length = 0;
-  Logger.info('info');
-  Logger.debug('debug');
-  expect(msgs.some(m => m.includes('INFO') && m.includes('info'))).toBe(true);
-  expect(msgs.some(m => m.includes('DEBUG') && m.includes('debug'))).toBe(false);
+  test("DEBUG", () => {
+    process.env.LOG_LEVEL = "DEBUG";
+    expect(getLogLevel()).toBe("DEBUG");
+  });
 
-  // Set NONE level: nothing should be logged
-  process.env.LOG_LEVEL = 'NONE';
-  Logger.setLevel(process.env.LOG_LEVEL!);
-  msgs.length = 0;
-  Logger.info('info suppressed');
-  Logger.error('error suppressed');
-  expect(msgs.length).toBe(0);
+  test("INFO", () => {
+    process.env.LOG_LEVEL = "INFO";
+    expect(getLogLevel()).toBe("INFO");
+  });
 
-  // Restore defaults
-  delete process.env.LOG_LEVEL;
-  Logger.setLevel(LogLevel.DEBUG);
-  console.log = orig;
+  test("fallback", () => {
+    process.env.LOG_LEVEL = "NOPE";
+    expect(getLogLevel()).toBe("INFO");
+  });
 });

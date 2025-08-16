@@ -1,7 +1,7 @@
 // turn-manager.ts
 import type { ChatRoom } from "./chat-room";
 import type { AgentModel } from "./entity/agent-model";
-import { Logger } from "../logger";
+import { Logger } from "../ui/logger";
 
 // Time-bounded user-control gate (set by main.ts during interject)
 function userControlActive(): boolean {
@@ -23,6 +23,12 @@ export interface TurnManagerOpts {
 }
 
 export class TurnManager {
+  private __kickPending = false;
+  private __kickSoon() {
+    if (this.__kickPending) return;
+    this.__kickPending = true;
+    setTimeout(() => { this.__kickPending = false; try { this.run?.(); } catch {} }, 0);
+  }
   private i = 0;
   private timer: NodeJS.Timeout | null = null;
   private running: boolean[] = [];
@@ -136,6 +142,8 @@ export class TurnManager {
 
       try {
         const didWork = await agent.takeTurn();
+      // ensure next agent gets scheduled promptly
+      this.__kickSoon();
         didSchedule = true;
         this.lastAnyWorkTs = Date.now();
 

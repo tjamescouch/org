@@ -1,3 +1,4 @@
+import { globalTurnMutex, shouldSerialize } from "./turn-mutex";
 // --- Global pause helpers (for user input) ---
 const isPaused = () => Boolean((globalThis as any).__PAUSE_INPUT);
 const waitWhilePaused = async () => {
@@ -55,10 +56,12 @@ const __transport = ((globalThis as any).__transport ||= {
     };
   }
 });
-const logLine = (s: string) => { (console.log)(s); };
-const logErr  = (s: string) => { ( console.error)(s); };
-const appendDirect = (s: string) => { ( ((x: string)=>console.log(x)))(s.endsWith("\n")?s:(s+"\n")); };
-const stamp = () => new Date().toLocaleTimeString();
+
+//Fixme - move to something in ui
+export const logLine = (s: string) => { (console.log)(s); };
+export const logErr  = (s: string) => { ( console.error)(s); };
+export const appendDirect = (s: string) => { ( ((x: string)=>console.log(x)))(s.endsWith("\n")?s:(s+"\n")); };
+export const stamp = () => new Date().toLocaleTimeString();
 
 const SHOW_THINK = (process.env.SHOW_THINK === "1" || process.env.SHOW_THINK === "true");
 
@@ -109,7 +112,8 @@ import {
 import type { ChatMessage, ToolCall, ToolDef } from "../../types";
 import type { ChatRoom, RoomMessage } from "../chat-room";
 import { chatOnce, summarizeOnce } from "../../transport/chat";
-import { Logger } from "../../logger";
+import { waitForEnter } from "../../ui/key-input";
+import { Logger } from "../../ui/logger";
 
 type Audience =
   | { kind: "group"; target: "*" } | { kind: "direct"; target: string }      // send only to a given model
@@ -986,6 +990,8 @@ Do not narrate plans or roles; provide the final answer only.
   private async _runShell(functionName: string, { cmd, rawCmd }: { cmd: string, rawCmd?: string }): Promise<{role: string, name: string, content: string}> {
 
     const timeout = Math.max(1, Number(this.shellTimeout));
+
+    await waitForEnter(`Agent wants to run: sh ${cmd ?? rawCmd} @ ${stamp()}`);
 
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), (timeout + 1) * 1000);

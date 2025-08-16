@@ -1,4 +1,4 @@
-import { Logger } from "../logger";
+import { Logger } from "./logger";
 
 export function printBanner(opts?: { safe?: boolean }) {
   const safe = !!opts?.safe;

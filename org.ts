@@ -1,4 +1,57 @@
 #!/usr/bin/env bun
+import { installSafeExecHook } from "./src/core/hooks/safe-exec-hook";
+installSafeExecHook();
+
+// /* argv shim: read '-' from stdin */
+import { readFileSync } from "node:fs";
+
+(function argvShim(){
+  try {
+    // If "-" is present, read stdin fully and inject as --prompt
+    const wantsStdin = process.argv.includes("-");
+    if (wantsStdin) {
+      const data = readFileSync(0); // fd 0
+      const s = data.toString("utf8");
+      const prompt = s.replace(/\r\n/g, "\n");
+      // only inject if caller didn't also provide --prompt explicitly
+      if (!process.argv.some(a => a === "--prompt")) {
+        process.argv.push("--prompt", prompt);
+      }
+    }
+  } catch {}
+})();
+
+// /* org.ts auto-prompt shim */  // keeps app functional when run with no args
+try {
+  // If launched without --prompt but PROMPT is present, inject it.
+  const hasPromptArg = process.argv.some(a => a === "--prompt");
+  const envPrompt = (process.env.PROMPT || "").trim();
+  if (!hasPromptArg && envPrompt.length > 0) {
+    process.argv.push("--prompt", envPrompt);
+  }
+} catch {}
+
+
+import { shouldSerialize } from "./src/core/turn-mutex";
+if (shouldSerialize) try { console.log("[INFO ] round-robin serializer: SERIALIZE_CHAT=1 (one LLM call at a time)"); } catch {}
+import "./src/runtime-fixes/bootstrap";
+
+// bootstrap (inserts BEFORE original code)
+import { installDebugHooks } from "./src/core/debug-hooks";
+import "./src/runtime-fixes/role-fix";
+import { Logger } from "./src/ui/logger";
+if (process.env.DEBUG_TRACE === "1") {
+  installDebugHooks().catch(e => console.error("debug-hooks failed:", e));
+}
+Logger.info("org: bootstrap", { argv: process.argv.slice(2) });
+// --- original file follows ---
+import { installDebugHooks } from "./src/core/debug-hooks";
+import "./src/runtime-fixes/role-fix";
+import { Logger } from "./src/ui/logger";
+if (process.env.DEBUG_TRACE === "1") {
+  installDebugHooks().catch(e => console.error("debug-hooks failed:", e));
+}
+Logger.info("org: bootstrap", { argv: process.argv.slice(2) });
 // org.ts — CLI entry point for the multi‑agent chat application.
 //
 // Usage patterns:
@@ -72,20 +125,6 @@ function parsePersonas(str: string | undefined, defaultModel: string): PersonaSp
   });
 }
 
-// Pause for Enter when safe mode is enabled.  Returns a promise that
-// resolves once the user presses Enter.  If stdin is not a TTY this
-// resolves immediately.
-function waitForEnter(): Promise<void> {
-  if (!process.stdin.isTTY) return Promise.resolve();
-  return new Promise(resolve => {
-    process.stdout.write('Press Enter to continue...');
-    process.stdin.resume();
-    process.stdin.once('data', () => {
-      resolve();
-    });
-  });
-}
-
 async function main() {
   const argv = process.argv.slice(2);
   const opts = parseArgs(argv);
@@ -152,9 +191,6 @@ async function main() {
 
   // For each agent, optionally wait for user confirmation in safe mode
   for (const agent of agents) {
-    if (safe) {
-      await waitForEnter();
-    }
     await (agent as any).takeTurn();
   }
 
@@ -172,7 +208,6 @@ async function main() {
   // Send prompt again to ensure transcripts capture this run
   await room.broadcast('User', prompt);
   for (const agent of agents) {
-    if (safe) await waitForEnter();
     await (agent as any).takeTurn();
   }
 

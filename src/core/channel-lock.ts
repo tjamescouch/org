@@ -1,7 +1,35 @@
 // ChannelLock.ts
-import { Logger } from "../logger";
+import { Logger } from "../ui/logger";
 
 export class ChannelLock {
+  /* watchdog: force-release after max ms */
+  private __wdTimer: ReturnType<typeof setTimeout> | null = null;
+  private __wdMaxMs: number = Number(process.env.LOCK_MAX_MS ?? "1500");
+  private __wdArm(holder: string){
+    if(this.__wdTimer){ clearTimeout(this.__wdTimer); this.__wdTimer = null; }
+    if(this.__wdMaxMs > 0){
+      const ms = this.__wdMaxMs;
+      this.__wdTimer = setTimeout(() => {
+        try {
+          this.logger?.debug?.(`[DEBUG channel-lock] watchdog firing after ${ms}ms; forcibly releasing holder=${holder} queueLength=${this.queue?.length ?? 0}`);
+        } catch {}
+        try {
+          // prefer a safe release path if available
+          // if class provides forceRelease use it; else call release()
+          // @ts-ignore
+          if (typeof this.forceRelease === "function") {
+            // @ts-ignore
+            this.forceRelease("watchdog");
+          } else {
+            // @ts-ignore
+            this.release("watchdog");
+          }
+        } catch {}
+        this.__wdTimer = null;
+      }, ms);
+    }
+  }
+  private __wdDisarm(){ if(this.__wdTimer){ clearTimeout(this.__wdTimer); this.__wdTimer=null; } }
   private locked = false;
   private queue: Array<{
     give: (release: () => void) => void;

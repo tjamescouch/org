@@ -11,3 +11,5 @@ build
 *.bin
 openai-patch.sh
 patch-debug.sh
+logs
+patch.sh
