@@ -1,5 +1,23 @@
 #!/usr/bin/env bun
 
+// /* argv shim: read '-' from stdin */
+import { readFileSync } from "node:fs";
+
+(function argvShim(){
+  try {
+    // If "-" is present, read stdin fully and inject as --prompt
+    const wantsStdin = process.argv.includes("-");
+    if (wantsStdin) {
+      const data = readFileSync(0); // fd 0
+      const s = data.toString("utf8");
+      const prompt = s.replace(/\r\n/g, "\n");
+      // only inject if caller didn't also provide --prompt explicitly
+      if (!process.argv.some(a => a === "--prompt")) {
+        process.argv.push("--prompt", prompt);
+      }
+    }
+  } catch {}
+})();
 
 // /* org.ts auto-prompt shim */  // keeps app functional when run with no args
 try {
