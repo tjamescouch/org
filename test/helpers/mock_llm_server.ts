@@ -271,7 +271,7 @@ export function installFetchProxy(targetPort: number, opts?: { verbose?: boolean
           const body = await extractBody(input, init);
 
           if (verbose) {
-            try { console.debug?.(`[fetch-proxy] POST ${urlStr} -> ${proxied}`); } catch {}
+            try { console.debug?.(`[fetch-proxy] POST ${urlStr} -> ${proxied}`); } catch (e) { console.error(e) }
           }
 
           return originalFetch(proxied, {
@@ -337,7 +337,7 @@ export function installFetchProxyV2(targetPort: number, opts?: { verbose?: boole
           const headers = init?.headers ?? (typeof input !== "string" && !(input instanceof URL) ? (input as Request).headers : undefined);
           const body = await extractBody(input, init);
           if (verbose) {
-            try { console.debug?.(`[fetch-proxy] POST ${urlStr} -> ${proxied}`); } catch {}
+            try { console.debug?.(`[fetch-proxy] POST ${urlStr} -> ${proxied}`); } catch (e) { console.error(e) }
           }
           return originalFetch(proxied, { method: "POST", headers, body });
         }

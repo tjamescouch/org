@@ -3,7 +3,7 @@ import { installSafeMode } from "../runtime/safe-mode";
 import { installStdoutBytesTap } from "../core/utils/stdout-bytes-tap";
 import { installStdoutThinkFlatten } from "../core/utils/stdout-think-flatten";
 if (shouldSerialize) {
-  try { console.log("[INFO ] round-robin serializer: SERIALIZE_CHAT=1 (one LLM call at a time)"); } catch {}
+  try { console.log("[INFO ] round-robin serializer: SERIALIZE_CHAT=1 (one LLM call at a time)"); } catch (e) { console.error(e) }
 }
 if (process.env.DEBUG_COT === "1") { try { installStdoutBytesTap(); } catch (e) { console.error("bytes tap failed:", e); } }
 installStdoutThinkFlatten(); // SHOW_THINK=1 flattens CoT; DEBUG_COT=1 logs raw bytes

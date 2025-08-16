@@ -205,7 +205,7 @@ export class AgentModel extends Model {
   // Schedule a self-wake so the agent processes its unread inbox shortly after
   // the interjection window elapses. This prevents endless "skip" loops.
   private _scheduleWake(delayMs = 1700) {
-    try { if (this._wakeTimer) { clearTimeout(this._wakeTimer); this._wakeTimer = null; } } catch {}
+    try { if (this._wakeTimer) { clearTimeout(this._wakeTimer); this._wakeTimer = null; } } catch (e) { console.error(e) }
     this._wakeTimer = setTimeout(() => {
       // Re-enter via receiveMessage with a lightweight synthetic system nudge.
       const nudge: RoomMessage = {
@@ -317,7 +317,7 @@ Do not narrate plans or roles; provide the final answer only.
     try {
       // Best-effort: ask the streaming layer to abort
       require("./chat").interruptChat();
-    } catch {}
+    } catch (e) { console.error(e) }
   }
 
   // Called by the TurnManager scheduler to let the agent process its unread inbox.
@@ -347,7 +347,7 @@ Do not narrate plans or roles; provide the final answer only.
         Logger.debug(`[DEBUG takeTurn] agent=${this.id} detected transport busy (inflight=${t.inflight()}); continuing`);
         // Do not return here; allow runWithTools to proceed and queue network calls.
       }
-    } catch {}
+    } catch (e) { console.error(e) }
 
     // If the user just interjected, let the normal receive path handle it after the skip window.  Log the skip.
     const __userInterrupt = (globalThis as any).__userInterrupt || { ts: 0 };
@@ -502,7 +502,7 @@ Do not narrate plans or roles; provide the final answer only.
         Logger.debug(
           `[DEBUG receiveMessage] agent=${this.id} unread=${unreadBatch.length} historyLength=${fullMessageHistory.length}`
         );
-      } catch {}
+      } catch (e) { console.error(e) }
 
       const normalizedHistory = this._viewForSelf(fullMessageHistory);
       let messages: ChatMessage[] = [];
@@ -515,7 +515,7 @@ Do not narrate plans or roles; provide the final answer only.
           Logger.error(
             `[DEBUG receiveMessage] agent=${this.id} runWithTools threw ${err instanceof Error ? err.message : String(err)}`
           );
-        } catch {}
+        } catch (e) { console.error(e) }
         messages = [];
       }
       for (const m of messages) {
@@ -629,7 +629,7 @@ Do not narrate plans or roles; provide the final answer only.
         Logger.debug(
           `[DEBUG runWithTools] agent=${this.id} hop=${hop} currentMessages=${currentMessages.length}`
         );
-      } catch {}
+      } catch (e) { console.error(e) }
       // If the user just interjected, yield this turn so the new message is handled ASAP.
       if (Date.now() - __userInterrupt.ts < 1500) {
         responses.push({
@@ -706,7 +706,7 @@ Do not narrate plans or roles; provide the final answer only.
             Logger.debug(
               `[DEBUG runWithTools] agent=${this.id} calling chatOnce baseUrl=${chatOpts.baseUrl || 'default'} model=${chatOpts.model}`
             );
-          } catch {}
+          } catch (e) { console.error(e) }
           return await withTimeout(
             chatOnce(this.id, messagesForHop, chatOpts),
             600_000,
@@ -721,7 +721,7 @@ Do not narrate plans or roles; provide the final answer only.
       if (msg && typeof msg.content === "string" && msg.content.length) {
         const san = sanitizeAssistantText(msg.content);
         if (san.aborted) {
-          try { (globalThis as any).__log?.(`[abort] ${this.id}: trimmed response due to ${san.reason}`, "yellow"); } catch {}
+          try { (globalThis as any).__log?.(`[abort] ${this.id}: trimmed response due to ${san.reason}`, "yellow"); } catch (e) { console.error(e) }
           msg.content = san.text;
         }
       }
@@ -735,7 +735,7 @@ Do not narrate plans or roles; provide the final answer only.
             read: true,
             content: `[notice] part of ${this.id}'s streamed output was censored from chat logs (${(msg as any).censor_reason || "policy"}).`
           } as any);
-        } catch {}
+        } catch (e) { console.error(e) }
       }
       // Small pacing delay to avoid hammering the provider
       await new Promise(r => setTimeout(r, 25));
@@ -747,7 +747,7 @@ Do not narrate plans or roles; provide the final answer only.
       const noTokens = !msg || (typeof msg.content === "string" ? msg.content.trim().length === 0 : true);
       const noTools = !msg?.tool_calls || (Array.isArray(msg.tool_calls) && msg.tool_calls.length === 0);
       if (noTokens && noTools) {
-        try { (Bun.stdout as any)?.write?.("."); } catch {}
+        try { (Bun.stdout as any)?.write?.("."); } catch (e) { console.error(e) }
         // Gentle retry with slightly wider sampling
         msg = await invokeChat(0.3).catch(() => msg);
       }
@@ -755,7 +755,7 @@ Do not narrate plans or roles; provide the final answer only.
       if (msg && typeof msg.content === "string" && msg.content.length) {
         const san2 = sanitizeAssistantText(msg.content);
         if (san2.aborted) {
-          try { (globalThis as any).__log?.(`[abort] ${this.id}: trimmed response (retry) due to ${san2.reason}`, "yellow"); } catch {}
+          try { (globalThis as any).__log?.(`[abort] ${this.id}: trimmed response (retry) due to ${san2.reason}`, "yellow"); } catch (e) { console.error(e) }
           msg.content = san2.text;
         }
       }
@@ -857,7 +857,7 @@ Do not narrate plans or roles; provide the final answer only.
               const norm = parsed.cmd.replace(/\s+/g, " ").trim();
               rawArgs = JSON.stringify({ ...parsed, cmd: norm });
             }
-          } catch {}
+          } catch (e) { console.error(e) }
         }
         const sig = `${call?.function?.name}|${rawArgs}`;
 

@@ -20,7 +20,7 @@ import { Logger } from "../ui/logger";
           Logger.debug(`[role-fix] Coercing ${a[0].from} user→assistant`);
           a[0] = { ...a[0], role: "assistant" };
         }
-      } catch {}
+      } catch (e) { console.error(e) }
       return orig.apply(this, a);
     };
     Logger.info("role-fix: ChatRoom.receive patched");

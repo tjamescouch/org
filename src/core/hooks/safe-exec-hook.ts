@@ -29,10 +29,10 @@ function confirmSyncPreview(preview: string): boolean {
 
   const msg = `[SAFE] About to run: ${preview} [y/N] `;
   fs.writeSync(1, msg);
-  try { (process.stdin as any).setRawMode?.(true); } catch {}
+  try { (process.stdin as any).setRawMode?.(true); } catch (e) { console.error(e) }
   const buf = Buffer.alloc(1);
   const n = fs.readSync(0, buf, 0, 1, null);
-  try { (process.stdin as any).setRawMode?.(false); } catch {}
+  try { (process.stdin as any).setRawMode?.(false); } catch (e) { console.error(e) }
   fs.writeSync(1, "\n");
 
   const c = (n > 0 ? String.fromCharCode(buf[0]) : "").toLowerCase();
@@ -144,7 +144,7 @@ export function installSafeExecHook(opts?: SafeExecHookOptions): void {
 export function __resetSafeExecHookForTests() {
   // Restore any Bun.$ we patched
   for (const [bun, orig] of ORIG_BUN_DOLLAR.entries()) {
-    try { (bun as any).$ = orig; } catch {}
+    try { (bun as any).$ = orig; } catch (e) { console.error(e) }
   }
   ORIG_BUN_DOLLAR.clear();
 
@@ -157,7 +157,7 @@ export function __resetSafeExecHookForTests() {
       const cp = require("node:child_process") as typeof import("node:child_process");
       if (ORIG_EXEC)      (cp as any).exec     = ORIG_EXEC;
       if (ORIG_EXECFILE)  (cp as any).execFile = ORIG_EXECFILE;
-    } catch {}
+    } catch (e) { console.error(e) }
   }
   CP_INSTALLED = false;
   ORIG_EXEC = null;

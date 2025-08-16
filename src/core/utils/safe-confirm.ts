@@ -42,9 +42,9 @@ export async function confirm(
   // Small helper to read a single keystroke.
   const promptOnce = (): Promise<string> =>
     new Promise((resolve) => {
-      try { input.setRawMode?.(true); } catch {}
+      try { input.setRawMode?.(true); } catch (e) { console.error(e) }
       const onData = (buf: Buffer) => {
-        try { input.setRawMode?.(false); } catch {}
+        try { input.setRawMode?.(false); } catch (e) { console.error(e) }
         input.removeListener("data", onData);
         resolve(String(buf || "").trim());
       };

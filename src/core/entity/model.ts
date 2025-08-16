@@ -33,20 +33,20 @@ try {
     // leave undefined; only forward if a model provides enqueueFromRoom itself
   }
   if (typeof _MP.onRoomMessage !== "function") {
-    _MP.onRoomMessage = function(msg: any) { try { return this.enqueueFromRoom?.(msg); } catch {} };
+    _MP.onRoomMessage = function(msg: any) { try { return this.enqueueFromRoom?.(msg); } catch (e) { console.error(e) } };
   }
   if (typeof _MP.receiveMessage !== "function") {
-    _MP.receiveMessage = function(msg: any) { try { return this.enqueueFromRoom?.(msg); } catch {} };
+    _MP.receiveMessage = function(msg: any) { try { return this.enqueueFromRoom?.(msg); } catch (e) { console.error(e) } };
   }
-} catch {}
+} catch (e) { console.error(e) }
 
 // [force] delivery shims: funnel receiveMessage/onRoomMessage to enqueueFromRoom if provided
 try {
   const _MP: any = (Model as any).prototype;
   if (typeof _MP.onRoomMessage !== "function") {
-    _MP.onRoomMessage = function(msg: any) { try { return this.enqueueFromRoom?.(msg); } catch {} };
+    _MP.onRoomMessage = function(msg: any) { try { return this.enqueueFromRoom?.(msg); } catch (e) { console.error(e) } };
   }
   if (typeof _MP.receiveMessage !== "function") {
-    _MP.receiveMessage = function(msg: any) { try { return this.enqueueFromRoom?.(msg); } catch {} };
+    _MP.receiveMessage = function(msg: any) { try { return this.enqueueFromRoom?.(msg); } catch (e) { console.error(e) } };
   }
-} catch {}
+} catch (e) { console.error(e) }

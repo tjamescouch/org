@@ -17,7 +17,7 @@ function confirmSync(tag: string, command: string, args: string[] = []): Decisio
     `\n[SAFE] ${tag} about to run:\n$ ${line}\n` +
     `[Enter]=run  [s]=skip  [q]=quit > `;
 
-  try { fs.writeSync(process.stderr.fd, prompt); } catch {}
+  try { fs.writeSync(process.stderr.fd, prompt); } catch (e) { console.error(e) }
 
   let input = "";
   const readOneLine = (fd: number) => {
@@ -35,7 +35,7 @@ function confirmSync(tag: string, command: string, args: string[] = []): Decisio
     fs.closeSync(fd);
   } catch {
     // Fallback to stdin if /dev/tty not available
-    try { input = readOneLine(0); } catch {}
+    try { input = readOneLine(0); } catch (e) { console.error(e) }
   }
 
   if (input === "q") return "quit";
@@ -57,7 +57,7 @@ export function installSafeMode() {
     execFile: cp.execFile,
   };
 
-  try { process.stderr.write("[SAFE] Safe Mode enabled: confirm before shell commands.\n"); } catch {}
+  try { process.stderr.write("[SAFE] Safe Mode enabled: confirm before shell commands.\n"); } catch (e) { console.error(e) }
 
   cp.spawn = function(command: string, args?: any, options?: any) {
     const argv: string[] = Array.isArray(args) ? args : [];

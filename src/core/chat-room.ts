@@ -67,13 +67,13 @@ export class ChatRoom implements RoomAPI {
       throw new Error(`Model id already in room: ${model.id}`);
     }
     this.models.set(model.id, model);
-    try { (model as any).onAttach?.(this as unknown as RoomAPI); } catch {}
+    try { (model as any).onAttach?.(this as unknown as RoomAPI); } catch (e) { console.error(e) }
   }
 
   removeModel(id: string) {
     const m = this.models.get(id);
     this.models.delete(id);
-    try { (m as any)?.onDetach?.(); } catch {}
+    try { (m as any)?.onDetach?.(); } catch (e) { console.error(e) }
   }
 
   /** True if a user message was seen within the freshness window. */
@@ -104,7 +104,7 @@ export class ChatRoom implements RoomAPI {
     // Direct message
     const target = this.models.get(msg.to);
     if (target) {
-      try { await (target as any).receiveMessage(msg); } catch {}
+      try { await (target as any).receiveMessage(msg); } catch (e) { console.error(e) }
     }
   }
 
@@ -151,7 +151,7 @@ try {
         },
         emit(evt: string, payload: any) {
           const arr = this._l.get(evt);
-          if (arr) for (const fn of arr) try { fn(payload); } catch {}
+          if (arr) for (const fn of arr) try { fn(payload); } catch (e) { console.error(e) }
         },
       };
     }
@@ -162,7 +162,7 @@ try {
         const _txt = typeof content === "string" ? content : (content && typeof content.content === "string" ? content.content : String(content));
         const _explicit = /(^|\s)@([A-Za-z0-9_\-]+)/.test(_txt);
         Logger.debug?.(`[room/broadcast] from=${from} explicit=${_explicit} text=${_txt.slice(0,120)}`);
-      } catch {}
+      } catch (e) { console.error(e) }
 
       try {
         const text = typeof content === "string"
@@ -189,4 +189,4 @@ try {
       return await __origBroadcast.apply(this, arguments as any);
     };
   }
-} catch {}
+} catch (e) { console.error(e) }

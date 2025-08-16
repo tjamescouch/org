@@ -146,4 +146,4 @@ try {
     if (!P.isBusy)   P.isBusy   = function(){ return !!this._busy; };
     if (!P.reason)   P.reason   = function(){ return this._busyReason ?? null; };
   }
-} catch {}
+} catch (e) { console.error(e) }

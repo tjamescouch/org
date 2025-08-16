@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
         process.argv.push("--prompt", prompt);
       }
     }
-  } catch {}
+  } catch (e) { console.error(e) }
 })();
 
 // /* org.ts auto-prompt shim */  // keeps app functional when run with no args
@@ -29,11 +29,11 @@ try {
   if (!hasPromptArg && envPrompt.length > 0) {
     process.argv.push("--prompt", envPrompt);
   }
-} catch {}
+} catch (e) { console.error(e) }
 
 
 import { shouldSerialize } from "./src/core/turn-mutex";
-if (shouldSerialize) try { console.log("[INFO ] round-robin serializer: SERIALIZE_CHAT=1 (one LLM call at a time)"); } catch {}
+if (shouldSerialize) try { console.log("[INFO ] round-robin serializer: SERIALIZE_CHAT=1 (one LLM call at a time)"); } catch (e) { console.error(e) }
 import "./src/runtime-fixes/bootstrap";
 
 // bootstrap (inserts BEFORE original code)

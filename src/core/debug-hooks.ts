@@ -17,7 +17,7 @@ export async function installDebugHooks(): Promise<void> {
         proto.acquire = function (...a: any[]) {
           if (!this.__orgRegistered) { reg.push(this); this.__orgRegistered = true; }
           const p = origAcquire.apply(this, a);
-          try { this.__heldSince = Date.now(); } catch {}
+          try { this.__heldSince = Date.now(); } catch (e) { console.error(e) }
           return p;
         };
       }
@@ -43,10 +43,10 @@ export async function installDebugHooks(): Promise<void> {
                 lk.locked = false;
                 lk.__heldSince = null;
                 const next = lk.queue.shift();
-                if (typeof next === "function") { try { next(); } catch {} }
+                if (typeof next === "function") { try { next(); } catch (e) { console.error(e) } }
               }
             }
-          } catch {}
+          } catch (e) { console.error(e) }
         }
       }, Math.min(500, lockMax));
       console.info(`debug-hooks: ChannelLock watchdog active (MAX ${lockMax} ms)`);

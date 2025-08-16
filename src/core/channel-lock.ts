@@ -12,7 +12,7 @@ export class ChannelLock {
       this.__wdTimer = setTimeout(() => {
         try {
           this.logger?.debug?.(`[DEBUG channel-lock] watchdog firing after ${ms}ms; forcibly releasing holder=${holder} queueLength=${this.queue?.length ?? 0}`);
-        } catch {}
+        } catch (e) { console.error(e) }
         try {
           // prefer a safe release path if available
           // if class provides forceRelease use it; else call release()
@@ -24,7 +24,7 @@ export class ChannelLock {
             // @ts-ignore
             this.release("watchdog");
           }
-        } catch {}
+        } catch (e) { console.error(e) }
         this.__wdTimer = null;
       }, ms);
     }
@@ -64,7 +64,7 @@ export class ChannelLock {
           }
           this.drain();
         }
-      } catch {}
+      } catch (e) { console.error(e) }
     }, 1000);
   }
 
@@ -76,7 +76,7 @@ export class ChannelLock {
       Logger.debug(
         `[DEBUG channel-lock] acquire attempt locked=${this.locked} queueLength=${this.queue.length}`
       );
-    } catch {}
+    } catch (e) { console.error(e) }
 
     // Fast path: no one waiting and not locked
     if (!this.locked && this.queue.length === 0) {
@@ -87,7 +87,7 @@ export class ChannelLock {
         Logger.debug(
           `[DEBUG channel-lock] acquired immediately locked=${this.locked} queueLength=${this.queue.length}`
         );
-      } catch {}
+      } catch (e) { console.error(e) }
       return this.makeRelease();
     }
 
@@ -123,7 +123,7 @@ export class ChannelLock {
       Logger.debug(
         `[DEBUG channel-lock] lock granted via drain locked=${this.locked} queueLength=${this.queue.length}`
       );
-    } catch {}
+    } catch (e) { console.error(e) }
     next.give(this.makeRelease());
   }
 
@@ -142,7 +142,7 @@ export class ChannelLock {
         Logger.debug(
           `[DEBUG channel-lock] released lock locked=${this.locked} queueLength=${this.queue.length}`
         );
-      } catch {}
+      } catch (e) { console.error(e) }
       // Let next waiter run on microtask turn
       queueMicrotask(() => this.drain());
     };

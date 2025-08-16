@@ -31,7 +31,7 @@ export class TurnManager {
       const env = (globalThis as any)?.process?.env ?? (globalThis as any) ?? {};
       const on = env.TM_DEBUG && String(env.TM_DEBUG) != "0";
       if (on && typeof console !== "undefined" && console.debug) console.debug("[tm]", ...args);
-    } catch {}
+    } catch (e) { console.error(e) }
   }
 
   /** Idle watchdog: enqueue "(resume)" if we've been idle >= pokeAfterMs. */
@@ -64,7 +64,7 @@ export class TurnManager {
   private __kickSoon() {
     if (this.__kickPending) return;
     this.__kickPending = true;
-    setTimeout(() => { this.__kickPending = false; try { this.run?.(); } catch {} }, 0);
+    setTimeout(() => { this.__kickPending = false; try { this.run?.(); } catch (e) { console.error(e) } }, 0);
   }
   private i = 0;
   private timer: NodeJS.Timeout | null = null;
@@ -79,7 +79,7 @@ export class TurnManager {
   constructor(private room: ChatRoom, private agents: AgentModel[], private opts: TurnManagerOpts = {}) {
     this.opts = opts as any;
     // [tm-bind] bind room._tm = this
-    try { (this as any).room = (this as any).room ?? arguments[0]; (arguments[0] as any)._tm = this; } catch {}
+    try { (this as any).room = (this as any).room ?? arguments[0]; (arguments[0] as any)._tm = this; } catch (e) { console.error(e) }
 const n = agents.length;
     this.running = Array(n).fill(false);
     this.lastIdle = Array(n).fill(0);
@@ -95,7 +95,7 @@ const n = agents.length;
     if (this.timer) return;
     const tickMs = this.opts.tickMs ?? 400;
     const loop = async () => {
-      try { await this.tick(); } catch {}
+      try { await this.tick(); } catch (e) { console.error(e) }
       this.timer = setTimeout(loop, tickMs);
     };
     this.timer = setTimeout(loop, tickMs);
@@ -107,7 +107,7 @@ const n = agents.length;
   /** One scheduling step */
   private async tick() {
     
-try { /*[dbg] tm.tick*/ Logger.debug?.("[tm] tick()"); } catch {}// [watchdog-v3] call inserted
+try { /*[dbg] tm.tick*/ Logger.debug?.("[tm] tick()"); } catch (e) { console.error(e) }// [watchdog-v3] call inserted
     this.__pokeIfIdle();
 // [watchdog-patch] call
     this.__watchdogPokeAfterIdle();
@@ -131,7 +131,7 @@ if (this.paused) return;
     if (userControlActive()) {
       const now = Date.now();
       if (!this.lastSkipLog || now - this.lastSkipLog > 1000) {
-        try { (globalThis as any).__log?.("[skip] user control active; skipping scheduler tick", "yellow"); } catch {}
+        try { (globalThis as any).__log?.("[skip] user control active; skipping scheduler tick", "yellow"); } catch (e) { console.error(e) }
         this.lastSkipLog = now;
       }
       return;
@@ -152,12 +152,12 @@ if (this.paused) return;
               `[backpressure] provider busy/cooling (inflight=${inflight}, cap=${cap}) — deferring scheduling`,
               "yellow"
             );
-          } catch {}
+          } catch (e) { console.error(e) }
           this.lastSkipLog = now;
         }
         return;
       }
-    } catch {}
+    } catch (e) { console.error(e) }
 
     const n = this.agents.length;
     if (!n) return;
@@ -239,9 +239,9 @@ if (this.paused) return;
               content: "(resume)",
               read: false,
             });
-          } catch {}
+          } catch (e) { console.error(e) }
         }
-        try { (globalThis as any).__log?.("[watchdog] idle ≥ 30s — poked agents with (resume)", "yellow"); } catch {}
+        try { (globalThis as any).__log?.("[watchdog] idle ≥ 30s — poked agents with (resume)", "yellow"); } catch (e) { console.error(e) }
       }
     } else {
       // Reset the idle timestamp whenever we schedule work
@@ -255,7 +255,7 @@ if (this.paused) return;
     if (Date.now() - this.lastAnyWorkTs > STARVE_MS) {
       for (let k = 0; k < n; k++) this.lastProbe[k] = 0;
       this.lastAnyWorkTs = Date.now();
-      try { (globalThis as any).__log?.("[watchdog] starvation guard reset probes", "yellow"); } catch {}
+      try { (globalThis as any).__log?.("[watchdog] starvation guard reset probes", "yellow"); } catch (e) { console.error(e) }
     }
   }
 }
@@ -286,7 +286,7 @@ if (this.paused) return;
     }
   } catch (e) {
     // Never let logging or a bad agent explode the scheduler
-    try { console.debug?.("[tm/watchdog] error:", String(e && (e.stack || e))); } catch {}
+    try { console.debug?.("[tm/watchdog] error:", String(e && (e.stack || e))); } catch (e) { console.error(e) }
   }
 };
 
@@ -316,10 +316,10 @@ try {
                 else if (typeof self.rr === "number")  { self.rr  = (self.rr  + 1) % self.agents.length; }
                 else if (typeof self.cursor === "number") { self.cursor = (self.cursor + 1) % self.agents.length; }
               }
-            } catch {}
+            } catch (e) { console.error(e) }
           }, 75);
         }
-      } catch {}
+      } catch (e) { console.error(e) }
       return rv;
     };
 
@@ -329,8 +329,8 @@ try {
           clearInterval((this as any).__confirmRotateTimer);
           (this as any).__confirmRotateTimer = null;
         }
-      } catch {}
+      } catch (e) { console.error(e) }
       return _stop.apply(this, args);
     };
   }
-} catch {}
+} catch (e) { console.error(e) }

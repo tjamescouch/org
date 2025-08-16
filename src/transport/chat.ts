@@ -247,6 +247,7 @@ export async function summarizeOnce(
       json?.choices?.[0]?.message?.content ?? null;
     return (viaV1 ?? "").trim();
   } catch {
+    console.error(e);
     clearTimeout(t);
     return "";
   }
@@ -268,11 +269,6 @@ export async function chatOnce(
   }
 ): Promise<AssistantMessage> {
   
-  try { /*[dbg] chatOnce prefetch*/
-    // We assume variables model/baseUrl/messages exist shortly after — this is just a coarse trace.
-    const _m = (typeof model === "string" ? model : (model && model.name)) ?? "<unknown>";
-    Logger.debug?.(`[transport/chatOnce] preparing request model=${_m}`);
-  } catch {}
 // Resolve the upstream base URL and model at call time.  Even if the module
   // was imported before environment variables were set (as happens in some
   // integration tests), we prefer opts.baseUrl first, then fresh environment
@@ -386,7 +382,7 @@ export async function chatOnce(
       const decoder = new TextDecoder("utf-8");
 
       let firstChunkArrived = false;
-      const waitDots = setInterval(() => { if (!firstChunkArrived) { try { Bun.stdout.write("."); } catch {} } }, 250);
+      const waitDots = setInterval(() => { if (!firstChunkArrived) { try { Bun.stdout.write("."); } catch (e) { console.error(e) } } }, 250);
 
       let firstReadTimedOut = false;
       const first = await Promise.race([
@@ -428,7 +424,7 @@ export async function chatOnce(
   const COT_LOG_PATH = DEBUG_COT ? pathResolve(COT_LOG_DIR, `cot-bytes-${Date.now()}.log`) : "";
   const _cotLogInit = (async () => {
     if (DEBUG_COT) {
-      try { await mkdir(COT_LOG_DIR, { recursive: true }); await appendFile(COT_LOG_PATH, `# cot-bytes log started ${new Date().toISOString()}\n`); } catch {}
+      try { await mkdir(COT_LOG_DIR, { recursive: true }); await appendFile(COT_LOG_PATH, `# cot-bytes log started ${new Date().toISOString()}\n`); } catch (e) { console.error(e) }
     }
   })();
   const cotLog = DEBUG_COT ? async (bytes: Uint8Array) => {
@@ -436,7 +432,7 @@ export async function chatOnce(
       await _cotLogInit;
       const hex = Buffer.from(bytes).toString("hex").replace(/(..)/g, "$1 ");
       await appendFile(COT_LOG_PATH, `HEX ${hex}\n`);
-    } catch {}
+    } catch (e) { console.error(e) }
   } : async (_: Uint8Array) => {};
 
   async function readWithIdleTimeout(): Promise<ReadableStreamReadResult<Uint8Array>> {
@@ -483,7 +479,7 @@ export async function chatOnce(
 
   while (!done) {
     if (Date.now() - startedAt > HARD_STOP_MS) {
-      try { reader.cancel(); } catch {}
+      try { reader.cancel(); } catch (e) { console.error(e) }
       console.error("[chatOnce] aborted stream: hard-stop");
       break;
     }
@@ -492,8 +488,8 @@ export async function chatOnce(
       readResult = await readWithIdleTimeout();
     } catch (e) {
       const msg = (e as Error)?.message || '';
-      if (msg === 'idle-timeout') { try { reader.cancel(); } catch {} ; console.error('[chatOnce] aborted stream: idle-timeout'); break; }
-      if (msg === 'interrupted') { try { reader.cancel(); } catch {} ; console.error('[chatOnce] aborted stream: interrupted'); break; }
+      if (msg === 'idle-timeout') { try { reader.cancel(); } catch (e) { console.error(e) } ; console.error('[chatOnce] aborted stream: idle-timeout'); break; }
+      if (msg === 'interrupted') { try { reader.cancel(); } catch (e) { console.error(e) } ; console.error('[chatOnce] aborted stream: interrupted'); break; }
       throw e;
     }
     const { value, done: streamDone } = readResult;
@@ -685,7 +681,7 @@ export async function chatOnce(
       }
       const agg = Object.values(toolCallsAgg);
       if (agg.length) toolCalls = agg;
-    } catch {}
+    } catch (e) { console.error(e) }
   }
 
   //if (squelchedChars > 0) {
@@ -702,11 +698,11 @@ export async function chatOnce(
       const Red = "\x1b[31m"; const Reset = "\x1b[0m";
       const tsNote = new Date().toLocaleTimeString();
       Bun.stdout.write(`\n${Red}[${tsNote}] output after this point was censored from chat logs (${censorReason || "policy"})${Reset}\n`);
-    } catch {}
+    } catch (e) { console.error(e) }
   }
 
   if (tokenCount === 0) {
-    try { Bun.stdout.write("."); } catch {}
+    try { Bun.stdout.write("."); } catch (e) { console.error(e) }
   }
   _currentStreamAC = null;
   return {
