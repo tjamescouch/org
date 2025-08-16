@@ -23,3 +23,5 @@ export async function bootstrapApp(argv: string[]) {
   // stdout hooks are active first.
 }
 if (process.env.SAFE_MODE === "1" || process.argv.includes("--safe")) installSafeMode();
+import { installSafeExecHook } from "../core/hooks/safe-exec-hook";
+installSafeExecHook();

@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { installSafeExecHook } from "./src/core/hooks/safe-exec-hook";
+installSafeExecHook();
 
 // /* argv shim: read '-' from stdin */
 import { readFileSync } from "node:fs";
