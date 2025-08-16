@@ -49,7 +49,7 @@ export function setupKeyInput(h: KeyHandlers) {
 // resolves immediately.
 export function waitForEnter(msg: string): Promise<void> {
   if (process.stdin.isTTY) {
-    appendDirect(`${BrightRedTag()}[y/N] ******* ${msg}${Reset()}`);
+    appendDirect(`${BrightRedTag()} Continue? [y/N] ******* ${msg}${Reset()}`);
     return new Promise((resolve, reject) => {
       process.stdout.write('Continue? [y/N]');
       process.stdin.resume();
