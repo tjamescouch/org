@@ -12,14 +12,15 @@ test("watchdog fires during live ticks", async () => {
   a.enqueueFromRoom = (m: any) => { inbox.push(m); };
   room.addModel(a);
 
-  await room.broadcast("User", "seed"); // prime 'recent activity'
+  // Make us look idle *before* starting the loop (deterministic trigger)
+  const tm = new TurnManager(room, [a], { tickMs: 20, idleBackoffMs: 0, pokeAfterMs: 100, proactiveMs: 10_000 });
+  (tm as any).lastAnyWorkTs = Date.now() - 60_000;
 
-  const tm = new TurnManager(room, [a], { tickMs: 25, idleBackoffMs: 0, pokeAfterMs: 120, proactiveMs: 10_000 });
   tm.start();
 
   let ok = false;
-  for (let i = 0; i < 40; i++) {  // up to ~1s
-    await sleep(25);
+  for (let i = 0; i < 50; i++) { // up to ~1s
+    await sleep(20);
     if (inbox.some((m: any) => m?.content === "(resume)")) { ok = true; break; }
   }
 
