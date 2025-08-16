@@ -8,9 +8,9 @@ import type { ChatMessage, ToolCall, ToolDef } from "../../types";
 
 import { TagParser } from "../../tools/tools/tag-parser";
 import { extractToolCallsFromText } from "../../tools/tools/tool-call-extractor";
-import { chatOnce, summarizeOnce } from "../../transport/chat";
+import { chatOnce, summarizeOnce, type ChatResult, type Choice } from "../../transport/chat";
 import { channelLock } from "../channel-lock";
-import { Logger } from "../../ui/logger";
+import { AgentLog, Logger } from "../../ui/logger";
 import { ExecutionGate } from "../../ui/key-input";
 
 import {
@@ -32,16 +32,14 @@ import {
   BrightGreenTag, BrightYellowTag, BrightMagentaTag, BrightCyanTag, BrightWhiteTag
 } from "../../constants";
 
+
 // --- user pause/interjection flags ---
 const isPaused = () => Boolean((globalThis as any).__PAUSE_INPUT);
+
 const __userInterrupt = { ts: 0 };
 export function markUserInterject() { __userInterrupt.ts = Date.now(); }
 
 // --- logging shims ---
-export const logLine = (s: string) => { (console.log)(s); };
-export const logErr  = (s: string) => { (console.error)(s); };
-export const appendDirect = (s: string) => { console.log(s); };
-export const stamp = () => new Date().toLocaleTimeString();
 const SHOW_THINK = (process.env.SHOW_THINK === "1" || process.env.SHOW_THINK === "true");
 
 // --- utilities ---
@@ -90,14 +88,80 @@ export class AgentModel extends Model {
     super(id);
     this.model = model;
     this.system = `You are agent "${this.id}".
-Use the sh tool for shell; write files with #file:<path>. Prefer files for long code. Keep replies concise.`;
+If you need to run shell commands, call the sh tool. If you misuse a tool you will get an "Invalid response" message.
+Commands are executed in a Debian VM.
+Try to make decisions for yourself even if you're not completely sure that they are correct.
+You have access to an actual Debian VM.
+It has git, gcc and bun installed.
+
+You have access to basic unix commands including pwd, cd, git, gcc, g++, python3, ls, cat, diff, grep, curl. 
+To write to a file include a tag with the format #file:<filename>. Follow the syntax exactly. i.e. lowercase, with no spaces.
+This way you do not do a tool call and simply respond.
+
+Example:
+#file:index.ts
+console.log("hello world");
+
+Any output after the tag, and before another tag, will be redirected to the file, so avoid accidentally including other output or code fences etc. Just include the desired content of the file.
+If multiple tags are present then multiple files will be written.
+You have access to the apply_patch via the sh command to make small modifications to files.
+
+Terminal responses are limited to ${this.maxShellReponseCharacters} characters. 
+
+Prefer the above tagging approach for writing files longer than a few paragraphs.
+You may write to files with echo, apply_patch, patch, or the tagging approach.
+
+
+You may direct message another agent using the following tag syntax: @<username>
+
+Example:
+@bob
+I have implemented the architecture documents.
+
+Prefer direct messages when the information is not important to other members of the group.
+Responses with no tags are sent to the entire group.
+
+Avoid accidentally writing to the end of the file when trying to switch back to communicating with the group.
+Instead use @group to expicitly switch back and prevent corrupting files.
+Examlple
+
+#file:notes.txt
+My awesome file
+@group
+I wrote notes.txt check it out.
+
+PLEASE use the file system.
+PLEASE write files to disk rather than just chatting about them with the group.
+PLEASE avoid overwriting existing files by accident. Check for and read existing files before writing to disk.
+
+PLEASE run shell commands and test your work.
+DO NOT do the same thing over and over again (infinite loop)
+If you get stuck reach out to the group for help.
+Delegate where appropriate and avoid doing work that should be done by another agent.
+Please actually use the tools provided. Do not simply hallucinate tool calls.
+Do not make stuff up. Do not imagine tool invocation results. Avoid repeating old commands.
+Verify and validate your work.
+Verify and validate the work of your team members.
+Messages will be of the format <username>: <message>.
+DO NOT mimic the above format of messages within your response.
+
+Use git and commit often.
+DO NOT PUSH ANYTHING TO GITHUB.
+
+Above all - DO THE THING. Don't just talk about it.
+Speak only in your own voice as "${this.id}" in the first person.
+Do not describe your intentions (e.g., "We need to respond as Bob").
+Do not narrate plans or roles; provide the final answer only.
+    Do not quote other agents’ names as prefixes like "bob:" or "carol:".
+
+    Be concise.`;
   }
 
   // -------- TurnManager hooks --------
   public hasUnread(): boolean { return this.inbox.length > 0; }
   public enqueueFromRoom(msg: RoomMessage) { this._enqueue(msg); }
   public abortCurrentTurn(reason: string) {
-    try { require("../../transport/chat").interruptChat(); } catch {}
+    try { require("../../transport/chat").interruptChat(); } catch (e) { console.log(e) }
   }
 
   public async takeTurn(): Promise<boolean> {
@@ -117,14 +181,14 @@ Use the sh tool for shell; write files with #file:<path>. Prefer files for long 
     this._enqueue({ ...incoming, read: false });
     if (incoming.from !== this.id) return;
     const initial = typeof incoming.content === "string" ? incoming.content : "";
-    logLine(`${CyanTag()} **** ${this.id} @ ${stamp()}${Reset()}
+    Logger.info(`${CyanTag()} **** ${this.id} @ ${AgentLog.stamp()}${Reset()}
 ${initial}`);
   }
 
   async receiveMessage(incoming: RoomMessage): Promise<void> {
     try {
       Logger.debug(`[recv] ${this.id} <- ${incoming.from} role=${incoming.role}`);
-    } catch {}
+    } catch (e) { console.log(e) }
 
     const PAUSED = isPaused();
     const userJustInterjected = (Date.now() - __userInterrupt.ts) < 1500;
@@ -133,7 +197,7 @@ ${initial}`);
       const now = Date.now();
       if (now - this._lastSkipLog > 900) {
         this._lastSkipLog = now;
-        logLine(`${BrightYellowTag()}[skip] ${this.id}: user control; queued @ ${stamp()}${Reset()}`);
+        AgentLog.info(`${BrightYellowTag()}[skip] ${this.id}: user control; queued @ ${AgentLog.stamp()}${Reset()}`);
       }
       this._scheduleWake(1700);
       return;
@@ -149,7 +213,7 @@ ${initial}`);
       const now = Date.now();
       if (now - this._lastSkipLog > 900) {
         this._lastSkipLog = now;
-        logLine(`${BrightYellowTag()}[skip] ${this.id}: user control after lock; yielding${Reset()}`);
+        Logger.info(`${BrightYellowTag()}[skip] ${this.id}: user control after lock; yielding${Reset()}`);
       }
       this._scheduleWake(1700);
       return;
@@ -171,7 +235,7 @@ ${initial}`);
         try {
           try {
             summaryText = await withTimeout(
-              summarizeOnce([ summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false } ], { model: this.model }),
+              summarizeOnce([summarizerSystem, ...tail, { role: "user", from: incoming.from, content: incoming.content, read: false }], { model: this.model }),
               180_000, "summary timeout"
             );
           } catch (err) { summaryText = ""; }
@@ -193,13 +257,13 @@ ${initial}`);
         ...unread.map(m => ({ role: (m.role === "system" || m.from === this.id) ? "system" : "user", from: m.from, content: m.content, read: false } as ChatMessage)),
       ];
 
-      const tools: ToolDef[] = [ this._defShellTool() ];
+      const tools: ToolDef[] = [this._defShellTool()];
       Logger.debug?.(`[receive] ${this.id} unread=${unread.length} history=${full.length}`);
 
       const normalized = this._viewForSelf(full);
       let messages: ChatMessage[] = [];
       try {
-        messages = await this.runWithTools(normalized, tools, (c) => this._execTool(c), 5);
+        messages = await this.runWithTools(normalized, tools, (c) => this._execTool(c), 15);
       } catch (err: any) {
         Logger.error?.(`[receive] ${this.id} runWithTools error: ${err?.message || String(err)}`);
         messages = [];
@@ -214,7 +278,7 @@ ${initial}`);
       if (last) {
         await this._deliver((last.content ?? (last as any).reasoning ?? ""));
       } else {
-        logErr("lastMessage is undefined");
+        Logger.error("lastMessage is undefined");
       }
 
       const assistantAggregate = messages
@@ -230,7 +294,8 @@ ${initial}`);
 
   // --- tools/chat loop ---
   async runWithTools(
-    messages: ChatMessage[], tools: ToolDef[],
+    messages: ChatMessage[],
+    tools: ToolDef[],
     execTool: (call: ToolCall) => Promise<ChatMessage>,
     maxHops: number
   ): Promise<ChatMessage[]> {
@@ -261,8 +326,10 @@ ${initial}`);
       const toolsForHop = (breakerCooldown > 0) ? [] : tools;
       const toolChoiceForHop = (breakerCooldown > 0) ? ("none" as const) : ("auto" as const);
       const remainingCalls = Math.max(0, MAX_TOOL_CALLS_PER_TURN - totalToolCallsThisTurn);
-      const nudge: ChatMessage = { role: "system", from: "System", read: true,
-        content: `Tools remaining: ${remainingCalls}. Prefer #file:<path> for code.` };
+      const nudge: ChatMessage = {
+        role: "system", from: "System", read: true,
+        content: `Tools remaining: ${remainingCalls}. Prefer #file:<path> for code.`
+      };
       const normalized = this._viewForSelf(currentMessages);
       const messagesForHop: ChatMessage[] = [...normalized, nudge];
 
@@ -270,11 +337,16 @@ ${initial}`);
         tools: toolsForHop, tool_choice: toolChoiceForHop, num_ctx: 128000,
         abortDetectors: baseDetectors, model: this.model, soc: this.socText,
         temperature: 1 + tempBump,
-        onData: () => { try { this._leaseTouch?.(); } catch {} }, // <-- refresh lease each streamed chunk
+        onData: (data: string) => {
+          try {
+            //console.log(JSON.stringify(data, null, 2));
+            //Logger.streamInfo(data);
+            this._leaseTouch?.();
+          } catch (e) { console.log("error", e) }
+        }, // <-- refresh lease each streamed chunk
       };
-      try {
-        Logger.debug?.(`[run] ${this.id} chatOnce …`);
-      } catch {}
+
+      Logger.debug(`[run] ${this.id} chatOnce …`);
 
       const msg = await withTimeout(
         chatOnce(this.id, messagesForHop, chatOpts),
@@ -310,7 +382,7 @@ ${initial}`);
       // parse tags, aggregate tool_calls (declared + extracted)
       const { clean: response, tags } = TagParser.parse(msg.content || "");
       const extractedAll = extractToolCallsFromText(msg.content ?? "").tool_calls || [];
-      const tool_calls = [ ...(msg.tool_calls ?? []), ...extractedAll ];
+      const tool_calls = [...(msg.tool_calls ?? []), ...extractedAll];
 
       if (!tool_calls || tool_calls.length === 0) {
         if (SHOW_THINK && (msg as any).reasoning) {
@@ -348,7 +420,7 @@ ${initial}`);
         }
         let rawArgs = typeof call?.function?.arguments === "object" ? JSON.stringify(call?.function?.arguments) : String(call?.function?.arguments ?? "");
         if ((call?.function?.name || "") === "sh") {
-          try { const parsed = JSON.parse(rawArgs); if (parsed && typeof parsed.cmd === "string") rawArgs = JSON.stringify({ ...parsed, cmd: parsed.cmd.replace(/\s+/g, " ").trim() }); } catch {}
+          try { const parsed = JSON.parse(rawArgs); if (parsed && typeof parsed.cmd === "string") rawArgs = JSON.stringify({ ...parsed, cmd: parsed.cmd.replace(/\s+/g, " ").trim() }); } catch (e) { /* intentionally blank */ }
         }
         const sig = `${call?.function?.name}|${rawArgs}`;
         if (lastSig && sig === lastSig) {
@@ -407,7 +479,7 @@ ${initial}`);
       const parts: string[] = [];
       for (const m of responses) if (m.role === "assistant" || m.role === "tool") parts.push(`${m.role}:${String(m.content ?? "").slice(0, 60)}`);
       if (parts.length) Logger.debug?.(`[outputs] ${this.id} ${parts.join(" | ")}`);
-    } catch {}
+    } catch (e) { console.log(e) }
     return responses;
   }
 
@@ -428,7 +500,8 @@ ${initial}`);
   }
 
   private async _execTool(call: ToolCall): Promise<ChatMessage> {
-    if (VERBOSE) logErr("CALL " + JSON.stringify(call));
+    if (VERBOSE) Logger.warn("CALL " + JSON.stringify(call));
+
     const name: string = call?.function?.name ?? "unknown";
     try {
       const args = JSON.parse(call?.function?.arguments ?? '{"cmd": ""}') as { cmd: string };
@@ -442,9 +515,9 @@ ${initial}`);
     }
   }
 
-  private async _runShell(functionName: string, { cmd, rawCmd }: { cmd: string, rawCmd?: string }): Promise<{role: string, name: string, content: string}> {
+  private async _runShell(functionName: string, { cmd, rawCmd }: { cmd: string, rawCmd?: string }): Promise<{ role: string, name: string, content: string }> {
     const timeout = Math.max(1, Number(this.shellTimeout));
-    await ExecutionGate.gate(`Agent wants to run: sh ${cmd ?? rawCmd} @ ${stamp()}`);
+    await ExecutionGate.gate(`Agent wants to run: sh\n${cmd ?? rawCmd} @ ${stamp()}`);
 
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), (timeout + 1) * 1000);
@@ -470,7 +543,7 @@ ${RedTag()}${sErr}${Reset()}
       return { role: "tool", name: "sh", content };
     } catch (e: any) {
       const content = `sh -c ${cmd} -> ` + JSON.stringify({ ok: false, err: e?.message || String(e) });
-      logErr(`sh ${cmd} failed: ${e?.message || String(e)}`);
+      Logger.error(`sh ${cmd} failed: ${e?.message || String(e)}`);
       return { role: "tool", name: "sh", content };
     } finally { clearTimeout(timer); }
   }
@@ -486,14 +559,14 @@ ${RedTag()}${sErr}${Reset()}
         case "group": {
           const r: any = (this as any).__room || (this as any).room;
           if (r && typeof r.broadcast === "function") await r.broadcast(this.id, String(msg ?? ""));
-          else logErr(`broadcast failed: Model "${this.id}" is not attached to a ChatRoom`);
+          else Logger.error(`broadcast failed: Model "${this.id}" is not attached to a ChatRoom`);
           response = { ts: Date.now().toString(), from: this.id, content: msg, read: true, role: "assistant" } as any;
           break;
         }
         case "direct": {
           const r: any = (this as any).__room || (this as any).room;
           if (r && typeof r.broadcast === "function") await r.broadcast(this.id, String(msg ?? ""), target);
-          else logErr(`sendTo failed: Model "${this.id}" is not attached to a ChatRoom`);
+          else Logger.error(`sendTo failed: Model "${this.id}" is not attached to a ChatRoom`);
           response = { ts: Date.now().toString(), from: this.id, content: msg, read: true, role: "assistant" } as any;
           break;
         }
@@ -515,14 +588,14 @@ ${RedTag()}${sErr}${Reset()}
             const fs = await import("fs"); await fs.promises.writeFile(p, text + "\n", { encoding: "utf-8" });
           }
           response = { ts: Date.now().toString(), from: this.id, role: "tool", read: true, content: `=> Written to file ${p}` } as any;
-          logLine(`******* wrote file ${p} @ ${stamp()}`);
+          Logger.info(`******* wrote file ${p} @ ${stamp()}`);
           break;
         }
       }
     } catch (e: any) {
       const p = (kind === "file") ? ((!target.startsWith("/") && !target.startsWith("./")) ? `./${target}` : target) : String(target);
       response = { ts: Date.now().toString(), from: this.id, role: "tool", read: true, content: `${JSON.stringify({ ok: false, err: String(e) })} Failed to write to file ${p}.` } as any;
-      logErr(`file write failed: ${String(e)}`);
+      Logger.error(`file write failed: ${String(e)}`);
     } finally {
       if (this.fileToRedirectTo) this.audience = { kind: "group", target: "*" };
       this.fileToRedirectTo = undefined;
@@ -557,7 +630,7 @@ ${RedTag()}${sErr}${Reset()}
   }
 
   private _scheduleWake(delayMs = 1700) {
-    try { if (this._wakeTimer) { clearTimeout(this._wakeTimer); this._wakeTimer = null; } } catch {}
+    try { if (this._wakeTimer) { clearTimeout(this._wakeTimer); this._wakeTimer = null; } } catch (e) { console.log(e) }
     this._wakeTimer = setTimeout(() => {
       const nudge: RoomMessage = { ts: new Date().toISOString(), role: "system", from: "System", read: false, content: "(resume)" } as any;
       if (!(globalThis as any).__PAUSE_INPUT) void this.receiveMessage(nudge);
@@ -602,7 +675,7 @@ ${RedTag()}${sErr}${Reset()}
 
     const summaryLines: string[] = [];
     summaryLines.push(`[summary] Compressed ${head.length} earlier turns.`);
-    if (toolCount) summaryLines.push(`tools_used=${toolCount}` + (lastCmd ? ` last_cmd="${lastCmd.slice(0,120)}"` : ""));
+    if (toolCount) summaryLines.push(`tools_used=${toolCount}` + (lastCmd ? ` last_cmd="${lastCmd.slice(0, 120)}"` : ""));
     if (filesWritten.length) summaryLines.push(`files_written=${filesWritten.slice(-5).join(",")}`);
     if (headPreview) summaryLines.push(`recent_head:\n${headPreview}`);
 
@@ -637,7 +710,7 @@ async function runPortableShell(cmd: string, signal?: AbortSignal): Promise<{ st
   return await new Promise((resolve, reject) => {
     const p = cp.spawn("sh", ["-c", cmd], { stdio: ["ignore", "pipe", "pipe"] });
     let out = "", err = "";
-    const onAbort = () => { try { p.kill("SIGTERM"); } catch {} };
+    const onAbort = () => { try { p.kill("SIGTERM"); } catch (e) { console.log(e) } };
     if (signal) signal.addEventListener("abort", onAbort, { once: true });
     p.stdout.on("data", (b: Buffer) => { out += b.toString(); });
     p.stderr.on("data", (b: Buffer) => { err += b.toString(); });

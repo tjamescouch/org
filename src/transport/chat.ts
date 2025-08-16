@@ -2,6 +2,9 @@
 // Portable streaming client used by AgentModel. Supports `onData` to let callers
 // refresh leases while tokens arrive. Avoids Node/Bun specifics.
 
+import { logLine } from "../core/entity/agent-model";
+import Logger from "../ui/logger";
+
 export type ChatMessage = { role: "system" | "user" | "assistant" | "tool"; from?: string; content?: string; read?: boolean };
 export type AbortDetector = any;
 
@@ -26,19 +29,51 @@ export function interruptChat() {
   try { _abort?.abort(); } catch { /* noop */ }
 }
 
+export interface ChatResult {
+  id: string,
+  object: string,
+  created: number,
+  model: string,
+  system_fingerprint: string,
+  choices: [{
+    index: number,
+    delta: { reasoning?: string, content?: string },
+    logprobs: string,
+    finish_reason: string
+  }
+  ]
+}
+
+export const parseChatData = (s: string): ChatResult | undefined => {
+  try {
+    JSON.parse(s);
+  } catch {
+    return undefined;
+  }
+}
+export const parseChatDatas = (s: string): string => {
+  return s.split("data: ").map(blob => parseChatData(blob)).flatMap(x => x?.choices).map(c => (c?.delta.content || c?.delta.reasoning || '')).join('');
+}
+
 function pickBaseUrl(defaultBase?: string): string | undefined {
   const env: any = (globalThis as any).process?.env ?? {};
   return defaultBase || env.OLLAMA_BASE_URL || env.OAI_BASE || env.OPENAI_BASE_URL || env.OPENAI_BASE || undefined;
 }
 
-function isLikelyOpenAI(url: string): boolean {
-  return true;///openai|api\.openai|slack|v1\/chat/i.test(url);
+const isTrue = (s: string): boolean => {
+  return s === "true" || s === "1";
 }
+
+function isOpenAi(url: string): boolean {
+  return isTrue(process.env.OPENAI_COMPATIBLE) || true;
+}
+
+type StringToVoid = (s: string) => void;
 
 export async function chatOnce(agentId: string, messages: ChatMessage[], opts: ChatOptions = {}): Promise<any> {
   const base = pickBaseUrl(opts.baseUrl) || "http://127.0.0.1:11434";
   const url = base.replace(/\/$/, "");
-  const endpoint = isLikelyOpenAI(url) ? "/v1/chat/completions" : "/chat";
+  const endpoint = isOpenAi(url) ? "/v1/chat/completions" : "/chat";
 
   _abort = new AbortController();
 
@@ -66,6 +101,9 @@ export async function chatOnce(agentId: string, messages: ChatMessage[], opts: C
 
   if (opts.noStream) {
     const text = await res.text();
+
+    Logger.streamInfo(text);
+
     return { role: "assistant", content: text };
   }
 
@@ -89,6 +127,8 @@ export async function chatOnce(agentId: string, messages: ChatMessage[], opts: C
     opts.onData?.(chunk);
     buffered += chunk;
 
+    Logger.info(chunk);
+
     // Parse SSE-style "data: ..." lines if present
     let idx: number;
     while ((idx = buffered.indexOf("\n")) >= 0) {
@@ -101,8 +141,9 @@ export async function chatOnce(agentId: string, messages: ChatMessage[], opts: C
         if (payload === "[DONE]") { buffered = ""; break; }
         try {
           const obj = JSON.parse(payload);
-          if (obj?.choices?.[0]?.delta?.content) {
-            finalText += obj.choices[0].delta.content;
+          const delta = obj.choices[0].delta.content;
+          if (delta) {
+            finalText += delta;
           }
           if (Array.isArray(obj?.choices?.[0]?.delta?.tool_calls)) {
             toolCalls = toolCalls.concat(obj.choices[0].delta.tool_calls);
@@ -123,7 +164,7 @@ export async function chatOnce(agentId: string, messages: ChatMessage[], opts: C
   return { role: "assistant", content: finalText, tool_calls: toolCalls.length ? toolCalls : undefined };
 }
 
-export async function summarizeOnce(messages: ChatMessage[], opts: ChatOptions = {}): Promise<string> {
+export async function summarizeOnce(messages: ChatMessage[], opts: ChatOptions = {}, onData?: StringToVoid): Promise<string> {
   const base = pickBaseUrl(opts.baseUrl) || "http://127.0.0.1:11434";
   const url = base.replace(/\/$/, "");
   const endpoint = "/summarize";
@@ -134,5 +175,9 @@ export async function summarizeOnce(messages: ChatMessage[], opts: ChatOptions =
     body: JSON.stringify({ model: opts.model || "gpt-oss-20b", messages }),
   });
   if (!res.ok) return "";
-  return await res.text();
+  const text = await res.text();
+
+  if(onData) onData(text);
+
+  return text;
 }

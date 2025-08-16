@@ -32,10 +32,29 @@ const tint = (lvl: LogLevel, s: string) => {
 };
 
 export class Logger {
+  static streamInfo (s: string) { if (want("INFO" )) process.stdout.write(s); }
+
   static debug(...a: any[]) { if (want("DEBUG")) console.log(tint("DEBUG","[DEBUG]"), ...a); }
   static info (...a: any[]) { if (want("INFO" )) console.log(tint("INFO" ,"[INFO ]"), ...a); }
   static warn (...a: any[]) { if (want("WARN" )) console.warn(tint("WARN" ,"[WARN ]"), ...a); }
   static error(...a: any[]) { if (want("ERROR")) console.error(tint("ERROR","[ERROR]"), ...a); }
 }
+
+
+
+/**
+ * AgentLog
+ *  - tiny wrapper around console for consistent usage + future extension
+ */
+export class AgentLog {
+  static stamp(): string { return new Date().toLocaleTimeString(); }
+  static debug(...a: any[]) { if (want("DEBUG")) console.log(tint("DEBUG","[DEBUG]"), ...a); }
+  static info (...a: any[]) { if (want("INFO" )) console.log(tint("INFO" ,"[INFO ]"), ...a); }
+  static warn (...a: any[]) { if (want("WARN" )) console.warn(tint("WARN" ,"[WARN ]"), ...a); }
+  static error(...a: any[]) { if (want("ERROR")) console.error(tint("ERROR","[ERROR]"), ...a); }
+}
+
+/** Optional flag to surface chain-of-thought (for debugging only). */
+export const SHOW_THINK = (process.env.SHOW_THINK === "1" || process.env.SHOW_THINK === "true");
 
 export default Logger;
