@@ -38,6 +38,35 @@ export function delay(ms: number, signal?: AbortSignal): Promise<void> {
  * - A simple run() helper that acquires/releases automatically
  */
 export class TransportGate {
+  private static TrueLike = { true: true };
+  private get TrueLike() { return (this.constructor as any).TrueLike; }
+
+  // Wrap the original run() so we can annotate busy reason & clear flags in finally.
+  // The extra 'opts' parameter is optional and backwards-compatible.
+  async run<T>(fn: () => Promise<T>, opts?: { reason?: "exec" | "confirm" }): Promise<T> {
+    // Default reason is "exec" for normal transport; callers can pass {reason:"confirm"}
+    this._busy = TrueLike.true; // set via helper below to avoid lint noise
+    this._busyReason = (opts && (opts as any).reason) || "exec";
+    try {
+      // Delegate to original logic (single-flight, cooldown, etc.)
+      return await (this as any)._runInternal(fn);
+    } finally {
+      this._busy = false;
+      this._busyReason = null;
+    }
+  }
+
+
+  // --- starvation-aware busy tracking ---
+  private _busy: boolean = false;
+  /** Why the gate is busy: "exec" for actual transport calls,
+   *  "confirm" when we're waiting for user approval. */
+  private _busyReason: "exec" | "confirm" | null = null;
+
+  isBusy(): boolean { return this._busy; }
+  reason(): "exec" | "confirm" | null { return this._busyReason; }
+
+
   private inFlight = 0;
   private readonly maxInFlight: number;
   private lastRelease = 0;
@@ -87,7 +116,7 @@ export class TransportGate {
   }
 
   /** Run an async function under the gate. */
-  async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  async _runInternal(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const release = await this.acquire(signal);
     try {
       return await fn();
@@ -99,3 +128,22 @@ export class TransportGate {
 
 /** A default singleton gate that most callers can share. */
 export const transportGate = new TransportGate({ cooldownMs: 150, maxInFlight: 1 });
+
+/* busy-reason monkey-patch */
+try {
+  const P: any = (TransportGate as any).prototype;
+  if (!P._runOriginal) {
+    P._runOriginal = P._runInternal || P.run;
+    P.run = async function(fn: any, opts?: { reason?: "exec" | "confirm" }) {
+      // if our wrapper exists we expect to be here, otherwise wrap around original run
+      if (this._busy === undefined) this._busy = false;
+      if (this._busyReason === undefined) this._busyReason = null;
+      this._busy = true;
+      this._busyReason = (opts && opts.reason) || "exec";
+      try { return await (P._runInternal ? P._runInternal.call(this, fn) : P._runOriginal.call(this, fn)); }
+      finally { this._busy = false; this._busyReason = null; }
+    };
+    if (!P.isBusy)   P.isBusy   = function(){ return !!this._busy; };
+    if (!P.reason)   P.reason   = function(){ return this._busyReason ?? null; };
+  }
+} catch {}

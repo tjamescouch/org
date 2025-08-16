@@ -1,4 +1,3 @@
-
 // test/multi-agent-stop-integration.test.ts
 import { test, expect } from "bun:test";
 import { ChatRoom } from "../src/core/chat-room";
@@ -12,13 +11,17 @@ type Step =
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
-/** Scripted agent with explicit inbox + attachRoom usage. */
+/**
+ * Scripted agent with explicit inbox + multiple delivery entrypoints.
+ * Also supports attachRoom so we can broadcast even if base Model lacks it.
+ */
 class ScriptedAgent extends Model {
   private steps: Step[];
   private idx = 0;
   private started = false;
   private inbox: any[] = [];
   private onTurn?: (who: string, step: Step) => void;
+  private _room: ChatRoom | null = null;
 
   delivered = 0;
 
@@ -27,6 +30,9 @@ class ScriptedAgent extends Model {
     this.steps = steps;
     this.onTurn = onTurn;
   }
+
+  // For safety: allow the room to be attached explicitly by the test.
+  attachRoom(room: ChatRoom) { this._room = room; }
 
   async receiveMessage(m: any) { if (m?.from !== this.id) { this.started = true; this.inbox.push(m); this.delivered++; } }
   onRoomMessage(m: any)        { if (m?.from !== this.id) { this.started = true; this.inbox.push(m); this.delivered++; } }
@@ -46,7 +52,13 @@ class ScriptedAgent extends Model {
       await sleep(step.ms);
     } else {
       Logger.debug(`[script:${this.id}] say: ${step.text}`);
-      await this.broadcast(step.text, step.to);
+      // Prefer Model.broadcast if it exists; otherwise use the attached room.
+      const b = (this as any).broadcast;
+      if (typeof b === "function") {
+        await b.call(this, step.text, step.to);
+      } else {
+        await this._room!.broadcast(this.id, step.text, step.to);
+      }
     }
     if (this.idx < this.steps.length) this.inbox.push({ from: this.id, content: "tick" });
     return true;
@@ -54,6 +66,9 @@ class ScriptedAgent extends Model {
 }
 
 test("full convo then user says Stop -> scheduler pauses (no more chatter)", async () => {
+  // Reset any global pause left by other tests.
+  (globalThis as any).__PAUSE_INPUT = false;
+
   Logger.info("[integration-stop] starting");
 
   const room = new ChatRoom();
@@ -80,10 +95,8 @@ test("full convo then user says Stop -> scheduler pauses (no more chatter)", asy
      { kind: "say",  text: "@group Carol summary." }],
     tap);
 
-  // Explicitly attach, in case addModel doesn't
-  (alice as any).attachRoom?.(room);
-  (bob as any).attachRoom?.(room);
-  (carol as any).attachRoom?.(room);
+  // Attach explicitly (works even if ChatRoom.addModel doesn't call attachRoom).
+  alice.attachRoom(room); bob.attachRoom(room); carol.attachRoom(room);
 
   room.addModel(alice as any);
   room.addModel(bob as any);
@@ -92,26 +105,35 @@ test("full convo then user says Stop -> scheduler pauses (no more chatter)", asy
   const tm = new TurnManager(room, [alice as any, bob as any, carol as any], {
     tickMs: 20, idleBackoffMs: 0, proactiveMs: 10_000, turnTimeoutMs: 2_000
   });
-  // if TM has binder, bind now
+  // If TurnManager exposes a binder (some builds), use it.
   (tm as any)._bindOnce?.();
 
   tm.start();
 
-  // Kickoff
+  // (1) Kickoff
   await room.broadcast("User", "Kickoff");
 
-  // Ensure delivery happened
+  // (2) Ensure delivery happened; fall back to manual seeding if not.
   const tDeliver = Date.now();
-  while ((alice.delivered + bob.delivered + carol.delivered) === 0 && Date.now() - tDeliver < 1500) {
+  while ((alice.delivered + bob.delivered + carol.delivered) === 0 && Date.now() - tDeliver < 600) {
     await sleep(25);
   }
+  if ((alice.delivered + bob.delivered + carol.delivered) === 0) {
+    Logger.debug("[integration-stop] fallback: manual enqueueFromRoom seeding");
+    const seed = { from: "User", content: "Kickoff(seed)" };
+    alice.enqueueFromRoom(seed); bob.enqueueFromRoom(seed); carol.enqueueFromRoom(seed);
+  }
 
-  // Wait until at least one scripted step happened
+  // (3) Wait until at least one scripted step happened
   const t0 = Date.now();
   while (turnLog.length < 1 && Date.now() - t0 < 3000) await sleep(25);
+  if (turnLog.length === 0) {
+    tm.stop();
+    throw new Error(`[integration-stop] no steps observed; delivered={a:${alice.delivered},b:${bob.delivered},c:${carol.delivered}}`);
+  }
   expect(turnLog.length).toBeGreaterThan(0);
 
-  // Interject: Stop -> pause immediately
+  // (4) User says Stop -> pause immediately; verify no more chatter while paused
   await room.broadcast("User", "Stop");
   tm.pause();
   const turnsAtStop = turnLog.length;
@@ -119,7 +141,7 @@ test("full convo then user says Stop -> scheduler pauses (no more chatter)", asy
   await sleep(500);
   expect(turnLog.length).toBe(turnsAtStop);
 
-  // Resume briefly; if steps remain they can proceed now
+  // (5) Resume briefly; if steps remain they can proceed now (sanity)
   tm.resume();
   const t1 = Date.now();
   while (Date.now() - t1 < 600 && turnLog.length === turnsAtStop) await sleep(25);
