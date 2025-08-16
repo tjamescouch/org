@@ -27,6 +27,11 @@ export class ExecutionGate {
       throw new Error("Safe mode and non TTY are not compatible");
     }
 
+    if (ExecutionGate.mode != ExecutionMode.SAFE) {
+      return;
+    }
+
+
     await waitForEnter();
   }
 }
