@@ -1,4 +1,4 @@
-import { Logger } from "../logger";
+import { Logger } from "../ui/logger";
 (async () => {
   try {
     const mod = await import("../core/chat-room");

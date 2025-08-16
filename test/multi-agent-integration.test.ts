@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import { ChatRoom } from "../src/core/chat-room";
-import { Logger } from "../src/logger";
+import { Logger } from "../src/ui/logger";
 
 // NOTE: baseUrl override to mock server is handled in test/integration.mock-server.test.ts
 //       This test just verifies a simple two-agent exchange doesn't deadlock.

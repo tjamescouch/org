@@ -1,4 +1,4 @@
-import { C, colorOn } from "./ui/colors";
+import { C, colorOn } from "./colors";
 
 /** Runtime enum-like object so tests can import { LogLevel } as a value. */
 export const LogLevel = {

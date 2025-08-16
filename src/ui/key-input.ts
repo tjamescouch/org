@@ -1,4 +1,6 @@
-import { Logger } from "../logger";
+import { BrightRedTag, Reset } from "../constants";
+import { appendDirect, stamp } from "../core/entity/agent-model";
+import { Logger } from "./logger";
 
 export interface KeyHandlers {
   onInterject?: () => void;
@@ -11,7 +13,7 @@ export function setupKeyInput(h: KeyHandlers) {
 
   if (!stdin.isTTY) {
     Logger.debug("key-input: stdin is not a TTY; interactive keys disabled");
-    return { close(){} };
+    return { close() { } };
   }
 
   const onData = (buf: Buffer) => {
@@ -29,7 +31,7 @@ export function setupKeyInput(h: KeyHandlers) {
     Logger.debug("key-input: raw=", JSON.stringify(s));
   };
 
-  try { stdin.setRawMode(true); } catch {}
+  try { stdin.setRawMode(true); } catch { }
   stdin.resume();
   stdin.on("data", onData);
   Logger.info("key-input: ready. keys — i:interject, s:system, q:quit, ^C:quit");
@@ -37,7 +39,28 @@ export function setupKeyInput(h: KeyHandlers) {
   return {
     close() {
       stdin.off("data", onData);
-      try { stdin.setRawMode(false); } catch {}
+      try { stdin.setRawMode(false); } catch { }
     }
   };
+}
+
+// Pause for Enter when safe mode is enabled.  Returns a promise that
+// resolves once the user presses Enter.  If stdin is not a TTY this
+// resolves immediately.
+export function waitForEnter(msg: string): Promise<void> {
+  if (process.stdin.isTTY) {
+    appendDirect(`${BrightRedTag()}[y/N] ******* ${msg}${Reset()}`);
+    return new Promise((resolve, reject) => {
+      process.stdout.write('Continue? [y/N]');
+      process.stdin.resume();
+      process.stdin.once('data', (data: Buffer) => {
+        const s = data.toString("utf8");
+        if (s.trim() !== "y") {
+          reject();
+        } else {
+          resolve();
+        }
+      });
+    });
+  }
 }

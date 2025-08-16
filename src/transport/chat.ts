@@ -8,7 +8,7 @@ import {
   BrightMagentaTag,
   Reset,
 } from "../constants";
-import { Logger } from "../logger";
+import { Logger } from "../ui/logger";
 
 // /Users/jamescouch/dev/llm/org/chat.ts
 // Streaming chat client with immediate per-chunk meta-tag censorship.

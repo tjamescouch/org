@@ -39,8 +39,7 @@ import "./src/runtime-fixes/bootstrap";
 // bootstrap (inserts BEFORE original code)
 import { installDebugHooks } from "./src/core/debug-hooks";
 import "./src/runtime-fixes/role-fix";
-import "./src/runtime-fixes/safe-mode";
-import { Logger } from "./src/logger";
+import { Logger } from "./src/ui/logger";
 if (process.env.DEBUG_TRACE === "1") {
   installDebugHooks().catch(e => console.error("debug-hooks failed:", e));
 }
@@ -48,7 +47,7 @@ Logger.info("org: bootstrap", { argv: process.argv.slice(2) });
 // --- original file follows ---
 import { installDebugHooks } from "./src/core/debug-hooks";
 import "./src/runtime-fixes/role-fix";
-import { Logger } from "./src/logger";
+import { Logger } from "./src/ui/logger";
 if (process.env.DEBUG_TRACE === "1") {
   installDebugHooks().catch(e => console.error("debug-hooks failed:", e));
 }
@@ -126,20 +125,6 @@ function parsePersonas(str: string | undefined, defaultModel: string): PersonaSp
   });
 }
 
-// Pause for Enter when safe mode is enabled.  Returns a promise that
-// resolves once the user presses Enter.  If stdin is not a TTY this
-// resolves immediately.
-function waitForEnter(): Promise<void> {
-  if (!process.stdin.isTTY) return Promise.resolve();
-  return new Promise(resolve => {
-    process.stdout.write('Press Enter to continue...');
-    process.stdin.resume();
-    process.stdin.once('data', () => {
-      resolve();
-    });
-  });
-}
-
 async function main() {
   const argv = process.argv.slice(2);
   const opts = parseArgs(argv);
@@ -206,9 +191,6 @@ async function main() {
 
   // For each agent, optionally wait for user confirmation in safe mode
   for (const agent of agents) {
-    if (safe) {
-      await waitForEnter();
-    }
     await (agent as any).takeTurn();
   }
 
@@ -226,7 +208,6 @@ async function main() {
   // Send prompt again to ensure transcripts capture this run
   await room.broadcast('User', prompt);
   for (const agent of agents) {
-    if (safe) await waitForEnter();
     await (agent as any).takeTurn();
   }
 

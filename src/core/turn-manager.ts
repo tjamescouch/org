@@ -1,7 +1,7 @@
 // turn-manager.ts
 import type { ChatRoom } from "./chat-room";
 import type { AgentModel } from "./entity/agent-model";
-import { Logger } from "../logger";
+import { Logger } from "../ui/logger";
 
 // Time-bounded user-control gate (set by main.ts during interject)
 function userControlActive(): boolean {

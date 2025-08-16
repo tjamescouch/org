@@ -1,4 +1,4 @@
-import { getLogLevel } from "../src/logger";
+import { getLogLevel } from "../src/ui/logger";
 
 describe("Logger respects LOG_LEVEL env", () => {
   const saved = process.env.LOG_LEVEL;

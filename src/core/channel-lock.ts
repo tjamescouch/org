@@ -1,5 +1,5 @@
 // ChannelLock.ts
-import { Logger } from "../logger";
+import { Logger } from "../ui/logger";
 
 export class ChannelLock {
   /* watchdog: force-release after max ms */
