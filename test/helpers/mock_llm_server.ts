@@ -289,3 +289,64 @@ export function installFetchProxy(targetPort: number, opts?: { verbose?: boolean
 
   return () => { globalThis.fetch = originalFetch; };
 }
+
+/**
+ * Hardened fetch proxy: redirects ANY POST to the local mock server (unless already targeting it).
+ * - Preserves method, headers, and forwards a cloned body (works for Request/init variants).
+ * - Keeps original pathname + query string.
+ * Use installFetchProxyV2(port, { verbose: true }) to debug what gets proxied.
+ */
+export function installFetchProxyV2(targetPort: number, opts?: { verbose?: boolean }): () => void {
+  const originalFetch = globalThis.fetch;
+  const verbose = !!opts?.verbose;
+
+  function toURLString(input: RequestInfo): string | null {
+    try {
+      if (typeof input === "string") return input;
+      if (input instanceof URL) return input.toString();
+      return (input as Request).url ?? null;
+    } catch { return null; }
+  }
+
+  async function extractBody(input: RequestInfo, init?: RequestInit): Promise<BodyInit | undefined> {
+    try {
+      if (typeof input === "string" || input instanceof URL) {
+        const b = init?.body;
+        if (b == null) return undefined;
+        if (typeof b === "string") return b;
+        try { return await new Response(b as any).text(); } catch { return b as any; }
+      } else {
+        const req = input as Request;
+        try { return await req.clone().text(); } catch { return undefined; }
+      }
+    } catch { return undefined; }
+  }
+
+  globalThis.fetch = (async (input: RequestInfo, init?: RequestInit): Promise<Response> => {
+    const urlStr = toURLString(input);
+    try {
+      const methodSrc = init?.method ?? (typeof input !== "string" && !(input instanceof URL) ? (input as Request).method : undefined);
+      const method = (methodSrc ?? "GET").toUpperCase();
+      if (method === "POST") {
+        const url = new URL(urlStr ?? "http://invalid/");
+        const isAlreadyMock =
+          (url.hostname === "127.0.0.1" || url.hostname === "localhost") &&
+          url.port === String(targetPort);
+        if (!isAlreadyMock) {
+          const proxied = `http://127.0.0.1:${targetPort}${url.pathname}${url.search || ""}`;
+          const headers = init?.headers ?? (typeof input !== "string" && !(input instanceof URL) ? (input as Request).headers : undefined);
+          const body = await extractBody(input, init);
+          if (verbose) {
+            try { console.debug?.(`[fetch-proxy] POST ${urlStr} -> ${proxied}`); } catch {}
+          }
+          return originalFetch(proxied, { method: "POST", headers, body });
+        }
+      }
+    } catch {
+      // fall through on parsing issues
+    }
+    return originalFetch(input as any, init as any);
+  }) as typeof globalThis.fetch;
+
+  return () => { globalThis.fetch = originalFetch; };
+}

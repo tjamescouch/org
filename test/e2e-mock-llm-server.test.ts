@@ -3,6 +3,7 @@ import { ChatRoom } from "../src/core/chat-room";
 import { TurnManager } from "../src/core/turn-manager";
 import { Model } from "../src/core/entity/model";
 import { startToolCallsServer, installFetchProxy } from "./helpers/mock_llm_server";
+import { installFetchProxyV2 } from "./helpers/mock_llm_server";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -35,7 +36,7 @@ function makeBunDollarStub(counter: { count: number }) {
 
 test("e2e: mock LLM always uses 2 tools then returns @group", async () => {
   const server = startToolCallsServer();
-  const restoreFetch = installFetchProxy(server.port, { verbose: false });
+  const restoreFetch = installFetchProxyV2(server.port, { verbose: false });
 
   // Prevent real shell execs; count tool runs
   const toolCounter = { count: 0 };
