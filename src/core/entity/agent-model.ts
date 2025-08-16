@@ -1081,6 +1081,8 @@ ${RedTag()}${sErr}${Reset()}
         }
         case "file": {
           const p = (!target.startsWith("/") && !target.startsWith("./")) ? `./${target}` : target;
+          await ExecutionGate.gate(`Agent wants to (over)write the file ${p} @ ${stamp()}`);
+
           // ensure directory exists
           const slash = p.lastIndexOf("/");
           const dir = slash >= 0 ? p.slice(0, slash) : ".";
