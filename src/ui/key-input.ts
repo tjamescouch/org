@@ -1,4 +1,5 @@
 import { BrightRedTag, Reset } from "../constants";
+import AgentLog from "../core/entity/agent-logging";
 import { appendDirect, stamp } from "../core/entity/agent-model";
 import { Logger } from "./logger";
 
@@ -30,7 +31,7 @@ export class ExecutionGate {
       return;
     }
 
-    appendDirect(`\n${BrightRedTag()} Continue? [y/N] ${msg}${Reset()}`);
+    AgentLog.appendDirect(`\n${BrightRedTag()} Continue? [y/N] ${msg}${Reset()}`);
 
     await waitForEnter();
   }
