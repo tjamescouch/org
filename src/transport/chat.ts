@@ -291,6 +291,7 @@ export async function chatOnce(
     return { role: "assistant", content: "ok" };
   }
 
+  let firstContent = true;
   const pf = await preflight(ollamaBaseUrl, model);
   // If a baseUrl override is in effect (via opts or environment), skip the preflight
   // check entirely.  Tests may install a mock server that does not expose /api/version
@@ -354,14 +355,13 @@ export async function chatOnce(
           const reasoningStr = typeof msg.reasoning === "string" ? msg.reasoning : "";
           const tc = Array.isArray(msg.tool_calls) ? msg.tool_calls : (Array.isArray(ch.tool_calls) ? ch.tool_calls : undefined);
 
-          if (contentStr) Bun.stdout.write(contentStr + "\n");
+          if (contentStr) Bun.stdout.write(contentStr);
           if (!contentStr && reasoningStr && SHOW_THINK) {
             // Flatten all whitespace in the reasoning string so it prints
             // on a single line.  This avoids the haiku-like formatting
             // that results from newline-delimited streaming.  After
             // collapsing whitespace, trim leading/trailing spaces.
-            const flattened = reasoningStr.replace(/\s+/g, ' ').trim();
-            Bun.stdout.write(`${BrightMagentaTag()}${flattened}${Reset()}\n`);
+            Bun.stdout.write(`${BrightMagentaTag()}${reasoningStr}${Reset()}`);
           }
           _currentStreamAC = null;
           return { role: "assistant", content: contentStr.trim(), reasoning: reasoningStr, tool_calls: tc };
@@ -490,7 +490,6 @@ export async function chatOnce(
     if (DEBUG_STREAM) console.error("RAW:", chunk.replace(/\r/g, "\\r").replace(/\n/g, "\\n"));
     lineBuffer += chunk;
 
-    let firstContent = true;
 
     for (;;) {
       const nl = lineBuffer.indexOf('\n');
@@ -675,11 +674,11 @@ export async function chatOnce(
     } catch {}
   }
 
-  if (squelchedChars > 0) {
-    Bun.stdout.write("\n");
-  }
+  //if (squelchedChars > 0) {
+  //  Bun.stdout.write("\n");
+  //}
   // Ensure a newline after the streamed content
-  Bun.stdout.write("\n");
+  //Bun.stdout.write("\n");
 
   let wasCensored = Boolean(censorReason);
   if (cutAt !== null) {

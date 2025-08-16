@@ -8,6 +8,29 @@ export interface KeyHandlers {
   onQuit?: () => void;
 }
 
+export enum ExecutionMode {
+  SAFE = "SAFE",
+  DIRECT = "DIRECT"
+}
+
+export class ExecutionGate {
+  private static mode: ExecutionMode = ExecutionMode.SAFE;
+
+  static setMode(_mode: ExecutionMode): void {
+    ExecutionGate.mode = _mode;
+  }
+
+  static async gate(msg: string): Promise<void> {
+    appendDirect(`\n${BrightRedTag()} Continue? [y/N] ${msg}${Reset()}`);
+
+    if (!process.stdin.isTTY && ExecutionGate.mode === ExecutionMode.SAFE) {
+      throw new Error("Safe mode and non TTY are not compatible");
+    }
+
+    await waitForEnter();
+  }
+}
+
 export function setupKeyInput(h: KeyHandlers) {
   const stdin = process.stdin;
 
@@ -47,11 +70,9 @@ export function setupKeyInput(h: KeyHandlers) {
 // Pause for Enter when safe mode is enabled.  Returns a promise that
 // resolves once the user presses Enter.  If stdin is not a TTY this
 // resolves immediately.
-export function waitForEnter(msg: string): Promise<void> {
+function waitForEnter(msg: string): Promise<void> {
   if (process.stdin.isTTY) {
-    appendDirect(`${BrightRedTag()}[y/N] ******* ${msg}${Reset()}`);
     return new Promise((resolve, reject) => {
-      process.stdout.write('Continue? [y/N]');
       process.stdin.resume();
       process.stdin.once('data', (data: Buffer) => {
         const s = data.toString("utf8");
