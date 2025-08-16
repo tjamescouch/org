@@ -1,22 +1,16 @@
 /**
- * ChannelLock — a tiny async mutex with:
+ * ChannelLock — portable async mutex with:
  *  - FIFO fairness
- *  - microtask handoff (grant to the next waiter on a microtask)
- *  - waiter timeouts
- *  - deadlock/lease breaker with `touch()` to refresh
- *  - zero monkey‑patching; no Node/Bun specifics
+ *  - microtask handoff
+ *  - waiter acquire timeouts
+ *  - lease + `touch()` to refresh while streaming
+ *  - watchdog to break stale holders
  *
- * Usage
- *   const release = await channelLock.waitForLock(5000, "fetch");
- *   try {
- *     // ...critical section...
- *     // During long running streaming operations, keep the lease alive:
- *     release.touch?.();
- *   } finally {
- *     await release();
- *   }
+ * No monkey-patching, no Node/Bun-specific dependencies.
  */
+
 export type ReleaseFn = (() => Promise<void>) & { touch?: () => void };
+
 type Resolver<T> = (v: T) => void;
 
 interface ChannelLockOptions {
@@ -24,7 +18,7 @@ interface ChannelLockOptions {
   leaseMs?: number;
   /** How frequently to check for stale holders (ms). Default 250. */
   pollMs?: number;
-  /** Optional debug label printed with console.debug when LOG_LEVEL=DEBUG. */
+  /** Optional tag for debug logs. */
   debugTag?: string;
 }
 
@@ -60,23 +54,18 @@ export class ChannelLock {
   get locked(): boolean { return !!this._holder; }
   get queueLength(): number { return this._q.length; }
 
-  /**
-   * Acquire the lock, waiting up to `timeoutMs` before rejecting.
-   * Returns an async release function. The release function is idempotent.
-   * The returned function also has a `touch()` method to refresh the lease.
-   */
   async waitForLock(timeoutMs: number = 10_000, label: string = "anon"): Promise<ReleaseFn> {
+    // Fast-path when free
     if (!this._holder) {
       this._holder = this._newHolder(label);
       return this._makeRelease(this._holder);
     }
 
-    const waiter = await new Promise<ReleaseFn>((resolve, reject) => {
+    // Queue and wait (FIFO)
+    const release = await new Promise<ReleaseFn>((resolve, reject) => {
       const item = { label, resolve, reject, timeout: undefined as any };
-      // Timeout for waiting
       if (timeoutMs > 0 && Number.isFinite(timeoutMs)) {
         item.timeout = setTimeout(() => {
-          // Remove this waiter from queue if still present
           const idx = this._q.indexOf(item as any);
           if (idx >= 0) this._q.splice(idx, 1);
           reject(new Error(`ChannelLock: acquire timeout after ${timeoutMs}ms`));
@@ -84,35 +73,30 @@ export class ChannelLock {
       }
       this._q.push(item as any);
     });
-
-    return waiter;
+    return release;
   }
 
-  /**
-   * Convenience wrapper to run a critical section under the lock.
-   */
   async run<T>(fn: () => Promise<T>, timeoutMs?: number, label?: string): Promise<T> {
     const release = await this.waitForLock(timeoutMs, label);
     try { return await fn(); }
     finally { await release(); }
   }
 
-  /** Manually refresh the current holder's lease. (Usually call `release.touch?.()` instead.) */
+  /** Manually refresh the current holder's lease. */
   touch(): void {
     if (this._holder) this._holder.lastTouch = Date.now();
   }
 
-  // -- internals ------------------------------------------------------------
+  // ---- internals -----------------------------------------------------------
 
   private _debug(msg: string) {
-    // Print only when LOG_LEVEL looks like DEBUG
     try {
       const lvl = (globalThis as any).process?.env?.LOG_LEVEL ?? "";
       if (String(lvl).toUpperCase().includes("DEBUG")) {
         // eslint-disable-next-line no-console
         console.debug(`[${this.opts.debugTag}] ${msg}`);
       }
-    } catch { /* noop */ }
+    } catch { /* ignore */ }
   }
 
   private _newHolder(label: string): Holder {
@@ -128,7 +112,6 @@ export class ChannelLock {
       const age = Date.now() - Math.max(h.lastTouch, h.acquiredAt);
       if (age > this.opts.leaseMs) {
         this._debug(`lease expired for holder=${h.label} (id=${h.id}); breaking and rotating queue`);
-        // Force release and grant next if any
         this._forceRelease();
       }
     }, this.opts.pollMs);
@@ -138,7 +121,6 @@ export class ChannelLock {
     const h = this._holder;
     if (!h) return;
     this._holder = null;
-    // microtask handoff
     queueMicrotask(() => this._grantNext());
   }
 
@@ -146,7 +128,6 @@ export class ChannelLock {
     while (this._q.length) {
       const next = this._q.shift()!;
       if (next.timeout) clearTimeout(next.timeout);
-      // Next holder becomes active
       const h = this._newHolder(next.label);
       this._holder = h;
       const release = this._makeRelease(h);
@@ -159,10 +140,8 @@ export class ChannelLock {
     const release: any = async () => {
       if (h.released) return;
       h.released = true;
-      // Only the current holder may release the global lock
       if (this._holder && this._holder.id === h.id) {
         this._holder = null;
-        // microtask handoff (do not grant synchronously)
         queueMicrotask(() => this._grantNext());
       }
     };
@@ -175,5 +154,5 @@ export class ChannelLock {
   }
 }
 
-// Default singleton used throughout the project
+// Default singleton
 export const channelLock = new ChannelLock();

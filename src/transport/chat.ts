@@ -1,10 +1,8 @@
 // transport/chat.ts
-// Streaming chat transport with optional onData hook so callers can refresh a lease (e.g., ChannelLock.touch()).
-// This module avoids Node/Bun specifics and relies on the Fetch standard + Web Streams.
-// It also exposes `interruptChat()` to abort the in-flight request.
+// Portable streaming client used by AgentModel. Supports `onData` to let callers
+// refresh leases while tokens arrive. Avoids Node/Bun specifics.
 
 export type ChatMessage = { role: "system" | "user" | "assistant" | "tool"; from?: string; content?: string; read?: boolean };
-export type ToolCall = any;
 export type AbortDetector = any;
 
 export interface ChatOptions {
@@ -15,11 +13,11 @@ export interface ChatOptions {
   abortDetectors?: AbortDetector[];
   soc?: string;
   temperature?: number;
-  /** Called with raw streamed data chunks as they arrive. */
+  /** Streaming data callback. Called for every chunk. */
   onData?: (chunk: string) => void;
-  /** Override baseUrl (e.g., OLLAMA_BASE_URL, OpenAI base, mock base). */
+  /** Base URL override; otherwise inferred from env. */
   baseUrl?: string;
-  /** When true, disable streaming. */
+  /** Force non-streaming request. */
   noStream?: boolean;
 }
 
@@ -33,17 +31,18 @@ function pickBaseUrl(defaultBase?: string): string | undefined {
   return defaultBase || env.OLLAMA_BASE_URL || env.OAI_BASE || env.OPENAI_BASE_URL || env.OPENAI_BASE || undefined;
 }
 
-/**
- * Minimal streaming client compatible with both OpenAI-style streaming (data: lines)
- * and simple text endpoints used in tests. The exact wire format is intentionally
- * lightweight; the important bit is that we invoke `opts.onData` for every
- * streamed token/chunk so upper layers can call ChannelLock.touch().
- */
+function isLikelyOpenAI(url: string): boolean {
+  return /openai|api\.openai|slack|v1\/chat/i.test(url);
+}
+
 export async function chatOnce(agentId: string, messages: ChatMessage[], opts: ChatOptions = {}): Promise<any> {
   const base = pickBaseUrl(opts.baseUrl) || "http://127.0.0.1:11434";
-  const url = base.endsWith("/") ? base.slice(0, -1) : base;
+  const url = base.replace(/\/$/, "");
+  const endpoint = isLikelyOpenAI(url) ? "/v1/chat/completions" : "/chat";
 
-  const body = {
+  _abort = new AbortController();
+
+  const body: any = {
     model: opts.model || "gpt-oss-20b",
     messages,
     stream: !opts.noStream,
@@ -51,21 +50,12 @@ export async function chatOnce(agentId: string, messages: ChatMessage[], opts: C
     tool_choice: opts.tool_choice || undefined,
     temperature: typeof opts.temperature === "number" ? opts.temperature : 1,
     num_ctx: opts.num_ctx || 8192,
-    // Allow servers to receive raw SoC if they support it (safe to ignore).
-    meta: { soc: opts.soc || "" }
+    meta: { soc: opts.soc || "" },
   };
-
-  _abort = new AbortController();
-
-  // Prefer `/v1/chat/completions` if it looks like an OpenAI base, otherwise fall back
-  // to a generic `/chat` the mock servers can implement.
-  const endpoint = /openai|api\.openai|v1|chat/i.test(url) ? "/v1/chat/completions" : "/chat";
 
   const res = await fetch(url + endpoint, {
     method: "POST",
-    headers: {
-      "content-type": "application/json"
-    },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
     signal: _abort.signal,
   });
@@ -79,26 +69,27 @@ export async function chatOnce(agentId: string, messages: ChatMessage[], opts: C
     return { role: "assistant", content: text };
   }
 
-  const reader = (res.body as any).getReader?.();
-  if (!reader) {
-    // No reader means no streaming support; read everything.
-    const text = await res.text();
-    return { role: "assistant", content: text };
-  }
-
+  const reader: any = (res as any).body?.getReader ? (res as any).body.getReader() : null;
   const decoder = new TextDecoder();
   let buffered = "";
   let finalText = "";
   let toolCalls: any[] = [];
 
+  if (!reader) {
+    // Non-streaming body; consume all
+    const text = await res.text();
+    opts.onData?.(text);
+    return { role: "assistant", content: text };
+  }
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     const chunk = decoder.decode(value, { stream: true });
-    buffered += chunk;
     opts.onData?.(chunk);
+    buffered += chunk;
 
-    // Parse Server-Sent-Events style "data: ..." lines if present
+    // Parse SSE-style "data: ..." lines if present
     let idx: number;
     while ((idx = buffered.indexOf("\n")) >= 0) {
       const line = buffered.slice(0, idx).trim();
@@ -117,17 +108,14 @@ export async function chatOnce(agentId: string, messages: ChatMessage[], opts: C
             toolCalls = toolCalls.concat(obj.choices[0].delta.tool_calls);
           }
         } catch {
-          // Non-JSON payload: treat as plain text
           finalText += payload;
         }
       } else {
-        // Non-SSE line — accumulate as text
         finalText += line;
       }
     }
   }
 
-  // Flush any remaining buffered text as plain text
   if (buffered.trim().length) {
     finalText += buffered.trim();
   }
@@ -136,9 +124,8 @@ export async function chatOnce(agentId: string, messages: ChatMessage[], opts: C
 }
 
 export async function summarizeOnce(messages: ChatMessage[], opts: ChatOptions = {}): Promise<string> {
-  // Non-streaming, simple summary endpoint
   const base = pickBaseUrl(opts.baseUrl) || "http://127.0.0.1:11434";
-  const url = base.endsWith("/") ? base.slice(0, -1) : base;
+  const url = base.replace(/\/$/, "");
   const endpoint = "/summarize";
 
   const res = await fetch(url + endpoint, {
