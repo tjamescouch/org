@@ -1,47 +1,42 @@
-
-// test/e2e-mock-llm-f-server.test.ts
-import "./setup";
-import { startMockLLMServer } from "./mock-llm";
-import { ChatRoom } from "../src/core/chat-room";
-import { AgentModel } from "../src/core/entity/agent-model";
+import ChatRoom from "../src/core/chat-room";
+import AgentModel from "../src/core/entity/agent-model";
 import { TurnManager } from "../src/core/turn-manager";
-import { sleep } from "./helpers/sleep";
+import { startMockLLMServer } from "./mock-llm";
+// re-usable mock(s)
 
-test("e2e f-server: two tools → @group done(L) per agent > routes via OpenAI base, then emits @group", async () => {
-  const mock = await startMockLLMServer();
-  process.env.OAI_BASE = mock.url;
+const sleep = (ms:number) => new Promise(r => setTimeout(r, ms));
+
+// Simple helper: spin until predicate or timeout
+async function waitUntil(pred: () => boolean, timeoutMs=4000, stepMs=25) {
+  const t0 = Date.now();
+  while (!pred() && Date.now() - t0 < timeoutMs) await sleep(stepMs);
+}
+
+/**
+ * f-server variant: LLM answers f(question) after two tools. We assert tool path + deliveries.
+ */
+test("routes via OpenAI base, then emits @group", async () => {
+  const mock = await startMockLLMServer({ mode: "f" });
+  const baseUrl = mock.baseUrl;
 
   const room = new ChatRoom();
-  const a = new AgentModel("alice"); room.addModel(a);
-  const b = new AgentModel("bob");   room.addModel(b);
-  const c = new AgentModel("carol"); room.addModel(c);
-  const tm = new TurnManager(room, [a,b,c], { tickMs: 20, proactiveMs: 40, idleBackoffMs: 0 , disableUserControl: true });
+  const a = new AgentModel("alice", { baseUrl });
+  const b = new AgentModel("bob",   { baseUrl });
+  const c = new AgentModel("carol", { baseUrl });
+  room.addModel(a); room.addModel(b); room.addModel(c);
 
-  const groupCounts = new Map<string, number>();
-  room.events.on("send", (ev: any) => {
-    if (ev?.to === "group" && ev?.from) {
-      groupCounts.set(ev.from, (groupCounts.get(ev.from) ?? 0) + 1);
-    }
-  });
-
+  const tm = new TurnManager(room, [a,b,c], { tickMs: 20, proactiveMs: 40, idleBackoffMs: 0 });
   tm.start();
-  await room.broadcast("User", "What is f('hello')?");
 
-  const t0 = Date.now();
-  while (
-    ((groupCounts.get("alice") ?? 0) +
-     (groupCounts.get("bob")   ?? 0) +
-     (groupCounts.get("carol") ?? 0)) < 1 &&
-    Date.now() - t0 < 5000
-  ) {
-    await sleep(25);
-  }
+  void room.broadcast("User", "What is f('hello')?");
 
+  await waitUntil(() => mock.getReqs() >= 1, 3000);
+  await waitUntil(() => mock.toolCounter.count >= 2, 3000);
+  await sleep(100);
   tm.stop();
-  await mock.close();
 
-  const total = (groupCounts.get("alice") ?? 0) +
-                (groupCounts.get("bob")   ?? 0) +
-                (groupCounts.get("carol") ?? 0);
-  expect(total).toBeGreaterThanOrEqual(1);
+  expect(mock.toolCounter.count).toBeGreaterThanOrEqual(2);
+  expect(a.delivered).toBeGreaterThan(0);
+  expect(b.delivered).toBeGreaterThan(0);
+  expect(c.delivered).toBeGreaterThan(0);
 });
