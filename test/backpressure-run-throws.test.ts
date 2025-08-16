@@ -1,8 +1,7 @@
 // test/backpressure-run-throws.test.ts
 import { test, expect } from "bun:test";
 import { TransportGate } from "../src/core/backpressure";
-
-const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+import { sleep } from "./helpers/sleep";
 
 test("TransportGate.run releases the slot even when fn throws", async () => {
   const gate = new TransportGate({ cooldownMs: 0, maxInFlight: 1 });

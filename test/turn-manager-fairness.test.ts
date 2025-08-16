@@ -4,8 +4,7 @@ import { test, expect } from "bun:test";
 import { ChatRoom } from "../src/core/chat-room";
 import { TurnManager } from "../src/core/turn-manager";
 import { Model } from "../src/core/entity/model";
-
-const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+import { sleep } from "./helpers/sleep";
 
 class LightAgent extends Model {
   inbox: any[] = [];

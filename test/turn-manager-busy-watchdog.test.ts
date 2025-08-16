@@ -2,8 +2,8 @@ import { test, expect } from "bun:test";
 import { ChatRoom } from "../src/core/chat-room";
 import { TurnManager } from "../src/core/turn-manager";
 import { AgentModel } from "../src/core/entity/agent-model";
+import { sleep } from "./helpers/sleep";
 
-const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 test("watchdog still fires during prolonged busy transport", async () => {
   // Simulate a transport permanently stuck busy

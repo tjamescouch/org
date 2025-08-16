@@ -2,8 +2,7 @@ import { test, expect } from "bun:test";
 import { ChatRoom } from "../src/core/chat-room";
 import { TurnManager } from "../src/core/turn-manager";
 import { AgentModel } from "../src/core/entity/agent-model";
-
-const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+import { sleep } from "./helpers/sleep";
 
 test("watchdog fires during live ticks", async () => {
   const room = new ChatRoom();

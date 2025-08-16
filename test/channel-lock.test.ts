@@ -5,8 +5,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { ChannelLock } from "../src/core/channel-lock";
 // If your logger exports differently, tweak this import:
 import { Logger } from "../src/ui/logger";
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+import { sleep } from "./helpers/sleep";
 
 describe("ChannelLock", () => {
   const oldDeadlock = process.env.LOCK_DEADLOCK_MS;
