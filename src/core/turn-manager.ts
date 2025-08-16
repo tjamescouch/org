@@ -23,6 +23,42 @@ export interface TurnManagerOpts {
 }
 
 export class TurnManager {
+
+  // [watchdog-v3] methods inserted
+  private __dbg(...args: any[]) {
+    try {
+      const env = (globalThis as any)?.process?.env ?? (globalThis as any) ?? {};
+      const on = env.TM_DEBUG && String(env.TM_DEBUG) != "0";
+      if (on && typeof console !== "undefined" && console.debug) console.debug("[tm]", ...args);
+    } catch {}
+  }
+
+  /** Idle watchdog: enqueue "(resume)" if we've been idle >= pokeAfterMs. */
+  private __pokeIfIdle() {
+    try {
+      const pokeAfter = this?.opts?.pokeAfterMs ?? 30_000;
+      const idleMs = Date.now() - (this?.lastAnyWorkTs ?? 0);
+      this.__dbg("idle?", { idleMs, pokeAfter, agents: this?.agents?.length });
+
+      if (idleMs >= pokeAfter) {
+        const nowIso = new Date().toISOString();
+        let poked = 0;
+        for (let i = 0; i < (this?.agents?.length ?? 0); i++) {
+          const tgt: any = this.agents[i];
+          if (tgt && typeof tgt.enqueueFromRoom === "function") {
+            tgt.enqueueFromRoom({ ts: nowIso, role: "user", from: "User", content: "(resume)", read: false });
+            poked++;
+          }
+        }
+        this.lastAnyWorkTs = Date.now();
+        this.__dbg("poke", { poked });
+      }
+    } catch (e: any) {
+      this.__dbg("poke:error", String(e?.stack || e));
+    }
+  }
+
+
   private __kickPending = false;
   private __kickSoon() {
     if (this.__kickPending) return;
@@ -66,7 +102,10 @@ export class TurnManager {
 
   /** One scheduling step */
   private async tick() {
-    // [watchdog-patch] call
+    
+// [watchdog-v3] call inserted
+    this.__pokeIfIdle();
+// [watchdog-patch] call
     this.__watchdogPokeAfterIdle();
 if (this.paused) return;
 

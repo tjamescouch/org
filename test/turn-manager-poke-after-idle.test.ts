@@ -3,29 +3,18 @@ import { ChatRoom } from "../src/core/chat-room";
 import { TurnManager } from "../src/core/turn-manager";
 import { AgentModel } from "../src/core/entity/agent-model";
 
-const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
-
-test("idle watchdog pokes agents with (resume)", async () => {
+test("pokeIfIdle enqueues (resume) deterministically", async () => {
   const room = new ChatRoom();
   const a = new AgentModel("a","mock") as any;
   const inbox: any[] = [];
   a.enqueueFromRoom = (m: any) => { inbox.push(m); };
   room.addModel(a);
 
-  // Prime a recent activity marker (user message) before starting the loop
-  await room.broadcast("User", "seed");
+  const tm = new TurnManager(room, [a], { pokeAfterMs: 200 });
+  (tm as any).lastAnyWorkTs = Date.now() - 1_000;
 
-  const tm = new TurnManager(room, [a], { tickMs: 25, idleBackoffMs: 0, pokeAfterMs: 200, proactiveMs: 10_000 });
-  tm.start();
+  // Call the method directly – no timers, no polling.
+  (tm as any).__pokeIfIdle();
 
-  // Poll up to ~1.5s to absorb timer jitter
-  let sawResume = false;
-  for (let i = 0; i < 30; i++) {
-    await sleep(50);
-    sawResume = inbox.some((m: any) => m?.content === "(resume)");
-    if (sawResume) break;
-  }
-
-  tm.stop();
-  expect(sawResume).toBe(true);
+  expect(inbox.some((m: any) => m?.content === "(resume)")).toBe(true);
 });

@@ -13,3 +13,4 @@ openai-patch.sh
 patch-debug.sh
 logs
 patch.sh
+patch.py
