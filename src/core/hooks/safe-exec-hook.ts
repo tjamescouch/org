@@ -11,8 +11,8 @@ let ORIG_EXEC: any = null;
 let ORIG_EXECFILE: any = null;
 
 /** Track every Bun.$ we've patched so we can (a) avoid double patch, (b) restore in tests */
-const PATCHED_BUNS = new WeakSet<any>();
-const ORIG_BUN_DOLLAR = new WeakMap<any, any>();
+let PATCHED_BUNS = new WeakSet<any>();
+const ORIG_BUN_DOLLAR = new Map<any, any>();
 
 function interpolate(tpl: TemplateStringsArray, vals: unknown[]): string {
   let s = "";
@@ -142,26 +142,28 @@ export function installSafeExecHook(opts?: SafeExecHookOptions): void {
 
 /** For tests: restore original state */
 export function __resetSafeExecHookForTests() {
-  // restore any Bun.$ we have patched (best-effort)
-  ORIG_BUN_DOLLAR.forEach((orig, bun) => {
-    try { if (PATCHED_BUNS.has(bun)) bun.$ = orig; } catch {}
-  });
+  // Restore any Bun.$ we patched
+  for (const [bun, orig] of ORIG_BUN_DOLLAR.entries()) {
+    try { (bun as any).$ = orig; } catch {}
+  }
   ORIG_BUN_DOLLAR.clear();
 
-  PATCHED_BUNS.clear();
+  // Allow re-patching later
+  PATCHED_BUNS = new WeakSet<any>();
 
-  // restore child_process if patched
+  // Restore child_process hooks if we installed them
   if (CP_INSTALLED) {
     try {
       const cp = require("node:child_process") as typeof import("node:child_process");
-      if (ORIG_EXEC) cp.exec = ORIG_EXEC;
-      if (ORIG_EXECFILE) cp.execFile = ORIG_EXECFILE;
+      if (ORIG_EXEC)      (cp as any).exec     = ORIG_EXEC;
+      if (ORIG_EXECFILE)  (cp as any).execFile = ORIG_EXECFILE;
     } catch {}
   }
   CP_INSTALLED = false;
   ORIG_EXEC = null;
   ORIG_EXECFILE = null;
 
-  // reset ask
+  // Reset ASK gate to default (interactive confirm)
   ASK = (q) => confirm(q);
 }
+
