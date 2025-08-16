@@ -5,20 +5,19 @@ import { AgentModel } from "../src/core/entity/agent-model";
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
-test("idle watchdog pokes agents with (resume)", async () => {
+test("watchdog still fires during prolonged busy transport", async () => {
+  // Simulate a transport permanently stuck busy
+  (globalThis as any).__transport = { cap: 1, inflight: () => 1, cooling: () => false };
+
   const room = new ChatRoom();
   const a = new AgentModel("a","mock") as any;
   const inbox: any[] = [];
   a.enqueueFromRoom = (m: any) => { inbox.push(m); };
   room.addModel(a);
 
-  // Prime a recent activity marker (user message) before starting the loop
-  await room.broadcast("User", "seed");
-
-  const tm = new TurnManager(room, [a], { tickMs: 25, idleBackoffMs: 0, pokeAfterMs: 200, proactiveMs: 10_000 });
+  const tm = new TurnManager(room, [a], { tickMs: 25, idleBackoffMs: 0, pokeAfterMs: 200, proactiveMs: 999999 });
   tm.start();
 
-  // Poll up to ~1.5s to absorb timer jitter
   let sawResume = false;
   for (let i = 0; i < 30; i++) {
     await sleep(50);

@@ -66,7 +66,9 @@ export class TurnManager {
 
   /** One scheduling step */
   private async tick() {
-    if (this.paused) return;
+    // [watchdog-patch] call
+    this.__watchdogPokeAfterIdle();
+if (this.paused) return;
 
     // [watchdog-patch] ensure idle poke can fire during backpressure
   {
@@ -214,3 +216,33 @@ export class TurnManager {
     }
   }
 }
+
+// [watchdog-patch] proto method
+(TurnManager as any).prototype.__watchdogPokeAfterIdle = function () {
+  try {
+    const env = (typeof process !== "undefined" && process?.env) ? process.env : (globalThis as any);
+    const DBG = env && (env.TM_DEBUG === "1" || env.TM_DEBUG === 1);
+
+    const pokeAfter = (this?.opts?.pokeAfterMs ?? 30000);
+    const idleMs = Date.now() - (this?.lastAnyWorkTs ?? 0);
+
+    if (DBG) console.debug?.("[tm/watchdog] idleMs=%d pokeAfter=%d agents=%d", idleMs, pokeAfter, this?.agents?.length ?? -1);
+
+    if (idleMs >= pokeAfter) {
+      const nowIso = new Date().toISOString();
+      let poked = 0;
+      for (let i = 0; i < (this?.agents?.length ?? 0); i++) {
+        const tgt: any = this.agents[i];
+        if (tgt && typeof tgt.enqueueFromRoom === "function") {
+          tgt.enqueueFromRoom({ ts: nowIso, role: "user", from: "User", content: "(resume)", read: false });
+          poked++;
+        }
+      }
+      this.lastAnyWorkTs = Date.now();
+      if (DBG) console.debug?.("[tm/watchdog] poked=%d", poked);
+    }
+  } catch (e) {
+    // Never let logging or a bad agent explode the scheduler
+    try { console.debug?.("[tm/watchdog] error:", String(e && (e.stack || e))); } catch {}
+  }
+};
