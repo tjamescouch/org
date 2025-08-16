@@ -1,0 +1,14 @@
+{
+  "name": "mini-multiagent-proto",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/app.ts",
+    "start:node": "node --loader ts-node/esm src/app.ts"
+  },
+  "dependencies": {
+  },
+  "devDependencies": {}
+}
+
