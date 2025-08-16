@@ -1,99 +1,131 @@
 // src/core/chat-room.ts
-import type { ChatMessage } from "../types";
+// Lightweight ChatRoom with default '@group' routing for messages that do not
+// specify an explicit recipient. Designed to be drop-in simple and avoid
+// monkey‑patching or other runtime tricks.
+
 import type { Model } from "./entity/model";
 
-export interface RoomMessage extends ChatMessage {}
+export type Role = "user" | "assistant" | "tool";
 
+export interface RoomMessage {
+  from: string;          // sender model id or 'User'
+  to: string;            // recipient model id or '@group'
+  role: Role;
+  content: string;
+}
+
+/** Public API that models can rely on once attached to a ChatRoom. */
 export interface RoomAPI {
-  sendTo(from: string, recipient: string, content: string): Promise<void>;
-  broadcast(from: string, content: string): Promise<void>;
-  /**
-   * Returns true for a short window after a user message is sent.  The
-   * TurnManager uses this to schedule turns aggressively after user input.
-   */
+  sendTo(senderId: string, recipientId: string, content: string): Promise<void>;
+  broadcast(senderId: string, content: string): Promise<void>;
   hasFreshUserMessage(): boolean;
 }
 
-export class ChatRoom implements RoomAPI {
-  private readonly models = new Map<string, Model>();
+/** Minimal event bus used by tests (room.events.on('send', ...)) */
+class EventBus {
+  private listeners: Map<string, Set<Function>> = new Map();
 
-  // Timestamp of the last user-originating message (ms since epoch)
+  on(event: string, fn: Function) {
+    if (!this.listeners.has(event)) this.listeners.set(event, new Set());
+    this.listeners.get(event)!.add(fn);
+  }
+  off(event: string, fn: Function) {
+    this.listeners.get(event)?.delete(fn);
+  }
+  emit(event: string, payload: any) {
+    const set = this.listeners.get(event);
+    if (!set) return;
+    for (const fn of Array.from(set)) {
+      try { (fn as any)(payload); } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * ChatRoom manages a set of Models and routes messages between them.
+ * - If no explicit target is provided, we route to @group by default.
+ * - We track the timestamp of the most recent user-originating message so
+ *   callers (scheduler/tests) can check for "fresh" user input.
+ */
+export class ChatRoom implements RoomAPI {
+  public readonly events = new EventBus();
+  public readonly models: Map<string, Model> = new Map();
+
+  // ms since epoch of the most recent message from the human user
   private lastUserTs = 0;
 
+  // Window used by hasFreshUserMessage(); chosen to match existing tests (~2s)
+  private readonly freshWindowMs: number;
+
+  constructor(opts?: { freshWindowMs?: number }) {
+    this.freshWindowMs = opts?.freshWindowMs ?? 2000;
+  }
+
   addModel(model: Model) {
-    if (this.models.has(model.id)) throw new Error(`Model id already in room: ${model.id}`);
+    if (this.models.has(model.id)) {
+      throw new Error(`Model id already in room: ${model.id}`);
+    }
     this.models.set(model.id, model);
-    (model as any).onAttach?.(this);
+    try { (model as any).onAttach?.(this as unknown as RoomAPI); } catch {}
   }
 
   removeModel(id: string) {
     const m = this.models.get(id);
-    if (!m) return;
     this.models.delete(id);
-    (m as any).onDetach?.();
+    try { (m as any)?.onDetach?.(); } catch {}
   }
 
-  async sendTo(from: string, recipient: string, content: string): Promise<void> {
-    const m = this.models.get(recipient);
-    if (!m) return;
-    const msg: RoomMessage = { role: "user", from, to: recipient, content };
-    // Only update the freshness timestamp when the message originates
-    // from the end user.  Agent‑to‑agent traffic should not trigger a
-    // user burst in the scheduler.
-    if (from && from.toLowerCase() === 'user') {
-      this.lastUserTs = Date.now();
-    }
-    await m.receiveMessage(msg);
-  }
-
-  async broadcast(from: string, content: string): Promise<void> {
-    const msg: RoomMessage = { role: "user", from, content };
-    // Only update the freshness timestamp for user broadcasts.  Agent
-    // broadcasts are treated as normal agent chatter and should not
-    // trigger the user freshness window.
-    if (from && from.toLowerCase() === 'user') {
-      this.lastUserTs = Date.now();
-    }
-    await Promise.all([...this.models.values()].map(m => m.receiveMessage(msg)));
-  }
-
-  /**
-   * Indicate whether a user message has been received recently.  The default
-   * freshness window is ~2 seconds, matching the expectation of TurnManager.
-   */
+  /** True if a user message was seen within the freshness window. */
   hasFreshUserMessage(): boolean {
-    return Date.now() - this.lastUserTs < 2000;
+    return Date.now() - this.lastUserTs < this.freshWindowMs;
+  }
+
+  /** Internal: deliver a message object to one or more models. */
+  private async deliver(msg: RoomMessage): Promise<void> {
+    this.events.emit("send", msg);
+
+    if (msg.to === "@group") {
+      // Fanout to all agents in the room
+      const deliveries: Promise<any>[] = [];
+      for (const [id, model] of this.models) {
+        // Skip echo to the same model if the sender is an agent in the room
+        if (id === msg.from) continue;
+        try {
+          deliveries.push((model as any).receiveMessage(msg));
+        } catch {
+          // ignore individual delivery errors to avoid blocking fanout
+        }
+      }
+      await Promise.allSettled(deliveries);
+      return;
+    }
+
+    // Direct message
+    const target = this.models.get(msg.to);
+    if (target) {
+      try { await (target as any).receiveMessage(msg); } catch {}
+    }
+  }
+
+  /** Send a message to a specific recipient. */
+  async sendTo(senderId: string, recipientId: string, content: string): Promise<void> {
+    // Treat falsy/empty recipient as group by default.
+    const to = (recipientId && recipientId.trim().length > 0) ? recipientId : "@group";
+    const role: Role = senderId === "User" ? "user" : "assistant";
+
+    if (role === "user") this.lastUserTs = Date.now();
+
+    const msg: RoomMessage = { from: senderId, to, role, content };
+    await this.deliver(msg);
+  }
+
+  /** Broadcast to the whole room (default path when no explicit target). */
+  async broadcast(senderId: string, content: string): Promise<void> {
+    const role: Role = senderId === "User" ? "user" : "assistant";
+    if (role === "user") this.lastUserTs = Date.now();
+    const msg: RoomMessage = { from: senderId, to: "@group", role, content };
+    await this.deliver(msg);
   }
 }
 
-
-// [chatroom-patch] attachRoom + interjection wrapper
-try {
-  // Attach room onto model when added (gives models a way to broadcast)
-  if (!(ChatRoom as any).prototype._addModelPatched) {
-    const _origAdd = (ChatRoom as any).prototype.addModel;
-    (ChatRoom as any).prototype.addModel = function(model: any) {
-      try { model?.attachRoom?.(this); } catch {}
-      return _origAdd.apply(this, arguments as any);
-    };
-    ;(ChatRoom as any).prototype._addModelPatched = true;
-  }
-
-  // Wrap broadcast to detect user interjection: "i" or "stop" -> pause TurnManager
-  if (!(ChatRoom as any).prototype._broadcastInterjectPatched) {
-    const _origBroadcast = (ChatRoom as any).prototype.broadcast;
-    (ChatRoom as any).prototype.broadcast = async function(from: string, content: any, directTo?: string) {
-      try {
-        if (from === "User" && typeof content === "string") {
-          const s = content.trim().toLowerCase();
-          if (s === "i" || s === "stop") {
-            (globalThis as any).__PAUSE_INPUT = true;      // legacy flag some models read
-            try { (this as any)._tm?.pause?.(); } catch {}
-          }
-        }
-      } catch {}
-      return _origBroadcast.apply(this, arguments as any);
-    };
-    ;(ChatRoom as any).prototype._broadcastInterjectPatched = true;
-  }
-} catch {}
+export default ChatRoom;

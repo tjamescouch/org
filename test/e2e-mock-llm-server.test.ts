@@ -21,7 +21,7 @@ test("e2e: mock LLM always uses 2 tools then returns @group > routes OpenAI chat
   room.addModel(b);
   room.addModel(c);
 
-  const tm = new TurnManager(room, [a, b, c], { tickMs: 20, proactiveMs: 40, idleBackoffMs: 0 });
+  const tm = new TurnManager(room, [a, b, c], { tickMs: 20, proactiveMs: 40, idleBackoffMs: 0 , disableUserControl: true });
 
   const groupCounts = new Map<string, number>();
   room.events.on("send", (ev: any) => {

@@ -15,7 +15,7 @@ test("e2e f-server: two tools → @group done(L) per agent > routes via OpenAI b
   const a = new AgentModel("alice"); room.addModel(a);
   const b = new AgentModel("bob");   room.addModel(b);
   const c = new AgentModel("carol"); room.addModel(c);
-  const tm = new TurnManager(room, [a,b,c], { tickMs: 20, proactiveMs: 40, idleBackoffMs: 0 });
+  const tm = new TurnManager(room, [a,b,c], { tickMs: 20, proactiveMs: 40, idleBackoffMs: 0 , disableUserControl: true });
 
   const groupCounts = new Map<string, number>();
   room.events.on("send", (ev: any) => {

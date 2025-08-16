@@ -76,6 +76,7 @@ export class TurnManager {
   private lastSkipLog = 0;
 
   constructor(private room: ChatRoom, private agents: AgentModel[], private opts: TurnManagerOpts = {}) {
+    this.opts = opts as any;
     // [tm-bind] bind room._tm = this
     try { (this as any).room = (this as any).room ?? arguments[0]; (arguments[0] as any)._tm = this; } catch {}
 const n = agents.length;
