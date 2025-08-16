@@ -1,5 +1,17 @@
 #!/usr/bin/env bun
 
+
+// /* org.ts auto-prompt shim */  // keeps app functional when run with no args
+try {
+  // If launched without --prompt but PROMPT is present, inject it.
+  const hasPromptArg = process.argv.some(a => a === "--prompt");
+  const envPrompt = (process.env.PROMPT || "").trim();
+  if (!hasPromptArg && envPrompt.length > 0) {
+    process.argv.push("--prompt", envPrompt);
+  }
+} catch {}
+
+
 import { shouldSerialize } from "./src/core/turn-mutex";
 if (shouldSerialize) try { console.log("[INFO ] round-robin serializer: SERIALIZE_CHAT=1 (one LLM call at a time)"); } catch {}
 import "./src/runtime-fixes/bootstrap";

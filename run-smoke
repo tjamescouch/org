@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+exec tools/run-smoke.sh
