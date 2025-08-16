@@ -60,7 +60,7 @@ const __transport = ((globalThis as any).__transport ||= {
 //Fixme - move to something in ui
 export const logLine = (s: string) => { (console.log)(s); };
 export const logErr  = (s: string) => { ( console.error)(s); };
-export const appendDirect = (s: string) => { ( ((x: string)=>console.log(x)))(s.endsWith("\n")?s:(s+"\n")); };
+export const appendDirect = (s: string) => { console.log(s); };
 export const stamp = () => new Date().toLocaleTimeString();
 
 const SHOW_THINK = (process.env.SHOW_THINK === "1" || process.env.SHOW_THINK === "true");
