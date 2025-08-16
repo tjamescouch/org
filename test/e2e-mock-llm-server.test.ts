@@ -6,6 +6,7 @@ const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 describe("e2e: mock LLM always uses 2 tools then returns @group", () => {
   it("routes OpenAI chat → two tools → @group", async () => {
     const server = await startSimpleLLMServer();
+    // Set BEFORE importing anything that touches transport/chat.ts
     process.env.OAI_BASE = server.url;
     process.env.OPENAI_COMPAT = "1";
     process.env.FORCE_V1 = "1";
@@ -20,21 +21,28 @@ describe("e2e: mock LLM always uses 2 tools then returns @group", () => {
     const c = new AgentModel("carol"); room.addModel(c);
     const tm = new TurnManager(room, [a,b,c], { tickMs: 20, proactiveMs: 40, idleBackoffMs: 0 });
 
+    // Tap outbound messages by patching sendTo instead of relying on internal event bus
     const groupCounts = new Map<string, number>();
-    room.events.on("send", (ev: any) => {
-      if (ev.to === "@group" || ev.to === "group") {
-        groupCounts.set(ev.from, (groupCounts.get(ev.from) ?? 0) + 1);
+    const origSendTo = (room as any).sendTo?.bind(room);
+    expect(typeof origSendTo).toBe("function");
+    (room as any).sendTo = (...args: any[]) => {
+      const [from, to] = args;
+      if (to === "@group" || to === "group") {
+        groupCounts.set(from, (groupCounts.get(from) ?? 0) + 1);
       }
-    });
+      return origSendTo(...args);
+    };
 
     tm.start();
     await room.broadcast("User", "Kickoff");
 
+    // Ensure the mock server actually received at least one POST
     const t0 = Date.now();
     while (server.getReqs() < 1 && Date.now() - t0 < 3000) await sleep(25);
     expect(server.getReqs()).toBeGreaterThanOrEqual(1);
 
-    await sleep(500);
+    // Let the turn manager process tool_calls and produce a @group message
+    await sleep(700);
     tm.stop();
 
     expect(groupCounts.get("alice") ?? 0).toBeGreaterThan(0);

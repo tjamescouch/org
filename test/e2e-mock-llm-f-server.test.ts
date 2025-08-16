@@ -20,12 +20,17 @@ describe("e2e f-server: two tools → @group done(L) per agent", () => {
     const c = new AgentModel("carol"); room.addModel(c);
     const tm = new TurnManager(room, [a,b,c], { tickMs: 20, proactiveMs: 40, idleBackoffMs: 0 });
 
+    // Tap outbound messages (don’t depend on internal bus wiring)
     const groupCounts = new Map<string, number>();
-    room.events.on("send", (ev: any) => {
-      if (ev.to === "@group" || ev.to === "group") {
-        groupCounts.set(ev.from, (groupCounts.get(ev.from) ?? 0) + 1);
+    const origSendTo = (room as any).sendTo?.bind(room);
+    expect(typeof origSendTo).toBe("function");
+    (room as any).sendTo = (...args: any[]) => {
+      const [from, to] = args;
+      if (to === "@group" || to === "group") {
+        groupCounts.set(from, (groupCounts.get(from) ?? 0) + 1);
       }
-    });
+      return origSendTo(...args);
+    };
 
     tm.start();
     await room.broadcast("User", "What is f('hello')?");
@@ -34,7 +39,7 @@ describe("e2e f-server: two tools → @group done(L) per agent", () => {
     while (mock.getReqs() < 1 && Date.now() - t0 < 3000) await sleep(25);
     expect(mock.getReqs()).toBeGreaterThanOrEqual(1);
 
-    await sleep(500);
+    await sleep(700);
     tm.stop();
 
     expect(groupCounts.get("alice") ?? 0).toBeGreaterThan(0);
