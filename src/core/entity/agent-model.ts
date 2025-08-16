@@ -112,7 +112,7 @@ import {
 import type { ChatMessage, ToolCall, ToolDef } from "../../types";
 import type { ChatRoom, RoomMessage } from "../chat-room";
 import { chatOnce, summarizeOnce } from "../../transport/chat";
-import { waitForEnter } from "../../ui/key-input";
+import { ExecutionGate, waitForEnter } from "../../ui/key-input";
 import { Logger } from "../../ui/logger";
 
 type Audience =
@@ -991,7 +991,7 @@ Do not narrate plans or roles; provide the final answer only.
 
     const timeout = Math.max(1, Number(this.shellTimeout));
 
-    await waitForEnter(`Agent wants to run: sh ${cmd ?? rawCmd} @ ${stamp()}`);
+    await ExecutionGate.gate(`Agent wants to run: sh ${cmd ?? rawCmd} @ ${stamp()}`);
 
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), (timeout + 1) * 1000);
