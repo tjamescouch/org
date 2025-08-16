@@ -1233,3 +1233,5 @@ ${RedTag()}${sErr}${Reset()}
     }
   }
 }
+
+export default AgentModel;

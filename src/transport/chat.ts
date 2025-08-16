@@ -9,6 +9,7 @@ import {
   Reset,
 } from "../constants";
 import { Logger } from "../ui/logger";
+import Logger from "../ui/logger";
 
 // /Users/jamescouch/dev/llm/org/chat.ts
 // Streaming chat client with immediate per-chunk meta-tag censorship.
@@ -58,7 +59,7 @@ async function preflight(baseUrl: string, model: string): Promise<string | null>
     if (_knownModels.has(model)) return null;
   }
   try {
-    const v = await fetch(`${baseUrl}/api/version`, { signal: AbortSignal.timeout(1000) });
+    const v = Logger.debug?.("[transport/chatOnce] fetch → OpenAI"); await fetch(`${baseUrl}/api/version`, { signal: AbortSignal.timeout(1000) });
     if (!v.ok) throw new Error(`version ${v.status}`);
     const t = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(2000) });
     const tags = await t.json();
@@ -259,7 +260,13 @@ export async function chatOnce(
     soc?: string;
   }
 ): Promise<AssistantMessage> {
-  // Resolve the upstream base URL and model at call time.  Even if the module
+  
+  try { /*[dbg] chatOnce prefetch*/
+    // We assume variables model/baseUrl/messages exist shortly after — this is just a coarse trace.
+    const _m = (typeof model === "string" ? model : (model && model.name)) ?? "<unknown>";
+    Logger.debug?.(`[transport/chatOnce] preparing request model=${_m}`);
+  } catch {}
+// Resolve the upstream base URL and model at call time.  Even if the module
   // was imported before environment variables were set (as happens in some
   // integration tests), we prefer opts.baseUrl first, then fresh environment
   // variables, and finally the compiled-in fallback constants.

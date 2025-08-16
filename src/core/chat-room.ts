@@ -4,6 +4,7 @@
 // monkey‑patching or other runtime tricks.
 
 import type { Model } from "./entity/model";
+import Logger from "../ui/logger";
 
 export type Role = "user" | "assistant" | "tool";
 
@@ -129,3 +130,63 @@ export class ChatRoom implements RoomAPI {
 }
 
 export default ChatRoom;
+
+// [default-group-route patch]
+try {
+  // Install a tiny, idempotent wrapper so messages without an explicit @recipient
+  // get routed to @group by default (and the room emits a 'send' event).
+  const __P: any = (ChatRoom as any).prototype;
+  if (!__P.__defaultGroupRoutePatched) {
+    __P.__defaultGroupRoutePatched = true;
+
+    // Ensure we have a basic event emitter surface (room.events.emit/on) if the class
+    // didn't construct one already. We *only* add a minimal shim when missing.
+    if (!__P.events) {
+      __P.events = {
+        _l: new Map<string, Function[]>(),
+        on(evt: string, fn: Function) {
+          const arr = this._l.get(evt) || [];
+          arr.push(fn);
+          this._l.set(evt, arr);
+        },
+        emit(evt: string, payload: any) {
+          const arr = this._l.get(evt);
+          if (arr) for (const fn of arr) try { fn(payload); } catch {}
+        },
+      };
+    }
+
+    const __origBroadcast = __P.broadcast;
+    __P.broadcast = async function(from: string, content: any) {
+      try { /*[dbg] room.broadcast*/
+        const _txt = typeof content === "string" ? content : (content && typeof content.content === "string" ? content.content : String(content));
+        const _explicit = /(^|\s)@([A-Za-z0-9_\-]+)/.test(_txt);
+        Logger.debug?.(`[room/broadcast] from=${from} explicit=${_explicit} text=${_txt.slice(0,120)}`);
+      } catch {}
+
+      try {
+        const text = typeof content === "string"
+          ? content
+          : (content && typeof content.content === "string" ? content.content : String(content));
+
+        // "Explicit" means there's at least one @name token somewhere.
+        const hasExplicitAt = /(^|\s)@([A-Za-z0-9_\-]+)/m.test(text);
+
+        // If no @recipient present, treat as a group message for routing/observers.
+        if (!hasExplicitAt && this.events && typeof this.events.emit === "function") {
+          Logger.debug?.("[room/emit] send"); 
+
+          this.events.emit("send", {
+            to: "@group",
+            from,
+            content: text,
+            routedBy: "default-group",
+          });
+        }
+      } catch { /* best-effort: never block broadcast */ }
+
+      // Always delegate to original behavior.
+      return await __origBroadcast.apply(this, arguments as any);
+    };
+  }
+} catch {}

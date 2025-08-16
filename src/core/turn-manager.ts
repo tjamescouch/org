@@ -2,6 +2,7 @@
 import type { ChatRoom } from "./chat-room";
 import type { AgentModel } from "./entity/agent-model";
 import { Logger } from "../ui/logger";
+import Logger from "../ui/logger";
 
 // Time-bounded user-control gate (set by main.ts during interject)
 function userControlActive(): boolean {
@@ -106,7 +107,7 @@ const n = agents.length;
   /** One scheduling step */
   private async tick() {
     
-// [watchdog-v3] call inserted
+try { /*[dbg] tm.tick*/ Logger.debug?.("[tm] tick()"); } catch {}// [watchdog-v3] call inserted
     this.__pokeIfIdle();
 // [watchdog-patch] call
     this.__watchdogPokeAfterIdle();
@@ -191,7 +192,7 @@ if (this.paused) return;
         // agents get turns during the multi-agent integration test.  We
         // include basic state to understand why an agent is chosen.
         Logger.debug(
-          `[DEBUG turn-manager] scheduling agent=${agent?.id} hasUnread=${hasUnread} ` +
+          `[DEBUG turn-manager] Logger.debug?.("[tm] scheduling…"); scheduling agent=${agent?.id} hasUnread=${hasUnread} ` +
             `userBurst=${userBurst} allowProactive=${allowProactive} backoffElapsed=${now - this.lastIdle[k]}ms`
         );
       }
