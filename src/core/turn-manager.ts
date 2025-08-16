@@ -76,7 +76,9 @@ export class TurnManager {
   private lastSkipLog = 0;
 
   constructor(private room: ChatRoom, private agents: AgentModel[], private opts: TurnManagerOpts = {}) {
-    const n = agents.length;
+    // [tm-bind] bind room._tm = this
+    try { (this as any).room = (this as any).room ?? arguments[0]; (arguments[0] as any)._tm = this; } catch {}
+const n = agents.length;
     this.running = Array(n).fill(false);
     this.lastIdle = Array(n).fill(0);
     this.lastProbe = Array(n).fill(0);

@@ -65,3 +65,35 @@ export class ChatRoom implements RoomAPI {
     return Date.now() - this.lastUserTs < 2000;
   }
 }
+
+
+// [chatroom-patch] attachRoom + interjection wrapper
+try {
+  // Attach room onto model when added (gives models a way to broadcast)
+  if (!(ChatRoom as any).prototype._addModelPatched) {
+    const _origAdd = (ChatRoom as any).prototype.addModel;
+    (ChatRoom as any).prototype.addModel = function(model: any) {
+      try { model?.attachRoom?.(this); } catch {}
+      return _origAdd.apply(this, arguments as any);
+    };
+    ;(ChatRoom as any).prototype._addModelPatched = true;
+  }
+
+  // Wrap broadcast to detect user interjection: "i" or "stop" -> pause TurnManager
+  if (!(ChatRoom as any).prototype._broadcastInterjectPatched) {
+    const _origBroadcast = (ChatRoom as any).prototype.broadcast;
+    (ChatRoom as any).prototype.broadcast = async function(from: string, content: any, directTo?: string) {
+      try {
+        if (from === "User" && typeof content === "string") {
+          const s = content.trim().toLowerCase();
+          if (s === "i" || s === "stop") {
+            (globalThis as any).__PAUSE_INPUT = true;      // legacy flag some models read
+            try { (this as any)._tm?.pause?.(); } catch {}
+          }
+        }
+      } catch {}
+      return _origBroadcast.apply(this, arguments as any);
+    };
+    ;(ChatRoom as any).prototype._broadcastInterjectPatched = true;
+  }
+} catch {}

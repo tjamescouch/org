@@ -22,3 +22,20 @@ export abstract class Model {
     await this.room.sendTo(this.id, recipient, content);
   }
 }
+
+
+// [delivery-shim] defaults for message entrypoints
+try {
+  // Ensure base Model has sane defaults: any delivery path funnels to enqueueFromRoom
+  // (keeps custom/minimal models working regardless of which hook ChatRoom calls)
+  const _MP: any = (Model as any).prototype;
+  if (typeof _MP.enqueueFromRoom !== "function") {
+    // leave undefined; only forward if a model provides enqueueFromRoom itself
+  }
+  if (typeof _MP.onRoomMessage !== "function") {
+    _MP.onRoomMessage = function(msg: any) { try { return this.enqueueFromRoom?.(msg); } catch {} };
+  }
+  if (typeof _MP.receiveMessage !== "function") {
+    _MP.receiveMessage = function(msg: any) { try { return this.enqueueFromRoom?.(msg); } catch {} };
+  }
+} catch {}
