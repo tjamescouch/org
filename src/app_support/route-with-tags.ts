@@ -1,12 +1,5 @@
 import { TagParser, ParsedTag } from "../utils/tag-parser";
 
-/**
- * Very small in-memory router the app can use. You can adapt this to your
- * actual message bus / room. The contract is:
- *  - group messages go to every agent except the sender
- *  - direct messages go to a single agent
- *  - file messages are surfaced via onFile (you can persist/write them if you want)
- */
 export type DeliverFn = (recipient: string, from: string, content: string) => void;
 export type BroadcastFn = (from: string, content: string) => void;
 export type FileFn = (from: string, filename: string, content: string) => void;
@@ -25,8 +18,6 @@ export function makeRouter(
 
   function route(from: string, text: string): ParsedTag[] {
     const parts = parser.parse(text);
-
-    // If parsing returned empty, do nothing.
     if (!parts.length) return parts;
 
     for (const part of parts) {
@@ -39,11 +30,11 @@ export function makeRouter(
           break;
         }
         case "agent": {
-          const target = allAgents.find(a => a.toLowerCase() === part.tag.toLowerCase());
+          const target = allAgents.find((a) => a.toLowerCase() === part.tag.toLowerCase());
           if (target) {
             sendTo(target, from, part.content);
           } else {
-            // Unknown target → treat as group
+            // Unknown target → treat as group broadcast
             for (const name of allAgents) {
               if (name === from) continue;
               broadcast(from, part.content);

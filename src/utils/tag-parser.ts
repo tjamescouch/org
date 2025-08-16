@@ -3,26 +3,12 @@
  * ----------
  * Extracts routed content from model text.
  *
- * Grammar (kept intentionally small and readable):
+ * Grammar (intentionally small and readable):
  * - Agent DM:   "@<agentName> <content until next tag or EOF>"
  * - Group msg:  "@group <content until next tag or EOF>"
  * - File blob:  "#<filename> <content until next tag or EOF>"
  *
  * If the input contains no tags, it is treated as a single group message.
- *
- * Examples:
- *  "@david here are the documents
- *   @robert did you get that thing I sent you? #blob.txt This is an awesome
- *   file I made for you.
- *   @group what are we all thinking?"
- *
- *  =>
- *   [
- *     { kind: "agent", content: "here are the documents", index: 0, tag:"david" },
- *     { kind: "agent", content: "did you get that thing I sent you?", index: 1, tag:"robert" },
- *     { kind: "file",  content: "This is an awesome\nfile I made for you.", index: 2, tag:"blob.txt" },
- *     { kind: "group", content: "what are we all thinking?", index: 3, tag:"group" }
- *   ]
  */
 
 export type ParsedKind = "agent" | "group" | "file";
@@ -46,11 +32,7 @@ function isWordBoundary(ch: string | undefined): boolean {
   return !ch || /\s/.test(ch);
 }
 
-function readWhile(
-  s: string,
-  start: number,
-  test: (c: string) => boolean
-): number {
+function readWhile(s: string, start: number, test: (c: string) => boolean): number {
   let i = start;
   while (i < s.length && test(s[i])) i++;
   return i;
@@ -100,7 +82,6 @@ function scanTokens(s: string): Token[] {
       continue;
     }
   }
-  // Sort by appearance
   out.sort((a, b) => a.start - b.start);
   return out;
 }
@@ -127,8 +108,6 @@ export class TagParser {
       const end = next ? next.start : text.length;
       const raw = text.slice(cur.contentStart, end);
       const content = raw.trim();
-
-      // Skip empty payloads (rare but possible if tags are back-to-back)
       if (!content) continue;
 
       results.push({
