@@ -64,6 +64,7 @@ Logger.info("org: bootstrap", { argv: process.argv.slice(2) });
 import { ChatRoom } from './src/core/chat-room';
 import { TurnManager } from './src/core/turn-manager';
 import { AgentModel } from './src/core/entity/agent-model';
+import { ExecutionGate, ExecutionMode } from "./src/ui/key-input";
 
 // Attempt to import the interactive TUI.  When INTERACTIVE is true,
 // we will call this module's default export instead of running script
@@ -170,6 +171,7 @@ async function main() {
   }
 
   const safe: boolean = !!opts.safe;
+  ExecutionGate.setMode(safe ? ExecutionMode.SAFE : ExecutionMode.DIRECT);
 
   // Create chat room and agents
   const room = new ChatRoom();
