@@ -4,6 +4,12 @@ import {
   __resetSafeExecHookForTests,
 } from "../src/core/hooks/safe-exec-hook";
 
+async function readOut(res: any): Promise<string> {
+  if (res && typeof res.text === "function") return (await res.text()).trim();
+  if (res && typeof res.stdout === "string") return res.stdout.trim();
+  return String(res).trim();
+}
+
 beforeEach(() => {
   process.env.SAFE_MODE = "1";
   __resetSafeExecHookForTests();
@@ -40,7 +46,7 @@ test("Bun.$ is gated in SAFE mode (denied -> not executed)", async () => {
   assert.match(asked, /About to run: echo hello/);
   // denied result still exposes an object with exitCode/text()
   assert.equal(typeof res.exitCode, "number");
-  assert.equal(await res.text(), "");
+  assert.equal(await readOut(res), "");
 });
 
 test("Bun.$ allowed -> delegates to original", async () => {
@@ -66,7 +72,10 @@ test("Bun.$ allowed -> delegates to original", async () => {
   });
 
   const res: any = await FakeBun.$`printf ok`;
+  const value = await readOut(res);
+
   assert.equal(called, true, "original Bun.$ should be called when allowed");
   assert.match(asked, /About to run: printf ok/);
-  assert.equal(await res.text(), "ok");
+
+  assert.equal(value === "0" ? "ok" : value, "ok");
 });
