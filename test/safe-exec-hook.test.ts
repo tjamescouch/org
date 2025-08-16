@@ -1,32 +1,44 @@
 import { strict as assert } from "node:assert";
-import { installSafeExecHook } from "../src/core/hooks/safe-exec-hook";
+import {
+  installSafeExecHook,
+  __resetSafeExecHookForTests,
+} from "../src/core/hooks/safe-exec-hook";
+
+beforeEach(() => {
+  process.env.SAFE_MODE = "1";
+  __resetSafeExecHookForTests();
+});
 
 test("Bun.$ is gated in SAFE mode (denied -> not executed)", async () => {
   let asked = "";
   let called = false;
 
-  // Fake Bun.$ implementation we can observe
+  // Fake Bun.$ we can observe
   const FakeBun: any = {
-    $: (tpl: TemplateStringsArray, ...vals: unknown[]) => {
+    $: (tpl: TemplateStringsArray, ..._vals: unknown[]) => {
       called = true;
-      // emulate Bun.$ promise that resolves to exit code
+      // emulate Bun.$ (won't be called in denied case)
       const p: any = Promise.resolve(0);
       p.exitCode = 0;
-      p.text = async () => "";
+      p.text = async () => "should-not";
       return p;
-    }
+    },
   };
-
-  process.env.SAFE_MODE = "1";
 
   installSafeExecHook({
     bun: FakeBun,
-    ask: async (q) => { asked = q; return false; }, // deny
+    ask: async (q) => {
+      asked = q;
+      return false; // deny
+    },
   });
 
   const res: any = await FakeBun.$`echo hello`;
+  // original never called
   assert.equal(called, false, "original Bun.$ should not have been called when denied");
+  // we show the preview question
   assert.match(asked, /About to run: echo hello/);
+  // denied result still exposes an object with exitCode/text()
   assert.equal(typeof res.exitCode, "number");
   assert.equal(await res.text(), "");
 });
@@ -34,21 +46,23 @@ test("Bun.$ is gated in SAFE mode (denied -> not executed)", async () => {
 test("Bun.$ allowed -> delegates to original", async () => {
   let asked = "";
   let called = false;
+
   const FakeBun: any = {
-    $: (tpl: TemplateStringsArray, ...vals: unknown[]) => {
+    $: (tpl: TemplateStringsArray, ..._vals: unknown[]) => {
       called = true;
       const p: any = Promise.resolve(0);
       p.exitCode = 0;
       p.text = async () => "ok";
       return p;
-    }
+    },
   };
-
-  process.env.SAFE_MODE = "1";
 
   installSafeExecHook({
     bun: FakeBun,
-    ask: async (q) => { asked = q; return true; }, // allow
+    ask: async (q) => {
+      asked = q;
+      return true; // allow
+    },
   });
 
   const res: any = await FakeBun.$`printf ok`;
