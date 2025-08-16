@@ -1,6 +1,6 @@
 // src/core/backpressure.ts
 // A small single-flight gate with optional cooldown used to serialize
-// outbound transport calls (model -> provider) and avoid stampedes.
+// outbound transport calls and avoid stampedes.
 
 import { ChannelLock } from "./channel-lock";
 

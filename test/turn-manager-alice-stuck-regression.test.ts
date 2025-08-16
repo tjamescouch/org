@@ -22,13 +22,12 @@ function installTransportGate() {
 }
 
 class ToolHoldingAgent extends Model {
-  inbox: any[] = []; held = false; sent = 0;
+  inbox: any[] = []; sent = 0;
   async receiveMessage(m: any) { if (m.from !== this.id) this.inbox.push(m); }
   hasUnread() { return this.inbox.length > 0; }
   async takeTurn() {
     if (!this.inbox.length) return false;
     this.inbox.shift();
-    // simulate a "tool call" that occupies the transport
     const rel = await (globalThis as any).__transport.acquire("sh");
     await new Promise(r => setTimeout(r, 120));
     await rel();
@@ -66,6 +65,6 @@ test("after Alice finishes a tool call, Bob gets scheduled (no starvation)", asy
   await new Promise(r => setTimeout(r, 600));
   tm.stop();
 
-  expect(alice.sent).toBeGreaterThan(0);    // Alice ran
-  expect(bob.received).toBeGreaterThan(0);  // Bob did get a turn afterwards — regression guard
+  expect(alice.sent).toBeGreaterThan(0);
+  expect(bob.received).toBeGreaterThan(0);
 });

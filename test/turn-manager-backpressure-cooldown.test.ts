@@ -12,24 +12,25 @@ class CounterAgent extends Model {
 }
 
 test("scheduler pauses during cooling then runs", async () => {
-  // Fake transport that is cooling for ~120ms
-  (globalThis as any).__transport = { cooling: () => Date.now() - start < 120, inflight: () => 0, cap: 1 };
+  const start = Date.now();
+  (globalThis as any).__transport = {
+    cap: 1,
+    inflight: () => 0,
+    cooling: () => Date.now() - start < 120
+  };
 
   const room = new ChatRoom();
   const a = new CounterAgent("a");
   room.addModel(a as any);
-
-  // prime unread
   await room.broadcast("User", "go");
 
   const tm = new TurnManager(room, [a as any], { tickMs: 25, idleBackoffMs: 0, proactiveMs: 1_000 });
-  const start = Date.now();
   tm.start();
 
   await new Promise(r => setTimeout(r, 80));
-  expect(a.runs).toBe(0);            // still cooling: nothing scheduled
+  expect(a.runs).toBe(0);
 
   await new Promise(r => setTimeout(r, 120));
   tm.stop();
-  expect(a.runs).toBeGreaterThan(0); // resumed after cooling
+  expect(a.runs).toBeGreaterThan(0);
 });

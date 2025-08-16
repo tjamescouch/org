@@ -68,7 +68,21 @@ export class TurnManager {
   private async tick() {
     if (this.paused) return;
 
-    // Global, time-bounded pause when user is interjecting
+    // [watchdog-patch] ensure idle poke can fire during backpressure
+  {
+    const pokeAfter = this.opts.pokeAfterMs ?? 30_000;
+    const idleMs = Date.now() - this.lastAnyWorkTs;
+    if (idleMs >= pokeAfter) {
+      this.lastAnyWorkTs = Date.now();
+      const nowIso = new Date().toISOString();
+      for (let i = 0; i < this.agents.length; i++) {
+        (this.agents[i] as any).enqueueFromRoom({
+          ts: nowIso, role: "user", from: "User", content: "(resume)", read: false,
+        });
+      }
+    }
+  }
+// Global, time-bounded pause when user is interjecting
     if (userControlActive()) {
       const now = Date.now();
       if (!this.lastSkipLog || now - this.lastSkipLog > 1000) {

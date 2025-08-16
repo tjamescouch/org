@@ -15,7 +15,6 @@ First para
   expect(tags[0].content.startsWith("First para")).toBe(true);
   expect(tags[1].content).toBe("ping you");
   expect(tags[2].content).toBe("back to channel.");
-  // clean string preserves everything except the tag tokens
   expect(clean.includes("#file:notes.md")).toBe(false);
   expect(clean.includes("@bob")).toBe(false);
   expect(clean.includes("@group")).toBe(false);
