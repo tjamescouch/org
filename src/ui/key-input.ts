@@ -21,7 +21,6 @@ export class ExecutionGate {
   }
 
   static async gate(msg: string): Promise<void> {
-    appendDirect(`\n${BrightRedTag()} Continue? [y/N] ${msg}${Reset()}`);
 
     if (!process.stdin.isTTY && ExecutionGate.mode === ExecutionMode.SAFE) {
       throw new Error("Safe mode and non TTY are not compatible");
@@ -31,6 +30,7 @@ export class ExecutionGate {
       return;
     }
 
+    appendDirect(`\n${BrightRedTag()} Continue? [y/N] ${msg}${Reset()}`);
 
     await waitForEnter();
   }
