@@ -11,6 +11,7 @@ import { loadConfig } from "./config";
 import { makeLmStudioOpenAiDriver } from "./drivers/openai-lmstudio";
 import { ExecutionGate } from "./tools/exec-gate";
 import { Logger } from "./logger";
+import { ExecutionGuard } from "./execution-guards";
 
 // Small color helpers
 const C = {
@@ -114,7 +115,13 @@ async function main() {
     process.exit(1);
   }
 
-  const usersFirstPrompt = args["prompt"] || await readPrompt("Prompt> ");
+  const argPrompt = args["prompt"] || undefined;
+
+  if (argPrompt) {
+    //FIXME - set execution gate to direct - only guards should apply, it should not ask the user
+  }
+
+  const usersFirstPrompt = argPrompt || await readPrompt("Prompt> ");
 
   // Router using TagParser (feeds agent inboxes)
   const agentIds = agents.map((a) => a.id);
