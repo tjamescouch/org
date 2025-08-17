@@ -40,7 +40,7 @@ function computeMode(): { interactive: boolean; prompt?: string; safe: boolean }
 
   const prompt = promptArg;
   // Configure the ExecutionGate once (throws if invalid combo)
-  ExecutionGate.configure({ safe, interactive });
+  ExecutionGate.configure({ interactive, safe });
 
   return { interactive, prompt, safe };
 }
@@ -75,34 +75,39 @@ export const C = {
   gray: (s: string) => `\x1b[90m${s}\x1b[0m`,
 };
 
-
-
 type ModelKind = "mock" | "lmstudio";
-
-interface AgentRec {
-  id: string;
-  kind: ModelKind;
-  model: { respond(prompt: string, maxTools: number, peers: string[]): Promise<{ message: string; toolsUsed: number }> };
-}
+type AgentSpec = { id: string; kind: ModelKind; model: any };
 
 function parseArgs(argv: string[]) {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
+  const out: Record<string, string | boolean> = {};
+  let key: string | null = null;
+  const rest: string[] = [];
+  for (const a of argv) {
     if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const val = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "1";
-      out[key] = val;
+      const [k, v] = a.split("=", 2);
+      if (v !== undefined) out[k.slice(2)] = v;
+      else key = k.slice(2);
+    } else if (key) {
+      out[key] = a; key = null;
+    } else {
+      rest.push(a);
     }
   }
+  if (key) out[key] = true;
+  out["_"] = rest.join(" ");
   return out;
 }
 
-function parseAgents(spec: string | undefined, llmDefaults: { driver: "lmstudio"; model: string; baseUrl: string; protocol: "openai"; }): AgentRec[] {
-  if (!spec) return [];
-  const list = spec.split(",").map((s) => s.trim()).filter(Boolean);
-  const out: AgentRec[] = [];
-
+function parseAgents(s: string | undefined, llmDefaults: any): AgentSpec[] {
+  const list = String(s || "").split(",").map(x => x.trim()).filter(Boolean);
+  if (list.length === 0) {
+    // default two mock agents, for demo
+    return [
+      { id: "alice", kind: "mock", model: new MockModel("alice") },
+      { id: "bob",   kind: "mock", model: new MockModel("bob") },
+    ];
+  }
+  const out: AgentSpec[] = [];
   for (const item of list) {
     const [id, kindRaw = "mock"] = item.split(":");
     const kind = (kindRaw as ModelKind) || "mock";
@@ -118,7 +123,8 @@ function parseAgents(spec: string | undefined, llmDefaults: { driver: "lmstudio"
       }
       const driver = makeLmStudioOpenAiDriver({
         baseUrl: llmDefaults.baseUrl,
-        model: llmDefaults.model || 'openai/gpt-oss-120b',
+        model: llmDefaults.model,
+        apiKey: llmDefaults.apiKey
       });
       out.push({ id, kind, model: new LlmAgent(id, driver, llmDefaults.model) as any });
       continue;
@@ -148,8 +154,10 @@ function ensureInbox(id: string) {
   return inbox.get(id)!;
 }
 
+let lastUserDMTarget: string | null = null; // set when an agent addresses @@user
+
 function hasUserInInbox(): boolean {
-  return inbox.has("user");
+  return ensureInbox("user").length > 0;
 }
 
 function nextPromptFor(id: string, fallback: string): string {
@@ -180,17 +188,24 @@ async function main() {
   // Router using TagParser (feeds agent inboxes)
   const agentIds = agents.map((a) => a.id);
   const router = makeRouter({
-    // sendTo
-    onAgent: (recipient, from, content) => {
-      ensureInbox(recipient.toLowerCase()).push(content);
-      Logger.debug(`${C.gray(`${from} → @@${recipient}`)}: ${content}`);
+    // direct message to a specific agent: @@<agent>
+    onAgent: (from, to, content) => {
+      ensureInbox(to).push(content);
+      Logger.debug(`${C.gray(`${from} → @@${to}`)}: ${content}`);
     },
-    // broadcast
+    // broadcast to all agents except sender: @@group (or plain text preamble)
     onGroup: (from, content) => {
-      for (const id of agentIds) if (id !== from) ensureInbox(id.toLowerCase()).push(content);
+      for (const id of agentIds) if (id !== from) ensureInbox(id).push(content);
       Logger.debug(`${C.gray(`${from} → @@group`)}: ${content}`);
     },
-    // onFile
+    // address the human user: @@user — capture who asked so that the next user reply DMs them by default
+    onUser: (from, content) => {
+      lastUserDMTarget = from;
+      // Put a lightweight marker so the scheduler yields control to the user prompt.
+      ensureInbox("user").push(content);
+      Logger.debug(`${C.gray(`${from} → @@user`)}: ${content}`);
+    },
+    // onFile: ##<name> <content> — offer to write a file, gated by ExecutionGate
     onFile: async (from, filename, content) => {
       const cmd = `${content}\n***** Write to file? [y/N] ${filename}\n`;
       const sanitizedContent = extractCodeGuards(content).cleaned;
@@ -220,19 +235,21 @@ async function main() {
   function routeMessage(from: string, text: string) {
     const parts = TagParser.parse(text);
     if (parts.length === 0) {
-      for (const id of agentIds) if (id !== from) ensureInbox(id).push(text);
-      console.log(`${C.gray(`${from} → @@group`)}: ${text}`);
+      if (from === "user" && lastUserDMTarget) {
+        ensureInbox(lastUserDMTarget).push(text);
+        console.log(`${C.gray(`${from} → @@${lastUserDMTarget}`)}: ${text}`);
+      } else {
+        for (const id of agentIds) if (id !== from) ensureInbox(id).push(text);
+        console.log(`${C.gray(`${from} → @@group`)}: ${text}`);
+      }
       return;
     }
     router(from, text);
   }
 
   function isThereAUserMessageInAnInbox(): boolean {
-    console.log(C.gray(`Checking for user message`));
-    for (const id of agentIds) {
-      if (id !== "user" && hasUserInInbox()) return true;
-    }
-    return false;
+    // Any agent has asked @@user recently; we track a lightweight inbox entry for the user.
+    return hasUserInInbox();
   }
 
   // Round-robin until idle for two consecutive rounds
@@ -250,13 +267,14 @@ async function main() {
         const reply = await a.model.respond(basePrompt, 1, peers);
         let remaining = maxTools;
 
-
         if (TagParser.parse(reply.message).some(t => t.kind === "user") || isThereAUserMessageInAnInbox()) {
           const msg = reply.message?.trim() || "Yielding to user.";
           console.log(`${C.cyan(`${a.id}:`)} ${msg}`);
 
           const userMessage = await readPrompt("user: ");
           routeMessage("user", userMessage);
+          // clear user inbox marker(s) now that we received input
+          ensureInbox("user").length = 0;
 
           break;
         }
@@ -291,8 +309,8 @@ async function main() {
   }
 }
 
-
 main().catch((e) => {
   console.error(e);
   process.exit(1);
 });
+
