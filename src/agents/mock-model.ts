@@ -1,3 +1,5 @@
+import { sleep } from "../utils/sleep";
+
 export interface MockReply {
   /** Final assistant text (may contain tags). */
   message: string;
@@ -13,7 +15,8 @@ export class MockModel {
     this.name = name;
   }
 
-  async respond(prompt: string, maxTools: number, peers: string[]): Promise<MockReply> {
+  async respond(prompt: string, maxTools: number, peers: string[]): Promise<MockReply> { 
+    sleep(1000);
     // First two turns: pretend to "use tools" up to the budget
     if (maxTools > 0 && this.turn < 2) {
       this.turn++;
