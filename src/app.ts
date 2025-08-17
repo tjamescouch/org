@@ -60,6 +60,7 @@ import { LlmAgent } from "./agents/llm-agent";
 import { loadConfig } from "./config";
 import { makeLmStudioOpenAiDriver } from "./drivers/openai-lmstudio";
 import { Logger } from "./logger";
+import { extractCodeGuards } from "./utils/extract-code-blocks";
 
 export const C = {
   reset: "\x1b[0m",
@@ -186,6 +187,7 @@ async function main() {
     // onFile
     onFile: async (from, filename, content) => {
       const cmd = `${content}\n***** Write to file? [y/N] ${filename}\n`;
+      const sanitizedContent = extractCodeGuards(content).cleaned;
 
       try {
         await ExecutionGate.gate(cmd);
@@ -200,7 +202,7 @@ async function main() {
 
       // actually write the file
       try {
-        const result = await FileWriter.write(filename, content);
+        const result = await FileWriter.write(filename, sanitizedContent);
         Logger.info(C.green(`wrote ${result.path} (${result.bytes} bytes)`));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
