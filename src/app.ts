@@ -148,6 +148,10 @@ function ensureInbox(id: string) {
   return inbox.get(id)!;
 }
 
+function hasUserInInbox(): boolean {
+  return inbox.has("user");
+}
+
 function nextPromptFor(id: string, fallback: string): string {
   const q = ensureInbox(id);
   if (q.length > 0) {
@@ -223,6 +227,14 @@ async function main() {
     router(from, text);
   }
 
+  function isThereAUserMessageInAnInbox(): boolean {
+    console.log(C.gray(`Checking for user message`));
+    for (const id of agentIds) {
+      if (id !== "user" && hasUserInInbox()) return true;
+    }
+    return false;
+  }
+
   // Round-robin until idle for two consecutive rounds
   let idleRounds = 0;
 
@@ -239,8 +251,8 @@ async function main() {
         let remaining = maxTools;
 
 
-        if (TagParser.parse(reply.message).some(t => t.kind === "user")) {
-          const msg = reply.message?.trim() || "Okay. (no tools needed)";
+        if (TagParser.parse(reply.message).some(t => t.kind === "user") || isThereAUserMessageInAnInbox()) {
+          const msg = reply.message?.trim() || "Yielding to user.";
           console.log(`${C.cyan(`${a.id}:`)} ${msg}`);
 
           const userMessage = await readPrompt("user: ");
@@ -278,6 +290,7 @@ async function main() {
     if (idleRounds >= 2) break;
   }
 }
+
 
 main().catch((e) => {
   console.error(e);
