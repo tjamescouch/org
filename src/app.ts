@@ -235,15 +235,19 @@ async function main() {
       // Keep asking model while it wants to spend tools
       for (let hop = 0; hop < Math.max(1, maxTools + 1); hop++) {
         const peers = agents.map((x) => x.id);
-        const reply = await a.model.respond(basePrompt, remaining, peers);
+        const reply = await a.model.respond(basePrompt, 1, peers);
+        let remaining = maxTools;
+
 
         if (TagParser.parse(reply.message).some(t => t.kind === "user")) {
-          await readPrompt("user: ");
-          routeMessage("user", reply.message.trim());
+          const msg = reply.message?.trim() || "Okay. (no tools needed)";
+          console.log(`${C.cyan(`${a.id}:`)} ${msg}`);
+
+          const userMessage = await readPrompt("user: ");
+          routeMessage("user", userMessage);
 
           break;
         }
-
 
         if (reply.toolsUsed > 0) {
           console.log(`${C.cyan(`${a.id}:`)} $ tool → ${new Date().toISOString()}`);
