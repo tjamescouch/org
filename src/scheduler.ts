@@ -157,7 +157,8 @@ export class RoundRobinScheduler {
           if (wasRaw) process.stdin.setRawMode(false);
           await ExecutionGate.gate(cmd);
           const res = await FileWriter.write(name, cleaned);
-          Logger.info(C.yellow(`${cleaned}\nWritten to ${res.path} (${res.bytes} bytes)`));
+          Logger.info(C.yellow(`${cleaned}`));
+          Logger.info(C.magenta(`Written to ${res.path} (${res.bytes} bytes)`));
         } catch (err: any) {
           Logger.error(`File write failed: ${err?.message || err}`);
         } finally {
