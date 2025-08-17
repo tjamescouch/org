@@ -1,6 +1,7 @@
 import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt";
 import type { ChatDriver, ChatMessage } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
+import { Logger } from "../logger";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -84,6 +85,8 @@ Keep responses brief unless writing files.`;
           const cmd = String(args?.cmd || "").trim();
           if (cmd.length === 0) {
             // Feed a minimal error back to the model as a tool result
+            Logger.warn(`${name} tool missing cmd`);
+
             const content = JSON.stringify({ ok: false, stdout: "", stderr: "missing cmd", exit_code: 1, cmd: "" });
             this.history.push({ role: "tool", content, tool_call_id: tc.id, name: "sh" });
             totalUsed++;
@@ -95,6 +98,8 @@ Keep responses brief unless writing files.`;
           totalUsed++;
         } else {
           // Unknown tool → return a structured error
+          Logger.warn(`Unknown tool ${name} requested`);
+
           const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, cmd: "" });
           this.history.push({ role: "tool", content, tool_call_id: tc.id, name });
           totalUsed++;

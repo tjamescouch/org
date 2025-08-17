@@ -250,7 +250,7 @@ async function main() {
         }
 
         if (reply.toolsUsed > 0) {
-          console.log(`${C.cyan(`${a.id}:`)} $ tool → ${new Date().toISOString()}`);
+          console.log(`${C.cyan(`${a.id}:`)} $ tool ${reply.toolsUsed} → ${new Date().toISOString()}`);
           remaining = Math.max(0, remaining - reply.toolsUsed);
           anyWork = true;
           if (reply.message && reply.message.trim()) {
