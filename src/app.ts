@@ -75,6 +75,10 @@ export const C = {
   gray: (s: string) => `\x1b[90m${s}\x1b[0m`,
 };
 
+
+//FIXME - put all this into a class
+let usersPrompt: string = "";
+
 type ModelKind = "mock" | "lmstudio";
 
 interface AgentRec {
@@ -174,6 +178,10 @@ async function main() {
   // Router using TagParser (feeds agent inboxes)
   const agentIds = agents.map((a) => a.id);
   const router = makeRouter({
+    // yield to user
+    onUser: () => {
+      usersPrompt = argPrompt || await readPrompt("Prompt> ");
+    },
     // sendTo
     onAgent: (recipient, from, content) => {
       ensureInbox(recipient.toLowerCase()).push(content);
@@ -229,7 +237,8 @@ async function main() {
 
     for (const a of agents) {
       let remaining = maxTools;
-      const basePrompt = nextPromptFor(a.id, usersFirstPrompt);
+      const basePrompt = usersPrompt || nextPromptFor(a.id, usersFirstPrompt);
+      usersPrompt = "";
 
       // Keep asking model while it wants to spend tools
       for (let hop = 0; hop < Math.max(1, maxTools + 1); hop++) {
