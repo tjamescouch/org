@@ -1,6 +1,6 @@
 // [patch:run-modes] BEGIN
 import { ExecutionGate } from "./tools/execution-gate";
-import { sleep } from "./utils/sleep";
+import { FileWriter } from "./io/file-writer"; // add this import near the top
 
 // Mode detection:
 // - Shell mode (non-interactive) when --prompt is provided OR stdin is piped (and "-" not used).
@@ -61,11 +61,17 @@ import { loadConfig } from "./config";
 import { makeLmStudioOpenAiDriver } from "./drivers/openai-lmstudio";
 import { Logger } from "./logger";
 
-// Small color helpers
-const C = {
-  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
-  gray: (s: string) => `\x1b[90m${s}\x1b[0m`,
+export const C = {
+  reset: "\x1b[0m",
   bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
+  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
+  green: (s: string) => `\x1b[32m${s}\x1b[0m`,   // <-- fixed here
+  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
+  blue: (s: string) => `\x1b[34m${s}\x1b[0m`,
+  magenta: (s: string) => `\x1b[35m${s}\x1b[0m`,
+  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
+  white: (s: string) => `\x1b[37m${s}\x1b[0m`,
+  gray: (s: string) => `\x1b[90m${s}\x1b[0m`,
 };
 
 type ModelKind = "mock" | "lmstudio";
@@ -73,7 +79,7 @@ type ModelKind = "mock" | "lmstudio";
 interface AgentRec {
   id: string;
   kind: ModelKind;
-  model: { respond(prompt: string, maxTools: number, peers: string[]): Promise<{message: string; toolsUsed: number}> };
+  model: { respond(prompt: string, maxTools: number, peers: string[]): Promise<{ message: string; toolsUsed: number }> };
 }
 
 function parseArgs(argv: string[]) {
@@ -162,9 +168,6 @@ async function main() {
 
   const argPrompt = args["prompt"] || undefined;
 
-  if (argPrompt) {
-  }
-
   const usersFirstPrompt = argPrompt || await readPrompt("Prompt> ");
 
   // Router using TagParser (feeds agent inboxes)
@@ -181,9 +184,28 @@ async function main() {
       Logger.debug(`${C.gray(`${from} → @@group`)}: ${content}`);
     },
     // onFile
-    onFile: (from, filename, content) => {
+    onFile: async (from, filename, content) => {
+      const cmd = `${content}\n***** Write to file? [y/N] ${filename}\n`;
+
+      try {
+        await ExecutionGate.gate(cmd);
+      } catch (e) {
+        const msg = `Execution denied by guard or user: ${cmd}`;
+        console.log(red(`sh: ${cmd} -> ${msg}`));
+        throw e;
+      }
+
       Logger.warn(C.bold(C.gray(`[file from ${from}] ##${filename}`)));
       Logger.warn(content);
+
+      // actually write the file
+      try {
+        const result = await FileWriter.write(filename, content);
+        Logger.info(C.green(`wrote ${result.path} (${result.bytes} bytes)`));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        Logger.error(C.red(`failed to write ${filename}: ${msg}`));
+      }
     }
   });
 
