@@ -1,6 +1,7 @@
 import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt";
 import type { ChatDriver, ChatMessage } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
+import { C, Logger } from "../logger";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -62,6 +63,7 @@ Keep responses brief unless writing files.`;
 
     // Permit at least one completion; follow tool calls up to maxTools
     for (let hop = 0; hop < Math.max(1, maxTools + 1); hop++) {
+      Logger.info(C.green(`${this.id} ...`));
       const out = await this.driver.chat(this.history, { model: this.model, tools: this.tools });
 
       // If the assistant returned plain text, capture it (we still may see tool calls)
@@ -84,6 +86,8 @@ Keep responses brief unless writing files.`;
           const cmd = String(args?.cmd || "").trim();
           if (cmd.length === 0) {
             // Feed a minimal error back to the model as a tool result
+            Logger.warn(`${name} tool missing cmd`);
+
             const content = JSON.stringify({ ok: false, stdout: "", stderr: "missing cmd", exit_code: 1, cmd: "" });
             this.history.push({ role: "tool", content, tool_call_id: tc.id, name: "sh" });
             totalUsed++;
@@ -95,6 +99,8 @@ Keep responses brief unless writing files.`;
           totalUsed++;
         } else {
           // Unknown tool → return a structured error
+          Logger.warn(`Unknown tool ${name} requested`);
+
           const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, cmd: "" });
           this.history.push({ role: "tool", content, tool_call_id: tc.id, name });
           totalUsed++;
@@ -104,6 +110,8 @@ Keep responses brief unless writing files.`;
       // Loop back so the assistant can observe tool outputs and respond.
       if (totalUsed >= maxTools) break;
     }
+
+    Logger.info(C.green(`${this.id} wrote:\n${finalText}\nwith [${totalUsed}] tools used.)`));
 
     return { message: finalText, toolsUsed: totalUsed };
   }

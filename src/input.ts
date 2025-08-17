@@ -1,65 +1,82 @@
-import readline from 'readline';
-import { RoundRobinScheduler } from './scheduler';
-import { Logger } from './logger';
+import * as readline from "node:readline";
+import { RoundRobinScheduler } from "./scheduler";
+import { Logger } from "./logger";
 
-/** Handles: initial prompt, interject on 'i', and graceful Ctrl+C */
+const DEBUG = (() => {
+  const v = (process.env.DEBUG ?? "").toString().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "debug";
+})();
+function dbg(...a: any[]) { if (DEBUG) Logger.info("[DBG][input]", ...a); }
+
 export class InputController {
   private rl: readline.Interface;
   private scheduler: RoundRobinScheduler;
+  private rawHandler: ((chunk: Buffer) => void) | null = null;
+  private busy = false;
 
   constructor(scheduler: RoundRobinScheduler) {
     this.scheduler = scheduler;
-    this.rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout
-    });
+    this.rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "" });
+  }
 
-    // raw mode for 'i' interject
+  init() {
+    try { process.stdin.resume(); } catch {}
     if (process.stdin.isTTY) {
-      process.stdin.setRawMode(true);
-      process.stdin.on('data', this.onKeyData);
+      try { process.stdin.setRawMode(true); } catch {}
+      this.rawHandler = (chunk: Buffer) => this.onKeyData(chunk);
+      process.stdin.on("data", this.rawHandler);
     }
 
-    process.on('SIGINT', () => {
-      Logger.info('\nExiting.');
-      this.shutdown();
+    process.on("SIGINT", () => { this.shutdown(); });
+    process.stdin.on("pause", () => dbg("stdin paused"));
+    process.stdin.on("resume", () => dbg("stdin resumed"));
+  }
+
+  async askLine(prompt = "user: "): Promise<string> {
+    const wasRaw = !!(process.stdin as any).isRaw;
+    if (wasRaw) try { process.stdin.setRawMode(false); } catch {}
+    const line = await new Promise<string>((resolve) => {
+      this.rl.question(prompt, (ans) => resolve(ans ?? ""));
     });
+    if (wasRaw) try { process.stdin.setRawMode(true); } catch {}
+    try { process.stdin.resume(); } catch {}
+    return line || "";
   }
 
-  private onKeyData = (buf: Buffer) => {
-    const s = buf.toString('utf8');
-    if (s === 'i') {
-      this.interject();
-    } else if (s === '\u0003') { // Ctrl+C
-      this.shutdown();
+  async provideToScheduler(_fromAgent: string, _content: string): Promise<string | null> {
+    this.busy = true;
+    try { return await this.askLine("user: "); }
+    finally { this.busy = false; }
+  }
+
+  async askInitialAndSend(prompt?: string) {
+    const line = prompt || await this.askLine("user: ");
+    if (line.trim()) this.scheduler.handleUserInterjection(line.trim());
+  }
+
+  private async onKeyData(buf: Buffer) {
+    if (!(process.stdin as any).isRaw) return;
+    const ch = buf.toString("utf8");
+    const code = buf[0];
+    if (code === 3) { this.shutdown(); return; }
+    if (this.busy) return;
+    if (ch === "i" || ch === "I") {
+      this.busy = true;
+      try {
+        this.scheduler.pause();
+        const text = await this.askLine("interject (user): ");
+        if (text.trim()) this.scheduler.handleUserInterjection(text.trim());
+      } catch (e) { Logger.error(`interject failed: ${e}`); }
+      finally { this.scheduler.resume(); this.busy = false; }
     }
-  };
-
-  async askInitial() {
-    const text = await this.question('Prompt> ');
-    this.scheduler.broadcastUserPrompt(text);
-  }
-
-  private async interject() {
-    this.scheduler.pause();
-    const text = await this.question('\nInterject> ');
-    this.scheduler.broadcastUserPrompt(text);
-    this.scheduler.resume();
-  }
-
-  private question(q: string): Promise<string> {
-    return new Promise((res) => this.rl.question(q, (ans) => res(ans)));
   }
 
   shutdown() {
     try {
-      if (process.stdin.isTTY) {
-        process.stdin.setRawMode(false);
-        process.stdin.off('data', this.onKeyData);
-      }
+      if (process.stdin.isTTY) { try { process.stdin.setRawMode(false); } catch {} }
+      if (this.rawHandler) process.stdin.off("data", this.rawHandler);
     } catch {}
-    this.rl.close();
+    try { this.rl.close(); } catch {}
     process.exit(0);
   }
 }
-

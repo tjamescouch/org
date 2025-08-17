@@ -1,281 +1,148 @@
-// [patch:run-modes] BEGIN
+#!/usr/bin/env bun
+
 import { ExecutionGate } from "./tools/execution-gate";
-import { FileWriter } from "./io/file-writer"; // add this import near the top
-
-// Mode detection:
-// - Shell mode (non-interactive) when --prompt is provided OR stdin is piped (and "-" not used).
-// - Interactive when "-" provided as a positional OR when "--safe" is used without --prompt.
-// Additionally: SAFE + non-interactive is invalid (enforced by ExecutionGate.configure).
-
-function hasFlag(name: string): boolean {
-  return process.argv.includes(name);
-}
-function getFlagValue(name: string): string | undefined {
-  const idx = process.argv.indexOf(name);
-  if (idx >= 0 && idx + 1 < process.argv.length) return process.argv[idx + 1];
-  return undefined;
-}
-function isStdinPiped(): boolean {
-  try { return !process.stdin.isTTY; } catch { return false; }
-}
-function wantsInteractiveByDash(): boolean {
-  return process.argv.includes("-");
-}
-function computeMode(): { interactive: boolean; prompt?: string; safe: boolean } {
-  const safe = hasFlag("--safe") || /^(1|true|yes)$/i.test(String(process.env.SAFE_MODE || ""));
-  const promptArg = getFlagValue("--prompt");
-  const dashInteractive = wantsInteractiveByDash();
-  const stdinPiped = isStdinPiped();
-
-  let interactive: boolean;
-  if (dashInteractive) {
-    interactive = true;
-  } else if (promptArg || (stdinPiped && !dashInteractive)) {
-    interactive = false; // shell mode
-  } else if (safe && !promptArg) {
-    interactive = true; // `org --safe` → interactive
-  } else {
-    interactive = true; // default interactive
-  }
-
-  const prompt = promptArg;
-  // Configure the ExecutionGate once (throws if invalid combo)
-  ExecutionGate.configure({ safe, interactive });
-
-  return { interactive, prompt, safe };
-}
-
-// Expose mode for the rest of app.ts if needed
-const __APP_MODE = computeMode();
-// [patch:run-modes] END
-/**
- * Minimal multi-agent round-robin demo with TagParser routing.
- * Now supports an LM Studio driver via OpenAI protocol and a safe "sh" tool.
- */
-
-import { makeRouter } from "./app_support/route-with-tags";
-import { TagParser } from "./utils/tag-parser";
-import { MockModel } from "./agents/mock-model";
-import { LlmAgent } from "./agents/llm-agent";
 import { loadConfig } from "./config";
-import { makeLmStudioOpenAiDriver } from "./drivers/openai-lmstudio";
 import { Logger } from "./logger";
-import { extractCodeGuards } from "./utils/extract-code-blocks";
+import { RoundRobinScheduler } from "./scheduler";
+import { InputController } from "./input";
+import { makeLmStudioOpenAiDriver } from "./drivers/openai-lmstudio";
+import { LlmAgent } from "./agents/llm-agent";
+import { MockModel } from "./agents/mock-model";
 
-export const C = {
-  reset: "\x1b[0m",
-  bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
-  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
-  green: (s: string) => `\x1b[32m${s}\x1b[0m`,   // <-- fixed here
-  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
-  blue: (s: string) => `\x1b[34m${s}\x1b[0m`,
-  magenta: (s: string) => `\x1b[35m${s}\x1b[0m`,
-  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
-  white: (s: string) => `\x1b[37m${s}\x1b[0m`,
-  gray: (s: string) => `\x1b[90m${s}\x1b[0m`,
-};
-
-
-//FIXME - put all this into a class
-let usersPrompt: string = "";
-
-type ModelKind = "mock" | "lmstudio";
-
-interface AgentRec {
-  id: string;
-  kind: ModelKind;
-  model: { respond(prompt: string, maxTools: number, peers: string[]): Promise<{ message: string; toolsUsed: number }> };
-}
-
+/** ---------- CLI parsing ---------- */
 function parseArgs(argv: string[]) {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
+  const out: Record<string, string | boolean> = {};
+  let key: string | null = null;
+  for (const a of argv) {
     if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const val = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "1";
-      out[key] = val;
+      const [k, v] = a.split("=", 2);
+      if (v !== undefined) out[k.slice(2)] = v;
+      else key = k.slice(2);
+    } else if (key) {
+      out[key] = a; key = null;
     }
   }
+  if (key) out[key] = true;
   return out;
 }
 
-function parseAgents(spec: string | undefined, llmDefaults: { driver: "lmstudio"; model: string; baseUrl: string; protocol: "openai"; }): AgentRec[] {
-  if (!spec) return [];
-  const list = spec.split(",").map((s) => s.trim()).filter(Boolean);
-  const out: AgentRec[] = [];
+function enableDebugIfRequested(args: Record<string, string | boolean>) {
+  if (args["debug"] || process.env.DEBUG) {
+    process.env.DEBUG = String(args["debug"] ?? process.env.DEBUG ?? "1");
+    Logger.info("[DBG] debug logging enabled");
+  }
+}
 
+function setupProcessGuards() {
+  const dbgOn = !!process.env.DEBUG && process.env.DEBUG !== "0" && process.env.DEBUG !== "false";
+  if (dbgOn) {
+    process.on("beforeExit", (code) => {
+      Logger.info("[DBG] beforeExit", code, "— scheduler stays alive unless Ctrl+C");
+      // schedule a no-op to avoid accidental early exit if the event loop is empty
+      setTimeout(() => {}, 60_000);
+    });
+    process.on("uncaughtException", (e) => { Logger.info("[DBG] uncaughtException:", e); });
+    process.on("unhandledRejection", (e) => { Logger.info("[DBG] unhandledRejection:", e); });
+    process.stdin.on("end", () => Logger.info("[DBG] stdin end"));
+    process.stdin.on("pause", () => Logger.info("[DBG] stdin paused"));
+    process.stdin.on("resume", () => Logger.info("[DBG] stdin resumed"));
+
+
+  }
+}
+
+/** ---------- Mode / safety ---------- */
+function computeMode(): { interactive: boolean; safe: boolean } {
+  const interactive = true; // scheduler + hotkey assumes interactive
+  const cfg = loadConfig();
+  const safe = !!(cfg as any)?.runtime?.safe;
+  ExecutionGate.configure({ safe, interactive });
+  return { interactive, safe };
+}
+
+type ModelKind = "mock" | "lmstudio";
+type AgentSpec = { id: string; kind: ModelKind; model: any };
+
+function parseAgents(
+  spec: string | undefined,
+  llmDefaults: { model: string; baseUrl: string; protocol: "openai"; apiKey?: string }
+): AgentSpec[] {
+  const list = String(spec || "").split(",").map(x => x.trim()).filter(Boolean);
+  if (list.length === 0) {
+    return [
+      { id: "alice", kind: "mock", model: new MockModel("alice") },
+      { id: "bob",   kind: "mock", model: new MockModel("bob") }
+    ];
+  }
+  const out: AgentSpec[] = [];
   for (const item of list) {
     const [id, kindRaw = "mock"] = item.split(":");
     const kind = (kindRaw as ModelKind) || "mock";
-
     if (kind === "mock") {
-      out.push({ id, kind, model: new MockModel(id) as any });
-      continue;
-    }
-
-    if (kind === "lmstudio") {
-      if (llmDefaults.protocol !== "openai") {
-        throw new Error(`Unsupported protocol "${llmDefaults.protocol}" for driver lmstudio`);
-      }
+      out.push({ id, kind, model: new MockModel(id) });
+    } else if (kind === "lmstudio") {
+      if (llmDefaults.protocol !== "openai") throw new Error(`Unsupported protocol: ${llmDefaults.protocol}`);
       const driver = makeLmStudioOpenAiDriver({
         baseUrl: llmDefaults.baseUrl,
-        model: llmDefaults.model || 'openai/gpt-oss-120b',
+        model: llmDefaults.model,
+        apiKey: (llmDefaults as any).apiKey
       });
       out.push({ id, kind, model: new LlmAgent(id, driver, llmDefaults.model) as any });
-      continue;
+    } else {
+      throw new Error(`Unknown model kind: ${kindRaw}`);
     }
-
-    throw new Error(`Unknown model kind "${kindRaw}"`);
   }
   return out;
-}
-
-// Simple line reader for a one-time prompt:
-async function readPrompt(question = "Prompt> "): Promise<string> {
-  const rl = await import("readline");
-  return new Promise<string>((resolve) => {
-    const rli = rl.createInterface({ input: process.stdin, output: process.stdout });
-    rli.question(question, (ans) => {
-      rli.close();
-      resolve(ans || "");
-    });
-  });
-}
-
-// Inboxes for DMs/broadcasts parsed from tags.
-const inbox = new Map<string, string[]>();
-function ensureInbox(id: string) {
-  if (!inbox.has(id)) inbox.set(id, []);
-  return inbox.get(id)!;
-}
-
-function nextPromptFor(id: string, fallback: string): string {
-  const q = ensureInbox(id);
-  if (q.length > 0) {
-    return q.splice(0, q.length).join("\n");
-  }
-  return fallback;
 }
 
 async function main() {
   const cfg = loadConfig();
-  const argv = (globalThis as any).Bun ? Bun.argv.slice(2) : process.argv.slice(2);
+  const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : process.argv.slice(2));
   const args = parseArgs(argv);
+  enableDebugIfRequested(args);
+  setupProcessGuards();
 
-  const agents = parseAgents(args["agents"], cfg.llm);
   const maxTools = Math.max(0, Number(args["max-tools"] || 20));
+  computeMode();
 
-  if (agents.length === 0) {
-    console.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
+  const agentSpecs = parseAgents(String(args["agents"] || ""), cfg.llm);
+  if (agentSpecs.length === 0) {
+    Logger.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
     process.exit(1);
   }
 
-  const argPrompt = args["prompt"] || undefined;
+  const agents = agentSpecs.map(a => ({
+    id: a.id,
+    respond: (prompt: string, budget: number, peers: string[]) => a.model.respond(prompt, budget, peers)
+  }));
 
-  const usersFirstPrompt = argPrompt || await readPrompt("Prompt> ");
-
-  // Router using TagParser (feeds agent inboxes)
-  const agentIds = agents.map((a) => a.id);
-  const router = makeRouter({
-    // yield to user
-    onUser: async () => {
-      usersPrompt = await readPrompt("Prompt> ");
-    },
-    // sendTo
-    onAgent: (recipient, from, content) => {
-      ensureInbox(recipient.toLowerCase()).push(content);
-      Logger.debug(`${C.gray(`${from} → @@${recipient}`)}: ${content}`);
-    },
-    // broadcast
-    onGroup: (from, content) => {
-      for (const id of agentIds) if (id !== from) ensureInbox(id.toLowerCase()).push(content);
-      Logger.debug(`${C.gray(`${from} → @@group`)}: ${content}`);
-    },
-    // onFile
-    onFile: async (from, filename, content) => {
-      const cmd = `${content}\n***** Write to file? [y/N] ${filename}\n`;
-      const sanitizedContent = extractCodeGuards(content).cleaned;
-
-      try {
-        await ExecutionGate.gate(cmd);
-      } catch (e) {
-        const msg = `Execution denied by guard or user: ${cmd}`;
-        console.log(red(`sh: ${cmd} -> ${msg}`));
-        throw e;
-      }
-
-      Logger.warn(C.bold(C.gray(`[file from ${from}] ##${filename}`)));
-      Logger.warn(content);
-
-      // actually write the file
-      try {
-        const result = await FileWriter.write(filename, sanitizedContent);
-        Logger.info(C.green(`wrote ${result.path} (${result.bytes} bytes)`));
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        Logger.error(C.red(`failed to write ${filename}: ${msg}`));
-      }
+  // Wiring: scheduler + input
+  let input!: InputController;
+  const scheduler = new RoundRobinScheduler({
+    agents,
+    maxTools,
+    onAskUser: async (from, content) => {
+      if (process.env.DEBUG) Logger.info(`[DBG] @@user requested by ${from}:`, JSON.stringify(content));
+      return await input.provideToScheduler(from, content);
     }
   });
 
-  function routeAssistantText(from: string, text: string) {
-    const parts = TagParser.parse(text);
-    if (parts.length === 0) {
-      for (const id of agentIds) if (id !== from) ensureInbox(id).push(text);
-      console.log(`${C.gray(`${from} → @@group`)}: ${text}`);
-      return;
-    }
-    router(from, text);
+  input = new InputController(scheduler);
+  input.init();
+
+  if (process.env.DEBUG) {
+    Logger.info("[DBG] Agents:", agents.map(a => a.id).join(", "));
+    Logger.info("[DBG] maxTools:", maxTools);
   }
 
-  // Round-robin until idle for two consecutive rounds
-  let idleRounds = 0;
+  // Kick off with an initial user prompt
+  await input.askInitialAndSend(args['prompt']);
 
-  while (true) {
-    let anyWork = false;
-
-    for (const a of agents) {
-      let remaining = maxTools;
-      const basePrompt = usersPrompt || nextPromptFor(a.id, usersFirstPrompt);
-      usersPrompt = "";
-
-      // Keep asking model while it wants to spend tools
-      for (let hop = 0; hop < Math.max(1, maxTools + 1); hop++) {
-        const peers = agents.map((x) => x.id);
-        const reply = await a.model.respond(basePrompt, remaining, peers);
-
-        if (reply.toolsUsed > 0) {
-          console.log(`${C.cyan(`${a.id}:`)} $ tool → ${new Date().toISOString()}`);
-          remaining = Math.max(0, remaining - reply.toolsUsed);
-          anyWork = true;
-          if (reply.message && reply.message.trim()) {
-            routeAssistantText(a.id, reply.message.trim());
-          }
-          if (remaining <= 0) {
-            console.log(`${C.cyan(`${a.id}:`)} (tool budget exhausted)`);
-            break; // yield
-          }
-        } else {
-          const msg = reply.message?.trim() || "Okay. (no tools needed)";
-          console.log(`${C.cyan(`${a.id}:`)} ${msg}`);
-          routeAssistantText(a.id, msg);
-          break; // yield when no tools requested
-        }
-      }
-    }
-
-    const pending = Array.from(inbox.values()).reduce((n, q) => n + q.length, 0);
-    if (!anyWork && pending === 0) {
-      idleRounds++;
-    } else {
-      idleRounds = 0;
-    }
-    if (idleRounds >= 2) break;
-  }
+  // Never return under normal operation; exit only on Ctrl+C
+  await scheduler.start();
 }
 
 main().catch((e) => {
-  console.error(e);
+  Logger.info(e);
   process.exit(1);
 });

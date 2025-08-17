@@ -1,3 +1,4 @@
+import { Logger } from "../logger";
 import { ExecutionGate } from "./execution-gate";
 
 /** ANSI helpers */
@@ -36,8 +37,9 @@ export async function runSh(cmd: string): Promise<{ ok: boolean; stdout: string;
     await ExecutionGate.gate(cmd);
   } catch (e) {
     const msg = `Execution denied by guard or user: ${cmd}`;
-    console.log(red(`sh: ${cmd} -> ${msg}`));
-    throw e;
+    Logger.info(red(`sh: ${cmd} -> ${msg}`));
+
+    return { ok: false, stdout: '', stderr: `Execution denied by guard or user: ${cmd}`, exit_code: 10101, cmd };
   }
 
   // Bun path
@@ -50,7 +52,7 @@ export async function runSh(cmd: string): Promise<{ ok: boolean; stdout: string;
       proc.exited,
     ]);
     const merged = (stdout || "") + (stderr ? (stdout ? "\n" : "") + stderr : "");
-    console.log(red(`sh: ${cmd} -> ${merged.trim()}`));
+    Logger.info(red(`sh: ${cmd} -> ${merged.trim()}`));
     return { ok: code === 0, stdout, stderr, exit_code: code, cmd };
   }
 
@@ -69,7 +71,7 @@ export async function runSh(cmd: string): Promise<{ ok: boolean; stdout: string;
   });
 
   const merged = (stdout || "") + (stderr ? (stdout ? "\n" : "") + stderr : "");
-  console.log(red(`sh: ${cmd} -> ${merged.trim()}`));
+  Logger.info(red(`sh: ${cmd} -> ${merged.trim()}`));
 
   return { ok: exit_code === 0, stdout, stderr, exit_code, cmd };
 }
