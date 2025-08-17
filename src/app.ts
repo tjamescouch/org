@@ -1,15 +1,23 @@
 /**
  * Minimal multi-agent round-robin demo with TagParser routing.
- * - Agents each get up to --max-tools tool calls per *turn*.
- * - If an agent returns a reply with no tool usage, it yields immediately.
- * - Router parses @agent / @group / #file tags and places DMs into per-agent inboxes.
+ * Now supports an LM Studio driver via OpenAI protocol.
  *
- * Run:
- *   bun run src/app.ts --agents "alice:mock,bob:mock" --max-tools 2
+ * Run examples:
+ *   bun run src/app.ts --agents "alice:lmstudio,bob:mock" --max-tools 2
+ *
+ * Env (defaults shown):
+ *   LLM_BASE_URL=http://192.168.56.1:11434
+ *   LLM_PROTOCOL=openai
+ *   LLM_DRIVER=lmstudio
+ *   LLM_MODEL=gpt-oss-20b
  */
 
-import { MockModel } from "./agents/mock-model";
 import { makeRouter } from "./app_support/route-with-tags";
+import { TagParser } from "./utils/tag-parser";
+import { MockModel } from "./agents/mock-model";
+import { LlmAgent } from "./agents/llm-agent";
+import { loadConfig } from "./config";
+import { makeLmStudioOpenAiDriver } from "./drivers/openai-lmstudio";
 
 // Small color helpers
 const C = {
@@ -18,12 +26,13 @@ const C = {
   bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
 };
 
-type ModelKind = "mock";
+type ModelKind = "mock" | "lmstudio";
 
 interface AgentRec {
   id: string;
   kind: ModelKind;
-  model: MockModel;
+  // polymorphic; both models expose respond(prompt, maxTools, peers)
+  model: { respond(prompt: string, maxTools: number, peers: string[]): Promise<{message: string; toolsUsed: number}> };
 }
 
 function parseArgs(argv: string[]) {
@@ -39,15 +48,34 @@ function parseArgs(argv: string[]) {
   return out;
 }
 
-function parseAgents(spec: string | undefined): AgentRec[] {
+function parseAgents(spec: string | undefined, llmDefaults: { driver: "lmstudio"; model: string; baseUrl: string; protocol: "openai"; }): AgentRec[] {
   if (!spec) return [];
   const list = spec.split(",").map((s) => s.trim()).filter(Boolean);
   const out: AgentRec[] = [];
+
   for (const item of list) {
-    const [id, kind = "mock"] = item.split(":");
-    const k = (kind as ModelKind) || "mock";
-    if (k !== "mock") throw new Error(`Unknown model kind "${k}"`);
-    out.push({ id, kind: "mock", model: new MockModel(id) });
+    const [id, kindRaw = "mock"] = item.split(":");
+    const kind = (kindRaw as ModelKind) || "mock";
+
+    if (kind === "mock") {
+      out.push({ id, kind, model: new MockModel(id) as any });
+      continue;
+    }
+
+    if (kind === "lmstudio") {
+      // For now we only support "openai" protocol
+      if (llmDefaults.protocol !== "openai") {
+        throw new Error(`Unsupported protocol "${llmDefaults.protocol}" for driver lmstudio`);
+      }
+      const driver = makeLmStudioOpenAiDriver({
+        baseUrl: llmDefaults.baseUrl,
+        model: llmDefaults.model,
+      });
+      out.push({ id, kind, model: new LlmAgent(id, driver, llmDefaults.model) as any });
+      continue;
+    }
+
+    throw new Error(`Unknown model kind "${kindRaw}"`);
   }
   return out;
 }
@@ -80,18 +108,21 @@ function nextPromptFor(id: string, fallback: string): string {
 }
 
 async function main() {
-  const args = parseArgs((globalThis as any).Bun ? Bun.argv.slice(2) : process.argv.slice(2));
-  const agents = parseAgents(args["agents"]);
+  const cfg = loadConfig();
+  const argv = (globalThis as any).Bun ? Bun.argv.slice(2) : process.argv.slice(2);
+  const args = parseArgs(argv);
+
+  const agents = parseAgents(args["agents"], cfg.llm);
   const maxTools = Math.max(0, Number(args["max-tools"] || 2));
 
   if (agents.length === 0) {
-    console.error("No agents. Use --agents \"alice:mock,bob:mock\"");
+    console.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
     process.exit(1);
   }
 
   const usersFirstPrompt = await readPrompt("Prompt> ");
 
-  // Router around TagParser (feeds agent inboxes)
+  // Router using TagParser (feeds agent inboxes)
   const agentIds = agents.map((a) => a.id);
   const router = makeRouter(
     agentIds,
@@ -112,27 +143,24 @@ async function main() {
     }
   );
 
-  // Helper: route the agent's final assistant text
   function routeAssistantText(from: string, text: string) {
-    const parts = router.route(from, text);
-    if (!parts.length) {
-      // Treat as group when there are no tags
+    const parts = new TagParser().parse(text);
+    if (parts.length === 0) {
       for (const id of agentIds) if (id !== from) ensureInbox(id).push(text);
       console.log(`${C.gray(`${from} → @group`)}: ${text}`);
+      return;
     }
+    router.route(from, text);
   }
 
-  // Round-robin until the system is idle for 2 consecutive rounds
+  // Round-robin until idle for two consecutive rounds
   let idleRounds = 0;
-  let cycle = 0;
 
   while (true) {
-    cycle++;
     let anyWork = false;
 
     for (const a of agents) {
       let remaining = maxTools;
-      // Prompt for this agent: consume inbox first, else user prompt
       const basePrompt = nextPromptFor(a.id, usersFirstPrompt);
 
       // Keep asking model while it wants to spend tools
@@ -141,11 +169,9 @@ async function main() {
         const reply = await a.model.respond(basePrompt, remaining, peers);
 
         if (reply.toolsUsed > 0) {
-          // Simulate tool usage message
           console.log(`${C.cyan(`${a.id}:`)} $ tool → ${new Date().toISOString()}`);
           remaining = Math.max(0, remaining - reply.toolsUsed);
           anyWork = true;
-          // After tool step, route whatever text the mock emitted this hop
           if (reply.message && reply.message.trim()) {
             routeAssistantText(a.id, reply.message.trim());
           }
@@ -153,26 +179,21 @@ async function main() {
             console.log(`${C.cyan(`${a.id}:`)} (tool budget exhausted)`);
             break; // yield
           }
-          // Continue loop to allow more tools if the model wants
-          // (mock uses at most one per hop)
         } else {
-          // No tools needed → yield after routing the text
           const msg = reply.message?.trim() || "Okay. (no tools needed)";
           console.log(`${C.cyan(`${a.id}:`)} ${msg}`);
           routeAssistantText(a.id, msg);
-          break;
+          break; // yield when no tools requested
         }
       }
     }
 
-    // Idle detection
     const pending = Array.from(inbox.values()).reduce((n, q) => n + q.length, 0);
     if (!anyWork && pending === 0) {
       idleRounds++;
     } else {
       idleRounds = 0;
     }
-
     if (idleRounds >= 2) break;
   }
 }
