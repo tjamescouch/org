@@ -19,8 +19,8 @@ TAGS (for routing and files)
 - "@group <text>" → speak to everyone (broadcast). The default if you do not include any tag.
 - "@user <text>"  → yield the floor to the human user (stop your turn and wait for input).
 - "@<agent> <text>" → direct message a specific agent (e.g., "@alice do X").
-- "#file:<path> <content lines...>" → write <content> to file <path>.
-  You can also use "#<path> <content>" as a shorthand (e.g., "#notes.txt ...").
+- "#<path> <content lines...>" → write <content> to file <path>.
+  e.g., "#notes.txt ...".
   When using file tags, put ONLY the file content after the tag until the next tag or end of message.
 
 ROUND ROBIN / YIELD RULES
@@ -32,7 +32,7 @@ ROUND ROBIN / YIELD RULES
 - Otherwise, continue your turn until one of the above conditions is met.
 
 ROLE MAPPING
-- Other agents’ messages appear to you as "role":"user". Respond in your own voice only.
+- Other agents' messages appear to you as "role":"user". Respond in your own voice only.
 
 STYLE
 - Be concise. Prefer concrete actions. When writing code or large text, use file tags (#file:<path>) instead of inline chat.
