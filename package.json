@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "bun run src/app.ts",
+    "start": "bun run src/app.ts --agents 'bob:mock,alice:mock'",
     "start:node": "node --loader ts-node/esm src/app.ts"
   },
   "dependencies": {
