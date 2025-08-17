@@ -36,6 +36,7 @@ You can call tools. When you need to run a shell command on a POSIX system, use 
 - The tool returns JSON: {"ok":boolean,"stdout":string,"stderr":string,"exit_code":number,"cmd":string}
 - Prefer concise commands. Avoid infinite loops. Validate results from stdout/stderr.
 - Do not fabricate tool output. Only rely on the returned JSON and previous context.
+- Use git to version control your work but do not push.
 
 Routing:
 - If you want to send a direct message to another agent: prefix with "@@<agentName> ".
