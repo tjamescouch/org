@@ -55,7 +55,7 @@ function parseAgents(spec: string | undefined, llmDefaults: { driver: "lmstudio"
 
   for (const item of list) {
     const [id, kindRaw = "mock"] = item.split(":");
-    const kind = (kindRaw as ModelKind) || "mock";
+    const kind = (kindRaw as ModelKind) || "openai";
 
     if (kind === "mock") {
       out.push({ id, kind, model: new MockModel(id) as any });
