@@ -1,6 +1,15 @@
 /**
  * Minimal multi-agent round-robin demo with TagParser routing.
- * Now supports an LM Studio driver via OpenAI protocol and a safe "sh" tool.
+ * Now supports an LM Studio driver via OpenAI protocol.
+ *
+ * Run examples:
+ *   bun run src/app.ts --agents "alice:lmstudio,bob:mock" --max-tools 2
+ *
+ * Env (defaults shown):
+ *   LLM_BASE_URL=http://192.168.56.1:11434
+ *   LLM_PROTOCOL=openai
+ *   LLM_DRIVER=lmstudio
+ *   LLM_MODEL=gpt-oss-20b
  */
 
 import { makeRouter } from "./app_support/route-with-tags";
@@ -9,7 +18,6 @@ import { MockModel } from "./agents/mock-model";
 import { LlmAgent } from "./agents/llm-agent";
 import { loadConfig } from "./config";
 import { makeLmStudioOpenAiDriver } from "./drivers/openai-lmstudio";
-import { ExecutionGate } from "./tools/exec-gate";
 
 // Small color helpers
 const C = {
@@ -23,6 +31,7 @@ type ModelKind = "mock" | "lmstudio";
 interface AgentRec {
   id: string;
   kind: ModelKind;
+  // polymorphic; both models expose respond(prompt, maxTools, peers)
   model: { respond(prompt: string, maxTools: number, peers: string[]): Promise<{message: string; toolsUsed: number}> };
 }
 
@@ -46,7 +55,7 @@ function parseAgents(spec: string | undefined, llmDefaults: { driver: "lmstudio"
 
   for (const item of list) {
     const [id, kindRaw = "mock"] = item.split(":");
-    const kind = (kindRaw as ModelKind) || "mock";
+    const kind = (kindRaw as ModelKind) || "openai";
 
     if (kind === "mock") {
       out.push({ id, kind, model: new MockModel(id) as any });
@@ -54,6 +63,7 @@ function parseAgents(spec: string | undefined, llmDefaults: { driver: "lmstudio"
     }
 
     if (kind === "lmstudio") {
+      // For now we only support "openai" protocol
       if (llmDefaults.protocol !== "openai") {
         throw new Error(`Unsupported protocol "${llmDefaults.protocol}" for driver lmstudio`);
       }
@@ -101,9 +111,6 @@ async function main() {
   const cfg = loadConfig();
   const argv = (globalThis as any).Bun ? Bun.argv.slice(2) : process.argv.slice(2);
   const args = parseArgs(argv);
-
-  // Configure the execution gate (safe confirmation)
-  ExecutionGate.configure({ safe: cfg.runtime.safe });
 
   const agents = parseAgents(args["agents"], cfg.llm);
   const maxTools = Math.max(0, Number(args["max-tools"] || 2));
