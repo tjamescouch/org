@@ -10,6 +10,8 @@ build
 *.dat
 *.bin
 *.bak
+*.bak2
+*.bak3
 openai-patch.sh
 patch-debug.sh
 logs

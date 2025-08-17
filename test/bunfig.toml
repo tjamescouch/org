@@ -1,3 +1,0 @@
-# bunfig.toml
-[test]
-preload = ["./setup.ts"]
