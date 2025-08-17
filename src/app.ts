@@ -107,7 +107,7 @@ async function main() {
   ExecutionGate.configure({ safe: cfg.runtime.safe });
 
   const agents = parseAgents(args["agents"], cfg.llm);
-  const maxTools = Math.max(0, Number(args["max-tools"] || 2));
+  const maxTools = Math.max(0, Number(args["max-tools"] || 20));
 
   if (agents.length === 0) {
     console.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
