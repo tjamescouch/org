@@ -6,7 +6,7 @@ const DEBUG = (() => {
   const v = (process.env.DEBUG ?? "").toString().toLowerCase();
   return v === "1" || v === "true" || v === "yes" || v === "debug";
 })();
-function dbg(...a: any[]) { if (DEBUG) console.error("[DBG][input]", ...a); }
+function dbg(...a: any[]) { if (DEBUG) Logger.info("[DBG][input]", ...a); }
 
 export class InputController {
   private rl: readline.Interface;
@@ -49,8 +49,8 @@ export class InputController {
     finally { this.busy = false; }
   }
 
-  async askInitialAndSend() {
-    const line = await this.askLine("user: ");
+  async askInitialAndSend(prompt?: string) {
+    const line = prompt || await this.askLine("user: ");
     if (line.trim()) this.scheduler.handleUserInterjection(line.trim());
   }
 

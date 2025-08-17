@@ -9,7 +9,7 @@ const DEBUG = (() => {
   const v = (process.env.DEBUG ?? "").toString().toLowerCase();
   return v === "1" || v === "true" || v === "yes" || v === "debug";
 })();
-function dbg(...a: any[]) { if (DEBUG) console.error("[DBG][scheduler]", ...a); }
+function dbg(...a: any[]) { if (DEBUG) Logger.info("[DBG][scheduler]", ...a); }
 
 function restoreStdin(raw: boolean) {
   try {
@@ -19,7 +19,7 @@ function restoreStdin(raw: boolean) {
     process.stdin.resume();
     dbg("stdin restored (raw:", raw, ")");
   } catch (e) {
-    console.error("[DBG] failed to restore stdin:", e);
+    Logger.info("[DBG] failed to restore stdin:", e);
   }
 }
 

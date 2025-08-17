@@ -1,3 +1,5 @@
+#!/usr/bin/env bun
+
 import { ExecutionGate } from "./tools/execution-gate";
 import { loadConfig } from "./config";
 import { Logger } from "./logger";
@@ -27,7 +29,7 @@ function parseArgs(argv: string[]) {
 function enableDebugIfRequested(args: Record<string, string | boolean>) {
   if (args["debug"] || process.env.DEBUG) {
     process.env.DEBUG = String(args["debug"] ?? process.env.DEBUG ?? "1");
-    console.error("[DBG] debug logging enabled");
+    Logger.info("[DBG] debug logging enabled");
   }
 }
 
@@ -35,15 +37,15 @@ function setupProcessGuards() {
   const dbgOn = !!process.env.DEBUG && process.env.DEBUG !== "0" && process.env.DEBUG !== "false";
   if (dbgOn) {
     process.on("beforeExit", (code) => {
-      console.error("[DBG] beforeExit", code, "— scheduler stays alive unless Ctrl+C");
+      Logger.info("[DBG] beforeExit", code, "— scheduler stays alive unless Ctrl+C");
       // schedule a no-op to avoid accidental early exit if the event loop is empty
       setTimeout(() => {}, 60_000);
     });
-    process.on("uncaughtException", (e) => { console.error("[DBG] uncaughtException:", e); });
-    process.on("unhandledRejection", (e) => { console.error("[DBG] unhandledRejection:", e); });
-    process.stdin.on("end", () => console.error("[DBG] stdin end"));
-    process.stdin.on("pause", () => console.error("[DBG] stdin paused"));
-    process.stdin.on("resume", () => console.error("[DBG] stdin resumed"));
+    process.on("uncaughtException", (e) => { Logger.info("[DBG] uncaughtException:", e); });
+    process.on("unhandledRejection", (e) => { Logger.info("[DBG] unhandledRejection:", e); });
+    process.stdin.on("end", () => Logger.info("[DBG] stdin end"));
+    process.stdin.on("pause", () => Logger.info("[DBG] stdin paused"));
+    process.stdin.on("resume", () => Logger.info("[DBG] stdin resumed"));
 
 
   }
@@ -120,7 +122,7 @@ async function main() {
     agents,
     maxTools,
     onAskUser: async (from, content) => {
-      if (process.env.DEBUG) console.error(`[DBG] @@user requested by ${from}:`, JSON.stringify(content));
+      if (process.env.DEBUG) Logger.info(`[DBG] @@user requested by ${from}:`, JSON.stringify(content));
       return await input.provideToScheduler(from, content);
     }
   });
@@ -129,18 +131,18 @@ async function main() {
   input.init();
 
   if (process.env.DEBUG) {
-    console.error("[DBG] Agents:", agents.map(a => a.id).join(", "));
-    console.error("[DBG] maxTools:", maxTools);
+    Logger.info("[DBG] Agents:", agents.map(a => a.id).join(", "));
+    Logger.info("[DBG] maxTools:", maxTools);
   }
 
   // Kick off with an initial user prompt
-  await input.askInitialAndSend();
+  await input.askInitialAndSend(args['prompt']);
 
   // Never return under normal operation; exit only on Ctrl+C
   await scheduler.start();
 }
 
 main().catch((e) => {
-  console.error(e);
+  Logger.info(e);
   process.exit(1);
 });
