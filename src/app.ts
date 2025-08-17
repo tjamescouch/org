@@ -10,6 +10,7 @@
 
 import { MockModel } from "./agents/mock-model";
 import { makeRouter } from "./app_support/route-with-tags";
+import { Logger } from "./logger"
 
 // Small color helpers
 const C = {
@@ -173,7 +174,10 @@ async function main() {
       idleRounds = 0;
     }
 
-    if (idleRounds >= 2) break;
+    if (idleRounds >= 2) { 
+      Logger.warn(`Idel for ${idleRounds} rounds`);
+
+      await sleep(1000);
   }
 }
 
