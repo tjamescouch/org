@@ -12,6 +12,7 @@ build
 *.bak
 *.bak2
 *.bak3
+*.bak.*
 openai-patch.sh
 patch-debug.sh
 logs

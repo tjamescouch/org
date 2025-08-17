@@ -72,14 +72,14 @@ You can configure via **CLI flags** or **environment variables**.
 | `LLM_DRIVER`   | `lmstudio`                  | Driver key. Currently only `lmstudio`.             |
 | `LLM_PROTOCOL` | `openai`                    | Protocol / wire-format. Currently `openai`.        |
 | `LLM_BASE_URL` | `http://192.168.56.1:11434` | Base URL of LM Studio API (`/v1/chat/completions`) |
-| `LLM_MODEL`    | `gpt-oss-20b`               | Model id to request from LM Studio                 |
+| `LLM_MODEL`    | `openai/gpt-oss-120b`               | Model id to request from LM Studio                 |
 | `SAFE_MODE`    | *(unset → false)*           | `1/true/yes` enables confirmation for `sh` tool    |
 
 Example:
 
 ```bash
 export LLM_BASE_URL="http://127.0.0.1:11434"
-export LLM_MODEL="gpt-oss-20b"
+export LLM_MODEL="openai/gpt-oss-120b"
 export SAFE_MODE=true
 ```
 
@@ -92,7 +92,7 @@ export SAFE_MODE=true
 | `--driver`    | `--driver lmstudio`                  | Driver key (same as `LLM_DRIVER`)     |
 | `--protocol`  | `--protocol openai`                  | Protocol key (same as `LLM_PROTOCOL`) |
 | `--base-url`  | `--base-url http://127.0.0.1:11434`  | Base URL override                     |
-| `--model`     | `--model gpt-oss-20b`                | Model override                        |
+| `--model`     | `--model openai/gpt-oss-120b`                | Model override                        |
 | `--safe`      | `--safe`                             | Enable confirmation for `sh` tool     |
 
 ---

@@ -1,3 +1,53 @@
+// [patch:run-modes] BEGIN
+import { ExecutionGate } from "./tools/execution-gate";
+import { sleep } from "./utils/sleep";
+
+// Mode detection:
+// - Shell mode (non-interactive) when --prompt is provided OR stdin is piped (and "-" not used).
+// - Interactive when "-" provided as a positional OR when "--safe" is used without --prompt.
+// Additionally: SAFE + non-interactive is invalid (enforced by ExecutionGate.configure).
+
+function hasFlag(name: string): boolean {
+  return process.argv.includes(name);
+}
+function getFlagValue(name: string): string | undefined {
+  const idx = process.argv.indexOf(name);
+  if (idx >= 0 && idx + 1 < process.argv.length) return process.argv[idx + 1];
+  return undefined;
+}
+function isStdinPiped(): boolean {
+  try { return !process.stdin.isTTY; } catch { return false; }
+}
+function wantsInteractiveByDash(): boolean {
+  return process.argv.includes("-");
+}
+function computeMode(): { interactive: boolean; prompt?: string; safe: boolean } {
+  const safe = hasFlag("--safe") || /^(1|true|yes)$/i.test(String(process.env.SAFE_MODE || ""));
+  const promptArg = getFlagValue("--prompt");
+  const dashInteractive = wantsInteractiveByDash();
+  const stdinPiped = isStdinPiped();
+
+  let interactive: boolean;
+  if (dashInteractive) {
+    interactive = true;
+  } else if (promptArg || (stdinPiped && !dashInteractive)) {
+    interactive = false; // shell mode
+  } else if (safe && !promptArg) {
+    interactive = true; // `org --safe` → interactive
+  } else {
+    interactive = true; // default interactive
+  }
+
+  const prompt = promptArg;
+  // Configure the ExecutionGate once (throws if invalid combo)
+  ExecutionGate.configure({ safe, interactive });
+
+  return { interactive, prompt, safe };
+}
+
+// Expose mode for the rest of app.ts if needed
+const __APP_MODE = computeMode();
+// [patch:run-modes] END
 /**
  * Minimal multi-agent round-robin demo with TagParser routing.
  * Now supports an LM Studio driver via OpenAI protocol and a safe "sh" tool.
@@ -9,7 +59,7 @@ import { MockModel } from "./agents/mock-model";
 import { LlmAgent } from "./agents/llm-agent";
 import { loadConfig } from "./config";
 import { makeLmStudioOpenAiDriver } from "./drivers/openai-lmstudio";
-import { ExecutionGate } from "./tools/exec-gate";
+import { Logger } from "./logger";
 
 // Small color helpers
 const C = {
@@ -59,7 +109,7 @@ function parseAgents(spec: string | undefined, llmDefaults: { driver: "lmstudio"
       }
       const driver = makeLmStudioOpenAiDriver({
         baseUrl: llmDefaults.baseUrl,
-        model: llmDefaults.model,
+        model: llmDefaults.model || 'openai/gpt-oss-120b',
       });
       out.push({ id, kind, model: new LlmAgent(id, driver, llmDefaults.model) as any });
       continue;
@@ -102,48 +152,49 @@ async function main() {
   const argv = (globalThis as any).Bun ? Bun.argv.slice(2) : process.argv.slice(2);
   const args = parseArgs(argv);
 
-  // Configure the execution gate (safe confirmation)
-  ExecutionGate.configure({ safe: cfg.runtime.safe });
-
   const agents = parseAgents(args["agents"], cfg.llm);
-  const maxTools = Math.max(0, Number(args["max-tools"] || 2));
+  const maxTools = Math.max(0, Number(args["max-tools"] || 20));
 
   if (agents.length === 0) {
     console.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
     process.exit(1);
   }
 
-  const usersFirstPrompt = await readPrompt("Prompt> ");
+  const argPrompt = args["prompt"] || undefined;
+
+  if (argPrompt) {
+  }
+
+  const usersFirstPrompt = argPrompt || await readPrompt("Prompt> ");
 
   // Router using TagParser (feeds agent inboxes)
   const agentIds = agents.map((a) => a.id);
-  const router = makeRouter(
-    agentIds,
+  const router = makeRouter({
     // sendTo
-    (recipient, from, content) => {
-      ensureInbox(recipient).push(content);
-      console.log(`${C.gray(`${from} → @${recipient}`)}: ${content}`);
+    onAgent: (recipient, from, content) => {
+      ensureInbox(recipient.toLowerCase()).push(content);
+      Logger.debug(`${C.gray(`${from} → @${recipient}`)}: ${content}`);
     },
     // broadcast
-    (from, content) => {
-      for (const id of agentIds) if (id !== from) ensureInbox(id).push(content);
-      console.log(`${C.gray(`${from} → @group`)}: ${content}`);
+    onGroup: (from, content) => {
+      for (const id of agentIds) if (id !== from) ensureInbox(id.toLowerCase()).push(content);
+      Logger.debug(`${C.gray(`${from} → @group`)}: ${content}`);
     },
     // onFile
-    (from, filename, content) => {
-      console.log(C.bold(C.gray(`[file from ${from}] #${filename}`)));
-      console.log(content);
+    onFile: (from, filename, content) => {
+      Logger.warn(C.bold(C.gray(`[file from ${from}] #${filename}`)));
+      Logger.warn(content);
     }
-  );
+  });
 
   function routeAssistantText(from: string, text: string) {
-    const parts = new TagParser().parse(text);
+    const parts = TagParser.parse(text);
     if (parts.length === 0) {
       for (const id of agentIds) if (id !== from) ensureInbox(id).push(text);
       console.log(`${C.gray(`${from} → @group`)}: ${text}`);
       return;
     }
-    router.route(from, text);
+    router(from, text);
   }
 
   // Round-robin until idle for two consecutive rounds

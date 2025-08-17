@@ -1,3 +1,4 @@
+import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt";
 import type { ChatDriver, ChatMessage } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
 
@@ -27,6 +28,7 @@ export class LlmAgent {
 
     this.systemPrompt =
 `You are agent "${id}".
+    if (!(this as any).system || String((this as any).system).trim().length === 0) { (this as any).system = DEFAULT_SYSTEM_PROMPT; }
 You can call tools. When you need to run a shell command on a POSIX system, use the "sh" tool:
 - name: "sh"
 - arguments: { "cmd": "<full command string>" }  (example: {"cmd":"ls -la"})
