@@ -5,8 +5,13 @@ export interface LlmConfig {
   model: string;
 }
 
+export interface AppRuntime {
+  safe: boolean;
+}
+
 export interface AppConfig {
   llm: LlmConfig;
+  runtime: AppRuntime;
   cli: Record<string, string>;
 }
 
@@ -40,8 +45,17 @@ export function loadConfig(): AppConfig {
   const baseUrl  =  cli["base-url"] ?? readEnv("LLM_BASE_URL", "http://192.168.56.1:11434");
   const model    =  cli["model"]    ?? readEnv("LLM_MODEL",    "gpt-oss-20b");
 
+  const safeFlag = ((): boolean => {
+    if ("safe" in cli) return String(cli["safe"]).trim() !== "0";
+    const env = readEnv("SAFE_MODE", "");
+    if (!env) return false;
+    const v = env.toLowerCase();
+    return v === "1" || v === "true" || v === "yes";
+  })();
+
   return {
     llm: { driver, protocol, baseUrl, model },
+    runtime: { safe: safeFlag },
     cli
   };
 }

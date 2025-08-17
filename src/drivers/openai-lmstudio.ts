@@ -17,7 +17,15 @@ export function makeLmStudioOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
     async chat(messages: ChatMessage[], opts?: { model?: string; tools?: any[] }): Promise<ChatOutput> {
       const payload: any = {
         model: opts?.model || cfg.model,
-        messages: messages.map(m => ({ role: m.role, content: m.content })),
+        messages: messages.map(m => {
+          const out: any = { role: m.role, content: m.content };
+          if (m.role === "tool") {
+            // OpenAI requires tool_call_id for tool responses
+            if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
+            if (m.name) out.name = m.name;
+          }
+          return out;
+        }),
         temperature: 0.2
       };
 
