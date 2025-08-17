@@ -1,6 +1,6 @@
 
 
-# 🚨 org is intended to be run in a VM that talks to LMStudio/Ollama running on the host. If you run this on your host, be sure to run in safe mode. 🚨 $
+# 🚨 org is intended to be run in a VM that talks to LMStudio/Ollama running on the host. If you run this on your host, be sure to run in safe mode. 🚨
 
 ---
 
