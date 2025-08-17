@@ -153,7 +153,7 @@ async function main() {
   const args = parseArgs(argv);
 
   // Configure the execution gate (safe confirmation)
-  ExecutionGate.configure({ safe: cfg.runtime.safe });
+  //ExecutionGate.configure({ safe: cfg.runtime.safe });
 
   const agents = parseAgents(args["agents"], cfg.llm);
   const maxTools = Math.max(0, Number(args["max-tools"] || 20));
