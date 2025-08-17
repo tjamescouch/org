@@ -180,7 +180,7 @@ async function main() {
   const router = makeRouter({
     // yield to user
     onUser: async () => {
-      usersPrompt = argPrompt || await readPrompt("Prompt> ");
+      usersPrompt = await readPrompt("Prompt> ");
     },
     // sendTo
     onAgent: (recipient, from, content) => {

@@ -18,10 +18,6 @@
  *  { kind: "group", content: "what are we all thinking?", index: 3, tag: "group" }
  * ]
  *
- * Shorthand with slashes is supported, e.g.:
- *   ##src/main.ts     → tag "./src/main.ts"
- *   ##file:docs/readme.md → tag "./docs/readme.md"
- *
  * If no tags are present, the entire message is treated as @@group.
  */
 
