@@ -1,6 +1,6 @@
 import { TagParser } from "./utils/tag-parser";
 import { makeRouter } from "./routing/route-with-tags";
-import { Logger } from "./logger";
+import { C, Logger } from "./logger";
 import { extractCodeGuards } from "./utils/extract-code-blocks";
 import { FileWriter } from "./io/file-writer";
 import { ExecutionGate } from "./tools/execution-gate";
@@ -157,9 +157,9 @@ export class RoundRobinScheduler {
           if (wasRaw) process.stdin.setRawMode(false);
           await ExecutionGate.gate(cmd);
           const res = await FileWriter.write(name, cleaned);
-          Logger.info(`wrote ${res.path} (${res.bytes} bytes)`);
+          Logger.info(C.blue(`${cleaned}\nWritten to ${res.path} (${res.bytes} bytes)`));
         } catch (err: any) {
-          Logger.error(`file write failed: ${err?.message || err}`);
+          Logger.error(`File write failed: ${err?.message || err}`);
         } finally {
           restoreStdin(!!wasRaw);
         }
