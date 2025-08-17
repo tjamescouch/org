@@ -86,7 +86,7 @@ Keep responses brief unless writing files.`;
           const cmd = String(args?.cmd || "").trim();
           if (cmd.length === 0) {
             // Feed a minimal error back to the model as a tool result
-            Logger.warn(`${name} tool missing cmd`);
+            Logger.warn(`${name} tool missing cmd`, {cmd, args});
 
             const content = JSON.stringify({ ok: false, stdout: "", stderr: "missing cmd", exit_code: 1, cmd: "" });
             this.history.push({ role: "tool", content, tool_call_id: tc.id, name: "sh" });
