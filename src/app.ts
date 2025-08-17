@@ -179,7 +179,7 @@ async function main() {
   const agentIds = agents.map((a) => a.id);
   const router = makeRouter({
     // yield to user
-    onUser: () => {
+    onUser: async () => {
       usersPrompt = argPrompt || await readPrompt("Prompt> ");
     },
     // sendTo
