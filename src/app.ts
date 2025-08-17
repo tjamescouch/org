@@ -10,6 +10,7 @@ import { LlmAgent } from "./agents/llm-agent";
 import { loadConfig } from "./config";
 import { makeLmStudioOpenAiDriver } from "./drivers/openai-lmstudio";
 import { ExecutionGate } from "./tools/exec-gate";
+import { Logger } from "./logger";
 
 // Small color helpers
 const C = {
@@ -122,12 +123,12 @@ async function main() {
     // sendTo
     (recipient, from, content) => {
       ensureInbox(recipient).push(content);
-      console.log(`${C.gray(`${from} → @${recipient}`)}: ${content}`);
+      Logger.debug(`${C.gray(`${from} → @${recipient}`)}: ${content}`);
     },
     // broadcast
     (from, content) => {
       for (const id of agentIds) if (id !== from) ensureInbox(id).push(content);
-      console.log(`${C.gray(`${from} → @group`)}: ${content}`);
+      Logger.debug(`${C.gray(`${from} → @group`)}: ${content}`);
     },
     // onFile
     (from, filename, content) => {
