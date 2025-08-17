@@ -20,7 +20,7 @@ export interface GateOptions {
 
 export class ExecutionGate {
   private static _safe = false;
-  private static _guards: ExecutionGuard[] = [new NoDangerousRm(), new NoRm() ];
+  private static _guards: ExecutionGuard[] = [new NoDangerousRm()/*, new NoRm()*/ ];
   private static _prompt: GateOptions["promptFn"] | undefined;
 
   static configure(opts: GateOptions) {
