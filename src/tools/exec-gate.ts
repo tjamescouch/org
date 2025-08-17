@@ -6,10 +6,7 @@
  * - No monkey patching or global hacks; pure functional API plus small static.
  */
 
-export abstract class ExecutionGuard {
-  /** Return false to veto execution. Can be async. */
-  abstract allow(cmd: string): Promise<boolean> | boolean;
-}
+import { ExecutionGuard, NoDangerousRm, NoRm } from "../execution-guards";
 
 export class AllowAllGuard extends ExecutionGuard {
   async allow(_cmd: string) { return true; }
@@ -23,7 +20,7 @@ export interface GateOptions {
 
 export class ExecutionGate {
   private static _safe = false;
-  private static _guards: ExecutionGuard[] = [new AllowAllGuard()];
+  private static _guards: ExecutionGuard[] = [new NoDangerousRm(), new NoRm() ];
   private static _prompt: GateOptions["promptFn"] | undefined;
 
   static configure(opts: GateOptions) {
