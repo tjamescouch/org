@@ -53,3 +53,32 @@ export function routeWithTags(s: string): RouteOutcome {
     sawTags: { user: sawUser, group: sawGroup, file: sawFile, agent: sawAgent },
   };
 }
+
+export type RouterCallbacks = {
+  onGroup?: (from: string, content: string) => Promise<void> | void;
+  onAgent?: (from: string, to: string, content: string) => Promise<void> | void;
+  onUser?:  (from: string, content: string) => Promise<void> | void;
+  onFile?:  (from: string, name: string, content: string) => Promise<void> | void;
+};
+
+/**
+ * makeRouter(callbacks) → route(from, text) → RouteOutcome
+ * Provides a small adapter that app.ts can call directly.
+ */
+export function makeRouter(cb: RouterCallbacks) {
+  return async (from: string, text: string): Promise<RouteOutcome> => {
+    const outcome = routeWithTags(text || "");
+    for (const d of outcome.deliveries) {
+      if (d.kind === "group" && cb.onGroup) {
+        await cb.onGroup(from, d.content);
+      } else if (d.kind === "agent" && cb.onAgent) {
+        await cb.onAgent(from, d.to, d.content);
+      } else if (d.kind === "user" && cb.onUser) {
+        await cb.onUser(from, d.content);
+      } else if (d.kind === "file" && cb.onFile) {
+        await cb.onFile(from, d.name, d.content);
+      }
+    }
+    return outcome;
+  };
+}

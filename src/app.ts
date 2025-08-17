@@ -168,7 +168,6 @@ async function main() {
   const argPrompt = args["prompt"] || undefined;
 
   if (argPrompt) {
-    //FIXME - set execution gate to direct - only guards should apply, it should not ask the user
   }
 
   const usersFirstPrompt = argPrompt || await readPrompt("Prompt> ");
