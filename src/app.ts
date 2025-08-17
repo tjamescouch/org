@@ -109,7 +109,7 @@ function parseAgents(spec: string | undefined, llmDefaults: { driver: "lmstudio"
       }
       const driver = makeLmStudioOpenAiDriver({
         baseUrl: llmDefaults.baseUrl,
-        model: llmDefaults.model,
+        model: llmDefaults.model || 'openai/gpt-oss-120b',
       });
       out.push({ id, kind, model: new LlmAgent(id, driver, llmDefaults.model) as any });
       continue;
@@ -151,9 +151,6 @@ async function main() {
   const cfg = loadConfig();
   const argv = (globalThis as any).Bun ? Bun.argv.slice(2) : process.argv.slice(2);
   const args = parseArgs(argv);
-
-  // Configure the execution gate (safe confirmation)
-  //ExecutionGate.configure({ safe: cfg.runtime.safe });
 
   const agents = parseAgents(args["agents"], cfg.llm);
   const maxTools = Math.max(0, Number(args["max-tools"] || 20));

@@ -16,7 +16,7 @@ export function makeLmStudioOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
   return {
     async chat(messages: ChatMessage[], opts?: { model?: string; tools?: any[] }): Promise<ChatOutput> {
       const payload: any = {
-        model: opts?.model || cfg.model || 'openai/gpt-oss-120b',
+        model: opts?.model || cfg.model,
         messages: messages.map(m => {
           const out: any = { role: m.role, content: m.content };
           if (m.role === "tool") {
