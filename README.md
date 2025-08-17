@@ -365,7 +365,7 @@ Not yet — the runner returns aggregated stdout/stderr when the process exits. 
 
 ## License
 
-Add your license of choice (e.g., MIT) here.
+MIT
 
 ---
 
