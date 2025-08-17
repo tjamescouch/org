@@ -36,7 +36,7 @@ export class InputController {
   };
 
   async askInitial() {
-    const text = await this.question('Prompt> ');
+    const text = await this.question('user: ');
     this.scheduler.broadcastUserPrompt(text);
   }
 
