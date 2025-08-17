@@ -241,7 +241,7 @@ async function main() {
           await readPrompt("user: ");
           routeMessage("user", reply.message.trim());
 
-          yield;
+          break;
         }
 
 
