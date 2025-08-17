@@ -122,12 +122,12 @@ async function main() {
     agentIds,
     // sendTo
     (recipient, from, content) => {
-      ensureInbox(recipient).push(content);
+      ensureInbox(recipient.toLowerCase()).push(content);
       Logger.debug(`${C.gray(`${from} → @${recipient}`)}: ${content}`);
     },
     // broadcast
     (from, content) => {
-      for (const id of agentIds) if (id !== from) ensureInbox(id).push(content);
+      for (const id of agentIds) if (id !== from) ensureInbox(id.toLowerCase()).push(content);
       Logger.debug(`${C.gray(`${from} → @group`)}: ${content}`);
     },
     // onFile
