@@ -1,122 +1,117 @@
 /**
  * TagParser
- * ----------
- * Extracts routed content from model text.
+ * Split text into parts addressed to @agent, @group, @user or #file sections.
  *
- * Grammar (intentionally small and readable):
- * - Agent DM:   "@<agentName> <content until next tag or EOF>"
- * - Group msg:  "@group <content until next tag or EOF>"
- * - File blob:  "#<filename> <content until next tag or EOF>"
+ * Examples:
+ * parse(`@david here are the documents
+ * @robert did you get that thing I sent you? #blob.txt This is an awesome
+ * file I made for you.
+ * @group what are we all thinking?`)
  *
- * If the input contains no tags, it is treated as a single group message.
+ * => [
+ *  { kind: "agent", content: "here are the documents", index: 0, tag:"david" },
+ *  { kind: "agent", content: "did you get that thing I sent you?", index: 1, tag: "robert"},
+ *  { kind: "file",  content: "This is an awesome\nfile I made for you", index: 2, tag: "blob.txt"},
+ *  { kind: "group", content: "what are we all thinking?", index: 3, tag: "group" }
+ * ]
+ *
+ * If no tags are present, the entire message is treated as @group.
  */
 
-export type ParsedKind = "agent" | "group" | "file";
+export type TagPart =
+  | { kind: "agent"; tag: string; content: string; index: number }
+  | { kind: "group"; tag: "group"; content: string; index: number }
+  | { kind: "user";  tag: "user";  content: string; index: number }
+  | { kind: "file";  tag: string;  content: string; index: number };
 
-export interface ParsedTag {
-  kind: ParsedKind;
-  /** The routing tag: agent name, "group", or filename (for kind:"file"). */
-  tag: string;
-  /** Content belonging to this tag (trimmed; preserves internal newlines). */
-  content: string;
-  /** Stable order based on source appearance (0..n-1). */
-  index: number;
-}
-
-type Token =
-  | { kind: "agent" | "group"; tag: string; start: number; contentStart: number }
-  | { kind: "file"; tag: string; start: number; contentStart: number };
-
-function isWordBoundary(ch: string | undefined): boolean {
-  // treat start-of-string or whitespace as boundaries
-  return !ch || /\s/.test(ch);
-}
-
-function readWhile(s: string, start: number, test: (c: string) => boolean): number {
-  let i = start;
-  while (i < s.length && test(s[i])) i++;
-  return i;
-}
-
-function scanTokens(s: string): Token[] {
-  const out: Token[] = [];
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
-
-    // only consider tags that appear at a word boundary
-    if (ch !== "@" && ch !== "#") continue;
-    if (!isWordBoundary(s[i - 1])) continue;
-
-    if (ch === "@") {
-      // agent name: letters, digits, underscore, dash, dot
-      const nameStart = i + 1;
-      const nameEnd = readWhile(s, nameStart, (c) => /[A-Za-z0-9_.-]/.test(c));
-      if (nameEnd === nameStart) continue; // no name
-
-      const name = s.slice(nameStart, nameEnd);
-      const kind = name.toLowerCase() === "group" ? "group" : "agent";
-      out.push({
-        kind,
-        tag: kind === "group" ? "group" : name,
-        start: i,
-        contentStart: nameEnd + 1 /* skip following space if present */,
-      });
-      i = nameEnd - 1;
-      continue;
-    }
-
-    if (ch === "#") {
-      // filename: non-whitespace sequence
-      const fileStart = i + 1;
-      const fileEnd = readWhile(s, fileStart, (c) => !/\s/.test(c));
-      if (fileEnd === fileStart) continue; // no filename
-
-      const filename = s.slice(fileStart, fileEnd);
-      out.push({
-        kind: "file",
-        tag: filename,
-        start: i,
-        contentStart: fileEnd + 1 /* skip following space if present */,
-      });
-      i = fileEnd - 1;
-      continue;
-    }
-  }
-  out.sort((a, b) => a.start - b.start);
-  return out;
-}
+const isWordChar = (ch: string) => /[A-Za-z0-9._-]/.test(ch);
 
 export class TagParser {
-  /**
-   * Parse tags from a string into routed segments.
-   * If no tags are found, a single group message is returned.
-   */
-  parse(s: string): ParsedTag[] {
+  static parse(s: string): TagPart[] {
     const text = String(s ?? "");
-    const tokens = scanTokens(text);
+    if (!text.trim()) return [{ kind: "group", tag: "group", content: "", index: 0 }];
 
-    if (!tokens.length) {
-      const grp = text.trim();
-      if (!grp) return [];
-      return [{ kind: "group", tag: "group", content: grp, index: 0 }];
+    type TagTok = { kind: "agent" | "group" | "user" | "file"; tag: string; start: number; end: number };
+    const toks: TagTok[] = [];
+
+    const pushTok = (t: TagTok) => toks.push(t);
+
+    let i = 0;
+    while (i < text.length) {
+      const ch = text[i];
+
+      if (ch === "@") {
+        // Parse @tag
+        let j = i + 1;
+        let tag = "";
+        while (j < text.length && isWordChar(text[j])) { tag += text[j]; j++; }
+        if (tag.length > 0) {
+          const kind: TagTok["kind"] =
+            tag.toLowerCase() === "group" ? "group" :
+            tag.toLowerCase() === "user"  ? "user"  :
+            "agent";
+          pushTok({ kind, tag, start: i, end: j });
+          i = j;
+          continue;
+        }
+      } else if (ch === "#") {
+        // Parse #file or #file:NAME
+        let j = i + 1;
+        let token = "";
+        while (j < text.length && isWordChar(text[j])) { token += text[j]; j++; }
+        // Support both "#file:notes.txt" and "#notes.txt"
+        let tag = token;
+        if (token.toLowerCase() === "file" && text[j] === ":") {
+          j++;
+          let name = "";
+          while (j < text.length && !/\s/.test(text[j])) { name += text[j]; j++; }
+          tag = name || "file.txt";
+        }
+        if (tag.length > 0) {
+          pushTok({ kind: "file", tag, start: i, end: j });
+          i = j;
+          continue;
+        }
+      }
+
+      i++;
     }
 
-    const results: ParsedTag[] = [];
-    for (let i = 0; i < tokens.length; i++) {
-      const cur = tokens[i];
-      const next = tokens[i + 1];
-      const end = next ? next.start : text.length;
-      const raw = text.slice(cur.contentStart, end);
-      const content = raw.trim();
-      if (!content) continue;
-
-      results.push({
-        kind: cur.kind,
-        tag: cur.tag,
-        content,
-        index: results.length,
-      });
+    // If no tags, single group message
+    if (toks.length === 0) {
+      return [{ kind: "group", tag: "group", content: text.trim(), index: 0 }];
     }
-    return results;
+
+    // Build parts: content of a tag spans until the next tag start
+    const parts: TagPart[] = [];
+    for (let k = 0; k < toks.length; k++) {
+      const cur = toks[k];
+      const nextStart = (k + 1 < toks.length) ? toks[k + 1].start : text.length;
+      const raw = text.slice(cur.end, nextStart);
+      const content = raw.replace(/^\s+/, "").replace(/\s+$/, "");
+      const index = k;
+
+      if (cur.kind === "file") {
+        parts.push({ kind: "file", tag: cur.tag, content, index });
+      } else if (cur.kind === "group") {
+        parts.push({ kind: "group", tag: "group", content, index });
+      } else if (cur.kind === "user") {
+        parts.push({ kind: "user", tag: "user", content, index });
+      } else {
+        parts.push({ kind: "agent", tag: cur.tag, content, index });
+      }
+    }
+
+    // If the message begins with plain text before the first tag, treat it as @group preamble.
+    const firstStart = toks[0].start;
+    const preamble = text.slice(0, firstStart).trim();
+    if (preamble) {
+      parts.unshift({ kind: "group", tag: "group", content: preamble, index: -1 });
+      // Reindex to remain stable
+      let idx = 0;
+      for (const p of parts) (p as any).index = idx++;
+    }
+
+    return parts;
   }
 }

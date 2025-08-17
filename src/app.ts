@@ -1,3 +1,53 @@
+// [patch:run-modes] BEGIN
+import { ExecutionGate } from "./tools/exec-gate";
+import { sleep } from "./utils/sleep";
+
+// Mode detection:
+// - Shell mode (non-interactive) when --prompt is provided OR stdin is piped (and "-" not used).
+// - Interactive when "-" provided as a positional OR when "--safe" is used without --prompt.
+// Additionally: SAFE + non-interactive is invalid (enforced by ExecutionGate.configure).
+
+function hasFlag(name: string): boolean {
+  return process.argv.includes(name);
+}
+function getFlagValue(name: string): string | undefined {
+  const idx = process.argv.indexOf(name);
+  if (idx >= 0 && idx + 1 < process.argv.length) return process.argv[idx + 1];
+  return undefined;
+}
+function isStdinPiped(): boolean {
+  try { return !process.stdin.isTTY; } catch { return false; }
+}
+function wantsInteractiveByDash(): boolean {
+  return process.argv.includes("-");
+}
+function computeMode(): { interactive: boolean; prompt?: string; safe: boolean } {
+  const safe = hasFlag("--safe") || /^(1|true|yes)$/i.test(String(process.env.SAFE_MODE || ""));
+  const promptArg = getFlagValue("--prompt");
+  const dashInteractive = wantsInteractiveByDash();
+  const stdinPiped = isStdinPiped();
+
+  let interactive: boolean;
+  if (dashInteractive) {
+    interactive = true;
+  } else if (promptArg || (stdinPiped && !dashInteractive)) {
+    interactive = false; // shell mode
+  } else if (safe && !promptArg) {
+    interactive = true; // `org --safe` → interactive
+  } else {
+    interactive = true; // default interactive
+  }
+
+  const prompt = promptArg;
+  // Configure the ExecutionGate once (throws if invalid combo)
+  ExecutionGate.configure({ safe, interactive });
+
+  return { interactive, prompt, safe };
+}
+
+// Expose mode for the rest of app.ts if needed
+const __APP_MODE = computeMode();
+// [patch:run-modes] END
 /**
  * Minimal multi-agent round-robin demo with TagParser routing.
  * Now supports an LM Studio driver via OpenAI protocol and a safe "sh" tool.

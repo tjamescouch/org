@@ -1,54 +1,57 @@
 /**
- * ExecutionGate & ExecutionGuards
- * -------------------------------
- * - If `safe` is true, the gate prompts the user before executing a command.
- * - Guards are an extensible chain to allow/deny commands (policy hook).
- * - No monkey patching or global hacks; pure functional API plus small static.
+ * Single ExecutionGate for the whole app.
+ * - Only prompts when SAFE mode is enabled.
+ * - If SAFE + nonInteractive → throws at configure().
+ * - Extensible guard chain allows policy checks (denylist, cwd, etc.)
  */
 
-import { ExecutionGuard, NoDangerousRm, NoRm } from "../execution-guards";
-
-export class AllowAllGuard extends ExecutionGuard {
-  async allow(_cmd: string) { return true; }
+export abstract class ExecutionGuard {
+  /** Return false to block the command. Provide a message in `reason` (throw or return false). */
+  async allow(_cmd: string): Promise<boolean> { return true; }
 }
 
-export interface GateOptions {
-  safe: boolean;
-  guards?: ExecutionGuard[];
-  promptFn?: (text: string) => Promise<boolean>; // for testing / custom UIs
-}
+type GateConfig = { safe: boolean; interactive: boolean; guards?: ExecutionGuard[] };
 
 export class ExecutionGate {
   private static _safe = false;
-  private static _guards: ExecutionGuard[] = [new NoDangerousRm()/*, new NoRm()*/ ];
-  private static _prompt: GateOptions["promptFn"] | undefined;
+  private static _interactive = true;
+  private static _guards: ExecutionGuard[] = [];
 
-  static configure(opts: GateOptions) {
-    this._safe = !!opts.safe;
-    this._guards = (opts.guards && opts.guards.length > 0) ? opts.guards : [new AllowAllGuard()];
-    this._prompt = opts.promptFn;
-  }
-
-  static isSafe(): boolean { return this._safe; }
-
-  static async check(cmd: string): Promise<boolean> {
-    for (const g of this._guards) {
-      const ok = await g.allow(cmd);
-      if (!ok) return false;
+  static configure(cfg: GateConfig) {
+    this._safe = Boolean(cfg.safe);
+    this._interactive = Boolean(cfg.interactive);
+    this._guards = Array.isArray(cfg.guards) ? cfg.guards : [];
+    if (this._safe && !this._interactive) {
+      throw new Error("SAFE mode requires interactive mode (safe + non-interactive is not allowed).");
     }
-    if (!this._safe) return true;
-
-    // Ask user for confirmation when safe mode is enabled.
-    if (this._prompt) return await this._prompt(`Run: ${cmd}? [y/N] `);
-
-    const rl = await import("readline");
-    return await new Promise<boolean>((resolve) => {
-      const rli = rl.createInterface({ input: process.stdin, output: process.stdout });
-      rli.question(`Run: ${cmd}? [y/N] `, (ans) => {
-        rli.close();
-        const v = String(ans || "").trim().toLowerCase();
-        resolve(v === "y" || v === "yes");
-      });
-    });
   }
+
+  /** Ask user only when SAFE is true. Otherwise, pass-through. */
+  static async gate(hint: string): Promise<void> {
+    // Guard chain first (applies for both safe/non-safe)
+    for (const g of this._guards) {
+      const ok = await Promise.resolve(g.allow(hint));
+      if (!ok) throw new Error(`Execution blocked by guard for: ${hint}`);
+    }
+
+    if (!this._safe) return;
+
+    // SAFE requires interactive (validated in configure); prompt the user
+    const question = `Run: ${hint}? [y/N] `;
+    const answer = await promptLine(question);
+    const yes = typeof answer === "string" && /^y(es)?$/i.test(answer.trim());
+    if (!yes) throw new Error(`User denied: ${hint}`);
+  }
+}
+
+async function promptLine(q: string): Promise<string> {
+  // Node & Bun both support readline interface
+  const readline = await import("node:readline");
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  const res = await new Promise<string>((resolve) => rl.question(q, resolve));
+  rl.close();
+  return res;
 }
