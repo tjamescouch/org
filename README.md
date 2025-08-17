@@ -92,7 +92,7 @@ export SAFE_MODE=true
 | `--driver`    | `--driver lmstudio`                  | Driver key (same as `LLM_DRIVER`)     |
 | `--protocol`  | `--protocol openai`                  | Protocol key (same as `LLM_PROTOCOL`) |
 | `--base-url`  | `--base-url http://127.0.0.1:11434`  | Base URL override                     |
-| `--model`     | `--model openai/gpt-oss-120b`                | Model override                        |
+| `--model`     | `--model openai/gpt-oss-120b`        | Model override                        |
 | `--safe`      | `--safe`                             | Enable confirmation for `sh` tool     |
 
 ---
@@ -190,6 +190,7 @@ The **TagParser** splits this into parts, and the router **delivers** them:
 
 * `@<agent>` → goes to that agent’s inbox (others do not see it),
 * `@group` → broadcast to all other agents,
+* `@user` → yield to the user,
 * `#<path>` → routed to `onFile(from, filename, content)` (default prints; easy to persist).
 
 > In each agent’s internal view, **other agents appear as role:"user"**. This arrangement keeps the tool‑calling logic simple and mirrors how most OpenAI‑style agentic systems work.
