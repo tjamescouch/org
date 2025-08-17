@@ -88,7 +88,7 @@ Keep responses brief unless writing files.`;
             // Feed a minimal error back to the model as a tool result
             Logger.warn(`${name} tool missing cmd`, {cmd, args});
 
-            const content = JSON.stringify({ ok: false, stdout: "", stderr: "missing cmd", exit_code: 1, cmd: "" });
+            const content = JSON.stringify({ ok: false, stdout: "", stderr: "Execution failed: Command required.", exit_code: 1, cmd: "" });
             this.history.push({ role: "tool", content, tool_call_id: tc.id, name: "sh" });
             totalUsed++;
             continue;
