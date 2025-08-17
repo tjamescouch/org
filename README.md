@@ -1,8 +1,10 @@
-Here’s a complete **`README.md`** you can drop in the repo root.
+
+
+# 🚨 org is intended to be run in a VM that talks to LMStudio/Ollama running on the host. If you run this on your host, be sure to run in safe mode. 🚨 $
 
 ---
 
-# Org – Minimal Multi‑Agent Orchestrator (LM Studio + Tools)
+# org – Minimal Multi‑Agent Orchestrator (LM Studio + Tools)
 
 A small, readable, and **extensible** multi‑agent orchestrator that:
 
