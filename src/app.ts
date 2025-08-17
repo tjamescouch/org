@@ -1,6 +1,6 @@
 // [patch:run-modes] BEGIN
 import { ExecutionGate } from "./tools/execution-gate";
-import { sleep } from "./utils/sleep";
+import { FileWriter } from "./io/file-writer"; // add this import near the top
 
 // Mode detection:
 // - Shell mode (non-interactive) when --prompt is provided OR stdin is piped (and "-" not used).
@@ -60,20 +60,31 @@ import { LlmAgent } from "./agents/llm-agent";
 import { loadConfig } from "./config";
 import { makeLmStudioOpenAiDriver } from "./drivers/openai-lmstudio";
 import { Logger } from "./logger";
+import { extractCodeGuards } from "./utils/extract-code-blocks";
 
-// Small color helpers
-const C = {
-  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
-  gray: (s: string) => `\x1b[90m${s}\x1b[0m`,
+export const C = {
+  reset: "\x1b[0m",
   bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
+  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
+  green: (s: string) => `\x1b[32m${s}\x1b[0m`,   // <-- fixed here
+  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
+  blue: (s: string) => `\x1b[34m${s}\x1b[0m`,
+  magenta: (s: string) => `\x1b[35m${s}\x1b[0m`,
+  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
+  white: (s: string) => `\x1b[37m${s}\x1b[0m`,
+  gray: (s: string) => `\x1b[90m${s}\x1b[0m`,
 };
+
+
+//FIXME - put all this into a class
+let usersPrompt: string = "";
 
 type ModelKind = "mock" | "lmstudio";
 
 interface AgentRec {
   id: string;
   kind: ModelKind;
-  model: { respond(prompt: string, maxTools: number, peers: string[]): Promise<{message: string; toolsUsed: number}> };
+  model: { respond(prompt: string, maxTools: number, peers: string[]): Promise<{ message: string; toolsUsed: number }> };
 }
 
 function parseArgs(argv: string[]) {
@@ -162,28 +173,49 @@ async function main() {
 
   const argPrompt = args["prompt"] || undefined;
 
-  if (argPrompt) {
-  }
-
   const usersFirstPrompt = argPrompt || await readPrompt("Prompt> ");
 
   // Router using TagParser (feeds agent inboxes)
   const agentIds = agents.map((a) => a.id);
   const router = makeRouter({
+    // yield to user
+    onUser: async () => {
+      usersPrompt = argPrompt || await readPrompt("Prompt> ");
+    },
     // sendTo
     onAgent: (recipient, from, content) => {
       ensureInbox(recipient.toLowerCase()).push(content);
-      Logger.debug(`${C.gray(`${from} → @${recipient}`)}: ${content}`);
+      Logger.debug(`${C.gray(`${from} → @@${recipient}`)}: ${content}`);
     },
     // broadcast
     onGroup: (from, content) => {
       for (const id of agentIds) if (id !== from) ensureInbox(id.toLowerCase()).push(content);
-      Logger.debug(`${C.gray(`${from} → @group`)}: ${content}`);
+      Logger.debug(`${C.gray(`${from} → @@group`)}: ${content}`);
     },
     // onFile
-    onFile: (from, filename, content) => {
-      Logger.warn(C.bold(C.gray(`[file from ${from}] #${filename}`)));
+    onFile: async (from, filename, content) => {
+      const cmd = `${content}\n***** Write to file? [y/N] ${filename}\n`;
+      const sanitizedContent = extractCodeGuards(content).cleaned;
+
+      try {
+        await ExecutionGate.gate(cmd);
+      } catch (e) {
+        const msg = `Execution denied by guard or user: ${cmd}`;
+        console.log(red(`sh: ${cmd} -> ${msg}`));
+        throw e;
+      }
+
+      Logger.warn(C.bold(C.gray(`[file from ${from}] ##${filename}`)));
       Logger.warn(content);
+
+      // actually write the file
+      try {
+        const result = await FileWriter.write(filename, sanitizedContent);
+        Logger.info(C.green(`wrote ${result.path} (${result.bytes} bytes)`));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        Logger.error(C.red(`failed to write ${filename}: ${msg}`));
+      }
     }
   });
 
@@ -191,7 +223,7 @@ async function main() {
     const parts = TagParser.parse(text);
     if (parts.length === 0) {
       for (const id of agentIds) if (id !== from) ensureInbox(id).push(text);
-      console.log(`${C.gray(`${from} → @group`)}: ${text}`);
+      console.log(`${C.gray(`${from} → @@group`)}: ${text}`);
       return;
     }
     router(from, text);
@@ -205,7 +237,8 @@ async function main() {
 
     for (const a of agents) {
       let remaining = maxTools;
-      const basePrompt = nextPromptFor(a.id, usersFirstPrompt);
+      const basePrompt = usersPrompt || nextPromptFor(a.id, usersFirstPrompt);
+      usersPrompt = "";
 
       // Keep asking model while it wants to spend tools
       for (let hop = 0; hop < Math.max(1, maxTools + 1); hop++) {

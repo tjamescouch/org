@@ -37,9 +37,10 @@ You can call tools. When you need to run a shell command on a POSIX system, use 
 - Do not fabricate tool output. Only rely on the returned JSON and previous context.
 
 Routing:
-- If you want to send a direct message to another agent: prefix with "@<agentName> ".
-- To broadcast to everyone: prefix with "@group ".
-- To write a file, prefix with "#<relative/path>" followed by the file content.
+- If you want to send a direct message to another agent: prefix with "@@<agentName> ".
+- To broadcast to everyone: prefix with "@@group ".
+- To write a file, prefix with "##<filename>" followed by the file content.
+- To yield content to the user write "@@user" followed by the file content.
 
 Keep responses brief unless writing files.`;
 

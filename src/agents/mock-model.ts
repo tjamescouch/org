@@ -22,7 +22,7 @@ export class MockModel {
       this.turn++;
       const iso = new Date().toISOString();
       // Show it's grouped (and to keep routers exercised)
-      return { message: `@group ${this.name} ran a tool: ${iso}`, toolsUsed: 1 };
+      return { message: `@@group ${this.name} ran a tool: ${iso}`, toolsUsed: 1 };
     }
 
     // After tools are done, emit a few variations that include tags.
@@ -30,9 +30,9 @@ export class MockModel {
 
     const peer = peers.find((p) => p !== this.name) || "group";
     const patterns = [
-      `@${peer} did you see the update?`,
-      `#notes-${this.name}.txt Here are some notes for the team.\nLine 2.`,
-      `@group All good on my side.`,
+      `@@${peer} did you see the update?`,
+      `##notes-${this.name}.txt Here are some notes for the team.\nLine 2.`,
+      `@@group All good on my side.`,
     ];
     const msg = patterns[this.turn % patterns.length];
 
