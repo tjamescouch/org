@@ -111,7 +111,8 @@ Keep responses brief unless writing files.`;
       if (totalUsed >= maxTools) break;
     }
 
-    Logger.info(C.green(`${this.id} wrote:\n${finalText}\nwith [${totalUsed}] tools used.)`));
+    Logger.info(C.green(`${finalText}`));
+    Logger.info(C.red(`[${this.id}] wrote. [${totalUsed}] tools used.`));
 
     return { message: finalText, toolsUsed: totalUsed };
   }
