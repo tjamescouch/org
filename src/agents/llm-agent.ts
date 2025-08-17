@@ -112,7 +112,7 @@ Keep responses brief unless writing files.`;
     }
 
     Logger.info(C.green(`${finalText}`));
-    Logger.info(C.red(`[${this.id}] wrote. [${totalUsed}] tools used.`));
+    Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
 
     return { message: finalText, toolsUsed: totalUsed };
   }
