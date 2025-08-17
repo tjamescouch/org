@@ -1,5 +1,5 @@
 // [patch:run-modes] BEGIN
-import { ExecutionGate } from "./tools/exec-gate";
+import { ExecutionGate } from "./tools/execution-gate";
 import { sleep } from "./utils/sleep";
 
 // Mode detection:
@@ -59,7 +59,7 @@ import { MockModel } from "./agents/mock-model";
 import { LlmAgent } from "./agents/llm-agent";
 import { loadConfig } from "./config";
 import { makeLmStudioOpenAiDriver } from "./drivers/openai-lmstudio";
-import { ExecutionGate } from "./tools/exec-gate";
+import { ExecutionGate } from "./tools/execution-gate";
 import { Logger } from "./logger";
 import { ExecutionGuard } from "./execution-guards";
 

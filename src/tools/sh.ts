@@ -1,4 +1,4 @@
-import { ExecutionGate } from "./exec-gate";
+import { ExecutionGate } from "./execution-gate";
 
 /** ANSI helpers */
 const red = (s: string) => `\x1b[31m${s}\x1b[0m`;

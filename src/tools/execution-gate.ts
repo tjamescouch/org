@@ -5,10 +5,8 @@
  * - Extensible guard chain allows policy checks (denylist, cwd, etc.)
  */
 
-export abstract class ExecutionGuard {
-  /** Return false to block the command. Provide a message in `reason` (throw or return false). */
-  async allow(_cmd: string): Promise<boolean> { return true; }
-}
+import { ExecutionGuard } from "../execution-guards";
+
 
 type GateConfig = { safe: boolean; interactive: boolean; guards?: ExecutionGuard[] };
 
