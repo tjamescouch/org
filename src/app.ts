@@ -114,7 +114,7 @@ async function main() {
     process.exit(1);
   }
 
-  const usersFirstPrompt = await readPrompt("Prompt> ");
+  const usersFirstPrompt = args["prompt"] || await readPrompt("Prompt> ");
 
   // Router using TagParser (feeds agent inboxes)
   const agentIds = agents.map((a) => a.id);
@@ -132,8 +132,8 @@ async function main() {
     },
     // onFile
     (from, filename, content) => {
-      console.log(C.bold(C.gray(`[file from ${from}] #${filename}`)));
-      console.log(content);
+      Logger.warn(C.bold(C.gray(`[file from ${from}] #${filename}`)));
+      Logger.warn(content);
     }
   );
 
