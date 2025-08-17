@@ -59,9 +59,7 @@ import { MockModel } from "./agents/mock-model";
 import { LlmAgent } from "./agents/llm-agent";
 import { loadConfig } from "./config";
 import { makeLmStudioOpenAiDriver } from "./drivers/openai-lmstudio";
-import { ExecutionGate } from "./tools/execution-gate";
 import { Logger } from "./logger";
-import { ExecutionGuard } from "./execution-guards";
 
 // Small color helpers
 const C = {
@@ -174,33 +172,32 @@ async function main() {
 
   // Router using TagParser (feeds agent inboxes)
   const agentIds = agents.map((a) => a.id);
-  const router = makeRouter(
-    agentIds,
+  const router = makeRouter({
     // sendTo
-    (recipient, from, content) => {
+    onAgent: (recipient, from, content) => {
       ensureInbox(recipient.toLowerCase()).push(content);
       Logger.debug(`${C.gray(`${from} → @${recipient}`)}: ${content}`);
     },
     // broadcast
-    (from, content) => {
+    onGroup: (from, content) => {
       for (const id of agentIds) if (id !== from) ensureInbox(id.toLowerCase()).push(content);
       Logger.debug(`${C.gray(`${from} → @group`)}: ${content}`);
     },
     // onFile
-    (from, filename, content) => {
+    onFile: (from, filename, content) => {
       Logger.warn(C.bold(C.gray(`[file from ${from}] #${filename}`)));
       Logger.warn(content);
     }
-  );
+  });
 
   function routeAssistantText(from: string, text: string) {
-    const parts = new TagParser().parse(text);
+    const parts = TagParser.parse(text);
     if (parts.length === 0) {
       for (const id of agentIds) if (id !== from) ensureInbox(id).push(text);
       console.log(`${C.gray(`${from} → @group`)}: ${text}`);
       return;
     }
-    router.route(from, text);
+    router(from, text);
   }
 
   // Round-robin until idle for two consecutive rounds
