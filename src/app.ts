@@ -173,16 +173,16 @@ async function main() {
     // sendTo
     onAgent: (recipient, from, content) => {
       ensureInbox(recipient.toLowerCase()).push(content);
-      Logger.debug(`${C.gray(`${from} → @${recipient}`)}: ${content}`);
+      Logger.debug(`${C.gray(`${from} → @@${recipient}`)}: ${content}`);
     },
     // broadcast
     onGroup: (from, content) => {
       for (const id of agentIds) if (id !== from) ensureInbox(id.toLowerCase()).push(content);
-      Logger.debug(`${C.gray(`${from} → @group`)}: ${content}`);
+      Logger.debug(`${C.gray(`${from} → @@group`)}: ${content}`);
     },
     // onFile
     onFile: (from, filename, content) => {
-      Logger.warn(C.bold(C.gray(`[file from ${from}] #${filename}`)));
+      Logger.warn(C.bold(C.gray(`[file from ${from}] ##${filename}`)));
       Logger.warn(content);
     }
   });
@@ -191,7 +191,7 @@ async function main() {
     const parts = TagParser.parse(text);
     if (parts.length === 0) {
       for (const id of agentIds) if (id !== from) ensureInbox(id).push(text);
-      console.log(`${C.gray(`${from} → @group`)}: ${text}`);
+      console.log(`${C.gray(`${from} → @@group`)}: ${text}`);
       return;
     }
     router(from, text);
