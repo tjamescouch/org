@@ -4,7 +4,6 @@ import { Logger } from "./logger";
 import { extractCodeGuards } from "./utils/extract-code-blocks";
 import { FileWriter } from "./io/file-writer";
 import { ExecutionGate } from "./tools/execution-gate";
-import { restoreStdin } from "./utils/restore-stdin";
 
 const DEBUG = (() => {
   const v = (process.env.DEBUG ?? "").toString().toLowerCase();
@@ -12,10 +11,21 @@ const DEBUG = (() => {
 })();
 function dbg(...a: any[]) { if (DEBUG) console.error("[DBG][scheduler]", ...a); }
 
+function restoreStdin(raw: boolean) {
+  try {
+    if (raw && process.stdin.isTTY) {
+      process.stdin.setRawMode(true);
+    }
+    process.stdin.resume();
+    dbg("stdin restored (raw:", raw, ")");
+  } catch (e) {
+    console.error("[DBG] failed to restore stdin:", e);
+  }
+}
+
 /** Minimal interface all participant models must implement. */
 export interface Responder {
   id: string;
-  /** peers are the other agent ids */
   respond(usersPrompt: string, maxTools: number, peers: string[]): Promise<{ message: string; toolsUsed: number }>;
 }
 
@@ -29,10 +39,7 @@ export class RoundRobinScheduler {
   private inbox = new Map<string, string[]>();
   private lastUserDMTarget: string | null = null;
 
-  // ask the human for input when an agent says @@user
   private userPromptFn: (fromAgent: string, content: string) => Promise<string | null>;
-
-  // optional keep-alive so the process won’t exit if bun/node empties the loop momentarily
   private keepAlive: NodeJS.Timeout | null = null;
 
   constructor(opts: {
@@ -46,7 +53,6 @@ export class RoundRobinScheduler {
     for (const a of this.agents) this.ensureInbox(a.id);
   }
 
-  /** --- public control API --- */
   start = async (): Promise<void> => {
     this.running = true;
     // Keep-alive to avoid “exit 0” on empty loops in some runtimes
@@ -85,139 +91,89 @@ export class RoundRobinScheduler {
           didWork = true;
 
           if (askedUser) {
-            // wait for the user's reply then route it
             const userText = (await this.userPromptFn(a.id, message)) ?? "";
-            const trimmed = userText.trim();
-            dbg(`@@user reply received:`, JSON.stringify(trimmed));
-            if (trimmed) this.handleUserInterjection(trimmed);
-            break; // yield to next agent after talking to user
+            if (userText.trim()) this.handleUserInterjection(userText.trim());
+            break;
           }
 
           if (toolsUsed > 0) {
             remaining = Math.max(0, remaining - toolsUsed);
-            dbg(`${a.id} tool budget now ${remaining}`);
-            if (remaining <= 0) break; // tool budget exhausted
-            // loop again to let the model see tool output and respond
+            if (remaining <= 0) break;
           } else {
-            break; // no tools => yield
+            break;
           }
         }
       }
 
-      const pending = this.totalPending();
-      if (didWork) {
-        idleTicks = 0;
-      } else {
-        idleTicks++;
-        dbg(`idle tick ${idleTicks} (pending=${pending})`);
-      }
+      if (!didWork) { idleTicks++; dbg(`idle tick ${idleTicks}`); }
+      else idleTicks = 0;
 
-      // Idle wait without burning CPU; remain interactive for hotkey 'i'
       await this.sleep(didWork ? 5 : 25);
     }
 
-    if (this.keepAlive) {
-      clearInterval(this.keepAlive);
-      this.keepAlive = null;
-    }
+    if (this.keepAlive) { clearInterval(this.keepAlive); this.keepAlive = null; }
   };
 
   stop() { this.running = false; }
   pause() { this.paused = true; dbg("paused"); }
   resume() { this.paused = false; dbg("resumed"); }
 
-  /** User pressed 'i' or otherwise typed — route to lastDM if available, else broadcast. */
   handleUserInterjection(text: string) {
     const target = this.lastUserDMTarget;
     if (target) {
       this.ensureInbox(target).push(text);
       Logger.debug(`[user → @@${target}] ${text}`);
-      dbg(`user DM to ${target}:`, JSON.stringify(text));
     } else {
       for (const a of this.agents) this.ensureInbox(a.id).push(text);
       Logger.debug(`[user → @@group] ${text}`);
-      dbg(`user broadcast:`, JSON.stringify(text));
     }
   }
-
-  /** --- internals --- */
 
   private ensureInbox(id: string) {
     if (!this.inbox.has(id)) this.inbox.set(id, []);
     return this.inbox.get(id)!;
   }
 
-  private totalPending(): number {
-    let n = 0;
-    for (const q of this.inbox.values()) n += q.length;
-    return n;
-  }
-
   private nextPromptFor(id: string): string | null {
     const q = this.ensureInbox(id);
     if (q.length === 0) return null;
-    // drain all pending lines for this turn
-    const text = q.splice(0, q.length).join("\n");
-    return text;
+    return q.splice(0, q.length).join("\n");
   }
 
-  /** Route a text emitted by an agent. Returns true if it addressed @@user. */
   private async route(from: string, text: string): Promise<boolean> {
     const parts = TagParser.parse(text || "");
-    const saw = { user: false, agent: false, group: false, file: false };
-    for (const t of parts) {
-      if (t.kind === "user") saw.user = true;
-      if (t.kind === "agent") saw.agent = true;
-      if (t.kind === "group") saw.group = true;
-      if (t.kind === "file") saw.file = true;
-    }
-    dbg(`route parts from ${from}:`, JSON.stringify(parts.map(p => p.kind)));
+    let sawUser = false;
+    for (const t of parts) if (t.kind === "user") sawUser = true;
 
     const router = makeRouter({
-      onAgent: async (_from, to, content) => {
-        this.ensureInbox(to).push(content);
-        Logger.debug(`${from} → @@${to}: ${content}`);
-        dbg(`${from} -> @@${to}:`, JSON.stringify(content));
-      },
-      onGroup: async (_from, content) => {
-        for (const a of this.agents) if (a.id !== from) this.ensureInbox(a.id).push(content);
-        Logger.debug(`${from} → @@group: ${content}`);
-        dbg(`${from} -> @@group:`, JSON.stringify(content));
-      },
-      onUser: async (_from, content) => {
-        this.lastUserDMTarget = from;
-        Logger.debug(`${from} → @@user: ${content}`);
-        dbg(`${from} -> @@user:`, JSON.stringify(content));
-      },
-      onFile: async (_from, name, content) => {
-        const { cleaned } = extractCodeGuards(content);
-        const cmd = `${content}\n***** Write to file? [y/N] ${name}\n`;
-        // Temporarily ensure cooked mode so input isn't stolen by hotkey handler
+      onAgent: async (_f, to, c) => { this.ensureInbox(to).push(c); },
+      onGroup: async (_f, c) => { for (const a of this.agents) if (a.id !== from) this.ensureInbox(a.id).push(c); },
+      onUser: async (_f, c) => { this.lastUserDMTarget = from; },
+      onFile: async (_f, name, c) => {
+        const { cleaned } = extractCodeGuards(c);
+        const cmd = `${c}\n***** Write to file? [y/N] ${name}\n`;
         const wasRaw = (process.stdin as any)?.isRaw;
         try {
-          if (wasRaw) { try { process.stdin.setRawMode(false); } catch (e) { console.error(e) } }
+          if (wasRaw) process.stdin.setRawMode(false);
           await ExecutionGate.gate(cmd);
           const res = await FileWriter.write(name, cleaned);
           Logger.info(`wrote ${res.path} (${res.bytes} bytes)`);
-          dbg(`file write OK: ${name}, bytes=${res.bytes}`);
         } catch (err: any) {
-          Logger.error(`file write denied or failed (${name}): ${err?.message || String(err)}`);
-          dbg(`file write ERR: ${name}`, err?.message || err);
+          Logger.error(`file write failed: ${err?.message || err}`);
         } finally {
-          if (wasRaw) { try { process.stdin.setRawMode(true); } catch (e) { console.error(e) } }
+          restoreStdin(!!wasRaw);
         }
       }
     });
 
     await router(from, text);
 
-    // If there were no tags, treat it as group text to others
-    if (!saw.user && !saw.agent && !saw.group && !saw.file) {
+    if (!sawUser && parts.length === 0) {
       for (const a of this.agents) if (a.id !== from) this.ensureInbox(a.id).push(text);
       Logger.debug(`${from} → @@group (implicit): ${text}`);
       dbg(`${from} -> @@group (implicit):`, JSON.stringify(text));
     }
-    return saw.user;
+    return sawUser;
   }
 
   private sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
