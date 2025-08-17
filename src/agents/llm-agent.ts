@@ -1,7 +1,7 @@
 import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt";
 import type { ChatDriver, ChatMessage } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
-import { Logger } from "../logger";
+import { C, Logger } from "../logger";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -63,6 +63,7 @@ Keep responses brief unless writing files.`;
 
     // Permit at least one completion; follow tool calls up to maxTools
     for (let hop = 0; hop < Math.max(1, maxTools + 1); hop++) {
+      Logger.info(C.green(`${this.id} ...`));
       const out = await this.driver.chat(this.history, { model: this.model, tools: this.tools });
 
       // If the assistant returned plain text, capture it (we still may see tool calls)
@@ -109,6 +110,8 @@ Keep responses brief unless writing files.`;
       // Loop back so the assistant can observe tool outputs and respond.
       if (totalUsed >= maxTools) break;
     }
+
+    Logger.info(C.green(`${this.id} wrote:\n${finalText}\nwith [${totalUsed}] tools used.)`));
 
     return { message: finalText, toolsUsed: totalUsed };
   }
