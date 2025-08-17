@@ -7,7 +7,7 @@ import { makeLmStudioOpenAiDriver } from "./drivers/openai-lmstudio";
 import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
 
-/** CLI parsing */
+/** ---------- CLI parsing ---------- */
 function parseArgs(argv: string[]) {
   const out: Record<string, string | boolean> = {};
   let key: string | null = null;
@@ -24,10 +24,12 @@ function parseArgs(argv: string[]) {
   return out;
 }
 
+/** ---------- Mode / safety ---------- */
 function computeMode(): { interactive: boolean; safe: boolean } {
   const interactive = true; // scheduler + hotkey assumes interactive
   const cfg = loadConfig();
-  const safe = !!cfg.runtime.safe;
+  // tolerate missing cfg.runtime.safe; default false
+  const safe = !!(cfg as any)?.runtime?.safe;
   ExecutionGate.configure({ safe, interactive });
   return { interactive, safe };
 }
@@ -35,12 +37,15 @@ function computeMode(): { interactive: boolean; safe: boolean } {
 type ModelKind = "mock" | "lmstudio";
 type AgentSpec = { id: string; kind: ModelKind; model: any };
 
-function parseAgents(spec: string | undefined, llmDefaults: { model: string; baseUrl: string; protocol: "openai" }): AgentSpec[] {
+function parseAgents(
+  spec: string | undefined,
+  llmDefaults: { model: string; baseUrl: string; protocol: "openai"; apiKey?: string }
+): AgentSpec[] {
   const list = String(spec || "").split(",").map(x => x.trim()).filter(Boolean);
   if (list.length === 0) {
     return [
       { id: "alice", kind: "mock", model: new MockModel("alice") },
-      { id: "bob",   kind: "mock", model: new MockModel("bob")   }
+      { id: "bob",   kind: "mock", model: new MockModel("bob") }
     ];
   }
   const out: AgentSpec[] = [];
@@ -51,7 +56,11 @@ function parseAgents(spec: string | undefined, llmDefaults: { model: string; bas
       out.push({ id, kind, model: new MockModel(id) });
     } else if (kind === "lmstudio") {
       if (llmDefaults.protocol !== "openai") throw new Error(`Unsupported protocol: ${llmDefaults.protocol}`);
-      const driver = makeLmStudioOpenAiDriver({ baseUrl: llmDefaults.baseUrl, model: llmDefaults.model });
+      const driver = makeLmStudioOpenAiDriver({
+        baseUrl: llmDefaults.baseUrl,
+        model: llmDefaults.model,
+        apiKey: (llmDefaults as any).apiKey
+      });
       out.push({ id, kind, model: new LlmAgent(id, driver, llmDefaults.model) as any });
     } else {
       throw new Error(`Unknown model kind: ${kindRaw}`);
@@ -62,9 +71,16 @@ function parseAgents(spec: string | undefined, llmDefaults: { model: string; bas
 
 async function main() {
   const cfg = loadConfig();
-  const args = parseArgs(((globalThis as any).Bun ? Bun.argv.slice(2) : process.argv.slice(2)));
-  const maxTools = Math.max(0, Number(args["max-tools"] || 20));
+  const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : process.argv.slice(2));
+  const args = parseArgs(argv);
 
+  // Enable ad‑hoc debug without touching Logger implementation
+  if (args["debug"] || process.env.DEBUG) {
+    process.env.DEBUG = String(args["debug"] ?? process.env.DEBUG ?? "1");
+    console.error("[DBG] debug logging enabled");
+  }
+
+  const maxTools = Math.max(0, Number(args["max-tools"] || 20));
   computeMode();
 
   const agentSpecs = parseAgents(String(args["agents"] || ""), cfg.llm);
@@ -73,21 +89,29 @@ async function main() {
     process.exit(1);
   }
 
-  const agents = agentSpecs.map(a => ({ id: a.id, respond: (prompt: string, budget: number, peers: string[]) => a.model.respond(prompt, budget, peers) }));
+  const agents = agentSpecs.map(a => ({
+    id: a.id,
+    respond: (prompt: string, budget: number, peers: string[]) => a.model.respond(prompt, budget, peers)
+  }));
 
   // Wiring: scheduler + input
   let input!: InputController;
   const scheduler = new RoundRobinScheduler({
     agents,
     maxTools,
-    onAskUser: async (_from, _content) => {
-      // scheduler wants the user's reply (e.g., after @@user). Delegate to input controller.
-      return await input.askLine("user: ");
+    onAskUser: async (from, content) => {
+      if (process.env.DEBUG) console.error(`[DBG] @@user requested by ${from}:`, JSON.stringify(content));
+      return await input.provideToScheduler(from, content);
     }
   });
 
   input = new InputController(scheduler);
   input.init();
+
+  if (process.env.DEBUG) {
+    console.error("[DBG] Agents:", agents.map(a => a.id).join(", "));
+    console.error("[DBG] maxTools:", maxTools);
+  }
 
   // Kick off with an initial user prompt
   await input.askInitialAndSend();
