@@ -16,11 +16,11 @@ TOOLS (function calling)
     {"tool_calls":[{"type":"function","id":"call_1","function":{"name":"sh","arguments":"{\\"cmd\\":\\"ls -la\\"}"}}]}
 
 TAGS (for routing and files)
-- "@group <text>" → speak to everyone (broadcast). The default if you do not include any tag.
-- "@user <text>"  → yield the floor to the human user (stop your turn and wait for input).
-- "@<agent> <text>" → direct message a specific agent (e.g., "@alice do X").
-- "#<path> <content lines...>" → write <content> to file <path>.
-  e.g., "#notes.txt ...".
+- "@@group <text>" → speak to everyone (broadcast). The default if you do not include any tag.
+- "@@user <text>"  → yield the floor to the human user (stop your turn and wait for input).
+- "@@<agent> <text>" → direct message a specific agent (e.g., "@alice do X").
+- "##<filename> <content lines...>" → write <content> to file <path>.
+  e.g., "##filename ...".
   When using file tags, put ONLY the file content after the tag until the next tag or end of message.
 
 ROUND ROBIN / YIELD RULES
