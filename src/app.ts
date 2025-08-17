@@ -53,7 +53,7 @@ const __APP_MODE = computeMode();
  * Now supports an LM Studio driver via OpenAI protocol and a safe "sh" tool.
  */
 
-import { makeRouter } from "./app_support/route-with-tags";
+import { makeRouter } from "./routing/route-with-tags";
 import { TagParser } from "./utils/tag-parser";
 import { MockModel } from "./agents/mock-model";
 import { LlmAgent } from "./agents/llm-agent";
@@ -76,8 +76,6 @@ export const C = {
 };
 
 
-//FIXME - put all this into a class
-let usersPrompt: string = "";
 
 type ModelKind = "mock" | "lmstudio";
 
@@ -132,7 +130,7 @@ function parseAgents(spec: string | undefined, llmDefaults: { driver: "lmstudio"
 }
 
 // Simple line reader for a one-time prompt:
-async function readPrompt(question = "Prompt> "): Promise<string> {
+async function readPrompt(question = "user: "): Promise<string> {
   const rl = await import("readline");
   return new Promise<string>((resolve) => {
     const rli = rl.createInterface({ input: process.stdin, output: process.stdout });
@@ -173,15 +171,11 @@ async function main() {
 
   const argPrompt = args["prompt"] || undefined;
 
-  const usersFirstPrompt = argPrompt || await readPrompt("Prompt> ");
+  const usersFirstPrompt = argPrompt || await readPrompt("user: ");
 
   // Router using TagParser (feeds agent inboxes)
   const agentIds = agents.map((a) => a.id);
   const router = makeRouter({
-    // yield to user
-    onUser: async () => {
-      usersPrompt = await readPrompt("Prompt> ");
-    },
     // sendTo
     onAgent: (recipient, from, content) => {
       ensureInbox(recipient.toLowerCase()).push(content);
@@ -201,7 +195,7 @@ async function main() {
         await ExecutionGate.gate(cmd);
       } catch (e) {
         const msg = `Execution denied by guard or user: ${cmd}`;
-        console.log(red(`sh: ${cmd} -> ${msg}`));
+        console.log(C.red(`sh: ${cmd} -> ${msg}`));
         throw e;
       }
 
@@ -219,7 +213,7 @@ async function main() {
     }
   });
 
-  function routeAssistantText(from: string, text: string) {
+  function routeMessage(from: string, text: string) {
     const parts = TagParser.parse(text);
     if (parts.length === 0) {
       for (const id of agentIds) if (id !== from) ensureInbox(id).push(text);
@@ -236,21 +230,27 @@ async function main() {
     let anyWork = false;
 
     for (const a of agents) {
-      let remaining = maxTools;
-      const basePrompt = usersPrompt || nextPromptFor(a.id, usersFirstPrompt);
-      usersPrompt = "";
+      const basePrompt = nextPromptFor(a.id, usersFirstPrompt);
 
       // Keep asking model while it wants to spend tools
       for (let hop = 0; hop < Math.max(1, maxTools + 1); hop++) {
         const peers = agents.map((x) => x.id);
         const reply = await a.model.respond(basePrompt, remaining, peers);
 
+        if (TagParser.parse(reply.message).some(t => t.kind === "user")) {
+          await readPrompt("user: ");
+          routeMessage("user", reply.message.trim());
+
+          yield;
+        }
+
+
         if (reply.toolsUsed > 0) {
           console.log(`${C.cyan(`${a.id}:`)} $ tool → ${new Date().toISOString()}`);
           remaining = Math.max(0, remaining - reply.toolsUsed);
           anyWork = true;
           if (reply.message && reply.message.trim()) {
-            routeAssistantText(a.id, reply.message.trim());
+            routeMessage(a.id, reply.message.trim());
           }
           if (remaining <= 0) {
             console.log(`${C.cyan(`${a.id}:`)} (tool budget exhausted)`);
@@ -259,7 +259,7 @@ async function main() {
         } else {
           const msg = reply.message?.trim() || "Okay. (no tools needed)";
           console.log(`${C.cyan(`${a.id}:`)} ${msg}`);
-          routeAssistantText(a.id, msg);
+          routeMessage(a.id, msg);
           break; // yield when no tools requested
         }
       }
