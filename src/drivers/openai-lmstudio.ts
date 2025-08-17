@@ -2,7 +2,7 @@ import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types"
 
 export interface OpenAiDriverConfig {
   baseUrl: string; // e.g. http://192.168.56.1:11434
-  model: string;   // e.g. gpt-oss-120b
+  model: string;   // e.g. openai/gpt-oss-120b
 }
 
 /**
