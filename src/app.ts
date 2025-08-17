@@ -39,12 +39,13 @@ function setupProcessGuards() {
       // schedule a no-op to avoid accidental early exit if the event loop is empty
       setTimeout(() => {}, 60_000);
     });
-    process.on("uncaughtException", (e) => {
-      console.error("[DBG] uncaughtException:", e);
-    });
-    process.on("unhandledRejection", (e) => {
-      console.error("[DBG] unhandledRejection:", e);
-    });
+    process.on("uncaughtException", (e) => { console.error("[DBG] uncaughtException:", e); });
+    process.on("unhandledRejection", (e) => { console.error("[DBG] unhandledRejection:", e); });
+    process.stdin.on("end", () => console.error("[DBG] stdin end"));
+    process.stdin.on("pause", () => console.error("[DBG] stdin paused"));
+    process.stdin.on("resume", () => console.error("[DBG] stdin resumed"));
+
+
   }
 }
 

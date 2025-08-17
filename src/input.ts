@@ -52,6 +52,11 @@ export class InputController {
       dbg("readline closed — recreating");
       this.recreateReadline();
     });
+
+    this.rl.on("close", () => {
+      console.error("[DBG] readline closed, recreating");
+      this.recreateReadline();
+    });
   }
 
   /** Ask the user for a line; used both for initial prompt and @@user replies. */

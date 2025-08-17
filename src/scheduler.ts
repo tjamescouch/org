@@ -4,6 +4,7 @@ import { Logger } from "./logger";
 import { extractCodeGuards } from "./utils/extract-code-blocks";
 import { FileWriter } from "./io/file-writer";
 import { ExecutionGate } from "./tools/execution-gate";
+import { restoreStdin } from "./utils/restore-stdin";
 
 const DEBUG = (() => {
   const v = (process.env.DEBUG ?? "").toString().toLowerCase();
