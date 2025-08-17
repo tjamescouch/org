@@ -24,11 +24,34 @@ function parseArgs(argv: string[]) {
   return out;
 }
 
+function enableDebugIfRequested(args: Record<string, string | boolean>) {
+  if (args["debug"] || process.env.DEBUG) {
+    process.env.DEBUG = String(args["debug"] ?? process.env.DEBUG ?? "1");
+    console.error("[DBG] debug logging enabled");
+  }
+}
+
+function setupProcessGuards() {
+  const dbgOn = !!process.env.DEBUG && process.env.DEBUG !== "0" && process.env.DEBUG !== "false";
+  if (dbgOn) {
+    process.on("beforeExit", (code) => {
+      console.error("[DBG] beforeExit", code, "— scheduler stays alive unless Ctrl+C");
+      // schedule a no-op to avoid accidental early exit if the event loop is empty
+      setTimeout(() => {}, 60_000);
+    });
+    process.on("uncaughtException", (e) => {
+      console.error("[DBG] uncaughtException:", e);
+    });
+    process.on("unhandledRejection", (e) => {
+      console.error("[DBG] unhandledRejection:", e);
+    });
+  }
+}
+
 /** ---------- Mode / safety ---------- */
 function computeMode(): { interactive: boolean; safe: boolean } {
   const interactive = true; // scheduler + hotkey assumes interactive
   const cfg = loadConfig();
-  // tolerate missing cfg.runtime.safe; default false
   const safe = !!(cfg as any)?.runtime?.safe;
   ExecutionGate.configure({ safe, interactive });
   return { interactive, safe };
@@ -73,12 +96,8 @@ async function main() {
   const cfg = loadConfig();
   const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : process.argv.slice(2));
   const args = parseArgs(argv);
-
-  // Enable ad‑hoc debug without touching Logger implementation
-  if (args["debug"] || process.env.DEBUG) {
-    process.env.DEBUG = String(args["debug"] ?? process.env.DEBUG ?? "1");
-    console.error("[DBG] debug logging enabled");
-  }
+  enableDebugIfRequested(args);
+  setupProcessGuards();
 
   const maxTools = Math.max(0, Number(args["max-tools"] || 20));
   computeMode();
@@ -116,6 +135,7 @@ async function main() {
   // Kick off with an initial user prompt
   await input.askInitialAndSend();
 
+  // Never return under normal operation; exit only on Ctrl+C
   await scheduler.start();
 }
 

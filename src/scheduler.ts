@@ -9,7 +9,6 @@ const DEBUG = (() => {
   const v = (process.env.DEBUG ?? "").toString().toLowerCase();
   return v === "1" || v === "true" || v === "yes" || v === "debug";
 })();
-
 function dbg(...a: any[]) { if (DEBUG) console.error("[DBG][scheduler]", ...a); }
 
 /** Minimal interface all participant models must implement. */
@@ -32,6 +31,9 @@ export class RoundRobinScheduler {
   // ask the human for input when an agent says @@user
   private userPromptFn: (fromAgent: string, content: string) => Promise<string | null>;
 
+  // optional keep-alive so the process won’t exit if bun/node empties the loop momentarily
+  private keepAlive: NodeJS.Timeout | null = null;
+
   constructor(opts: {
     agents: Responder[];
     maxTools: number;
@@ -46,6 +48,13 @@ export class RoundRobinScheduler {
   /** --- public control API --- */
   start = async (): Promise<void> => {
     this.running = true;
+    // Keep-alive to avoid “exit 0” on empty loops in some runtimes
+    //ping
+    this.keepAlive = setInterval(() => { /* no-op */ }, 30_000);
+    setTimeout(() => {
+      //pong
+      this.keepAlive = setInterval(() => { /* no-op */ }, 30_000);
+    }, 1000)
 
     let idleTicks = 0;
     while (this.running) {
@@ -104,6 +113,11 @@ export class RoundRobinScheduler {
 
       // Idle wait without burning CPU; remain interactive for hotkey 'i'
       await this.sleep(didWork ? 5 : 25);
+    }
+
+    if (this.keepAlive) {
+      clearInterval(this.keepAlive);
+      this.keepAlive = null;
     }
   };
 
@@ -180,7 +194,7 @@ export class RoundRobinScheduler {
         // Temporarily ensure cooked mode so input isn't stolen by hotkey handler
         const wasRaw = (process.stdin as any)?.isRaw;
         try {
-          if (wasRaw) { try { process.stdin.setRawMode(false); } catch {} }
+          if (wasRaw) { try { process.stdin.setRawMode(false); } catch (e) { console.error(e) } }
           await ExecutionGate.gate(cmd);
           const res = await FileWriter.write(name, cleaned);
           Logger.info(`wrote ${res.path} (${res.bytes} bytes)`);
@@ -189,7 +203,7 @@ export class RoundRobinScheduler {
           Logger.error(`file write denied or failed (${name}): ${err?.message || String(err)}`);
           dbg(`file write ERR: ${name}`, err?.message || err);
         } finally {
-          if (wasRaw) { try { process.stdin.setRawMode(true); } catch {} }
+          if (wasRaw) { try { process.stdin.setRawMode(true); } catch (e) { console.error(e) } }
         }
       }
     });

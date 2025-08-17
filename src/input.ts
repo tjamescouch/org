@@ -17,29 +17,59 @@ export class InputController {
 
   constructor(scheduler: RoundRobinScheduler) {
     this.scheduler = scheduler;
-    this.rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    this.rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "" });
+  }
+
+  private recreateReadline() {
+    try {
+      this.rl.close();
+    } catch (e) { console.error(e) }
+    this.rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "" });
+    dbg("readline recreated");
   }
 
   init() {
+    // Keep stdin flowing so the runtime doesn't think we're idle
+    try { process.stdin.resume(); } catch (e) { console.error(e) }
+
     if (process.stdin.isTTY) {
       try {
         process.stdin.setRawMode(true);
         dbg("stdin raw mode enabled");
-      } catch {}
+      } catch (e) { console.error(e) }
       this.rawHandler = (chunk: Buffer) => this.onKeyData(chunk);
       process.stdin.on("data", this.rawHandler);
     }
-    // Ctrl+C handling via readline too
-    this.rl.on("SIGINT", () => this.shutdown());
+
+    // Prefer a process-level SIGINT handler; avoids odd readline-specific exits on some runtimes
+    process.on("SIGINT", () => {
+      dbg("^C (process SIGINT)");
+      this.shutdown();
+    });
+
+    // If readline ever closes (e.g., unexpected EOF), recreate it so we don't drop the session.
+    this.rl.on("close", () => {
+      dbg("readline closed — recreating");
+      this.recreateReadline();
+    });
   }
 
   /** Ask the user for a line; used both for initial prompt and @@user replies. */
   async askLine(prompt = "user: "): Promise<string> {
     const wasRaw = !!(process.stdin as any).isRaw;
-    if (wasRaw) try { process.stdin.setRawMode(false); dbg("raw->cooked for question"); } catch {}
-    const ans = await new Promise<string>((resolve) => this.rl.question(prompt, resolve));
-    if (wasRaw) try { process.stdin.setRawMode(true); dbg("cooked->raw restored"); } catch {}
-    return ans || "";
+    if (wasRaw) try { process.stdin.setRawMode(false); dbg("raw->cooked for question"); } catch (e) { console.error(e) }
+    const line = await new Promise<string>((resolve) => {
+      try {
+        this.rl.question(prompt, (ans) => resolve(ans ?? ""));
+      } catch (e) {
+        // If question throws because rl was closed, rebuild and try once
+        dbg("rl.question failed, rebuilding readline:", e);
+        this.recreateReadline();
+        this.rl.question(prompt, (ans) => resolve(ans ?? ""));
+      }
+    });
+    if (wasRaw) try { process.stdin.setRawMode(true); dbg("cooked->raw restored"); } catch (e) { console.error(e) }
+    return line || "";
   }
 
   /** Called by scheduler when an agent addressed @@user */
@@ -71,7 +101,7 @@ export class InputController {
 
     // Ctrl+C
     if (code === 3) { // ^C
-      dbg("^C received");
+      dbg("^C received (raw)");
       this.shutdown();
       return;
     }
@@ -101,11 +131,11 @@ export class InputController {
   shutdown() {
     try {
       if (process.stdin.isTTY) {
-        try { process.stdin.setRawMode(false); dbg("raw mode disabled"); } catch {}
+        try { process.stdin.setRawMode(false); dbg("raw mode disabled"); } catch (e) { console.error(e) }
         if (this.rawHandler) process.stdin.off("data", this.rawHandler);
       }
-    } catch {}
-    this.rl.close();
+    } catch (e) { console.error(e) }
+    try { this.rl.close(); } catch (e) { console.error(e) }
     process.exit(0);
   }
 }
