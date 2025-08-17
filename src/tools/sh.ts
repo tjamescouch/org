@@ -32,10 +32,12 @@ async function sleep(ms: number): Promise<void> {
  * - Gated by ExecutionGate (confirmation when safe == true, plus guards).
  */
 export async function runSh(cmd: string): Promise<{ ok: boolean; stdout: string; stderr: string; exit_code: number; cmd: string; }> {
-  if (!(await ExecutionGate.check(cmd))) {
+  try {
+    await ExecutionGate.gate(cmd);
+  } catch (e) {
     const msg = `Execution denied by guard or user: ${cmd}`;
     console.log(red(`sh: ${cmd} -> ${msg}`));
-    return { ok: false, stdout: "", stderr: msg, exit_code: 124, cmd };
+    throw e;
   }
 
   // Bun path
