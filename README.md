@@ -11,7 +11,7 @@
 * routes assistant messages with a zero-magic tag grammar,
 * keeps the **human in the loop** with a hotkey interjection.
 
-Design goals: **clarity**, **predictability**, and **Unix-y behavior** (it operates in the directory where you invoke `org`). &#x20;
+Design goals: **clarity**, **predictability**, and **Unix-y behavior** (it operates in the directory where you invoke `org`).
 
 ---
 
@@ -19,6 +19,7 @@ Design goals: **clarity**, **predictability**, and **Unix-y behavior** (it opera
 
 * [Quick start](#quick-start)
 * [Installation](#installation)
+* [VM & networking setup (host ↔ VM)](#vm--networking-setup-host--vm)
 * [Configuration](#configuration)
 * [Running](#running)
 * [How it works](#how-it-works)
@@ -67,6 +68,82 @@ Design goals: **clarity**, **predictability**, and **Unix-y behavior** (it opera
 
 Re-run `./install.sh` after updating the repo.
 If you previously copied `org` instead of symlinking, remove it and re-install.
+
+---
+
+## VM & networking setup (host ↔ VM)
+
+The recommended setup is **host-only networking** for host↔VM traffic + **NAT** for VM internet. Goal: the VM reaches your host’s LLM server at a fixed IP (no exposure to your LAN).
+
+### 1) Create the VM
+
+Any modern Debian/Ubuntu works. Give it:
+
+* 2+ cores, 8+ GB RAM (more if you compile models/tools),
+* Bun + Node toolchain as you prefer.
+
+### 2) Network adapters
+
+Use **two adapters**:
+
+* **Adapter 1 – NAT**: VM gets outbound internet. No configuration.
+* **Adapter 2 – Host-Only**:
+
+  * **VirtualBox**: Host-only network `vboxnet0` (default 192.168.56.1/24). Enable **DHCP**.
+  * **VMware/Parallels**: Use their host-only network; ensure a 192.168.x.x/24 or 10.x.x.x/24 with DHCP.
+
+Result: the **host** has a predictable IP on the host-only net (often `192.168.56.1`), and the **VM** gets another IP in that range (e.g., `192.168.56.101`).
+
+**Verify inside the VM:**
+
+```bash
+ip addr  # look for the host-only interface (e.g., enp0s8) - address like 192.168.56.101
+```
+
+### 3) Start the LLM server on the host
+
+Pick one:
+
+* **LM Studio**
+
+  * Preferences → *OpenAI Compatible Server* → enable.
+  * **Bind / Listen**: choose “All interfaces” (or 0.0.0.0).
+  * **Port**: use `11434` (or your choice; adjust env below).
+* **Ollama**
+
+  ```bash
+  OLLAMA_HOST=0.0.0.0:11434 ollama serve
+  ```
+
+  This binds Ollama’s OpenAI-compatible endpoints to all interfaces on the host.
+
+> Security note: with **host-only** networking, the service is visible only to the VM, not your LAN. If you choose **bridged**, restrict with a firewall.
+
+### 4) Point `org` (in the VM) at the host
+
+In the VM:
+
+```bash
+export LLM_BASE_URL="http://192.168.56.1:11434"   # host IP on the host-only network
+# optional:
+export LLM_MODEL="openai/gpt-oss-120b"
+```
+
+**Connectivity check:**
+
+```bash
+curl -s "http://192.168.56.1:11434/v1/models" | sed 's/},{/},\n{/g' | head
+# Expect a JSON list of models. If connection refused: revisit Step 3 bind/port.
+```
+
+### 5) Typical gotchas
+
+* **Wrong IP**: `192.168.56.1` is the *host* address in VirtualBox by default; confirm with `ifconfig`/`ipconfig` on the host.
+* **Service bound to localhost**: make sure LM Studio/Ollama binds to `0.0.0.0` or the host-only interface; not `127.0.0.1` only.
+* **Firewall**: macOS may prompt to allow incoming connections; allow for the LLM server.
+* **Parallels/VMware** naming\*\*:\*\* host-only IPs differ; use whatever the hypervisor assigns to the host side.
+
+When the `curl` check succeeds, `org` can talk to your host LLM reliably.
 
 ---
 
@@ -246,8 +323,11 @@ Ensure you installed via `./install.sh` (symlink), and that `/usr/local/bin/org`
 **`apply_patch` keeps saying “hunk not found”**
 Use anchor directives (`at:top`, `after:/regex/`, etc.), or provide both `-` and `+` blocks. The tool is idempotent; if the `+` block already exists it succeeds with no changes.
 
-**LM Studio/Ollama not responding**
-Check `LLM_BASE_URL`, model name, and that the OpenAI compatibility server is enabled.
+**LLM server connection refused**
+
+* Confirm host-only IP (often `192.168.56.1`) and port match your server.
+* Ensure LM Studio/Ollama is bound to `0.0.0.0` or the host-only interface.
+* From the VM, `curl http://192.168.56.1:11434/v1/models` should return JSON.
 
 **Safe mode blocks everything**
 You enabled `--safe` or `SAFE_MODE=true`. Confirm prompts with `y`, or disable for a trusted workspace.
