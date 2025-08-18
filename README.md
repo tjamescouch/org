@@ -52,7 +52,7 @@ Design goals: **clarity**, **predictability**, and **Unix-y behavior** (it opera
 
    ```bash
    cd ~/work/scratch
-   org --agents "alice:lmstudio,bob:mock" --max-tools 2 --safe
+   org --agents "alice:lmstudio,bob:lmstudio" --max-tools 2 --safe
    ```
 
 * **Hotkeys**: press `i` at any time to interject; `Ctrl+C` to exit.
