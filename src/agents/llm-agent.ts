@@ -2,6 +2,7 @@ import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt";
 import type { ChatDriver, ChatMessage } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
 import { C, Logger } from "../logger";
+import { SummaryMemory } from "../memory/summary-memory";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -9,27 +10,30 @@ export interface AgentReply {
 }
 
 /**
- * Very small stateful agent that adapts ChatDriver to the demo's respond() API.
- * - Maintains its own short history (system -> user -> assistant/tool ...)
- * - Executes the "sh" tool with safe gating and prints output in red
- * - Other agents' text is fed as role:"user" by the app — requirement satisfied
+ * LlmAgent
+ * - Keeps conversation state via pluggable memory (SummaryMemory with hysteresis).
+ * - Executes the "sh" tool (gated elsewhere) and feeds results back as role:"tool".
+ * - Other agents & the user are presented as role:"user".
  */
 export class LlmAgent {
   private readonly id: string;
   private readonly driver: ChatDriver;
   private readonly model: string;
-  private history: ChatMessage[] = [];
-  private readonly systemPrompt: string;
   private readonly tools = [SH_TOOL_DEF];
+
+  // Memory replaces the old raw history array.
+  private readonly memory: SummaryMemory;
+  private readonly systemPrompt: string;
 
   constructor(id: string, driver: ChatDriver, model: string) {
     this.id = id;
     this.driver = driver;
     this.model = model;
 
+    // Compose system prompt: a short agent header + the shared default.
     this.systemPrompt =
-`You are agent "${id}".
-    if (!(this as any).system || String((this as any).system).trim().length === 0) { (this as any).system = DEFAULT_SYSTEM_PROMPT; }
+`You are agent "${id}". You can call tools and cooperate with other agents.
+${DEFAULT_SYSTEM_PROMPT}
 You can call tools. When you need to run a shell command on a POSIX system, use the "sh" tool:
 - name: "sh"
 - arguments: { "cmd": "<full command string>" }  (example: {"cmd":"ls -la"})
@@ -46,36 +50,52 @@ Routing:
 
 Keep responses brief unless writing files.`;
 
-    this.history.push({ role: "system", content: this.systemPrompt });
+    // Attach a hysteresis-based memory that summarizes overflow.
+    this.memory = new SummaryMemory({
+      driver: this.driver,
+      model: this.model,
+      systemPrompt: this.systemPrompt,
+      highWatermark: 64, // trigger
+      lowWatermark: 40,  // reduce to
+    });
   }
 
   /**
-   * Respond to a prompt. Uses OpenAI function calling via driver:
-   * - If model requests tool_calls, execute them (sh only) and feed results as role:"tool".
-   * - Up to `maxTools` executions per respond() call.
-   * - Yield after first assistant content that includes no tools.
+   * Respond to a prompt.
+   * - Add the user's text to memory.
+   * - Let the model respond; if it asks for tools, execute (sh only) and loop.
+   * - Stop after first assistant text with no more tool calls or when budget is hit.
    */
   async respond(prompt: string, maxTools: number, _peers: string[]): Promise<AgentReply> {
-    // Add the user's prompt (in this agent view, other agents & users are "user")
-    this.history.push({ role: "user", content: prompt });
+    await this.memory.add({ role: "user", content: prompt });
 
     let totalUsed = 0;
     let finalText = "";
 
-    // Permit at least one completion; follow tool calls up to maxTools
+    // At least one completion; allow tool-following up to maxTools
     for (let hop = 0; hop < Math.max(1, maxTools + 1); hop++) {
       Logger.info(C.green(`${this.id} ...`));
-      const out = await this.driver.chat(this.history, { model: this.model, tools: this.tools });
 
-      // If the assistant returned plain text, capture it (we still may see tool calls)
-      if (out.text && out.text.trim().length > 0) {
-        finalText = out.text.trim();
+      const out = await this.driver.chat(this.memory.messages(), {
+        model: this.model,
+        tools: this.tools
+      });
+
+      const assistantText = (out.text || "").trim();
+      if (assistantText.length > 0) {
+        finalText = assistantText;
       }
 
       const calls = out.toolCalls || [];
-      if (!calls.length) break; // No tools requested → yield after returning assistant text
+      if (!calls.length) {
+        // No tools requested — capture assistant text in memory and yield.
+        if (finalText) {
+          await this.memory.add({ role: "assistant", content: finalText });
+        }
+        break;
+      }
 
-      // Execute tools (sh only) — respect the remaining budget
+      // Execute tools (sh only), respecting remaining budget
       for (const tc of calls) {
         if (totalUsed >= maxTools) break;
 
@@ -86,30 +106,30 @@ Keep responses brief unless writing files.`;
         if (name === "sh") {
           const cmd = String(args?.cmd || "").trim();
           if (cmd.length === 0) {
-            // Feed a minimal error back to the model as a tool result
-            Logger.warn(`${name} tool missing cmd`, {cmd, args});
-
+            Logger.warn(`${name} tool missing cmd`, { cmd, args });
             const content = JSON.stringify({ ok: false, stdout: "", stderr: "Execution failed: Command required.", exit_code: 1, cmd: "" });
-            this.history.push({ role: "tool", content, tool_call_id: tc.id, name: "sh" });
+            await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh" } as ChatMessage);
             totalUsed++;
             continue;
           }
           const result = await runSh(cmd);
           const content = JSON.stringify(result);
-          this.history.push({ role: "tool", content, tool_call_id: tc.id, name: "sh" });
+          await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh" } as ChatMessage);
           totalUsed++;
         } else {
-          // Unknown tool → return a structured error
           Logger.warn(`Unknown tool ${name} requested`);
-
           const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, cmd: "" });
-          this.history.push({ role: "tool", content, tool_call_id: tc.id, name });
+          await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name } as ChatMessage);
           totalUsed++;
         }
       }
 
-      // Loop back so the assistant can observe tool outputs and respond.
-      if (totalUsed >= maxTools) break;
+      if (totalUsed >= maxTools) {
+        // Record whatever assistant text we have before yielding
+        if (finalText) await this.memory.add({ role: "assistant", content: finalText });
+        break;
+      }
+      // Loop: the assistant will see tool outputs (role:"tool") now in memory.
     }
 
     Logger.info(C.green(`${finalText}`));
