@@ -2,7 +2,7 @@ import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt";
 import type { ChatDriver, ChatMessage } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
 import { C, Logger } from "../logger";
-import { SummaryMemory } from "../memory/summary-memory";
+import { AgentMemory, ContextLimitedSummaryMemory } from "../memory";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -22,7 +22,7 @@ export class LlmAgent {
   private readonly tools = [SH_TOOL_DEF];
 
   // Memory replaces the old raw history array.
-  private readonly memory: SummaryMemory;
+  private readonly memory: AgentMemory;
   private readonly systemPrompt: string;
 
   constructor(id: string, driver: ChatDriver, model: string) {
@@ -32,7 +32,7 @@ export class LlmAgent {
 
     // Compose system prompt: a short agent header + the shared default.
     this.systemPrompt =
-`You are agent "${id}". You can call tools and cooperate with other agents.
+      `You are agent "${id}". You can call tools and cooperate with other agents.
 ${DEFAULT_SYSTEM_PROMPT}
 You can call tools. When you need to run a shell command on a POSIX system, use the "sh" tool:
 - name: "sh"
@@ -51,12 +51,17 @@ Routing:
 Keep responses brief unless writing files.`;
 
     // Attach a hysteresis-based memory that summarizes overflow.
-    this.memory = new SummaryMemory({
+    this.memory = new ContextLimitedSummaryMemory({
       driver: this.driver,
       model: this.model,
       systemPrompt: this.systemPrompt,
-      highWatermark: 64, // trigger
-      lowWatermark: 40,  // reduce to
+      contextTokens: 8192, // or 32768, etc.
+      // optional tuning:
+      // reserveHeaderTokens: 1200,
+      // reserveResponseTokens: 800,
+      // avgMessageTokens: 220,
+      // highRatio: 0.70,
+      // lowRatio: 0.45,
     });
   }
 
