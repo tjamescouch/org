@@ -1,79 +1,89 @@
 
+# 🚨 org is intended to be run in a VM that talks to LM Studio/Ollama running on the host. If you run this on your host, use **safe mode**. 🚨
 
-# 🚨 org is intended to be run in a VM that talks to LMStudio/Ollama running on the host. If you run this on your host, be sure to run in safe mode. 🚨
+# org — Minimal Multi-Agent Orchestrator (LM Studio/Ollama + Tools)
 
----
+`org` is a small, auditable multi-agent runner that:
 
-# org – Minimal Multi‑Agent Orchestrator (LM Studio + Tools)
+* schedules agents **round-robin** with a per-turn tool budget,
+* lets agents call **tools** (starting with a safe `sh` and a robust `apply_patch`),
+* speaks **OpenAI-compatible** API to local backends (LM Studio / Ollama),
+* routes assistant messages with a zero-magic tag grammar,
+* keeps the **human in the loop** with a hotkey interjection.
 
-A small, readable, and **extensible** multi‑agent orchestrator that:
-
-* does **round‑robin** scheduling across agents,
-* lets agents **call tools** (starting with a safe `sh` tool),
-* uses a clean **driver** abstraction (currently **OpenAI‑compatible** → **LM Studio**),
-* routes assistant messages using a simple, **extensible TagParser** (`@alice`, `@group`, `#notes.txt …`),
-* avoids monkey‑patching and keeps classes **focused** (single responsibility).
-
-The goal is to provide a simple, production‑lean codebase you can **reason about** and **extend** quickly.
+Design goals: **clarity**, **predictability**, and **Unix-y behavior** (it operates in the directory where you invoke `org`). &#x20;
 
 ---
 
 ## Contents
 
-* [Quick Start](#quick-start)
+* [Quick start](#quick-start)
+* [Installation](#installation)
 * [Configuration](#configuration)
 * [Running](#running)
-* [How It Works](#how-it-works)
-* [Tags & Routing](#tags--routing)
-* [Tools (Function Calling)](#tools-function-calling)
-* [Safe Execution](#safe-execution)
-* [Extending the System](#extending-the-system)
-* [Project Structure](#project-structure)
+* [How it works](#how-it-works)
+* [Tags & routing](#tags--routing)
+* [Tools](#tools)
+* [Safety](#safety)
+* [Project layout](#project-layout)
 * [Troubleshooting](#troubleshooting)
 * [FAQ](#faq)
 * [License](#license)
 
 ---
 
-## Quick Start
+## Quick start
 
-### Requirements
+1. **Start your local LLM API**
 
-* **Bun** ≥ 1.0 (recommended) – runs TypeScript directly
-  or **Node.js** ≥ 18 + your preferred TS runtime (e.g. `tsx`).
+   * LM Studio: enable *OpenAI Compatible Server*.
+   * Ollama: enable the OpenAI endpoint (varies by build).
 
-### LM Studio
+2. **Install** (from repo root):
 
-* Install and run [LM Studio](https://lmstudio.ai/).
-* Ensure the **OpenAI‑compatible** API is enabled and listening.
-* Default base URL used by this project: `http://192.168.56.1:11434`
-  (override via `LLM_BASE_URL` or `--base-url`).
+   ```bash
+   ./install.sh
+   ```
 
-### Install deps
+   This symlinks `/usr/local/bin/org` → `<repo>/org` and installs `apply_patch`.
 
-This project purposely has minimal runtime deps. If you add drivers/tools that need packages, install them here:
+3. **Use from any directory**:
 
-```bash
-bun install
-# or
-npm install
-```
+   ```bash
+   cd ~/work/scratch
+   org --agents "alice:lmstudio,bob:mock" --max-tools 2 --safe
+   ```
+
+* **Hotkeys**: press `i` at any time to interject; `Ctrl+C` to exit.
+
+---
+
+## Installation
+
+`install.sh` performs two actions:
+
+* Copies `apply_patch` to `/usr/local/bin/apply_patch`
+* Symlinks `/usr/local/bin/org` → `<repo>/org`
+
+Re-run `./install.sh` after updating the repo.
+If you previously copied `org` instead of symlinking, remove it and re-install.
 
 ---
 
 ## Configuration
 
-You can configure via **CLI flags** or **environment variables**.
+You can configure via **env vars** or **CLI flags**.
 
-### Environment Variables
+### Environment
 
-| Variable       | Default                     | Description                                        |
-| -------------- | --------------------------- | -------------------------------------------------- |
-| `LLM_DRIVER`   | `lmstudio`                  | Driver key. Currently only `lmstudio`.             |
-| `LLM_PROTOCOL` | `openai`                    | Protocol / wire-format. Currently `openai`.        |
-| `LLM_BASE_URL` | `http://192.168.56.1:11434` | Base URL of LM Studio API (`/v1/chat/completions`) |
-| `LLM_MODEL`    | `openai/gpt-oss-120b`               | Model id to request from LM Studio                 |
-| `SAFE_MODE`    | *(unset → false)*           | `1/true/yes` enables confirmation for `sh` tool    |
+| Variable       | Default                     | Notes                                     |
+| -------------- | --------------------------- | ----------------------------------------- |
+| `LLM_DRIVER`   | `lmstudio`                  | Driver key (currently `lmstudio`, `mock`) |
+| `LLM_PROTOCOL` | `openai`                    | Wire format                               |
+| `LLM_BASE_URL` | `http://192.168.56.1:11434` | Host API (override if not using a VM)     |
+| `LLM_MODEL`    | `openai/gpt-oss-120b`       | Model id                                  |
+| `SAFE_MODE`    | *(unset → false)*           | `1/true/yes` gates shell & file writes    |
+| `DEBUG`        | *(unset)*                   | `1/true` prints debug traces              |
 
 Example:
 
@@ -83,293 +93,179 @@ export LLM_MODEL="openai/gpt-oss-120b"
 export SAFE_MODE=true
 ```
 
-### CLI Flags
+### CLI
 
-| Flag          | Example                              | Meaning                               |
-| ------------- | ------------------------------------ | ------------------------------------- |
-| `--agents`    | `--agents "alice:lmstudio,bob:mock"` | Comma‑separated agents: `name:kind`   |
-| `--max-tools` | `--max-tools 2`                      | Per‑turn tool budget per agent        |
-| `--driver`    | `--driver lmstudio`                  | Driver key (same as `LLM_DRIVER`)     |
-| `--protocol`  | `--protocol openai`                  | Protocol key (same as `LLM_PROTOCOL`) |
-| `--base-url`  | `--base-url http://127.0.0.1:11434`  | Base URL override                     |
-| `--model`     | `--model openai/gpt-oss-120b`        | Model override                        |
-| `--safe`      | `--safe`                             | Enable confirmation for `sh` tool     |
+| Flag          | Example                              | Meaning                        |
+| ------------- | ------------------------------------ | ------------------------------ |
+| `--agents`    | `--agents "alice:lmstudio,bob:mock"` | `name:kind` comma-separated    |
+| `--max-tools` | `--max-tools 2`                      | Tool budget per agent per turn |
+| `--driver`    | `--driver lmstudio`                  | Driver override                |
+| `--protocol`  | `--protocol openai`                  | Protocol override              |
+| `--base-url`  | `--base-url http://127.0.0.1:11434`  | Base URL override              |
+| `--model`     | `--model openai/gpt-oss-120b`        | Model override                 |
+| `--safe`      | `--safe`                             | Enable confirmations           |
 
 ---
 
 ## Running
 
-### With Bun (recommended)
+With **Bun** (recommended):
 
 ```bash
-bun run src/app.ts --agents "alice:lmstudio,bob:mock" --max-tools 2 --safe
+org --agents "alice:lmstudio,bob:mock" --max-tools 2 --safe
 ```
 
-### With Node (using tsx)
+Behavior is **Unix-y**: all shell commands and file writes happen in the **current directory** where you typed `org`. The wrapper (`org` → `runner.ts`) ensures the process `cwd` matches your invocation directory.
 
-```bash
-npm i -D tsx
-node --loader tsx src/app.ts --agents "alice:lmstudio,bob:mock" --max-tools 2 --safe
-```
+Loop semantics:
 
-You’ll be prompted:
+1. Broadcast user input to all agents (others appear as `role:"user"` to each).
+2. Round-robin through agents; each gets up to `--max-tools` tool calls.
+3. If an agent returns plain text (no tools), it yields.
+4. Exit after two idle passes (nothing to do). `Ctrl+C` at any time to quit.
 
-```
-Prompt> Build a tiny README and list current dir
-```
-
-The orchestrator will:
-
-1. Broadcast the user prompt to agents (others appear as **role:"user"** to each agent).
-2. **Round‑robin** schedule the agents.
-3. Allow each agent up to **N tool calls** per turn (N = `--max-tools`).
-4. As soon as an agent returns plain assistant text (no tools), it **yields**.
-
-The loop exits after **two idle rounds** (no work & no pending messages).
-Press **Ctrl+C** any time to quit.
+**Hotkey**: press `i` to interject a user message immediately.
 
 ---
 
-## How It Works
+## How it works
 
-### Drivers
-
-Located in `src/drivers/`.
-
-* **`openai-lmstudio.ts`** — a minimal driver that speaks **OpenAI Chat Completions** to **LM Studio**:
-
-  * POSTs to `POST {base}/v1/chat/completions`
-  * Accepts `tools` + `tool_choice:"auto"`
-  * Returns `{ text, toolCalls }`
-
-Driver interface (see `src/drivers/types.ts`):
-
-```ts
-export interface ChatDriver {
-  chat(messages: ChatMessage[], opts?: { model?: string; tools?: any[] }): Promise<ChatOutput>;
-}
-```
-
-### Agents
-
-Located in `src/agents/`.
-
-* **`llm-agent.ts`** — keeps its own minimal message history, adds a **system prompt** with instructions for the `sh` tool, calls the driver, executes tool calls (via `sh`), and pushes back **role:"tool"** results (with `tool_call_id`) to the model before yielding.
-* **`mock-model.ts`** — a trivial baseline model (useful for smoke tests while bringing up drivers).
-
-### Orchestrator
-
-`src/app.ts`:
-
-* Parses CLI + env (`src/config.ts`),
-* Builds the agents from `--agents` (e.g. `alice:lmstudio,bob:mock`),
-* Runs round‑robin with a **per‑turn tool budget** (`--max-tools`),
-* Routes messages using the **TagParser** + **router**,
-* Exits after two idle rounds.
+* **Drivers** (`src/drivers/*`): minimal OpenAI-compatible client for LM Studio/Ollama.
+* **Agents** (`src/agents/*`): an LLM agent with a local tool loop; a `mock` agent for smoke tests.
+* **Router** (`src/app_support/route-with-tags.ts`): resolves tags to DM/group/file handlers.
+* **Scheduler**: simple round-robin with inboxes per agent.
+* **Input controller** (`src/input/*`): single-owner stdin state machine (prevents duplicated input and lost interjections).
 
 ---
 
-## Tags & Routing
+## Tags & routing
 
-Agents are encouraged to structure their messages with simple tags:
+Use inline tags inside assistant messages:
 
-* `@bob <message…>` — **direct message** to `bob`
-* `@group <message…>` — **broadcast**
-* `#notes.txt <content lines…>` — file “attachment” (by default we print; you can hook this to write the file if desired)
+* `@bob …` — direct message to agent `bob`
+* `@group …` — broadcast to all agents
+* `#path/to/file.ext …lines…` — file “attachment” (persisted via file handler)
 
-Example:
-
-```
-@david here are the documents
-@robert did you get that thing I sent you? #blob.txt This is an awesome
-file I made for you.
-@group what are we all thinking?
-```
-
-The **TagParser** splits this into parts, and the router **delivers** them:
-
-* `@<agent>` → goes to that agent’s inbox (others do not see it),
-* `@group` → broadcast to all other agents,
-* `@user` → yield to the user,
-* `#<path>` → routed to `onFile(from, filename, content)` (default prints; easy to persist).
-
-> In each agent’s internal view, **other agents appear as role:"user"**. This arrangement keeps the tool‑calling logic simple and mirrors how most OpenAI‑style agentic systems work.
+The router splits these parts and delivers them to agent inboxes or the file handler.
 
 ---
 
-## Tools (Function Calling)
+## Tools
 
-Tools live in `src/tools/`.
+### `sh` (shell)
 
-### `sh` Tool
+Function-calling tool that runs a POSIX command and returns JSON `{ ok, stdout, stderr, exit_code }`.
+By default runs in the **invocation directory**.
 
-* **Schema** (`SH_TOOL_DEF`):
+### `apply_patch`
 
-  ```ts
-  {
-    type: "function",
-    function: {
-      name: "sh",
-      description: "Run a POSIX shell command and return machine-readable stdout/stderr/exit_code.",
-      parameters: {
-        type: "object",
-        properties: { cmd: { type: "string" } },
-        required: ["cmd"],
-        additionalProperties: false
-      }
-    }
-  }
-  ```
-* **Execution** (`runSh(cmd: string)`):
+A tolerant patch applier for AI-generated diffs. Supports:
 
-  * Uses **Bun.spawn** if available, else **Node child\_process.spawn**.
-  * Returns `{ ok, stdout, stderr, exit_code, cmd }`.
-  * Prints in **red**:
+* `*** Begin/End Patch` blocks
+* `*** Update/Add/Delete/Rename File:` headers
+* Unified `@@` hunks with `-`/`+`/context lines
+* **Anchor directives** inside `@@`:
 
-    ```
-    sh: <cmd> -> <stdout and/or stderr trimmed>
-    ```
-* The LLM agent feeds tool results back to the driver as **role:"tool"** with the **original `tool_call_id`**, allowing the model to continue reasoning with the returned JSON.
+  * `@@ at:top @@`, `@@ at:bottom @@`
+  * `@@ before:/regex/ @@`, `@@ after:/regex/ @@`
+* Idempotence (no-op if change already applied)
+* Whitespace-insensitive hunk matching
 
----
-
-## Safe Execution
-
-The **ExecutionGate** (`src/tools/exec-gate.ts`) controls whether shell commands run without confirmation.
-
-Configure at app start:
-
-```ts
-import { ExecutionGate } from "./tools/exec-gate";
-ExecutionGate.configure({ safe: true /* or false */ });
-```
-
-Ways to enable **safe mode**:
-
-* CLI: `--safe`
-* Env: `SAFE_MODE=true` (or `1`, or `yes`)
-
-In safe mode, the user is prompted:
+Examples:
 
 ```
-Run: ls -la? [y/N]
+*** Begin Patch
+*** Update File: src/app.ts
+@@ at:top @@
++console.log("[diag] cwd=", process.cwd());
+*** End Patch
 ```
 
-You can inject custom **guards** (e.g., deny `rm -rf /`):
-
-```ts
-import { ExecutionGate, ExecutionGuard } from "./tools/exec-gate";
-
-class NoDangerousRm extends ExecutionGuard {
-  async allow(cmd: string) {
-    return !/rm\s+-rf\s+\/\b/.test(cmd);
-  }
-}
-
-ExecutionGate.configure({ safe: true, guards: [new NoDangerousRm()] });
+```
+*** Begin Patch
+*** Update File: README.md
+@@ after:/^## Quick start/ @@
++> Tip: press `i` to interject at any time.
+*** End Patch
 ```
 
 ---
 
-## Extending the System
+## Safety
 
-### Add a Driver
+`ExecutionGate` enforces an approval step and optional guards:
 
-Create `src/drivers/my-driver.ts` implementing `ChatDriver`. Wire it in `src/app.ts`’s `parseAgents()`.
-
-### Add a Tool
-
-Create a `<tool>.ts` exporting:
-
-* A **tool schema** matching OpenAI “function calling”
-* A runner function that returns structured JSON
-  Register it in `llm-agent.ts` (the `tools` array), and handle it in the tool loop.
-
-### Customize Routing / File Writes
-
-`src/app_support/route-with-tags.ts` and the in‑app `router` are purposely small:
-
-* Replace the `onFile(from, filename, content)` handler to **persist** files,
-* Extend TagParser to support additional tags.
+* `--safe` or `SAFE_MODE=true` prompts before running `sh` or writing files.
+* Add guards to deny suspicious commands (e.g., `rm -rf /`).
+* All file writes happen in the caller’s directory; backups are taken by `apply_patch`.
 
 ---
 
-## Project Structure
+## Project layout
 
 ```
+org                      # wrapper script (installed via symlink)
+runner.ts                # ensures process.cwd() = caller's directory
+install.sh               # installs org + apply_patch
+apply_patch              # robust patch applier
+
 src/
-  app.ts                      # Entry point & round‑robin loop
-  config.ts                   # CLI + env config
+  app.ts                 # entrypoint & round-robin
+  config.ts              # env/CLI parsing
+  input/
+    controller.ts        # single-owner stdin (hotkeys + prompts)
+    types.ts
+    utils.ts
+    index shim: ../input.ts (re-export)
   agents/
-    llm-agent.ts              # LLM-backed agent (OpenAI tools loop)
-    mock-model.ts             # Simple mock agent (no network)
+    llm-agent.ts         # LLM-backed agent with tool loop
+    mock-model.ts
   drivers/
-    types.ts                  # ChatDriver interfaces
-    openai-lmstudio.ts        # OpenAI-compatible driver to LM Studio
+    types.ts
+    openai-lmstudio.ts
   tools/
-    exec-gate.ts              # Safe execution gate + guards
-    sh.ts                     # POSIX shell tool (Bun/Node portable)
+    sh.ts
+    exec-gate.ts
   app_support/
-    route-with-tags.ts        # Router using TagParser parts
+    route-with-tags.ts
   utils/
-    tag-parser.ts             # TagParser used by the router
+    tag-parser.ts
 ```
-
-> If you don’t see some of these files, bring your repo up to the latest patch level you applied in this session.
 
 ---
 
 ## Troubleshooting
 
-**No output from LM Studio**
+**Interjection echoes or is lost**
+Update to the new input controller (single stdin owner). Prompts temporarily detach the raw handler; interjections are routed through the same path as normal user messages.
 
-* Check `LLM_BASE_URL` and that LM Studio is listening on `/v1/chat/completions`.
-* Try:
+**Everything runs in the repo instead of my working dir**
+Ensure you installed via `./install.sh` (symlink), and that `/usr/local/bin/org` points to the repo script. The runner sets `cwd` to the invocation directory.
 
-  ```bash
-  curl -s http://127.0.0.1:11434/v1/models
-  ```
+**`apply_patch` keeps saying “hunk not found”**
+Use anchor directives (`at:top`, `after:/regex/`, etc.), or provide both `-` and `+` blocks. The tool is idempotent; if the `+` block already exists it succeeds with no changes.
 
-  and confirm the model name (`LLM_MODEL`) exists.
-
-**Model never calls tools**
-
-* Ensure the driver payload includes `tools` and `tool_choice:"auto"` (already implemented).
-* Set a prompt that naturally requires a shell call (e.g., “list the current directory and show the first 5 files”).
-
-**Tool results ignored**
-
-* The agent must push tool outputs with `role:"tool"` **and** `tool_call_id` (already implemented). Verify in logs.
+**LM Studio/Ollama not responding**
+Check `LLM_BASE_URL`, model name, and that the OpenAI compatibility server is enabled.
 
 **Safe mode blocks everything**
-
-* You enabled `--safe` or `SAFE_MODE=true`. Press **`y`** when prompted or run with `--safe 0`.
-
-**Round‑robin stops too early**
-
-* The loop exits after **two idle rounds** (no tool calls and no pending messages). If your agents keep quiet after a single response, this is expected. Increase `--max-tools` or adjust prompts.
+You enabled `--safe` or `SAFE_MODE=true`. Confirm prompts with `y`, or disable for a trusted workspace.
 
 ---
 
 ## FAQ
 
-**Why do other agents appear as `role:"user"` to each agent?**
-It simplifies alignment with the OpenAI tool‑calling format and avoids coercing assistant/assistant threads. It also keeps your system prompt simple.
+**Why do other agents appear as `role:"user"`?**
+It matches the OpenAI function-calling pattern and keeps tool loops simple.
 
-**Where does the `#filename` content go?**
-By default, the router prints it. Replace the `onFile()` handler to persist to disk (e.g., `fs.writeFile`) with your policies/guards.
+**Where are files written?**
+In the directory where you ran `org` (not the repo). This is enforced by the wrapper + runner.
 
-**Does the `sh` tool stream output?**
-Not yet — the runner returns aggregated stdout/stderr when the process exits. The JSON design is compatible with streaming, so adding a streaming driver later is straightforward.
+**Can I add more tools or drivers?**
+Yes—tools are plain modules returning JSON; drivers implement a small `ChatDriver` interface.
 
 ---
 
 ## License
 
-MIT
-
----
-
-### Credits
-
-This repo aims to be a **clear, minimal** foundation for multi‑agent, tool‑using workflows with an LM Studio backend — with **strong separation of concerns** and **predictable behavior**.
+MIT. Contributions welcome.
