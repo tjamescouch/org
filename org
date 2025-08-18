@@ -17,5 +17,9 @@ export ORG_APPDIR="$APPDIR"
 
 command -v bun >/dev/null 2>&1 || { echo "org: bun not found in PATH" >&2; exit 127; }
 
-exec bun "$RUNNER" "$@"
+# Ensure the runner runs in the caller's working directory. Bun does not
+# automatically inherit the current working directory when using `exec`, so we
+# explicitly pass the `--cwd` flag. This mirrors the behaviour of many CLI
+# tools that respect the directory from which they were invoked.
+exec bun "$RUNNER" --cwd "$ORG_CALLER_CWD" "$@"
 
