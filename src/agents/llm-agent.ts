@@ -2,7 +2,7 @@ import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt";
 import type { ChatDriver, ChatMessage } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
 import { C, Logger } from "../logger";
-import { AgentMemory, ContextLimitedSummaryMemory } from "../memory";
+import { AdvancedMemory, AgentMemory } from "../memory";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -112,17 +112,21 @@ Do not quote other agents’ names as prefixes like "bob:" or "carol:".
 Keep responses brief unless writing files.`;
 
     // Attach a hysteresis-based memory that summarizes overflow.
-    this.memory = new ContextLimitedSummaryMemory({
+    this.memory = new AdvancedMemory({
       driver: this.driver,
       model: this.model,
       systemPrompt: this.systemPrompt,
-      contextTokens: 8192, // or 32768, etc.
-      // optional tuning:
-      // reserveHeaderTokens: 1200,
-      // reserveResponseTokens: 800,
-      // avgMessageTokens: 220,
-      // highRatio: 0.70,
-      // lowRatio: 0.45,
+
+      contextTokens: 8192,           // model window
+      reserveHeaderTokens: 1200,     // header/tool schema reserve
+      reserveResponseTokens: 800,    // space for the next reply
+      highRatio: 0.70,               // trigger summarization earlier than overflow
+      lowRatio: 0.50,                // target after summarization
+      summaryRatio: 0.35,            // 35% of budget for the 3 summaries
+
+      avgCharsPerToken: 4,           // char→token estimate
+      keepRecentPerLane: 4,          // retain 4 most-recent per lane
+      keepRecentTools: 3             // retain 3 most-recent tool outputs
     });
   }
 
