@@ -1,32 +1,21 @@
 #!/usr/bin/env bash
-# org wrapper: always run the app from this repository,
-# but keep the user's working directory where they invoked `org`.
-
 set -euo pipefail
 
-# Directory where this script itself resides (the project root)
-APPDIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve symlink to the actual script in your repo
+SELF="$0"
+# BSD readlink doesn’t support -f, so use python for portability
+REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SELF")"
+APPDIR="$(cd "$(dirname "$REAL")" && pwd)"
+
+RUNNER="$APPDIR/runner.ts"
 ENTRY="$APPDIR/src/app.ts"
 
-# Make sure repo-local tools are discoverable (like apply_patch)
 export PATH="$APPDIR:$APPDIR/scripts:$PATH"
+export ORG_CALLER_CWD="${ORG_CALLER_CWD:-$PWD}"
+export ORG_ENTRY="$ENTRY"
+export ORG_APPDIR="$APPDIR"
 
-# Preserve the caller's working directory.
-CWD="$(pwd)"
+command -v bun >/dev/null 2>&1 || { echo "org: bun not found in PATH" >&2; exit 127; }
 
-# Check entrypoint
-if [[ ! -f "$ENTRY" ]]; then
-  echo "org: entrypoint not found at $ENTRY" >&2
-  exit 66
-fi
-
-# Require Bun
-if ! command -v bun >/dev/null 2>&1; then
-  echo "org: bun is not installed or not in PATH" >&2
-  exit 127
-fi
-
-# Run the app in the caller's working directory
-cd "$CWD"
-exec bun "$ENTRY" "$@"
+exec bun "$RUNNER" "$@"
 
