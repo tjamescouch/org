@@ -142,9 +142,10 @@ Loop semantics:
 
 Use inline tags inside assistant messages:
 
-* `@bob …` — direct message to agent `bob`
-* `@group …` — broadcast to all agents
-* `#path/to/file.ext …lines…` — file “attachment” (persisted via file handler)
+* `@@bob …` — direct message to agent `bob`
+* `@@group …` — broadcast to all agents
+* `@@user …` — yield to user
+* `##path/to/file.ext …lines…` — file “attachment” (persisted via file handler)
 
 The router splits these parts and delivers them to agent inboxes or the file handler.
 
