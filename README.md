@@ -189,7 +189,7 @@ export SAFE_MODE=true
 With **Bun** (recommended):
 
 ```bash
-org --agents "alice:lmstudio,bob:mock" --max-tools 2 --safe
+org --agents "alice:lmstudio,bob:lmstudio" --max-tools 2 --safe
 ```
 
 Behavior is **Unix-y**: all shell commands and file writes happen in the **current directory** where you typed `org`. The wrapper (`org` → `runner.ts`) ensures the process `cwd` matches your invocation directory.
@@ -202,6 +202,11 @@ Loop semantics:
 4. Exit after two idle passes (nothing to do). `Ctrl+C` at any time to quit.
 
 **Hotkey**: press `i` to interject a user message immediately.
+
+When the agents are started you should they should use tools like in the following image:
+
+<img width="620" height="1240" alt="image" src="https://github.com/user-attachments/assets/39b33984-f98d-4f19-872c-0a1eade8e690" />
+
 
 ---
 
