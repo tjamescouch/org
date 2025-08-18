@@ -11,7 +11,7 @@ RUNNER="$APPDIR/runner.ts"
 ENTRY="$APPDIR/src/app.ts"
 
 export PATH="$APPDIR:$APPDIR/scripts:$PATH"
-export ORG_CALLER_CWD="${ORG_CALLER_CWD:-$PWD}"
+export ORG_CALLER_CWD="${ORG_CALLER_CWD:-/home/ollama/dev/ai-workspace}"
 export ORG_ENTRY="$ENTRY"
 export ORG_APPDIR="$APPDIR"
 
