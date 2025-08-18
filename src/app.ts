@@ -70,8 +70,20 @@ function parseAgents(
   const list = String(spec || "").split(",").map(x => x.trim()).filter(Boolean);
   if (list.length === 0) {
     return [
-      { id: "alice", kind: "mock", model: new MockModel("alice") },
-      { id: "bob",   kind: "mock", model: new MockModel("bob") }
+      { id: "alice", kind: "lmstudio", model: new LlmAgent("alice", 
+      makeLmStudioOpenAiDriver({
+        baseUrl: llmDefaults.baseUrl,
+        model: llmDefaults.model,
+        apiKey: (llmDefaults as any).apiKey
+      })
+      ,llmDefaults.model) },
+      { id: "bob",   kind: "lmstudio", model: new LlmAgent("bob",
+      makeLmStudioOpenAiDriver({
+        baseUrl: llmDefaults.baseUrl,
+        model: llmDefaults.model,
+        apiKey: (llmDefaults as any).apiKey
+      })
+      ,llmDefaults.model) }
     ];
   }
   const out: AgentSpec[] = [];

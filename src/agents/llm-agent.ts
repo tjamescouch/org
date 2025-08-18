@@ -36,6 +36,7 @@ You can call tools. When you need to run a shell command on a POSIX system, use 
 - The tool returns JSON: {"ok":boolean,"stdout":string,"stderr":string,"exit_code":number,"cmd":string}
 - Prefer concise commands. Avoid infinite loops. Validate results from stdout/stderr.
 - Do not fabricate tool output. Only rely on the returned JSON and previous context.
+- Use git to version control your work but do not push.
 
 Routing:
 - If you want to send a direct message to another agent: prefix with "@@<agentName> ".
@@ -86,9 +87,9 @@ Keep responses brief unless writing files.`;
           const cmd = String(args?.cmd || "").trim();
           if (cmd.length === 0) {
             // Feed a minimal error back to the model as a tool result
-            Logger.warn(`${name} tool missing cmd`);
+            Logger.warn(`${name} tool missing cmd`, {cmd, args});
 
-            const content = JSON.stringify({ ok: false, stdout: "", stderr: "missing cmd", exit_code: 1, cmd: "" });
+            const content = JSON.stringify({ ok: false, stdout: "", stderr: "Execution failed: Command required.", exit_code: 1, cmd: "" });
             this.history.push({ role: "tool", content, tool_call_id: tc.id, name: "sh" });
             totalUsed++;
             continue;
@@ -111,7 +112,8 @@ Keep responses brief unless writing files.`;
       if (totalUsed >= maxTools) break;
     }
 
-    Logger.info(C.green(`${this.id} wrote:\n${finalText}\nwith [${totalUsed}] tools used.)`));
+    Logger.info(C.green(`${finalText}`));
+    Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
 
     return { message: finalText, toolsUsed: totalUsed };
   }

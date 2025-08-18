@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve symlink to the actual script in your repo
+SELF="$0"
+# BSD readlink doesn’t support -f, so use python for portability
+REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SELF")"
+APPDIR="$(cd "$(dirname "$REAL")" && pwd)"
+
+RUNNER="$APPDIR/runner.ts"
+ENTRY="$APPDIR/src/app.ts"
+
+export PATH="$APPDIR:$APPDIR/scripts:$PATH"
+export ORG_CALLER_CWD="${ORG_CALLER_CWD:-$PWD}"
+export ORG_ENTRY="$ENTRY"
+export ORG_APPDIR="$APPDIR"
+
+command -v bun >/dev/null 2>&1 || { echo "org: bun not found in PATH" >&2; exit 127; }
+
+exec bun "$RUNNER" "$@"
+

@@ -5,7 +5,7 @@
  * - Extensible guard chain allows policy checks (denylist, cwd, etc.)
  */
 
-import { ExecutionGuard } from "../execution-guards";
+import { ExecutionGuard, NoDangerousRm, NoGitPush, NoRm } from "./execution-guards";
 
 
 type GateConfig = { safe: boolean; interactive: boolean; guards?: ExecutionGuard[] };
@@ -13,7 +13,7 @@ type GateConfig = { safe: boolean; interactive: boolean; guards?: ExecutionGuard
 export class ExecutionGate {
   private static _safe = false;
   private static _interactive = true;
-  private static _guards: ExecutionGuard[] = [];
+  private static _guards: ExecutionGuard[] = [new NoDangerousRm(), new NoRm(), new NoGitPush()];
 
   static configure(cfg: GateConfig) {
     this._safe = Boolean(cfg.safe);
