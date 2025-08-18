@@ -120,7 +120,7 @@ export class AdvancedMemory extends AgentMemory {
     // If we can fit without any summaries (very short tails), return early.
     if (preservedTok <= lowTarget) {
       this.messagesBuffer.splice(0, this.messagesBuffer.length,
-        ...this.stableOrder([], [], [], preserved, assistantIdx, userIdx, systemIdx, toolIdx, otherIdx)
+        ...this.stableOrder([], preserved, assistantIdx, userIdx, systemIdx, toolIdx, otherIdx) //changed to make the arguments line up
       );
       return;
     }
