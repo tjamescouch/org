@@ -58,10 +58,6 @@ export class RoundRobinScheduler {
     // Keep-alive to avoid “exit 0” on empty loops in some runtimes
     //ping
     this.keepAlive = setInterval(() => { /* no-op */ }, 30_000);
-    setTimeout(() => {
-      //pong
-      this.keepAlive = setInterval(() => { /* no-op */ }, 30_000);
-    }, 1000)
 
     let idleTicks = 0;
     while (this.running) {
