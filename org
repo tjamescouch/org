@@ -11,7 +11,10 @@ RUNNER="$APPDIR/runner.ts"
 ENTRY="$APPDIR/src/app.ts"
 
 export PATH="$APPDIR:$APPDIR/scripts:$PATH"
-export ORG_CALLER_CWD="${ORG_CALLER_CWD:-/home/ollama/dev/ai-workspace}"
+# Use the directory from which org was invoked. If the caller explicitly
+# sets ORG_CALLER_CWD, respect that; otherwise default to the current working
+# directory at execution time.
+export ORG_CALLER_CWD="${ORG_CALLER_CWD:-$(pwd)}"
 export ORG_ENTRY="$ENTRY"
 export ORG_APPDIR="$APPDIR"
 
