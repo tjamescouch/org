@@ -222,6 +222,7 @@ Keep responses brief unless writing files.`;
               await this.memory.add({ role: "system", content: decision.nudge });
             }
             if (decision?.endTurn) {
+              Logger.warn(`System ended turn.`);
               totalUsed = maxTools; // consume budget → end turn
               forceEndTurn = true;
               if (finalText) await this.memory.add({ role: "assistant", content: finalText });
