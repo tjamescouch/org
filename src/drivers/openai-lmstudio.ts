@@ -1,3 +1,7 @@
+const DEBUG = ((process.env.DEBUG ?? "").toString().toLowerCase());
+const DBG = DEBUG === "1" || DEBUG === "true" || DEBUG === "yes" || DEBUG === "debug";
+const dbg = (...a: any[]) => { if (DBG) Logger.info("[DBG][driver]", ...a); };
+
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types";
 
 export interface OpenAiDriverConfig {
@@ -37,6 +41,10 @@ export function makeLmStudioOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
         payload.tool_choice = "auto";
       }
 
+      const t0 = Date.now();
+      const charSum = messages.reduce((s, m) => s + String((m as any).content ?? "").length, 0);
+      dbg("POST /chat", { model: opts?.model ?? cfg.model, msgs: messages.length, chars: charSum, tools: !!opts?.tools && opts.tools.length ? opts.tools.length : 0, timeoutMs: defaultTimeout });
+
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -44,17 +52,25 @@ export function makeLmStudioOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
         signal: controller.signal,
       });
 
+      dbg("resp", { status: res.status, ms: Date.now() - t0 });
+
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         throw new Error(`LM Studio / OpenAI chat failed (${res.status}): ${text}`);
       }
 
       const data: any = await res.json();
+
+      dbg("parsed", { took: Date.now() - t0, hasChoices: !!data?.choices?.length });
+
       const choice = data?.choices?.[0];
       const msg = choice?.message || {};
       const content = typeof msg?.content === "string" ? msg.content : "";
       const toolCalls: ChatToolCall[] = Array.isArray(msg?.tool_calls) ? msg.tool_calls : [];
       return { text: content, toolCalls };
+    } catch (e: any) {
+      if (e?.name === "AbortError") dbg("timeout", { ms: defaultTimeout });
+      throw e;
     } finally {
       clearTimeout(timer);
     }
