@@ -1,4 +1,9 @@
-import { Logger } from "./logger";
+import { TagParser } from "./utils/tag-parser";
+import { makeRouter } from "./routing/route-with-tags";
+import { C, Logger } from "./logger";
+import { extractCodeGuards } from "./utils/extract-code-blocks";
+import { FileWriter } from "./io/file-writer";
+import { ExecutionGate } from "./tools/execution-gate";
 
 const DEBUG = (() => {
   const v = (process.env.DEBUG ?? "").toString().toLowerCase();
@@ -6,21 +11,36 @@ const DEBUG = (() => {
 })();
 function dbg(...a: any[]) { if (DEBUG) Logger.info("[DBG][scheduler]", ...a); }
 
-export interface AgentReply { message: string; toolsUsed: number; }
-export interface Responder {
-  id: string;
-  respond(prompt: string, maxTools: number, peers: string[]): Promise<AgentReply>;
+function restoreStdin(raw: boolean) {
+  try {
+    if (raw && process.stdin.isTTY) {
+      process.stdin.setRawMode(true);
+    }
+    process.stdin.resume();
+    dbg("stdin restored (raw:", raw, ")");
+  } catch (e) {
+    Logger.info("[DBG] failed to restore stdin:", e);
+  }
 }
 
+/** Minimal interface all participant models must implement. */
+export interface Responder {
+  id: string;
+  respond(usersPrompt: string, maxTools: number, peers: string[]): Promise<{ message: string; toolsUsed: number }>;
+}
+
+/** Round-robin scheduler that routes @@tags and supports hotkey interjection. */
 export class RoundRobinScheduler {
   private agents: Responder[];
   private maxTools: number;
-  private inbox: Map<string, string[]> = new Map();
   private running = false;
   private paused = false;
 
-  // prompts coming from router "@@user"
-  private readonly userPromptFn: (fromAgent: string, content: string) => Promise<string | null>;
+  private inbox = new Map<string, string[]>();
+  private lastUserDMTarget: string | null = null;
+
+  private userPromptFn: (fromAgent: string, content: string) => Promise<string | null>;
+  private keepAlive: NodeJS.Timeout | null = null;
 
   constructor(opts: {
     agents: Responder[];
@@ -35,100 +55,121 @@ export class RoundRobinScheduler {
 
   start = async (): Promise<void> => {
     this.running = true;
-    let idlePasses = 0;
+    // Keep-alive to avoid “exit 0” on empty loops in some runtimes
+    //ping
+    this.keepAlive = setInterval(() => { /* no-op */ }, 30_000);
 
-    // seed: if no agent has anything, prompt loop will ask user via onAskUser
+    let idleTicks = 0;
     while (this.running) {
-      if (this.paused) { await this.sleep(15); continue; }
+      if (this.paused) { await this.sleep(25); continue; }
 
-      let progressed = false;
+      let didWork = false;
 
-      for (const agent of this.agents) {
-        const peers = this.agents.filter(a => a.id !== agent.id).map(a => a.id);
-        const box = this.ensureInbox(agent.id);
-        const next = box.shift();
-        if (!next) continue;
+      for (const a of this.agents) {
+        if (this.paused || !this.running) break;
 
-        progressed = true;
-        const reply = await agent.respond(next, this.maxTools, peers).catch((e) => {
-          Logger.error(`[${agent.id}] respond failed: ${e}`);
-          return { message: "", toolsUsed: 0 } as AgentReply;
-        });
+        const basePrompt = this.nextPromptFor(a.id);
+        if (!basePrompt) {
+          dbg(`no work for ${a.id}`);
+          continue;
+        }
+        dbg(`drained prompt for ${a.id}:`, JSON.stringify(basePrompt));
 
-        if (reply.message && reply.message.trim()) {
-          await this.routeAndDeliver(agent.id, reply.message.trim());
+        let remaining = this.maxTools;
+        // multiple hops if the model requests tools
+        for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
+          const peers = this.agents.map(x => x.id);
+          dbg(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
+          const { message, toolsUsed } = await a.respond(basePrompt, Math.max(0, remaining), peers);
+          dbg(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
+
+          const askedUser = await this.route(a.id, message);
+          didWork = true;
+
+          if (askedUser) {
+            const userText = (await this.userPromptFn(a.id, message)) ?? "";
+            if (userText.trim()) this.handleUserInterjection(userText.trim());
+            break;
+          }
+
+          if (toolsUsed > 0) {
+            remaining = Math.max(0, remaining - toolsUsed);
+            if (remaining <= 0) break;
+          } else {
+            break;
+          }
         }
       }
 
-      if (!progressed) {
-        idlePasses++;
-        if (idlePasses >= 2) {
-          // ask agents if they want user input implicitly
-          // not blocking forever: short sleep and continue
-          await this.sleep(50);
-        } else {
-          await this.sleep(10);
-        }
-      } else {
-        idlePasses = 0;
-      }
+      if (!didWork) { idleTicks++; dbg(`idle tick ${idleTicks}`); }
+      else idleTicks = 0;
+
+      await this.sleep(didWork ? 5 : 25);
     }
+
+    if (this.keepAlive) { clearInterval(this.keepAlive); this.keepAlive = null; }
   };
 
   stop() { this.running = false; }
+  pause() { this.paused = true; dbg("paused"); }
+  resume() { this.paused = false; dbg("resumed"); }
 
-  pause() { this.paused = true; }
-  resume() { this.paused = false; }
-
-  /** external injection from the console */
   handleUserInterjection(text: string) {
-    const t = text.trim();
-    if (!t) return;
-    // broadcast to all agents
-    for (const a of this.agents) this.ensureInbox(a.id).push(t);
+    const target = this.lastUserDMTarget;
+    if (target) {
+      this.ensureInbox(target).push(text);
+      Logger.debug(`[user → @@${target}] ${text}`);
+    } else {
+      for (const a of this.agents) this.ensureInbox(a.id).push(text);
+      Logger.debug(`[user → @@group] ${text}`);
+    }
   }
 
-  private ensureInbox(id: string): string[] {
-    let q = this.inbox.get(id);
-    if (!q) { q = []; this.inbox.set(id, q); }
-    return q;
+  private ensureInbox(id: string) {
+    if (!this.inbox.has(id)) this.inbox.set(id, []);
+    return this.inbox.get(id)!;
   }
 
-  /** ultra-simple tag router */
-  private async routeAndDeliver(from: string, text: string): Promise<boolean> {
-    // Collect @@user prompts
+  private nextPromptFor(id: string): string | null {
+    const q = this.ensureInbox(id);
+    if (q.length === 0) return null;
+    return q.splice(0, q.length).join("\n");
+  }
+
+  private async route(from: string, text: string): Promise<boolean> {
+    const parts = TagParser.parse(text || "");
     let sawUser = false;
-    const mentions = Array.from(text.matchAll(/@@([a-z0-9_-]+)/gi)).map(m => m[1].toLowerCase());
-    const unique = Array.from(new Set(mentions));
-    const deliveredIds = new Set<string>();
+    for (const t of parts) if (t.kind === "user") sawUser = true;
 
-    if (unique.includes("user")) {
-      sawUser = true;
-      const promptToUser = text.replace(/@@user/gi, "").trim() || "(no message)";
-      const userReply = await this.userPromptFn(from, promptToUser);
-      if (userReply && userReply.trim()) {
-        // deliver the user's reply to all agents
-        for (const a of this.agents) {
-          if (a.id !== from) this.ensureInbox(a.id).push(userReply);
+    const router = makeRouter({
+      onAgent: async (_f, to, c) => { this.ensureInbox(to).push(c); },
+      onGroup: async (_f, c) => { for (const a of this.agents) if (a.id !== from) this.ensureInbox(a.id).push(c); },
+      onUser: async (_f, c) => { this.lastUserDMTarget = from; },
+      onFile: async (_f, name, c) => {
+        const { cleaned } = extractCodeGuards(c);
+        const cmd = `${c}\n***** Write to file? [y/N] ${name}\n`;
+        const wasRaw = (process.stdin as any)?.isRaw;
+        try {
+          if (wasRaw) process.stdin.setRawMode(false);
+          await ExecutionGate.gate(cmd);
+          const res = await FileWriter.write(name, cleaned);
+          Logger.info(C.yellow(`${cleaned}`));
+          Logger.info(C.magenta(`Written to ${res.path} (${res.bytes} bytes)`));
+        } catch (err: any) {
+          Logger.error(`File write failed: ${err?.message || err}`);
+        } finally {
+          restoreStdin(!!wasRaw);
         }
       }
-    }
+    });
 
-    // direct messages @@alice
-    for (const id of unique) {
-      if (id === "user" || id === "group") continue;
-      const target = this.agents.find(a => a.id.toLowerCase() === id);
-      if (target) {
-        this.ensureInbox(target.id).push(text);
-        deliveredIds.add(target.id);
-      }
-    }
+    await router(from, text);
 
-    // group (or no tags): broadcast to others
-    if (unique.length === 0 || unique.includes("group")) {
-      for (const a of this.agents) if (a.id !== from && !deliveredIds.has(a.id)) this.ensureInbox(a.id).push(text);
+    if (!sawUser && parts.length === 0) {
+      for (const a of this.agents) if (a.id !== from) this.ensureInbox(a.id).push(text);
+      Logger.debug(`${from} → @@group (implicit): ${text}`);
+      dbg(`${from} -> @@group (implicit):`, JSON.stringify(text));
     }
-
     return sawUser;
   }
 
