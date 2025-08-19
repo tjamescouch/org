@@ -29,7 +29,7 @@ export class LlmAgent {
   private readonly memory: AgentMemory;
   private readonly systemPrompt: string;
 
-  // Guard rails (loop / quality signals), per‑agent, pluggable.
+  // Guard rails (loop / quality signals), per-agent, pluggable.
   private readonly guard: GuardRail;
 
   constructor(id: string, driver: ChatDriver, model: string, guard?: GuardRail) {
@@ -117,11 +117,6 @@ Do not describe your intentions (e.g., "We need to respond as Bob").
 Do not narrate plans or roles; provide the final answer only.
 Do not quote other agents’ names as prefixes like "bob:" or "carol:".
 
-If you produce two consecutive replies that neither call tools nor contain @@user or a direct @@<peer>, your NEXT reply MUST be one of:
-- @@user <a single, specific clarifying question>, or
-- @@<peer> <a concrete, delegated task>.
-Do not post another generic @@group message.
-
 Keep responses brief unless writing files.`;
 
     // Attach a hysteresis-based memory that summarizes overflow.
@@ -152,7 +147,7 @@ Keep responses brief unless writing files.`;
   async respond(prompt: string, maxTools: number, _peers: string[]): Promise<AgentReply> {
     dbg(`${this.id} start`, { promptChars: prompt.length, maxTools });
 
-    // Initialize per‑turn thresholds/counters in the guard rail.
+    // Initialize per-turn thresholds/counters in the guard rail.
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
 
     await this.memory.add({ role: "user", content: prompt });
@@ -209,11 +204,11 @@ Keep responses brief unless writing files.`;
         try { args = JSON.parse(tc.function?.arguments || "{}"); } catch { args = {}; }
 
         if (name === "sh") {
-          const cmd = String(args?.cmd || "").trim();
-          if (cmd.length === 0) {
-            Logger.warn(`sh tool missing cmd`, { cmd, args });
+          const rawCmd = String(args?.cmd ?? "");
+          const cmd = rawCmd.replace(/\s+/g, " ").trim();
 
-            // Centralized escalation via GuardRail
+          if (cmd.length === 0) {
+            // Missing argument → centralized escalation via GuardRail
             const decision = this.guard.noteBadToolCall({
               name: "sh",
               reason: "missing-arg",
@@ -223,14 +218,9 @@ Keep responses brief unless writing files.`;
               await this.memory.add({ role: "system", content: decision.nudge });
             }
             if (decision?.endTurn) {
-              // Forcefully consume the remaining tool budget to end the turn.
-              totalUsed = maxTools;
+              totalUsed = maxTools; // consume budget → end turn
               forceEndTurn = true;
-
-              // Record the assistant text we have (if any) before yielding.
-              if (finalText) {
-                await this.memory.add({ role: "assistant", content: finalText });
-              }
+              if (finalText) await this.memory.add({ role: "assistant", content: finalText });
               break;
             }
 
@@ -247,10 +237,32 @@ Keep responses brief unless writing files.`;
             continue;
           }
 
-          dbg(`${this.id} tool ->`, { name, cmd: (cmd || "").slice(0, 120) });
+          // Normal execution
+          dbg(`${this.id} tool ->`, { name, cmd: cmd.slice(0, 160) });
           const tSh = Date.now();
           const result = await runSh(cmd);
           dbg(`${this.id} tool <-`, { name, ms: Date.now() - tSh, exit: result.exit_code, outChars: result.stdout.length, errChars: result.stderr.length });
+
+          // Let GuardRail see the signature to stop "same command" repetition
+          const repeatDecision = this.guard.noteToolCall({
+            name: "sh",
+            argsSig: cmd, // argument signature = canonicalized cmd
+            resSig: `${result.exit_code}|${(result.stdout || "").trim().slice(0, 240)}`,
+            exitCode: result.exit_code,
+          });
+          if (repeatDecision?.nudge) {
+            await this.memory.add({ role: "system", content: repeatDecision.nudge });
+          }
+          if (repeatDecision?.endTurn) {
+            // Still record the tool output so the model can read it later.
+            const contentJSON = JSON.stringify(result);
+            await this.memory.add({ role: "tool", content: contentJSON, tool_call_id: tc.id, name: "sh" } as ChatMessage);
+
+            totalUsed = maxTools;
+            forceEndTurn = true;
+            if (finalText) await this.memory.add({ role: "assistant", content: finalText });
+            break;
+          }
 
           const content = JSON.stringify(result);
           await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh" } as ChatMessage);

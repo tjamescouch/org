@@ -10,7 +10,7 @@ export type GuardDecision = {
   suppressBroadcast?: boolean;
   /** Temporarily mute the agent so others can progress (used by scheduler). */
   muteMs?: number;
-  /** Free‑form warnings for observability / logs. */
+  /** Free-form warnings for observability / logs. */
   warnings?: string[];
   /** Forcibly end the current agent turn (stop further tool hops this turn). */
   endTurn?: boolean;
@@ -19,7 +19,7 @@ export type GuardDecision = {
 export interface GuardRail {
   /**
    * Called once at the beginning of each agent "turn" (i.e., per respond() call).
-   * Used to (re)initialize per‑turn counters and thresholds.
+   * Used to (re)initialize per-turn counters and thresholds.
    */
   beginTurn(ctx: { maxToolHops: number }): void;
 
@@ -39,6 +39,18 @@ export interface GuardRail {
   }): GuardDecision | null;
 
   /**
+   * Notify guard rail of a (successful) tool call to detect repeats within a turn.
+   * argsSig should uniquely represent the arguments relevant to the call (e.g., sh cmd).
+   * resSig can summarize notable result surface (e.g., stdout snippet + exit code).
+   */
+  noteToolCall(info: {
+    name: string;
+    argsSig: string;
+    resSig?: string;
+    exitCode?: number;
+  }): GuardDecision | null;
+
+  /**
    * Evaluate an outgoing routed delivery from the agent (e.g., @@group).
    * Used by the scheduler to decide broadcast suppression and nudges.
    */
@@ -47,24 +59,28 @@ export interface GuardRail {
 
 /**
  * StandardGuardRail:
- *  - Detects near‑duplicate / low‑signal repeated @@group messages.
+ *  - Detects near-duplicate / low-signal repeated @@group messages.
  *  - Encourages switching to @@user or direct @@peer when stuck.
  *  - Tracks repeated invalid tool calls (e.g., sh missing "cmd"), escalates warnings,
- *    and can force end‑turn when the limit is reached.
+ *    and can force end-turn when the limit is reached.
+ *  - Tracks repeated *identical tool calls* in the same turn; escalates and can end turn.
  */
 export class StandardGuardRail implements GuardRail {
   private readonly agentId: string;
 
   // --- config knobs ----------------------------------------------------------
-  /** Optional override for invalid‑tool end‑turn limit (per turn). */
+  /** Optional override for invalid-tool end-turn limit (per turn). */
   private readonly overrideMissingArgEndTurnLimit?: number;
-  /** Similarity threshold for considering two messages near‑duplicates. */
+  /** Optional override for repeated tool signature end-turn limit (per turn). */
+  private readonly overrideRepeatToolSigEndTurnLimit?: number;
+
+  /** Similarity threshold for considering two messages near-duplicates. */
   private readonly nearDupThreshold = 0.80;
-  /** Repeats needed to flag repeated near‑duplicate @@group messages. */
+  /** Repeats needed to flag repeated near-duplicate @@group messages. */
   private readonly stagnationRepeatThreshold = 3;
-  /** Repeats needed if the message is low‑signal. */
+  /** Repeats needed if the message is low-signal. */
   private readonly lowSignalRepeatThreshold = 2;
-  /** Suggested temporary mute for repeated low‑signal group chatter (ms). */
+  /** Suggested temporary mute for repeated low-signal group chatter (ms). */
   private readonly defaultMuteMs = 1500;
 
   // --- state: group loop detection ------------------------------------------
@@ -78,20 +94,35 @@ export class StandardGuardRail implements GuardRail {
   private badToolMissingArgCount = 0;
   private badToolEndTurnLimit = 1; // computed each beginTurn
 
-  constructor(args: { agentId: string; missingArgEndTurnLimit?: number }) {
+  // --- state: repeated tool signatures (per turn) ----------------------------
+  private toolSigCounts: Map<string, number> = new Map();
+  private repeatToolSigEndTurnLimit = 2; // computed each beginTurn
+
+  constructor(args: {
+    agentId: string;
+    missingArgEndTurnLimit?: number;
+    repeatToolSigEndTurnLimit?: number;
+  }) {
     this.agentId = args.agentId;
     this.overrideMissingArgEndTurnLimit = args.missingArgEndTurnLimit;
+    this.overrideRepeatToolSigEndTurnLimit = args.repeatToolSigEndTurnLimit;
   }
 
   beginTurn(ctx: { maxToolHops: number }): void {
-    // Reset per‑turn counters.
+    // Reset per-turn counters.
     this.badToolMissingArgCount = 0;
+    this.toolSigCounts.clear();
 
-    // Compute limit for ending the turn due to repeated invalid tool calls.
-    const defaultLimit = Math.max(1, Math.ceil(Math.max(0, ctx.maxToolHops) / 2));
+    // Compute limits for this turn.
+    const defaultHalf = Math.max(1, Math.ceil(Math.max(0, ctx.maxToolHops) / 2));
     this.badToolEndTurnLimit = Math.max(
       1,
-      this.overrideMissingArgEndTurnLimit ?? defaultLimit
+      this.overrideMissingArgEndTurnLimit ?? defaultHalf
+    );
+    // Allow one repeat then end (default 2); or align with the same half rule if overridden.
+    this.repeatToolSigEndTurnLimit = Math.max(
+      2, // minimum sensible value (first time + one repeat)
+      this.overrideRepeatToolSigEndTurnLimit ?? 2
     );
   }
 
@@ -107,8 +138,6 @@ export class StandardGuardRail implements GuardRail {
   }): GuardDecision | null {
     const warnings: string[] = [];
 
-    // We currently only escalate for missing‑argument patterns,
-    // but this hook is generic for future reasons.
     if (info.reason === "missing-arg" || info.reason === "missing-args") {
       this.badToolMissingArgCount++;
       const count = this.badToolMissingArgCount;
@@ -123,7 +152,6 @@ export class StandardGuardRail implements GuardRail {
       if (count >= Math.max(2, limit - 1)) label = "FINAL WARNING";
       else if (count >= 2) label = "STRONG WARNING";
 
-      // If we reached the limit → end the turn immediately.
       if (count >= limit) {
         const nudge =
 `SYSTEM ${label}:
@@ -132,7 +160,6 @@ On your next turn, use @@user to ask for clarification OR DM a peer with a concr
         return { nudge, endTurn: true, warnings };
       }
 
-      // Otherwise warn loudly but allow another hop.
       const nudge =
 `SYSTEM ${label}:
 You invoked the "${info.name}" tool without ${need}.
@@ -142,6 +169,48 @@ ${count >= Math.max(2, limit - 1) ? "One more invalid tool call will END your tu
     }
 
     return warnings.length ? { warnings } : null;
+  }
+
+  noteToolCall(info: {
+    name: string;
+    argsSig: string;
+    resSig?: string;
+    exitCode?: number;
+  }): GuardDecision | null {
+    const warnings: string[] = [];
+
+    // Signature = tool + normalized args; result signature optional.
+    const key = `${info.name}|${this.normalize(info.argsSig)}`;
+    const count = (this.toolSigCounts.get(key) ?? 0) + 1;
+    this.toolSigCounts.set(key, count);
+
+    if (count === 1) return null; // first time: fine
+
+    // Escalate on repeats within the *same turn*.
+    const limit = this.repeatToolSigEndTurnLimit;
+    let label = "WARNING";
+    if (count >= Math.max(2, limit - 1)) label = "FINAL WARNING";
+    else if (count >= 2) label = "STRONG WARNING";
+
+    const base =
+`SYSTEM ${label}:
+You are repeating the same "${info.name}" call this turn:
+  args: ${info.argsSig}
+${info.resSig ? `  last result: ${truncate(info.resSig, 160)}` : ""}`;
+
+    if (count >= limit) {
+      const nudge =
+`${base}
+Ending your turn now. On your next turn, switch strategies:
+- @@user <ask a single, concrete question>, or
+- @@peer <delegate a specific subtask>.`;
+      return { nudge, endTurn: true, warnings };
+    }
+
+    const nudge =
+`${base}
+Do not re-run the same command again. Either change the arguments, run a DIFFERENT diagnostic, or DM a peer.`;
+    return { nudge, warnings };
   }
 
   guardCheck(route: GuardRouteKind, content: string, peers: string[]): GuardDecision | null {
@@ -219,4 +288,9 @@ Do NOT reply to @@group again.`;
     ];
     return pats.some((re) => re.test(text)) || s.split(" ").length <= 8;
   }
+}
+
+function truncate(s: string, n: number): string {
+  if (s.length <= n) return s;
+  return s.slice(0, Math.max(0, n - 1)) + "…";
 }
