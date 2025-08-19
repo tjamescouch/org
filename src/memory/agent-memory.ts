@@ -1,16 +1,15 @@
 import type { ChatMessage } from "../drivers/types";
 
 /**
- * Abstract memory for an agent. Concrete implementations decide how to
- * store/trim/summarize when the history grows.
- *
- * Lifecycle:
- *  - The constructor may seed an initial system prompt.
- *  - Call `add()` for every message the agent wants to remember.
- *  - Call `messages()` when sending context to the model.
+ * Base class for agent memory.
+ * Concrete classes should implement summarizeIfNeeded() using a non-blocking strategy.
  */
 export abstract class AgentMemory {
   protected readonly messagesBuffer: ChatMessage[] = [];
+
+  // Background summarization coordination
+  private summarizing = false;
+  private pending = false;
 
   constructor(systemPrompt?: string) {
     if (systemPrompt && systemPrompt.trim().length > 0) {
@@ -18,25 +17,39 @@ export abstract class AgentMemory {
     }
   }
 
-  /** Append a message and allow the implementation to maintain invariants. */
   async add(msg: ChatMessage): Promise<void> {
     this.messagesBuffer.push(msg);
+    // schedule summarization but don't block caller
     await this.onAfterAdd();
   }
 
-  /** All messages to provide to the driver (copy, not the live buffer). */
+  /** Hook for subclasses. Should schedule summarization but return quickly. */
+  protected abstract onAfterAdd(): Promise<void>;
+
+  /** Access snapshot of messages for sending to model. */
   messages(): ChatMessage[] {
-    // Return a shallow copy to avoid accidental mutation by callers.
     return [...this.messagesBuffer];
   }
 
-  /** Number of messages excluding the initial system prompt (if present). */
+  /** Utility for subclasses: count excluding first system message. */
   protected nonSystemCount(): number {
     if (this.messagesBuffer.length === 0) return 0;
-    const first = this.messagesBuffer[0];
-    return first?.role === "system" ? this.messagesBuffer.length - 1 : this.messagesBuffer.length;
+    return this.messagesBuffer[0].role === "system" ? this.messagesBuffer.length - 1 : this.messagesBuffer.length;
   }
 
-  /** Implementations can summarize/trim/etc. Called after each add(). */
-  protected abstract onAfterAdd(): Promise<void>;
+  /** Run a background task once. Subclasses can use to serialize summarization. */
+  protected async runOnce(task: () => Promise<void>): Promise<void> {
+    if (this.summarizing) { this.pending = true; return; }
+    this.summarizing = true;
+    try {
+      await task();
+    } finally {
+      this.summarizing = false;
+      if (this.pending) {
+        this.pending = false;
+        // Fire and forget; don't await a chain.
+        void this.runOnce(task);
+      }
+    }
+  }
 }
