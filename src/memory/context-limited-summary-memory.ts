@@ -1,9 +1,7 @@
 import type { ChatDriver } from "../drivers/types";
 import { SummaryMemory } from "./summary-memory";
 
-/**
- * Picks hysteresis watermarks from a context-size budget.
- */
+/** Picks hysteresis watermarks from a context-size budget. */
 export class ContextLimitedSummaryMemory extends SummaryMemory {
   constructor(args: {
     driver: ChatDriver;
@@ -36,11 +34,7 @@ export class ContextLimitedSummaryMemory extends SummaryMemory {
     high = Math.max(8, high);
     low  = Math.max(4, Math.min(low, high - 2));
 
-    super({
-      driver, model, systemPrompt,
-      highWatermark: high,
-      lowWatermark: low
-    });
+    super({ driver, model, systemPrompt, highWatermark: high, lowWatermark: low });
   }
 
   static for8k(args: Omit<ConstructorParameters<typeof ContextLimitedSummaryMemory>[0], "contextTokens">) {

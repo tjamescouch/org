@@ -1,31 +1,32 @@
 import type { ChatDriver, ChatMessage } from "../drivers/types";
 import { AgentMemory } from "./agent-memory";
-import { Logger } from "../logger";
 
 /**
- * AdvancedMemory:
- *  - Three swim lanes (assistant/system/user) summarized independently.
- *  - Summaries are emitted FIRST in the order: [assistant, system, user, ...rest].
- *  - Token budgeting based on context window with avg chars-per-token.
- *  - Keeps a small recent tail for each lane and a few recent tool outputs.
- *  - Background summarization; never blocks the caller.
+ * AdvancedMemory
+ *
+ * - Maintains three “swim lanes” (assistant / system / user) and summarizes them independently.
+ * - Emits summaries FIRST in the required order: [assistant, system, user, ...rest].
+ * - Uses an average characters-per-token estimate to keep the total context near a target budget
+ *   derived from the model’s context window (with reserves for headers/next reply).
+ * - Preserves a small recent tail from each lane and a few recent tool outputs.
+ * - Background summarization (serialized); never blocks the caller of add().
  */
 export class AdvancedMemory extends AgentMemory {
   private readonly driver: ChatDriver;
   private readonly model: string;
 
-  // Context budget
+  // Context budgeting knobs
   private readonly contextTokens: number;
   private readonly reserveHeaderTokens: number;
   private readonly reserveResponseTokens: number;
-  private readonly highRatio: number;
-  private readonly lowRatio: number;
-  private readonly summaryRatio: number;
+  private readonly highRatio: number;     // trigger summarization when est > highRatio * budget
+  private readonly lowRatio: number;      // compress to <= lowRatio * budget
+  private readonly summaryRatio: number;  // max fraction of budget for the 3 summaries combined
   private readonly avgCharsPerToken: number;
 
-  // Recency
-  private readonly keepRecentPerLane: number;
-  private readonly keepRecentTools: number;
+  // Recency knobs
+  private readonly keepRecentPerLane: number; // keep last N assistant/user/system msgs
+  private readonly keepRecentTools: number;   // keep last N tool msgs
 
   constructor(args: {
     driver: ChatDriver;
@@ -58,13 +59,16 @@ export class AdvancedMemory extends AgentMemory {
     this.keepRecentTools   = Math.max(0, Math.floor(args.keepRecentTools ?? 3));
   }
 
+  // ---------------------------------------------------------------------------
+
   protected async onAfterAdd(): Promise<void> {
     const budget = this.budgetTokens();
     const estTok = this.estimateTokens(this.messagesBuffer);
     if (estTok <= Math.floor(this.highRatio * budget)) return;
 
+    // Serialize summarization; do not block caller.
     await this.runOnce(async () => {
-      // Recompute when running (history may have changed).
+      // Recompute at execution time (history may have changed).
       const budget2 = this.budgetTokens();
       const estTok2 = this.estimateTokens(this.messagesBuffer);
       if (estTok2 <= Math.floor(this.highRatio * budget2)) return;
@@ -89,6 +93,7 @@ export class AdvancedMemory extends AgentMemory {
 
       const keepTools = tool.slice(Math.max(0, tool.length - this.keepRecentTools));
 
+      // Tokens cost of preserved (tails + sys head + a few tools + others)
       const preserved: ChatMessage[] = [
         ...sysHead, ...keepAssistant, ...keepSystem, ...keepUser, ...keepTools, ...other
       ];
@@ -97,7 +102,7 @@ export class AdvancedMemory extends AgentMemory {
       const lowTarget = Math.floor(this.lowRatio * budget2);
       const maxSummaryTok = Math.floor(this.summaryRatio * budget2);
 
-      // If tails alone fit, rebuild without summaries (just move preserved to front).
+      // If tails alone fit, rebuild w/out summaries (just reorder preserved)
       if (preservedTok <= lowTarget) {
         const rebuilt = this.ordered(
           [], sysHead, keepAssistant, keepSystem, keepUser, keepTools, other
@@ -106,6 +111,8 @@ export class AdvancedMemory extends AgentMemory {
         return;
       }
 
+      // We need summaries. Allocate summary budget across lanes proportionally
+      // to the chars we removed from each lane.
       const removedCharA = this.totalChars(olderAssistant);
       const removedCharS = this.totalChars(olderSystem);
       const removedCharU = this.totalChars(olderUser);
@@ -132,10 +139,9 @@ export class AdvancedMemory extends AgentMemory {
       );
       this.messagesBuffer.splice(0, this.messagesBuffer.length, ...rebuilt);
 
-      // Final clamp if still above target
+      // Final clamp if still above target (drop oldest non-system until under target)
       let finalTok = this.estimateTokens(this.messagesBuffer);
       if (finalTok > lowTarget) {
-        // drop oldest non-system messages until under target
         const pruned: ChatMessage[] = [];
         for (const m of this.messagesBuffer) {
           pruned.push(m);
@@ -149,22 +155,27 @@ export class AdvancedMemory extends AgentMemory {
     });
   }
 
+  // ---------------------------------------------------------------------------
+
   private budgetTokens(): number {
     return Math.max(
       512,
       this.contextTokens - this.reserveHeaderTokens - this.reserveResponseTokens
     );
   }
+
   private estimateTokens(msgs: ChatMessage[]): number {
     return Math.ceil(this.totalChars(msgs) / this.avgCharsPerToken);
   }
+
   private totalChars(msgs: ChatMessage[]): number {
     let c = 0;
     for (const m of msgs) {
       const s = String((m as any).content ?? "");
+      // Cap extremely long tool outputs for estimation
       if (m.role === "tool" && s.length > 24_000) c += 24_000;
       else c += s.length;
-      c += 32; // metadata overhead
+      c += 32; // small per-message overhead
     }
     return c;
   }
@@ -220,6 +231,7 @@ export class AdvancedMemory extends AgentMemory {
   ): Promise<string> {
     if (messages.length === 0 || tokenBudget <= 0) return "";
     const approxChars = Math.max(120, Math.floor(tokenBudget * this.avgCharsPerToken));
+
     const header = (() => {
       switch (laneName) {
         case "assistant": return "Summarize prior ASSISTANT replies (decisions, plans, code edits, shell commands and outcomes).";

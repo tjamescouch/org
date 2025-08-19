@@ -1,6 +1,12 @@
 import type { ChatDriver, ChatMessage } from "../drivers/types";
 import { AgentMemory } from "./agent-memory";
 
+const DEBUG = (() => {
+  const v = (process.env.DEBUG ?? "").toString().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "debug";
+})();
+function dbg(...a: any[]) { if (DEBUG) console.error("[DBG][SummaryMemory]", ...a); }
+
 /**
  * Count-based hysteresis memory with background summarization.
  */
@@ -26,10 +32,10 @@ export class SummaryMemory extends AgentMemory {
 
   protected async onAfterAdd(): Promise<void> {
     if (this.nonSystemCount() <= this.highWatermark) return;
+
     await this.runOnce(async () => {
       if (this.nonSystemCount() <= this.highWatermark) return;
 
-      // Replace oldest K messages with a summary to reduce to low watermark.
       const target = this.lowWatermark;
       const current = this.nonSystemCount();
       const reduceBy = current - target;
@@ -39,7 +45,9 @@ export class SummaryMemory extends AgentMemory {
       const end = Math.min(this.messagesBuffer.length, start + K);
       const toSummarize = this.messagesBuffer.slice(start, end);
 
+      dbg(`summarizing ${toSummarize.length} messages…`);
       const summaryText = await this.summarizeMessages(toSummarize);
+      dbg(`summary produced (len=${summaryText.length})`);
 
       const summaryMsg: ChatMessage = {
         role: "system",
@@ -51,17 +59,25 @@ export class SummaryMemory extends AgentMemory {
   }
 
   protected async summarizeMessages(block: ChatMessage[]): Promise<string> {
-    const asText = block.map((m, i) => {
+    // Bound input size so prompts stay quick.
+    const MAX_TOTAL_CHARS = 8_000;
+    let total = 0;
+    const parts: string[] = [];
+    for (const m of block) {
       const role = m.role || "assistant";
       let content = String((m as any).content ?? "");
-      if (role === "tool" && content.length > 1200) {
-        content = content.slice(0, 1200) + "\n…(truncated tool output)…";
-      }
-      return `${i + 1}. ${role.toUpperCase()}: ${content}`;
-    }).join("\n\n");
+      if (role === "tool" && content.length > 1200) content = content.slice(0, 1200) + "\n…(truncated tool output)…";
+      const frag = `${role.toUpperCase()}: ${content}`;
+      if (total + frag.length > MAX_TOTAL_CHARS) break;
+      parts.push(frag);
+      total += frag.length;
+    }
+    const asText = parts.join("\n\n");
 
-    const sys = { role: "system", content:
-      "You are a precise summarizer. Produce a compact summary of the provided chat transcript that preserves decisions, tasks, file names, command results, constraints, and open questions. 150–250 words."
+    const sys = {
+      role: "system",
+      content:
+        "You are a precise summarizer. Produce a compact summary preserving decisions, tasks, file paths, command results, constraints, and open questions. 150–250 words."
     } as ChatMessage;
 
     const user = { role: "user", content: "Summarize the following messages:\n\n" + asText } as ChatMessage;

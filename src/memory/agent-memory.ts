@@ -1,13 +1,13 @@
 import type { ChatMessage } from "../drivers/types";
 
 /**
- * Base class for agent memory.
- * Concrete classes should implement summarizeIfNeeded() using a non-blocking strategy.
+ * Base class for agent memory with background summarization support.
+ * Subclasses call `runOnce` to serialize/queue summarization so callers never block.
  */
 export abstract class AgentMemory {
   protected readonly messagesBuffer: ChatMessage[] = [];
 
-  // Background summarization coordination
+  // Background coordination
   private summarizing = false;
   private pending = false;
 
@@ -19,25 +19,22 @@ export abstract class AgentMemory {
 
   async add(msg: ChatMessage): Promise<void> {
     this.messagesBuffer.push(msg);
-    // schedule summarization but don't block caller
     await this.onAfterAdd();
   }
 
-  /** Hook for subclasses. Should schedule summarization but return quickly. */
+  /** Subclasses schedule summarization here but should return quickly. */
   protected abstract onAfterAdd(): Promise<void>;
 
-  /** Access snapshot of messages for sending to model. */
   messages(): ChatMessage[] {
     return [...this.messagesBuffer];
   }
 
-  /** Utility for subclasses: count excluding first system message. */
   protected nonSystemCount(): number {
     if (this.messagesBuffer.length === 0) return 0;
     return this.messagesBuffer[0].role === "system" ? this.messagesBuffer.length - 1 : this.messagesBuffer.length;
-  }
+    }
 
-  /** Run a background task once. Subclasses can use to serialize summarization. */
+  /** Serialize a background task; if called again while running, coalesce to one more run. */
   protected async runOnce(task: () => Promise<void>): Promise<void> {
     if (this.summarizing) { this.pending = true; return; }
     this.summarizing = true;
@@ -47,8 +44,7 @@ export abstract class AgentMemory {
       this.summarizing = false;
       if (this.pending) {
         this.pending = false;
-        // Fire and forget; don't await a chain.
-        void this.runOnce(task);
+        void this.runOnce(task); // fire-and-forget
       }
     }
   }
