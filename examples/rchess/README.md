@@ -1,3 +1,8 @@
+# This app was created by the org tool
+
+<img width="1311" height="599" alt="image" src="https://github.com/user-attachments/assets/f7647a7a-3330-4952-aae3-6f2be5d64685" />
+
+
 # Chess Engine Skeleton
 
 This repository contains a minimal Rust‑based chess engine skeleton. The goal is to provide a clean starting point for building a full chess engine with move generation, validation and basic UI.
