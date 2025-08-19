@@ -6,7 +6,6 @@ import { AdvancedMemory, AgentMemory } from "../memory";
 const DBG = /^(1|true|yes|debug)$/i.test(String(process.env.DEBUG ?? ""));
 const dbg = (...a: any[]) => { if (DBG) Logger.info("[DBG][agent]", ...a); };
 
-
 export interface AgentReply {
   message: string;   // assistant text
   toolsUsed: number; // number of tool calls consumed this hop
@@ -112,6 +111,11 @@ Do not describe your intentions (e.g., "We need to respond as Bob").
 Do not narrate plans or roles; provide the final answer only.
 Do not quote other agents’ names as prefixes like "bob:" or "carol:".
 
+If you produce two consecutive replies that neither call tools nor contain @@user or a direct @@<peer>, your NEXT reply MUST be one of:
+- @@user <a single, specific clarifying question>, or
+- @@<peer> <a concrete, delegated task>.
+Do not post another generic @@group message.
+
 Keep responses brief unless writing files.`;
 
     // Attach a hysteresis-based memory that summarizes overflow.
@@ -120,16 +124,16 @@ Keep responses brief unless writing files.`;
       model: this.model,
       systemPrompt: this.systemPrompt,
 
-      contextTokens: 8192,           // model window
-      reserveHeaderTokens: 1200,     // header/tool schema reserve
-      reserveResponseTokens: 800,    // space for the next reply
-      highRatio: 0.70,               // trigger summarization earlier than overflow
-      lowRatio: 0.50,                // target after summarization
-      summaryRatio: 0.35,            // 35% of budget for the 3 summaries
+      contextTokens: 8192,
+      reserveHeaderTokens: 1200,
+      reserveResponseTokens: 800,
+      highRatio: 0.70,
+      lowRatio: 0.50,
+      summaryRatio: 0.35,
 
-      avgCharsPerToken: 4,           // char→token estimate
-      keepRecentPerLane: 4,          // retain 4 most-recent per lane
-      keepRecentTools: 3             // retain 3 most-recent tool outputs
+      avgCharsPerToken: 4,
+      keepRecentPerLane: 4,
+      keepRecentTools: 3
     });
   }
 
@@ -148,7 +152,6 @@ Keep responses brief unless writing files.`;
     let finalText = "";
     let reasoning = "";
 
-    // At least one completion; allow tool-following up to maxTools
     for (let hop = 0; hop < Math.max(1, maxTools + 1); hop++) {
       Logger.info(C.green(`${this.id} ...`));
 
@@ -162,7 +165,6 @@ Keep responses brief unless writing files.`;
         dbg(`${this.id} empty-output`);
       }
 
-
       const assistantText = (out.text || "").trim();
       if (assistantText.length > 0) {
         finalText = assistantText;
@@ -174,7 +176,6 @@ Keep responses brief unless writing files.`;
 
       const calls = out.toolCalls || [];
       if (!calls.length) {
-        // No tools requested — capture assistant text in memory and yield.
         if (finalText) {
           dbg(`${this.id} add assistant`, { chars: finalText.length });
           await this.memory.add({ role: "assistant", content: finalText });
@@ -182,7 +183,6 @@ Keep responses brief unless writing files.`;
         break;
       }
 
-      // Execute tools (sh only), respecting remaining budget
       for (const tc of calls) {
         if (totalUsed >= maxTools) break;
 
@@ -205,7 +205,6 @@ Keep responses brief unless writing files.`;
           const result = await runSh(cmd);
           dbg(`${this.id} tool <-`, { name, ms: Date.now() - tSh, exit: result.exit_code, outChars: result.stdout.length, errChars: result.stderr.length });
 
-
           const content = JSON.stringify(result);
           await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh" } as ChatMessage);
           totalUsed++;
@@ -218,15 +217,12 @@ Keep responses brief unless writing files.`;
       }
 
       if (totalUsed >= maxTools) {
-        // Record whatever assistant text we have before yielding
         if (finalText) {
           dbg(`${this.id} add assistant`, { chars: finalText.length });
-
           await this.memory.add({ role: "assistant", content: finalText });
         }
         break;
       }
-      // Loop: the assistant will see tool outputs (role:"tool") now in memory.
     }
 
     if(reasoning) Logger.info(C.cyan(`${reasoning}`));
