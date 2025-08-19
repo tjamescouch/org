@@ -67,25 +67,7 @@ function parseAgents(
   spec: string | undefined,
   llmDefaults: { model: string; baseUrl: string; protocol: "openai"; apiKey?: string }
 ): AgentSpec[] {
-  const list = String(spec || "").split(",").map(x => x.trim()).filter(Boolean);
-  if (list.length === 0) {
-    return [
-      { id: "alice", kind: "lmstudio", model: new LlmAgent("alice", 
-      makeLmStudioOpenAiDriver({
-        baseUrl: llmDefaults.baseUrl,
-        model: llmDefaults.model,
-        apiKey: (llmDefaults as any).apiKey
-      })
-      ,llmDefaults.model) },
-      { id: "bob",   kind: "lmstudio", model: new LlmAgent("bob",
-      makeLmStudioOpenAiDriver({
-        baseUrl: llmDefaults.baseUrl,
-        model: llmDefaults.model,
-        apiKey: (llmDefaults as any).apiKey
-      })
-      ,llmDefaults.model) }
-    ];
-  }
+  const list = String(spec || "alice:lmstudio").split(",").map(x => x.trim()).filter(Boolean);
   const out: AgentSpec[] = [];
   for (const item of list) {
     const [id, kindRaw = "mock"] = item.split(":");

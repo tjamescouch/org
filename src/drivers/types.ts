@@ -17,6 +17,7 @@ export interface ChatToolCall {
 
 export interface ChatOutput {
   text: string;               // assistant text (may be empty)
+  reasoning?: string;
   toolCalls: ChatToolCall[];  // zero or more tool calls requested by the model
   reasoning?: string;
 }
