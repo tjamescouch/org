@@ -3,7 +3,6 @@ export type Role = "system" | "user" | "assistant" | "tool";
 export interface ChatMessage {
   role: Role;
   content: string;
-  reasoning?: string;
   /** When role==="tool", the id of the tool call being answered (OpenAI). */
   tool_call_id?: string;
   /** Optional: tool/function name for clarity */
@@ -18,6 +17,7 @@ export interface ChatToolCall {
 
 export interface ChatOutput {
   text: string;               // assistant text (may be empty)
+  reasoning?: string;
   toolCalls: ChatToolCall[];  // zero or more tool calls requested by the model
 }
 
