@@ -236,6 +236,7 @@ Keep responses brief unless writing files.`;
               exit_code: 1,
               cmd: "",
             });
+            Logger.warn(`Execution failed: Command required.`);
             await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh" } as ChatMessage);
             totalUsed++;
             continue;
