@@ -236,6 +236,7 @@ Keep responses brief unless writing files.`;
               exit_code: 1,
               cmd: "",
             });
+            Logger.warn(`Execution failed: Command required.`);
             await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh" } as ChatMessage);
             totalUsed++;
             continue;
@@ -290,7 +291,8 @@ Keep responses brief unless writing files.`;
       // Loop: the assistant will see tool outputs (role:"tool") now in memory.
     }
 
-    Logger.info(C.green(`${finalText}`));
+    if (allReasoning) Logger.info(C.cyan(`${allReasoning}`));
+    Logger.info(C.bold(`${finalText}`));
     Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
 
     return { message: finalText, toolsUsed: totalUsed };
