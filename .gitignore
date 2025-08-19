@@ -18,3 +18,7 @@ patch-debug.sh
 logs
 patch.sh
 patch.py
+
+
+cchat_client
+cchat_server

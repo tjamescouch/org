@@ -52,7 +52,7 @@ Design goals: **clarity**, **predictability**, and **Unix-y behavior** (it opera
 
    ```bash
    cd ~/work/scratch
-   org --agents "alice:lmstudio,bob:mock" --max-tools 2 --safe
+   org --agents "alice:lmstudio,bob:lmstudio" --max-tools 2 --safe
    ```
 
 * **Hotkeys**: press `i` at any time to interject; `Ctrl+C` to exit.
@@ -206,6 +206,9 @@ Loop semantics:
 When the agents are started you should they should use tools like in the following image:
 
 <img width="620" height="1240" alt="image" src="https://github.com/user-attachments/assets/39b33984-f98d-4f19-872c-0a1eade8e690" />
+
+Here is another example of the application debugging cchat, the networking app it created which can be found in the examples directory:
+<img width="1253" height="1266" alt="image" src="https://github.com/user-attachments/assets/8d5f6a34-25cb-4b6f-a3b6-13d5a71e14b9" />
 
 
 ---
