@@ -4,24 +4,13 @@ import { C, Logger } from "./logger";
 import { extractCodeGuards } from "./utils/extract-code-blocks";
 import { FileWriter } from "./io/file-writer";
 import { ExecutionGate } from "./tools/execution-gate";
+import { restoreStdin } from "./utils/restore-stdin";
 
 const DEBUG = (() => {
   const v = (process.env.DEBUG ?? "").toString().toLowerCase();
   return v === "1" || v === "true" || v === "yes" || v === "debug";
 })();
 function dbg(...a: any[]) { if (DEBUG) Logger.info("[DBG][scheduler]", ...a); }
-
-function restoreStdin(raw: boolean) {
-  try {
-    if (raw && process.stdin.isTTY) {
-      process.stdin.setRawMode(true);
-    }
-    process.stdin.resume();
-    dbg("stdin restored (raw:", raw, ")");
-  } catch (e) {
-    Logger.info("[DBG] failed to restore stdin:", e);
-  }
-}
 
 /** Minimal interface all participant models must implement. */
 export interface Responder {
