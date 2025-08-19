@@ -3,7 +3,7 @@ import type { ChatDriver, ChatMessage } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
 import { C, Logger } from "../logger";
 import { AdvancedMemory, AgentMemory } from "../memory";
-import { GuardRail, StandardGuardRail, GuardDecision, GuardRouteKind } from "../guardrail";
+import { GuardRail, StandardGuardRail, GuardRouteKind } from "../guardrail";
 const DBG = /^(1|true|yes|debug)$/i.test(String(process.env.DEBUG ?? ""));
 const dbg = (...a: any[]) => { if (DBG) Logger.info("[DBG][agent]", ...a); };
 
@@ -17,7 +17,7 @@ export interface AgentReply {
  * - Keeps conversation state via pluggable memory (SummaryMemory with hysteresis).
  * - Executes the "sh" tool (gated elsewhere) and feeds results back as role:"tool".
  * - Other agents & the user are presented as role:"user".
- * - Exposes a polymorphic guard rail to the caller (scheduler) via guardCheck().
+ * - Exposes a polymorphic guard rail (loop detection, tool misuse escalation).
  */
 export class LlmAgent {
   private readonly id: string;
@@ -81,8 +81,8 @@ I have implemented the architecture documents.
 Prefer direct messages when the information is not important to other members of the group.
 Responses with no tags are sent to the entire group.
 
-Avoid accidentally writing to the end of the file when trying to switch back to communicating with the group.
-Instead use @@group to expicitly switch back and prevent corrupting files.
+Avoid accidentally writing to the end of the file when trying to switch back and prevent corrupting files.
+Instead use @@group to expicitly switch back.
 Examlple
 
 ##file:notes.txt
@@ -152,6 +152,9 @@ Keep responses brief unless writing files.`;
   async respond(prompt: string, maxTools: number, _peers: string[]): Promise<AgentReply> {
     dbg(`${this.id} start`, { promptChars: prompt.length, maxTools });
 
+    // Initialize per‑turn thresholds/counters in the guard rail.
+    this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
+
     await this.memory.add({ role: "user", content: prompt });
 
     let totalUsed = 0;
@@ -173,7 +176,7 @@ Keep responses brief unless writing files.`;
       }
 
       const assistantText = (out.text || "").trim();
-      
+
       if ((out as any).reasoning && out.reasoning !== "undefined") allReasoning += `\n${out.reasoning}` || "";
 
       // Inform guard rail about this assistant turn (before routing)
@@ -182,7 +185,6 @@ Keep responses brief unless writing files.`;
       if (assistantText.length > 0) {
         finalText = assistantText;
       }
-
 
       const calls = out.toolCalls || [];
       if (!calls.length) {
@@ -195,8 +197,12 @@ Keep responses brief unless writing files.`;
       }
 
       // Execute tools (sh only), respecting remaining budget
+      let forceEndTurn = false;
+
       for (const tc of calls) {
-        if (totalUsed >= maxTools) break;
+        if (forceEndTurn) Logger.warn("Turn forcibly ended.");
+
+        if (totalUsed >= maxTools || forceEndTurn) break;
 
         const name = tc.function?.name || "";
         let args: any = {};
@@ -205,8 +211,37 @@ Keep responses brief unless writing files.`;
         if (name === "sh") {
           const cmd = String(args?.cmd || "").trim();
           if (cmd.length === 0) {
-            Logger.warn(`${name} tool missing cmd`, { cmd, args });
-            const content = JSON.stringify({ ok: false, stdout: "", stderr: "Execution failed: Command required.", exit_code: 1, cmd: "" });
+            Logger.warn(`sh tool missing cmd`, { cmd, args });
+
+            // Centralized escalation via GuardRail
+            const decision = this.guard.noteBadToolCall({
+              name: "sh",
+              reason: "missing-arg",
+              missingArgs: ["cmd"],
+            });
+            if (decision?.nudge) {
+              await this.memory.add({ role: "system", content: decision.nudge });
+            }
+            if (decision?.endTurn) {
+              // Forcefully consume the remaining tool budget to end the turn.
+              totalUsed = maxTools;
+              forceEndTurn = true;
+
+              // Record the assistant text we have (if any) before yielding.
+              if (finalText) {
+                await this.memory.add({ role: "assistant", content: finalText });
+              }
+              break;
+            }
+
+            // Synthesize a failed tool-output message back to memory (as before).
+            const content = JSON.stringify({
+              ok: false,
+              stdout: "",
+              stderr: "Execution failed: Command required.",
+              exit_code: 1,
+              cmd: "",
+            });
             await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh" } as ChatMessage);
             totalUsed++;
             continue;
@@ -232,7 +267,6 @@ Keep responses brief unless writing files.`;
         // Record whatever assistant text we have before yielding
         if (finalText) {
           dbg(`${this.id} add assistant`, { chars: finalText.length });
-
           await this.memory.add({ role: "assistant", content: finalText });
         }
         break;
@@ -240,14 +274,13 @@ Keep responses brief unless writing files.`;
       // Loop: the assistant will see tool outputs (role:"tool") now in memory.
     }
 
-    if (allReasoning) Logger.info(C.cyan(`${allReasoning}`));
     Logger.info(C.green(`${finalText}`));
     Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
 
     return { message: finalText, toolsUsed: totalUsed };
   }
 
-  /** Polymorphic guard rail hook used by the scheduler. */
+  /** Polymorphic guard rail hook used by the scheduler for routing checks. */
   guardCheck(route: GuardRouteKind, content: string, peers: string[]) {
     return this.guard.guardCheck(route, content, peers);
   }

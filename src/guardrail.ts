@@ -4,67 +4,155 @@ import { Logger } from "./logger";
 export type GuardRouteKind = "group" | "agent" | "user" | "file";
 
 export type GuardDecision = {
-  /** Add a message to the agent's inbox (as system guidance) */
+  /** Add a message to the agent's context (as system guidance). */
   nudge?: string | null;
-  /** Do not broadcast the current message to its original audience */
+  /** Do not broadcast the current message to its original audience. */
   suppressBroadcast?: boolean;
-  /** Temporarily mute the agent so others can progress */
+  /** Temporarily mute the agent so others can progress (used by scheduler). */
   muteMs?: number;
-  /** Free-form warnings for observability / logs */
+  /** Free‑form warnings for observability / logs. */
   warnings?: string[];
+  /** Forcibly end the current agent turn (stop further tool hops this turn). */
+  endTurn?: boolean;
 };
 
 export interface GuardRail {
-  /** Record facts about the agent's last assistant turn (for trends). */
+  /**
+   * Called once at the beginning of each agent "turn" (i.e., per respond() call).
+   * Used to (re)initialize per‑turn counters and thresholds.
+   */
+  beginTurn(ctx: { maxToolHops: number }): void;
+
+  /** Record facts about the agent's last assistant completion. */
   noteAssistantTurn(info: { text: string; toolCalls: number }): void;
 
-  /** Evaluate an outgoing routed delivery from the agent. */
+  /**
+   * Notify guard rail of a problematic tool call (e.g., missing arguments).
+   * Return an optional decision that may include a nudge and/or endTurn=true.
+   */
+  noteBadToolCall(info: {
+    name: string;
+    /** Human/enum code like "missing-arg", "missing-args", etc. */
+    reason: string;
+    /** If reason === missing-arg(s), specify which argument names are missing. */
+    missingArgs?: string[];
+  }): GuardDecision | null;
+
+  /**
+   * Evaluate an outgoing routed delivery from the agent (e.g., @@group).
+   * Used by the scheduler to decide broadcast suppression and nudges.
+   */
   guardCheck(route: GuardRouteKind, content: string, peers: string[]): GuardDecision | null;
 }
 
 /**
  * StandardGuardRail:
- *  - Detects near-duplicate / low-signal repeated @@group messages.
- *  - Encourages switching to @@user or a direct @@peer when stuck.
- *  - Emits warnings (observability) and recommends scheduler actions.
+ *  - Detects near‑duplicate / low‑signal repeated @@group messages.
+ *  - Encourages switching to @@user or direct @@peer when stuck.
+ *  - Tracks repeated invalid tool calls (e.g., sh missing "cmd"), escalates warnings,
+ *    and can force end‑turn when the limit is reached.
  */
 export class StandardGuardRail implements GuardRail {
   private readonly agentId: string;
 
-  // repetition tracking
+  // --- config knobs ----------------------------------------------------------
+  /** Optional override for invalid‑tool end‑turn limit (per turn). */
+  private readonly overrideMissingArgEndTurnLimit?: number;
+  /** Similarity threshold for considering two messages near‑duplicates. */
+  private readonly nearDupThreshold = 0.80;
+  /** Repeats needed to flag repeated near‑duplicate @@group messages. */
+  private readonly stagnationRepeatThreshold = 3;
+  /** Repeats needed if the message is low‑signal. */
+  private readonly lowSignalRepeatThreshold = 2;
+  /** Suggested temporary mute for repeated low‑signal group chatter (ms). */
+  private readonly defaultMuteMs = 1500;
+
+  // --- state: group loop detection ------------------------------------------
   private lastNorm = "";
   private repeatCount = 0;
 
-  // tool usage trend
+  // Track tool usage trends across completions.
   private consecutiveNoToolCalls = 0;
 
-  // thresholds (tunable)
-  private readonly nearDupThreshold = 0.80;
-  private readonly stagnationRepeatThreshold = 3; // ≥3 near-duplicates
-  private readonly lowSignalRepeatThreshold = 2;  // ≥2 repeats if low-signal
-  private readonly defaultMuteMs = 1500;
+  // --- state: invalid tool calls (per turn) ---------------------------------
+  private badToolMissingArgCount = 0;
+  private badToolEndTurnLimit = 1; // computed each beginTurn
 
-  constructor(args: { agentId: string }) {
+  constructor(args: { agentId: string; missingArgEndTurnLimit?: number }) {
     this.agentId = args.agentId;
+    this.overrideMissingArgEndTurnLimit = args.missingArgEndTurnLimit;
+  }
+
+  beginTurn(ctx: { maxToolHops: number }): void {
+    // Reset per‑turn counters.
+    this.badToolMissingArgCount = 0;
+
+    // Compute limit for ending the turn due to repeated invalid tool calls.
+    const defaultLimit = Math.max(1, Math.ceil(Math.max(0, ctx.maxToolHops) / 2));
+    this.badToolEndTurnLimit = Math.max(
+      1,
+      this.overrideMissingArgEndTurnLimit ?? defaultLimit
+    );
   }
 
   noteAssistantTurn(info: { text: string; toolCalls: number }): void {
     if (info.toolCalls > 0) this.consecutiveNoToolCalls = 0;
     else this.consecutiveNoToolCalls++;
-    // repetition is updated at guardCheck where we have the routed content
+  }
+
+  noteBadToolCall(info: {
+    name: string;
+    reason: string;
+    missingArgs?: string[];
+  }): GuardDecision | null {
+    const warnings: string[] = [];
+
+    // We currently only escalate for missing‑argument patterns,
+    // but this hook is generic for future reasons.
+    if (info.reason === "missing-arg" || info.reason === "missing-args") {
+      this.badToolMissingArgCount++;
+      const count = this.badToolMissingArgCount;
+      const limit = this.badToolEndTurnLimit;
+      const need =
+        info.missingArgs && info.missingArgs.length
+          ? `"${info.missingArgs.join('", "')}"`
+          : "required arguments";
+
+      // Escalating message tone
+      let label = "WARNING";
+      if (count >= Math.max(2, limit - 1)) label = "FINAL WARNING";
+      else if (count >= 2) label = "STRONG WARNING";
+
+      // If we reached the limit → end the turn immediately.
+      if (count >= limit) {
+        const nudge =
+`SYSTEM ${label}:
+Repeated invalid "${info.name}" tool calls (missing ${need}). Ending your turn now.
+On your next turn, use @@user to ask for clarification OR DM a peer with a concrete request (e.g., @@alice <task>).`;
+        return { nudge, endTurn: true, warnings };
+      }
+
+      // Otherwise warn loudly but allow another hop.
+      const nudge =
+`SYSTEM ${label}:
+You invoked the "${info.name}" tool without ${need}.
+Provide valid arguments next hop (e.g., {"cmd":"<non-empty command>"}).
+${count >= Math.max(2, limit - 1) ? "One more invalid tool call will END your turn." : "Fix this before calling tools again."}`;
+      return { nudge, warnings };
+    }
+
+    return warnings.length ? { warnings } : null;
   }
 
   guardCheck(route: GuardRouteKind, content: string, peers: string[]): GuardDecision | null {
     const warnings: string[] = [];
     const norm = this.normalize(content);
-
     const nearDup = this.jaccard(this.lastNorm, norm) >= this.nearDupThreshold;
     this.repeatCount = nearDup ? this.repeatCount + 1 : 1;
     this.lastNorm = norm;
 
     const isLowSignal = this.isLowSignal(content);
 
-    // Generic warnings
     if (isLowSignal) warnings.push("low-signal message");
     if (!/@{2}(user|group|[A-Za-z0-9._-]+)/.test(content)) {
       warnings.push("no explicit @@tag detected");
@@ -97,7 +185,7 @@ Do NOT reply to @@group again.`;
     return warnings.length ? { warnings } : null;
   }
 
-  // --- helpers -------------------------------------------------------------
+  // --- helpers ---------------------------------------------------------------
 
   private normalize(s: string): string {
     return String(s || "")
