@@ -1,3 +1,4 @@
+// src/llm-agent.ts
 import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt";
 import type { ChatDriver, ChatMessage } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
@@ -126,15 +127,15 @@ Keep responses brief unless writing files.`;
       systemPrompt: this.systemPrompt,
 
       contextTokens: 30_000,          // model window
-      reserveHeaderTokens: 1200,     // header/tool schema reserve
-      reserveResponseTokens: 800,    // space for the next reply
-      highRatio: 0.70,               // trigger summarization earlier than overflow
-      lowRatio: 0.50,                // target after summarization
-      summaryRatio: 0.35,            // 35% of budget for the 3 summaries
+      reserveHeaderTokens: 1200,      // header/tool schema reserve
+      reserveResponseTokens: 800,     // space for the next reply
+      highRatio: 0.70,                // trigger summarization earlier than overflow
+      lowRatio: 0.50,                 // target after summarization
+      summaryRatio: 0.35,             // 35% of budget for the 3 summaries
 
-      avgCharsPerToken: 4,           // char→token estimate
-      keepRecentPerLane: 4,          // retain 4 most-recent per lane
-      keepRecentTools: 3             // retain 3 most-recent tool outputs
+      avgCharsPerToken: 4,            // char→token estimate
+      keepRecentPerLane: 4,           // retain 4 most-recent per lane
+      keepRecentTools: 3              // retain 3 most-recent tool outputs
     });
   }
 
@@ -150,20 +151,24 @@ Keep responses brief unless writing files.`;
     // Initialize per-turn thresholds/counters in the guard rail.
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
 
+    // 1) Add user content to memory
     await this.memory.add({ role: "user", content: prompt });
 
-    let totalUsed = 0;
+    let hop = 0;  
+    let totalUsed = 0;  
     let finalText = "";
     let allReasoning: string | undefined;
 
-    // At least one completion; allow tool-following up to maxTools
-    for (let hop = 0; hop < Math.max(1, maxTools + 1); hop++) {
+    // 2) Main loop: let the model speak; if it requests tools, execute them; feed results.
+    while (true) {
       Logger.info(C.green(`${this.id} ...`));
-
       const msgs = this.memory.messages();
-      dbg(`${this.id} chat ->`, { hop, msgs: msgs.length });
+      dbg(`${this.id} chat ->`, { hop: hop++, msgs: msgs.length });
       const t0 = Date.now();
-      const out = await this.driver.chat(msgs, { model: this.model, tools: this.tools });
+      const out = await this.driver.chat(this.memory.messages(), {
+        model: this.model,
+        tools: this.tools,
+      });
       dbg(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
 
       if ((!out.text || !out.text.trim()) && (!out.toolCalls || !out.toolCalls.length)) {
@@ -207,8 +212,7 @@ Keep responses brief unless writing files.`;
           const rawCmd = String(args?.cmd ?? "");
           const cmd = rawCmd.replace(/\s+/g, " ").trim();
 
-          if (cmd.length === 0) {
-            // Missing argument → centralized escalation via GuardRail
+          if (!cmd) {
             const decision = this.guard.noteBadToolCall({
               name: "sh",
               reason: "missing-arg",
@@ -295,5 +299,11 @@ Keep responses brief unless writing files.`;
   /** Polymorphic guard rail hook used by the scheduler for routing checks. */
   guardCheck(route: GuardRouteKind, content: string, peers: string[]) {
     return this.guard.guardCheck(route, content, peers);
+  }
+
+  /** Allow scheduler to ask this agent's guard rail for idle fallbacks. */
+  guardOnIdle(state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }) {
+    const anyGuard: any = this.guard as any;
+    return typeof anyGuard.onIdle === 'function' ? anyGuard.onIdle(state) : null;
   }
 }

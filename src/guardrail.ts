@@ -14,6 +14,8 @@ export type GuardDecision = {
   warnings?: string[];
   /** Forcibly end the current agent turn (stop further tool hops this turn). */
   endTurn?: boolean;
+  /** Ask the user for input with this prompt (scheduler will call onAskUser). */
+  askUser?: string;
 };
 
 export interface GuardRail {
@@ -51,6 +53,12 @@ export interface GuardRail {
   }): GuardDecision | null;
 
   /**
+   * Called by the scheduler when *all* inboxes are empty for several ticks.
+   * Gives the guard rail a chance to formulate a user-facing fallback prompt.
+   */
+  onIdle?(state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }): GuardDecision | null;
+
+  /**
    * Evaluate an outgoing routed delivery from the agent (e.g., @@group).
    * Used by the scheduler to decide broadcast suppression and nudges.
    */
@@ -78,9 +86,8 @@ export class StandardGuardRail implements GuardRail {
   private readonly nearDupThreshold = 0.80;
   /** Repeats needed to flag repeated near-duplicate @@group messages. */
   private readonly stagnationRepeatThreshold = 3;
-  /** Repeats needed if the message is low-signal. */
-  private readonly lowSignalRepeatThreshold = 2;
-  /** Suggested temporary mute for repeated low-signal group chatter (ms). */
+
+  /** When the guard suggests muting, default duration. */
   private readonly defaultMuteMs = 1500;
 
   // --- state: group loop detection ------------------------------------------
@@ -137,37 +144,29 @@ export class StandardGuardRail implements GuardRail {
     missingArgs?: string[];
   }): GuardDecision | null {
     const warnings: string[] = [];
-
-    if (info.reason === "missing-arg" || info.reason === "missing-args") {
+    if (/missing-arg/.test(info.reason) || /missing-args/.test(info.reason)) {
       this.badToolMissingArgCount++;
-      const count = this.badToolMissingArgCount;
-      const limit = this.badToolEndTurnLimit;
-      const need =
-        info.missingArgs && info.missingArgs.length
-          ? `"${info.missingArgs.join('", "')}"`
-          : "required arguments";
-
-      // Escalating message tone
-      let label = "WARNING";
-      if (count >= Math.max(2, limit - 1)) label = "FINAL WARNING";
-      else if (count >= 2) label = "STRONG WARNING";
-
-      if (count >= limit) {
-        const nudge =
-`SYSTEM ${label}:
-Repeated invalid "${info.name}" tool calls (missing ${need}). Ending your turn now.
-On your next turn, use @@user to ask for clarification OR DM a peer with a concrete request (e.g., @@alice <task>).`;
-        return { nudge, endTurn: true, warnings };
-      }
-
+      const remaining = Math.max(0, this.badToolEndTurnLimit - this.badToolMissingArgCount);
+      const label = remaining <= 0 ? "FINAL" : (remaining === 1 ? "STRONG" : "WARNING");
+      const missing = (info.missingArgs ?? []).join(", ") || "required argument(s)";
       const nudge =
-`SYSTEM ${label}:
-You invoked the "${info.name}" tool without ${need}.
-Provide valid arguments next hop (e.g., {"cmd":"<non-empty command>"}).
-${count >= Math.max(2, limit - 1) ? "One more invalid tool call will END your turn." : "Fix this before calling tools again."}`;
+`SYSTEM ${label} WARNING:
+You attempted to call "${info.name}" without ${missing}.
+Fix the arguments and try once more.`;
+      if (remaining <= 0) {
+        return {
+          nudge:
+`${nudge}
+
+Ending your turn now. On your next turn either:
+- @@user Ask a specific question, or
+- @@peer Delegate a well-scoped subtask.`,
+          endTurn: true,
+          warnings
+        };
+      }
       return { nudge, warnings };
     }
-
     return warnings.length ? { warnings } : null;
   }
 
@@ -230,28 +229,39 @@ Do not re-run the same command again. Either change the arguments, run a DIFFERE
       warnings.push("multiple assistant turns without tool calls");
     }
 
-    if (route === "group") {
-      const stuckByRepeat = nearDup && this.repeatCount >= this.stagnationRepeatThreshold;
-      const stuckByLowSignal = isLowSignal && this.repeatCount >= this.lowSignalRepeatThreshold;
-
-      if (stuckByRepeat || stuckByLowSignal) {
-        const peersList = peers.filter(p => p !== this.agentId).map(p => `@@${p}`).join(" or ");
-        const nudge =
-`SYSTEM NOTE:
-You are repeating low-signal @@group messages. On your next turn do ONE of:
-- @@user <ask a single, concrete question>, or
-- ${peersList || "@@peer"} <delegate a specific task>.
-Do NOT reply to @@group again.`;
-        return {
-          nudge,
-          suppressBroadcast: true,
-          muteMs: this.defaultMuteMs,
-          warnings
-        };
-      }
+    // Escalate suppression of near-duplicate, low-signal group messages.
+    if (route === "group" && this.repeatCount >= this.stagnationRepeatThreshold && isLowSignal) {
+      const nudge =
+`SYSTEM: Your last few @@group messages were low-signal and very similar.
+Switch tactics on your next turn:
+- @@user Ask a single concrete question to move the task forward, or
+- @@peer DM a specific teammate with a well-defined request.`;
+      return {
+        nudge,
+        suppressBroadcast: true,
+        muteMs: this.defaultMuteMs,
+        warnings
+      };
     }
 
     return warnings.length ? { warnings } : null;
+  }
+
+  // --- scheduler idle fallback --------------------------------------------
+  onIdle?(state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }): GuardDecision | null {
+    if (!state.queuesEmpty) return null;
+    // only nudge every few idle ticks to avoid spam
+    if (state.idleTicks < 3) return null;
+    const prompt =
+`(scheduler)
+All agents are idle (no queued messages and no recent tool calls).
+Please provide the next concrete instruction or question.
+
+Examples:
+- "@@user Give Alice one specific task to run next."
+- "@@alice Please run <command> and post the output."
+- "Switch focus to <topic>."`;
+    return { askUser: prompt, warnings: ["scheduler-idle"] };
   }
 
   // --- helpers ---------------------------------------------------------------
@@ -277,7 +287,6 @@ Do NOT reply to @@group again.`;
   private isLowSignal(text: string): boolean {
     const s = this.normalize(text);
     if (s.length < 12) return true;
-    if (s.length > 240) return false;
     const pats = [
       /what can i help/i,
       /how can i help/i,

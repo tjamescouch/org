@@ -1,3 +1,4 @@
+// src/scheduler.ts
 import { TagParser } from "./utils/tag-parser";
 import { makeRouter } from "./routing/route-with-tags";
 import { C, Logger } from "./logger";
@@ -17,6 +18,8 @@ function dbg(...a: any[]) { if (DEBUG) Logger.info("[DBG][scheduler]", ...a); }
 export interface Responder {
   id: string;
   respond(usersPrompt: string, maxTools: number, peers: string[]): Promise<{ message: string; toolsUsed: number }>;
+  /** Optional: scheduler can ask the agent's guard rail for idle fallback guidance. */
+  guardOnIdle?: (state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }) => GuardDecision | null;
   /** Optional: expose agent-specific guard rail to the scheduler. */
   guardCheck?: (route: GuardRouteKind, content: string, peers: string[]) => GuardDecision | null;
 }
@@ -27,6 +30,9 @@ export class RoundRobinScheduler {
   private maxTools: number;
   private running = false;
   private paused = false;
+
+  /** After this many idle scans, we ask the user for help. */
+  private readonly idlePromptEvery = 3;
 
   private inbox = new Map<string, string[]>();
   private lastUserDMTarget: string | null = null;
@@ -97,8 +103,24 @@ export class RoundRobinScheduler {
         }
       }
 
-      if (!didWork) { idleTicks++; dbg(`idle tick ${idleTicks}`); }
-      else idleTicks = 0;
+      if (!didWork) {
+        idleTicks++;
+        dbg(`idle tick ${idleTicks}`);
+        // Detect true "empty scheduler" condition and fall back to the user.
+        if (idleTicks >= this.idlePromptEvery && this.areAllQueuesEmpty()) {
+          const peers = this.agents.map(x => x.id);
+          // Ask any agent's guard (first one) to craft the prompt; fall back to a sane default.
+          const dec = this.agents[0]?.guardOnIdle?.({ idleTicks, peers, queuesEmpty: true }) || null;
+          const prompt = dec?.askUser || `(scheduler)\nAll agents are idle (no queued work). Please provide the next concrete instruction or question.`;
+          const userText = (await this.userPromptFn("scheduler", prompt)) ?? "";
+          if (userText.trim()) {
+            this.handleUserInterjection(userText.trim());
+            idleTicks = 0; // reset on user interjection
+          }
+        }
+      } else {
+        idleTicks = 0;
+      }
 
       await this.sleep(didWork ? 5 : 25);
     }
@@ -149,7 +171,7 @@ export class RoundRobinScheduler {
     for (const t of parts) if (t.kind === "user") sawUser = true;
 
     const router = makeRouter({
-      onAgent: async (_f, to, c) => { this.ensureInbox(to).push(c); },
+      onAgent: async (_f, to, c) => { if ((c || "").trim()) this.ensureInbox(to).push(c); },
       onGroup: async (_f, c) => {
         // Let the agent’s guard rail weigh in before broadcasting
         const dec = fromAgent.guardCheck?.("group", c, this.agents.map(x => x.id)) || null;
@@ -158,23 +180,23 @@ export class RoundRobinScheduler {
           dbg(`suppress @@group from ${fromAgent.id}`);
           return;
         }
-        for (const a of this.agents) if (a.id !== fromAgent.id) this.ensureInbox(a.id).push(c);
+        for (const a of this.agents) if (a.id !== fromAgent.id) { if ((c || "").trim()) this.ensureInbox(a.id).push(c); }
       },
       onUser: async (_f, _c) => { this.lastUserDMTarget = fromAgent.id; },
       onFile: async (_f, name, c) => {
         const { cleaned } = extractCodeGuards(c);
         const cmd = `${c}\n***** Write to file? [y/N] ${name}\n`;
         const wasRaw = (process.stdin as any)?.isRaw;
-        try {
+          try {
           if (wasRaw) process.stdin.setRawMode(false);
           await ExecutionGate.gate(cmd);
           const res = await FileWriter.write(name, cleaned);
-          Logger.info(C.yellow(`${cleaned}`));
+              Logger.info(C.yellow(`${cleaned}`));
           Logger.info(C.magenta(`Written to ${res.path} (${res.bytes} bytes)`));
         } catch (err: any) {
           Logger.error(`File write failed: ${err?.message || err}`);
-        } finally {
-          restoreStdin(!!wasRaw);
+          } finally {
+            restoreStdin(!!wasRaw);
         }
       }
     });
@@ -184,9 +206,9 @@ export class RoundRobinScheduler {
     // If no tags and not @@user, treat as implicit group broadcast
     if (!sawUser && parts.length === 0) {
       const dec = fromAgent.guardCheck?.("group", text, this.agents.map(x => x.id)) || null;
-      if (dec) this.applyGuardDecision(fromAgent, dec);
+      if (dec) await this.applyGuardDecision(fromAgent, dec);
       if (!dec?.suppressBroadcast) {
-        for (const a of this.agents) if (a.id !== fromAgent.id) this.ensureInbox(a.id).push(text);
+        for (const a of this.agents) if (a.id !== fromAgent.id) { if ((text || "").trim()) this.ensureInbox(a.id).push(text); }
         Logger.debug(`${fromAgent.id} → @@group (implicit): ${text}`);
         dbg(`${fromAgent.id} -> @@group (implicit):`, JSON.stringify(text));
       } else {
@@ -196,7 +218,7 @@ export class RoundRobinScheduler {
     return sawUser;
   }
 
-  private applyGuardDecision(agent: Responder, dec: GuardDecision) {
+  private async applyGuardDecision(agent: Responder, dec: GuardDecision) {
     if (dec.warnings && dec.warnings.length) {
       Logger.debug(`[guard][${agent.id}] ` + dec.warnings.join("; "));
     }
@@ -206,6 +228,18 @@ export class RoundRobinScheduler {
     if (dec.muteMs && dec.muteMs > 0) {
       this.mute(agent.id, dec.muteMs);
     }
+    if (dec.askUser) {
+      const userText = (await this.userPromptFn(agent.id, dec.askUser)) ?? "";
+      if (userText.trim()) this.handleUserInterjection(userText.trim());
+    }
+  }
+
+  private areAllQueuesEmpty(): boolean {
+    for (const a of this.agents) {
+      const q = this.inbox.get(a.id) || [];
+      if (q.length > 0) return false;
+    }
+    return true;
   }
 
   private sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
