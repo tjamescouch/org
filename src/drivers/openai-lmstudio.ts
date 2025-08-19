@@ -1,6 +1,8 @@
+import { Logger } from "../logger";
 const DEBUG = ((process.env.DEBUG ?? "").toString().toLowerCase());
 const DBG = DEBUG === "1" || DEBUG === "true" || DEBUG === "yes" || DEBUG === "debug";
-const dbg = (...a: any[]) => { if (DBG) Logger.info("[DBG][driver]", ...a); };
+const dbg = (...a:any[]) => { if (DBG) Logger.info("[DBG][driver]", ...a); };
+
 
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types";
 
