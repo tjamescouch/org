@@ -5,6 +5,7 @@ import { extractCodeGuards } from "./utils/extract-code-blocks";
 import { FileWriter } from "./io/file-writer";
 import { ExecutionGate } from "./tools/execution-gate";
 import { restoreStdin } from "./utils/restore-stdin";
+import type { GuardRouteKind, GuardDecision } from "./guardrail";
 
 const DEBUG = (() => {
   const v = (process.env.DEBUG ?? "").toString().toLowerCase();
@@ -16,6 +17,8 @@ function dbg(...a: any[]) { if (DEBUG) Logger.info("[DBG][scheduler]", ...a); }
 export interface Responder {
   id: string;
   respond(usersPrompt: string, maxTools: number, peers: string[]): Promise<{ message: string; toolsUsed: number }>;
+  /** Optional: expose agent-specific guard rail to the scheduler. */
+  guardCheck?: (route: GuardRouteKind, content: string, peers: string[]) => GuardDecision | null;
 }
 
 /** Round-robin scheduler that routes @@tags and supports hotkey interjection. */
@@ -31,40 +34,23 @@ export class RoundRobinScheduler {
   private userPromptFn: (fromAgent: string, content: string) => Promise<string | null>;
   private keepAlive: NodeJS.Timeout | null = null;
 
-  // ---- Anti-loop state ------------------------------------------------------
-  /** last normalized text + repeat count per agent */
-  private repeats = new Map<string, { norm: string; count: number; at: number }>();
-  /** muted agents (skip scheduling) until given epoch ms */
+  // Anti-loop: we respect per-agent mute windows recommended by GuardRail
   private mutedUntil = new Map<string, number>();
-
-  /** configurable thresholds */
-  private stagnationRepeatThreshold = 3;  // ≥3 near-duplicates
-  private lowSignalRepeatThreshold = 2;   // ≥2 if the text is low-signal
-  private muteMs = 1500;                  // cool-off so others can progress
 
   constructor(opts: {
     agents: Responder[];
     maxTools: number;
     onAskUser: (fromAgent: string, content: string) => Promise<string | null>;
-    // Optional knobs
-    stagnationRepeatThreshold?: number;
-    lowSignalRepeatThreshold?: number;
-    muteMs?: number;
   }) {
     this.agents = opts.agents;
     this.maxTools = Math.max(0, opts.maxTools);
     this.userPromptFn = opts.onAskUser;
-
-    // Optional tuning
-    if (opts.stagnationRepeatThreshold) this.stagnationRepeatThreshold = Math.max(2, opts.stagnationRepeatThreshold);
-    if (opts.lowSignalRepeatThreshold)  this.lowSignalRepeatThreshold  = Math.max(2, opts.lowSignalRepeatThreshold);
-    if (opts.muteMs)                    this.muteMs                    = Math.max(500, opts.muteMs);
-
     for (const a of this.agents) this.ensureInbox(a.id);
   }
 
   start = async (): Promise<void> => {
     this.running = true;
+    // Keep-alive to avoid “exit 0” on empty loops in some runtimes
     this.keepAlive = setInterval(() => { /* no-op */ }, 30_000);
 
     let idleTicks = 0;
@@ -76,7 +62,6 @@ export class RoundRobinScheduler {
       for (const a of this.agents) {
         if (this.paused || !this.running) break;
 
-        // Skip muted agents briefly to collapse feedback loops
         if (this.isMuted(a.id)) { dbg(`muted: ${a.id}`); continue; }
 
         const basePrompt = this.nextPromptFor(a.id);
@@ -87,13 +72,14 @@ export class RoundRobinScheduler {
         dbg(`drained prompt for ${a.id}:`, JSON.stringify(basePrompt));
 
         let remaining = this.maxTools;
+        // multiple hops if the model requests tools
         for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
           const peers = this.agents.map(x => x.id);
           dbg(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
           const { message, toolsUsed } = await a.respond(basePrompt, Math.max(0, remaining), peers);
           dbg(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
 
-          const askedUser = await this.route(a.id, message);
+          const askedUser = await this.route(a, message);
           didWork = true;
 
           if (askedUser) {
@@ -146,63 +132,7 @@ export class RoundRobinScheduler {
     return q.splice(0, q.length).join("\n");
   }
 
-  // --------------------------- Routing + Anti-loop ---------------------------
-
-  private normalize(s: string): string {
-    return String(s || "")
-      .toLowerCase()
-      .replace(/[`*_~>]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  private jaccardSimilar(a: string, b: string): number {
-    if (!a || !b) return 0;
-    const sa = new Set(a.split(" "));
-    const sb = new Set(b.split(" "));
-    let inter = 0;
-    for (const w of sa) if (sb.has(w)) inter++;
-    const union = new Set([...sa, ...sb]).size;
-    return union === 0 ? 0 : inter / union;
-  }
-
-  private isLowSignalText(text: string): boolean {
-    const s = this.normalize(text);
-    if (s.length < 12) return true;
-    if (s.length > 240) return false;
-    const pats = [
-      /what can i help/i,
-      /how can i help/i,
-      /what would you like/i,
-      /i'?m here.*ready to help/i,
-      /let me know/i,
-      /sounds good.*just let me know/i,
-    ];
-    return pats.some((re) => re.test(text)) || s.split(" ").length <= 8;
-  }
-
-  /**
-   * Track repeats; return true if the agent appears stuck.
-   * - near-duplicate N times, or
-   * - low-signal text repeated a smaller number of times
-   */
-  private isStuck(from: string, text: string): boolean {
-    const norm = this.normalize(text);
-    const prev = this.repeats.get(from);
-    if (!prev) {
-      this.repeats.set(from, { norm, count: 1, at: Date.now() });
-      return false;
-    }
-
-    const sim = this.jaccardSimilar(prev.norm, norm);
-    const nearDup = sim >= 0.80;
-    const count = nearDup ? prev.count + 1 : 1;
-    this.repeats.set(from, { norm, count, at: Date.now() });
-
-    if (nearDup && count >= this.stagnationRepeatThreshold) return true;
-    if (this.isLowSignalText(text) && count >= this.lowSignalRepeatThreshold) return true;
-    return false;
-  }
+  // --------------------------- Routing + GuardRail --------------------------
 
   private isMuted(id: string): boolean {
     const until = this.mutedUntil.get(id) ?? 0;
@@ -210,10 +140,10 @@ export class RoundRobinScheduler {
   }
 
   private mute(id: string, ms: number) {
-    this.mutedUntil.set(id, Date.now() + ms);
+    this.mutedUntil.set(id, Date.now() + Math.max(250, ms));
   }
 
-  private async route(from: string, text: string): Promise<boolean> {
+  private async route(fromAgent: Responder, text: string): Promise<boolean> {
     const parts = TagParser.parse(text || "");
     let sawUser = false;
     for (const t of parts) if (t.kind === "user") sawUser = true;
@@ -221,25 +151,16 @@ export class RoundRobinScheduler {
     const router = makeRouter({
       onAgent: async (_f, to, c) => { this.ensureInbox(to).push(c); },
       onGroup: async (_f, c) => {
-        // Anti-loop: if the sender is stuck and still posting to @@group,
-        // do not broadcast. Instead, nudge and briefly mute the sender so
-        // other agents (or the user) can progress.
-        if (this.isStuck(from, c)) {
-          const peers = this.agents.filter(x => x.id !== from).map(x => `@@${x.id}`).join(" or ");
-          const nudge =
-`SYSTEM NOTE:
-You are repeating low-signal @@group messages. On your next turn do ONE of:
-- @@user <ask one concrete, single-sentence question>, or
-- ${peers} <delegate a specific task with details>.
-Do NOT reply to @@group.`;
-          this.ensureInbox(from).push(nudge);
-          this.mute(from, this.muteMs);
-          Logger.debug(C.yellow(`[anti-loop] nudged + muted ${from} for ${this.muteMs}ms`));
+        // Let the agent’s guard rail weigh in before broadcasting
+        const dec = fromAgent.guardCheck?.("group", c, this.agents.map(x => x.id)) || null;
+        if (dec) this.applyGuardDecision(fromAgent, dec);
+        if (dec?.suppressBroadcast) {
+          dbg(`suppress @@group from ${fromAgent.id}`);
           return;
         }
-        for (const a of this.agents) if (a.id !== from) this.ensureInbox(a.id).push(c);
+        for (const a of this.agents) if (a.id !== fromAgent.id) this.ensureInbox(a.id).push(c);
       },
-      onUser: async (_f, _c) => { this.lastUserDMTarget = from; },
+      onUser: async (_f, _c) => { this.lastUserDMTarget = fromAgent.id; },
       onFile: async (_f, name, c) => {
         const { cleaned } = extractCodeGuards(c);
         const cmd = `${c}\n***** Write to file? [y/N] ${name}\n`;
@@ -258,15 +179,33 @@ Do NOT reply to @@group.`;
       }
     });
 
-    await router(from, text);
+    await router(fromAgent.id, text);
 
-    // Parser always returns at least one part, so this fallback is rarely used.
+    // If no tags and not @@user, treat as implicit group broadcast
     if (!sawUser && parts.length === 0) {
-      for (const a of this.agents) if (a.id !== from) this.ensureInbox(a.id).push(text);
-      Logger.debug(`${from} → @@group (implicit): ${text}`);
-      dbg(`${from} -> @@group (implicit):`, JSON.stringify(text));
+      const dec = fromAgent.guardCheck?.("group", text, this.agents.map(x => x.id)) || null;
+      if (dec) this.applyGuardDecision(fromAgent, dec);
+      if (!dec?.suppressBroadcast) {
+        for (const a of this.agents) if (a.id !== fromAgent.id) this.ensureInbox(a.id).push(text);
+        Logger.debug(`${fromAgent.id} → @@group (implicit): ${text}`);
+        dbg(`${fromAgent.id} -> @@group (implicit):`, JSON.stringify(text));
+      } else {
+        dbg(`suppress implicit @@group from ${fromAgent.id}`);
+      }
     }
     return sawUser;
+  }
+
+  private applyGuardDecision(agent: Responder, dec: GuardDecision) {
+    if (dec.warnings && dec.warnings.length) {
+      Logger.debug(`[guard][${agent.id}] ` + dec.warnings.join("; "));
+    }
+    if (dec.nudge) {
+      this.ensureInbox(agent.id).push(dec.nudge);
+    }
+    if (dec.muteMs && dec.muteMs > 0) {
+      this.mute(agent.id, dec.muteMs);
+    }
   }
 
   private sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }

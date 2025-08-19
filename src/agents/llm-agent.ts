@@ -3,6 +3,7 @@ import type { ChatDriver, ChatMessage } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
 import { C, Logger } from "../logger";
 import { AdvancedMemory, AgentMemory } from "../memory";
+import { GuardRail, StandardGuardRail, GuardDecision, GuardRouteKind } from "../guardrail";
 const DBG = /^(1|true|yes|debug)$/i.test(String(process.env.DEBUG ?? ""));
 const dbg = (...a: any[]) => { if (DBG) Logger.info("[DBG][agent]", ...a); };
 
@@ -16,6 +17,7 @@ export interface AgentReply {
  * - Keeps conversation state via pluggable memory (SummaryMemory with hysteresis).
  * - Executes the "sh" tool (gated elsewhere) and feeds results back as role:"tool".
  * - Other agents & the user are presented as role:"user".
+ * - Exposes a polymorphic guard rail to the caller (scheduler) via guardCheck().
  */
 export class LlmAgent {
   private readonly id: string;
@@ -27,10 +29,14 @@ export class LlmAgent {
   private readonly memory: AgentMemory;
   private readonly systemPrompt: string;
 
-  constructor(id: string, driver: ChatDriver, model: string) {
+  // Guard rails (loop / quality signals), per‑agent, pluggable.
+  private readonly guard: GuardRail;
+
+  constructor(id: string, driver: ChatDriver, model: string, guard?: GuardRail) {
     this.id = id;
     this.driver = driver;
     this.model = model;
+    this.guard = guard ?? new StandardGuardRail({ agentId: id });
 
     // Compose system prompt: a short agent header + the shared default.
     this.systemPrompt =
@@ -124,16 +130,16 @@ Keep responses brief unless writing files.`;
       model: this.model,
       systemPrompt: this.systemPrompt,
 
-      contextTokens: 8192,
-      reserveHeaderTokens: 1200,
-      reserveResponseTokens: 800,
-      highRatio: 0.70,
-      lowRatio: 0.50,
-      summaryRatio: 0.35,
+      contextTokens: 30_000,          // model window
+      reserveHeaderTokens: 1200,     // header/tool schema reserve
+      reserveResponseTokens: 800,    // space for the next reply
+      highRatio: 0.70,               // trigger summarization earlier than overflow
+      lowRatio: 0.50,                // target after summarization
+      summaryRatio: 0.35,            // 35% of budget for the 3 summaries
 
-      avgCharsPerToken: 4,
-      keepRecentPerLane: 4,
-      keepRecentTools: 3
+      avgCharsPerToken: 4,           // char→token estimate
+      keepRecentPerLane: 4,          // retain 4 most-recent per lane
+      keepRecentTools: 3             // retain 3 most-recent tool outputs
     });
   }
 
@@ -150,8 +156,9 @@ Keep responses brief unless writing files.`;
 
     let totalUsed = 0;
     let finalText = "";
-    let reasoning = "";
+    let allReasoning: string | undefined;
 
+    // At least one completion; allow tool-following up to maxTools
     for (let hop = 0; hop < Math.max(1, maxTools + 1); hop++) {
       Logger.info(C.green(`${this.id} ...`));
 
@@ -166,16 +173,19 @@ Keep responses brief unless writing files.`;
       }
 
       const assistantText = (out.text || "").trim();
+      allReasoning += (out as any).reasoning || "";
+
+      // Inform guard rail about this assistant turn (before routing)
+      this.guard.noteAssistantTurn({ text: assistantText, toolCalls: (out.toolCalls || []).length });
+
       if (assistantText.length > 0) {
         finalText = assistantText;
       }
 
-      if ((out?.reasoning?.length ?? 0) > 0) {
-        reasoning = out?.reasoning;
-      }
 
       const calls = out.toolCalls || [];
       if (!calls.length) {
+        // No tools requested — capture assistant text in memory and yield.
         if (finalText) {
           dbg(`${this.id} add assistant`, { chars: finalText.length });
           await this.memory.add({ role: "assistant", content: finalText });
@@ -183,6 +193,7 @@ Keep responses brief unless writing files.`;
         break;
       }
 
+      // Execute tools (sh only), respecting remaining budget
       for (const tc of calls) {
         if (totalUsed >= maxTools) break;
 
@@ -217,18 +228,26 @@ Keep responses brief unless writing files.`;
       }
 
       if (totalUsed >= maxTools) {
+        // Record whatever assistant text we have before yielding
         if (finalText) {
           dbg(`${this.id} add assistant`, { chars: finalText.length });
+
           await this.memory.add({ role: "assistant", content: finalText });
         }
         break;
       }
+      // Loop: the assistant will see tool outputs (role:"tool") now in memory.
     }
 
-    if(reasoning) Logger.info(C.cyan(`${reasoning}`));
+    if (allReasoning) Logger.info(C.cyan(`${allReasoning}`));
     Logger.info(C.green(`${finalText}`));
     Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
 
     return { message: finalText, toolsUsed: totalUsed };
+  }
+
+  /** Polymorphic guard rail hook used by the scheduler. */
+  guardCheck(route: GuardRouteKind, content: string, peers: string[]) {
+    return this.guard.guardCheck(route, content, peers);
   }
 }
