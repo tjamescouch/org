@@ -146,6 +146,7 @@ Keep responses brief unless writing files.`;
 
     let totalUsed = 0;
     let finalText = "";
+    let reasoning = "";
 
     // At least one completion; allow tool-following up to maxTools
     for (let hop = 0; hop < Math.max(1, maxTools + 1); hop++) {
@@ -165,6 +166,10 @@ Keep responses brief unless writing files.`;
       const assistantText = (out.text || "").trim();
       if (assistantText.length > 0) {
         finalText = assistantText;
+      }
+
+      if ((out?.reasoning?.length ?? 0) > 0) {
+        reasoning = out?.reasoning;
       }
 
       const calls = out.toolCalls || [];
@@ -224,6 +229,7 @@ Keep responses brief unless writing files.`;
       // Loop: the assistant will see tool outputs (role:"tool") now in memory.
     }
 
+    if(reasoning) Logger.info(C.cyan(`${reasoning}`));
     Logger.info(C.green(`${finalText}`));
     Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
 

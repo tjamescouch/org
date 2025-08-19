@@ -69,7 +69,7 @@ export function makeLmStudioOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
       const msg = choice?.message || {};
       const content = typeof msg?.content === "string" ? msg.content : "";
       const toolCalls: ChatToolCall[] = Array.isArray(msg?.tool_calls) ? msg.tool_calls : [];
-      return { text: content, toolCalls };
+      return { text: content, reasoning: msg?.reasoning || undefined, toolCalls };
     } catch (e: any) {
       if (e?.name === "AbortError") dbg("timeout", { ms: defaultTimeout });
       throw e;
