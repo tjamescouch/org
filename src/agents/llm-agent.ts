@@ -160,14 +160,12 @@ Keep responses brief unless writing files.`;
     let finalText = "";
     let allReasoning: string | undefined;
 
-    const aborted = { message: "Aborted", toolsUsed: 0 }; //wtf this should not be necessary
-
     // 2) Main loop: let the model speak; if it requests tools, execute them; feed results.
     while (true) {
       if(abortCallback?.()) {
         Logger.warn("Aborted turn.");
 
-        return aborted;
+        break;
       }
 
       Logger.info(C.green(`${this.id} ...`));
