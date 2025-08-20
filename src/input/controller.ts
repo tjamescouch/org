@@ -109,7 +109,6 @@ export class InputController {
       this.state = InputState.Interject;
       try {
         this.scheduler.pause();
-        Logger.warn("Waiting for agent to complete...");
         await this.scheduler.drain();
         const text = await this.askLineExclusive("interject (user): ");
         const trimmed = (text || "").trim();

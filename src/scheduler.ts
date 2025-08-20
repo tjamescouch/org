@@ -125,6 +125,8 @@ export class RoundRobinScheduler {
 
       await this.sleep(didWork ? 5 : 25);
     }
+    
+    this.hasRunningAgent = false;
 
     if (this.keepAlive) { clearInterval(this.keepAlive); this.keepAlive = null; }
   };
