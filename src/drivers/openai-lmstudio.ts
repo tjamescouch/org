@@ -15,7 +15,7 @@ export interface OpenAiDriverConfig {
 export function makeLmStudioOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
   const base = cfg.baseUrl.replace(/\/+$/, "");
   const endpoint = `${base}/v1/chat/completions`;
-  const defaultTimeout = cfg.timeoutMs ?? 1_000_000;
+  const defaultTimeout = cfg.timeoutMs ?? 2*60*60*1000;
 
   async function postChat(messages: ChatMessage[], opts?: { model?: string; tools?: any[] }): Promise<ChatOutput> {
     const controller = new AbortController();
