@@ -141,7 +141,7 @@ export class RoundRobinScheduler {
 
   async drain(): Promise<void> { 
     this.draining = true;
-    while(this.hasActiveAgent()) {
+    while(this.hasActiveAgent() && this.draining) {
       Logger.info(C.magenta(`Waiting for agent to complete...`));
 
       await this.sleep(1000);
