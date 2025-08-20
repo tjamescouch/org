@@ -21,6 +21,10 @@ export function disableRawMode() {
   }
 }
 
+export function pauseStdin() {
+  try { process.stdin.pause(); } catch (e) { Logger.error(e) }
+}
+
 export function resumeStdin() {
   try { process.stdin.resume(); } catch (e) { Logger.error(e) }
 }

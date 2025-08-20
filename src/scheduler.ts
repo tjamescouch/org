@@ -6,21 +6,16 @@ import { extractCodeGuards } from "./utils/extract-code-blocks";
 import { FileWriter } from "./io/file-writer";
 import { ExecutionGate } from "./tools/execution-gate";
 import { restoreStdin } from "./utils/restore-stdin";
-import type { GuardRouteKind, GuardDecision } from "./guardrails/guardrail";
-import { LlmAgent } from "./agents/llm-agent";
+import type { GuardRouteKind, GuardDecision } from "./guardrail";
 
 
-/** Minimal interface all participant models must implement. */
 export interface Responder {
   id: string;
-  respond(usersPrompt: string, maxTools: number, peers: string[], abortCallback: () => boolean): Promise<{ message: string; toolsUsed: number }>;
-  /** Optional: scheduler can ask the agent's guard rail for idle fallback guidance. */
+  respond(usersPrompt: string, maxTools: number, peers: string[]): Promise<{ message: string; toolsUsed: number }>;
   guardOnIdle?: (state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }) => GuardDecision | null;
-  /** Optional: expose agent-specific guard rail to the scheduler. */
   guardCheck?: (route: GuardRouteKind, content: string, peers: string[]) => GuardDecision | null;
 }
 
-/** Round-robin scheduler that routes @@tags and supports hotkey interjection. */
 export class RoundRobinScheduler {
   private agents: Responder[];
   private maxTools: number;
@@ -29,7 +24,6 @@ export class RoundRobinScheduler {
   private activeAgent:Responder | undefined;
   private draining = false;
 
-  /** After this many idle scans, we ask the user for help. */
   private readonly idlePromptEvery = 3;
 
   private inbox = new Map<string, string[]>();
@@ -38,7 +32,6 @@ export class RoundRobinScheduler {
   private userPromptFn: (fromAgent: string, content: string) => Promise<string | null>;
   private keepAlive: NodeJS.Timeout | null = null;
 
-  // Anti-loop: we respect per-agent mute windows recommended by GuardRail
   private mutedUntil = new Map<string, number>();
 
   constructor(opts: {
@@ -54,17 +47,16 @@ export class RoundRobinScheduler {
 
   start = async (): Promise<void> => {
     this.running = true;
-    // Keep-alive to avoid “exit 0” on empty loops in some runtimes
-    this.keepAlive = setInterval(() => { /* no-op */ }, 30_000);
+    this.keepAlive = setInterval(() => { /* keep process alive */ }, 30_000);
 
     let idleTicks = 0;
     while (this.running) {
       this.activeAgent = undefined;
-      if (this.paused) { 
+      if (this.paused) {
 
-        await this.sleep(25); continue; 
+        await this.sleep(25); continue;
       }
-        
+
       let didWork = false;
 
       for (const a of this.agents) {
@@ -80,8 +72,6 @@ export class RoundRobinScheduler {
         Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(basePrompt));
 
         let remaining = this.maxTools;
-
-        //multiple hops if the model requests tools
         for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
           const peers = this.agents.map(x => x.id);
           Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
@@ -114,13 +104,12 @@ export class RoundRobinScheduler {
         // Detect true "empty scheduler" condition and fall back to the user.
         if (idleTicks >= this.idlePromptEvery && this.areAllQueuesEmpty()) {
           const peers = this.agents.map(x => x.id);
-          // Ask any agent's guard (first one) to craft the prompt; fall back to a sane default.
           const dec = this.agents[0]?.guardOnIdle?.({ idleTicks, peers, queuesEmpty: true }) || null;
           const prompt = dec?.askUser || `(scheduler)\nAll agents are idle (no queued work). Please provide the next concrete instruction or question.`;
           const userText = (await this.userPromptFn("scheduler", prompt)) ?? "";
           if (userText.trim()) {
             this.handleUserInterjection(userText.trim());
-            idleTicks = 0; // reset on user interjection
+            idleTicks = 0;
           }
         }
       } else {
@@ -129,8 +118,6 @@ export class RoundRobinScheduler {
 
       await this.sleep(didWork ? 5 : 25);
     }
-    
-    this.activeAgent = undefined;
 
     if (this.keepAlive) { clearInterval(this.keepAlive); this.keepAlive = null; }
   };
@@ -139,9 +126,9 @@ export class RoundRobinScheduler {
   pause() { this.paused = true; Logger.debug("paused"); }
   resume() { this.paused = false; Logger.debug("resumed"); }
 
-  async drain(): Promise<void> { 
+  async drain(): Promise<void> {
     this.draining = true;
-    while(this.hasActiveAgent()) {
+    while (this.hasActiveAgent()) {
       Logger.info(C.magenta(`Waiting for agent to complete...`));
 
       await this.sleep(1000);
@@ -194,9 +181,8 @@ export class RoundRobinScheduler {
     const router = makeRouter({
       onAgent: async (_f, to, c) => { if ((c || "").trim()) this.ensureInbox(to).push(c); },
       onGroup: async (_f, c) => {
-        // Let the agent’s guard rail weigh in before broadcasting
         const dec = fromAgent.guardCheck?.("group", c, this.agents.map(x => x.id)) || null;
-        if (dec) this.applyGuardDecision(fromAgent, dec);
+        if (dec) await this.applyGuardDecision(fromAgent, dec);
         if (dec?.suppressBroadcast) {
           Logger.debug(`suppress @@group from ${fromAgent.id}`);
           return;
@@ -208,7 +194,7 @@ export class RoundRobinScheduler {
         const { cleaned } = extractCodeGuards(c);
         const cmd = `${c}\n***** Write to file? [y/N] ${name}\n`;
         const wasRaw = (process.stdin as any)?.isRaw;
-          try {
+        try {
           if (wasRaw) process.stdin.setRawMode(false);
           await ExecutionGate.gate(cmd);
           const res = await FileWriter.write(name, cleaned);
@@ -216,8 +202,9 @@ export class RoundRobinScheduler {
           Logger.info(C.magenta(`Written to ${res.path} (${res.bytes} bytes)`));
         } catch (err: any) {
           Logger.error(`File write failed: ${err?.message || err}`);
-          } finally {
-            restoreStdin(!!wasRaw);
+        } finally {
+          // Restore the user's preferred TTY mode (raw no-echo while idle).
+          restoreStdin(!!wasRaw);
         }
       }
     });
