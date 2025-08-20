@@ -158,15 +158,7 @@ Keep responses brief unless writing files.`;
     let hop = 0;
     let totalUsed = 0;
     let finalText = "";
-    let allReasoning: string | undefined;
-
-    // 2) Main loop: let the model speak; if it requests tools, execute them; feed results.
-    //while (true) {
-    //  if(abortCallback?.()) {
-    //    Logger.warn("Aborted turn.");
-
-    //    break;
-    //  }
+    let allReasoning = "";
 
     Logger.info(C.green(`${this.id} ...`));
     const msgs = this.memory.messages();
