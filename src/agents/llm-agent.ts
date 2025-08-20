@@ -159,7 +159,7 @@ Keep responses brief unless writing files.`;
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
 
     // 1) Add user content to memory - if the user message already exists we just bubble it up to the top of the memories
-    await this.memory.addUnique({ role: "user", content: prompt });
+    await this.memory.addIfNotExists({ role: "user", content: prompt, from: "User" });
 
     let hop = 0;
     let totalUsed = 0;
@@ -194,7 +194,7 @@ Keep responses brief unless writing files.`;
       // No tools requested — capture assistant text in memory and yield.
       if (finalText) {
         Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
-        await this.memory.add({ role: "assistant", content: finalText });
+        await this.memory.add({ role: "assistant", content: finalText, from: "Me" });
       }
       Logger.info(C.bold(`${finalText}`));
       Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
@@ -230,13 +230,13 @@ Keep responses brief unless writing files.`;
             missingArgs: ["cmd"],
           });
           if (decision?.nudge) {
-            await this.memory.add({ role: "system", content: decision.nudge });
+            await this.memory.add({ role: "system", content: decision.nudge, from: "System" });
           }
           if (decision?.endTurn) {
             Logger.warn(`System ended turn.`);
             totalUsed = maxTools; // consume budget → end turn
             forceEndTurn = true;
-            if (finalText) await this.memory.add({ role: "assistant", content: finalText });
+            if (finalText) await this.memory.add({ role: "assistant", content: finalText, from: "System" });
             break;
           }
 
@@ -249,7 +249,7 @@ Keep responses brief unless writing files.`;
             cmd: "",
           });
           Logger.warn(`Execution failed: Command required.`);
-          await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh" } as ChatMessage);
+          await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh", from: "Tool" });
           totalUsed++;
           continue;
         }
@@ -268,26 +268,26 @@ Keep responses brief unless writing files.`;
           exitCode: result.exit_code,
         });
         if (repeatDecision?.nudge) {
-          await this.memory.add({ role: "system", content: repeatDecision.nudge });
+          await this.memory.add({ role: "system", content: repeatDecision.nudge, from: "System" });
         }
         if (repeatDecision?.endTurn) {
           // Still record the tool output so the model can read it later.
           const contentJSON = JSON.stringify(result);
-          await this.memory.add({ role: "tool", content: contentJSON, tool_call_id: tc.id, name: "sh" } as ChatMessage);
+          await this.memory.add({ role: "tool", content: contentJSON, tool_call_id: tc.id, name: "sh", from: "Tool"});
 
           totalUsed = maxTools;
           forceEndTurn = true;
-          if (finalText) await this.memory.add({ role: "assistant", content: finalText });
+          if (finalText) await this.memory.add({ role: "assistant", content: finalText, from: "Me" });
           break;
         }
 
         const content = JSON.stringify(result);
-        await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh" } as ChatMessage);
+        await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh", from: "Tool" });
         totalUsed++;
       } else {
         Logger.warn(`Unknown tool ${name} requested`);
         const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, cmd: "" });
-        await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name } as ChatMessage);
+        await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: "Tool" });
         totalUsed++;
       }
     }

@@ -1,4 +1,5 @@
 import type { ChatDriver, ChatMessage } from "../drivers/types";
+import { Role } from "../types";
 import { AgentMemory } from "./agent-memory";
 
 const DEBUG = (() => {
@@ -76,11 +77,12 @@ export class SummaryMemory extends AgentMemory {
 
     const sys = {
       role: "system",
+      from: "System",
       content:
         "You are a precise summarizer. Produce a compact summary preserving decisions, tasks, file paths, command results, constraints, and open questions. 150–250 words."
-    } as ChatMessage;
+    };
 
-    const user = { role: "user", content: "Summarize the following messages:\n\n" + asText } as ChatMessage;
+    const user = { role: "user", content: "Summarize the following messages:\n\n" + asText, from: "User" };
 
     const out = await this.driver.chat([sys, user], { model: this.model });
     const text = (out as any)?.text ?? "";
