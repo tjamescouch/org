@@ -9,6 +9,7 @@ import { AdvancedGuardRail } from "../guardrails/advanced-guardrail";
 
 export interface AgentReply {
   message: string;   // assistant text
+  reasoning?: string;
   toolsUsed: number; // number of tool calls consumed this hop
 }
 
@@ -183,7 +184,7 @@ Keep responses brief unless writing files.`;
     const assistantText = (out.text || "").trim();
 
     if ((out as any).reasoning) {
-      Logger.streamInfo(out.reasoning ?? "");
+      Logger.streamInfo(C.cyan(out.reasoning ?? ""));
 
       allReasoning += `\n${out.reasoning}` || "";
     }
@@ -202,7 +203,6 @@ Keep responses brief unless writing files.`;
         Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
         await this.memory.add({ role: "assistant", content: finalText });
       }
-      if (allReasoning) Logger.info(C.cyan(`${allReasoning}`));
       Logger.info(C.bold(`${finalText}`));
       Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
       return { message: finalText, toolsUsed: totalUsed }
@@ -308,11 +308,10 @@ Keep responses brief unless writing files.`;
     }
     // Loop: the assistant will see tool outputs (role:"tool") now in memory.
 
-    if (allReasoning) Logger.info(C.cyan(`${allReasoning}`));
     Logger.info(C.bold(`${finalText}`));
     Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
 
-    return { message: finalText, toolsUsed: totalUsed };
+    return { message: finalText, toolsUsed: totalUsed, reasoning: allReasoning };
   }
 
   /** Polymorphic guard rail hook used by the scheduler for routing checks. */
