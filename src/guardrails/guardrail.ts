@@ -1,5 +1,5 @@
 // src/guardrail.ts
-import { Logger } from "./logger";
+import { Logger } from "../logger";
 
 export type GuardRouteKind = "group" | "agent" | "user" | "file";
 export type Reason = "missing-arg";
@@ -146,7 +146,7 @@ export class StandardGuardRail implements GuardRail {
     missingArgs?: string[];
   }): GuardDecision | null {
     const warnings: string[] = [];
-    if (/missing-arg/.test(info.reason) || /missing-args/.test(info.reason)) { //FIXME use an enum for reason
+    if (/missing-arg/.test(info.reason) || /missing-args/.test(info.reason)) {
       this.badToolMissingArgCount++;
       const remaining = Math.max(0, this.badToolEndTurnLimit - this.badToolMissingArgCount);
       const label = remaining <= 0 ? "FINAL" : (remaining === 1 ? "STRONG" : "WARNING");

@@ -6,7 +6,7 @@ import { extractCodeGuards } from "./utils/extract-code-blocks";
 import { FileWriter } from "./io/file-writer";
 import { ExecutionGate } from "./tools/execution-gate";
 import { restoreStdin } from "./utils/restore-stdin";
-import type { GuardRouteKind, GuardDecision } from "./guardrail";
+import type { GuardRouteKind, GuardDecision } from "./guardrails/guardrail";
 
 const DEBUG = (() => {
   const v = (process.env.DEBUG ?? "").toString().toLowerCase();
