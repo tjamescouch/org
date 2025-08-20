@@ -1,8 +1,4 @@
 import { Logger } from "../logger";
-const DEBUG = ((process.env.DEBUG ?? "").toString().toLowerCase());
-const DBG = DEBUG === "1" || DEBUG === "true" || DEBUG === "yes" || DEBUG === "debug";
-const dbg = (...a:any[]) => { if (DBG) Logger.info("[DBG][driver]", ...a); };
-
 
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types";
 
@@ -45,7 +41,7 @@ export function makeLmStudioOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
 
       const t0 = Date.now();
       const charSum = messages.reduce((s, m) => s + String((m as any).content ?? "").length, 0);
-      dbg("POST /chat", { model: opts?.model ?? cfg.model, msgs: messages.length, chars: charSum, tools: !!opts?.tools && opts.tools.length ? opts.tools.length : 0, timeoutMs: defaultTimeout });
+      Logger.debug("POST /chat", { model: opts?.model ?? cfg.model, msgs: messages.length, chars: charSum, tools: !!opts?.tools && opts.tools.length ? opts.tools.length : 0, timeoutMs: defaultTimeout });
 
       const res = await fetch(endpoint, {
         method: "POST",
@@ -54,7 +50,7 @@ export function makeLmStudioOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
         signal: controller.signal,
       });
 
-      dbg("resp", { status: res.status, ms: Date.now() - t0 });
+      Logger.debug("resp", { status: res.status, ms: Date.now() - t0 });
 
       if (!res.ok) {
         const text = await res.text().catch(() => "");
@@ -63,7 +59,7 @@ export function makeLmStudioOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
 
       const data: any = await res.json();
 
-      dbg("parsed", { took: Date.now() - t0, hasChoices: !!data?.choices?.length });
+      Logger.debug("parsed", { took: Date.now() - t0, hasChoices: !!data?.choices?.length });
 
       const choice = data?.choices?.[0];
       const msg = choice?.message || {};
@@ -71,7 +67,7 @@ export function makeLmStudioOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
       const toolCalls: ChatToolCall[] = Array.isArray(msg?.tool_calls) ? msg.tool_calls : [];
       return { text: content, reasoning: msg?.reasoning || undefined, toolCalls };
     } catch (e: any) {
-      if (e?.name === "AbortError") dbg("timeout", { ms: defaultTimeout });
+      if (e?.name === "AbortError") Logger.debug("timeout", { ms: defaultTimeout });
       throw e;
     } finally {
       clearTimeout(timer);
