@@ -182,7 +182,11 @@ Keep responses brief unless writing files.`;
 
     const assistantText = (out.text || "").trim();
 
-    if ((out as any).reasoning && out.reasoning !== "undefined") allReasoning += `\n${out.reasoning}` || "";
+    if ((out as any).reasoning) {
+      Logger.streamInfo(out.reasoning ?? "");
+
+      allReasoning += `\n${out.reasoning}` || "";
+    }
 
     // Inform guard rail about this assistant turn (before routing)
     this.guard.noteAssistantTurn({ text: assistantText, toolCalls: (out.toolCalls || []).length });
