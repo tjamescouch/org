@@ -57,8 +57,8 @@ export class RoundRobinScheduler {
 
     let idleTicks = 0;
     while (this.running) {
+      this.hasRunningAgent = false;
       if (this.paused) { 
-        this.hasRunningAgent = false;
 
         await this.sleep(25); continue; 
       }
@@ -78,34 +78,8 @@ export class RoundRobinScheduler {
         Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(basePrompt));
 
         this.hasRunningAgent = true;
-
-
         await a.respond(basePrompt, this.maxTools);
-
-        //let remaining = this.maxTools;
-        // multiple hops if the model requests tools
-        //for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
-        //  const peers = this.agents.map(x => x.id);
-        //  Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
-        //  const { message, toolsUsed } = await a.respond(basePrompt, Math.max(0, remaining), peers);
-        //  Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
-
-        //  const askedUser = await this.route(a, message);
-        //  didWork = true;
-
-        //  if (askedUser) {
-        //    const userText = (await this.userPromptFn(a.id, message)) ?? "";
-        //    if (userText.trim()) this.handleUserInterjection(userText.trim());
-        //    break;
-        //  }
-
-        //  if (toolsUsed > 0) {
-        //    remaining = Math.max(0, remaining - toolsUsed);
-        //    if (remaining <= 0) break;
-        //  } else {
-        //    break;
-        //  }
-        //}
+        this.hasRunningAgent = false;
       }
 
       if (!didWork) {
@@ -130,7 +104,6 @@ export class RoundRobinScheduler {
       await this.sleep(didWork ? 5 : 25);
     }
     
-    this.hasRunningAgent = false;
 
     if (this.keepAlive) { clearInterval(this.keepAlive); this.keepAlive = null; }
   };
