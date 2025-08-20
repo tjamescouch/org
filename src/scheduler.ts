@@ -86,7 +86,7 @@ export class RoundRobinScheduler {
           const peers = this.agents.map(x => x.id);
           Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
           this.activeAgent = a;
-          const { message, toolsUsed } = await a.respond(basePrompt, Math.max(0, remaining), peers, () => { return this.draining });
+          const { message, toolsUsed } = await a.respond(basePrompt, Math.max(0, remaining), peers, () => this.draining);
           this.activeAgent = undefined;
           Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
 

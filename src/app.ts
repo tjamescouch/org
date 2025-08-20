@@ -99,7 +99,7 @@ async function main() {
   const maxTools = Math.max(0, Number(args["max-tools"] || 20));
   computeMode();
 
-  const agentSpecs = parseAgents(String(args["agents"] || ""), cfg.llm);
+  const agentSpecs = parseAgents(String(args["agents"] || "alice:lmstudio"), cfg.llm);
   if (agentSpecs.length === 0) {
     Logger.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
     process.exit(1);
@@ -107,7 +107,7 @@ async function main() {
 
   const agents = agentSpecs.map(a => ({
     id: a.id,
-    respond: (prompt: string, budget: number, peers: string[]) => a.model.respond(prompt, budget, peers)
+    respond: (prompt: string, budget: number, peers: string[], abortCallback: () => boolean) => a.model.respond(prompt, budget, peers, abortCallback)
   }));
 
   // Wiring: scheduler + input
