@@ -12,7 +12,7 @@ import type { GuardRouteKind, GuardDecision } from "./guardrails/guardrail";
 /** Minimal interface all participant models must implement. */
 export interface Responder {
   id: string;
-  respond(usersPrompt: string, maxTools: number, peers: string[]): Promise<{ message: string; toolsUsed: number }>;
+  respond(usersPrompt: string, maxTools: number): Promise<{ message: string; toolsUsed: number }>;
   /** Optional: scheduler can ask the agent's guard rail for idle fallback guidance. */
   guardOnIdle?: (state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }) => GuardDecision | null;
   /** Optional: expose agent-specific guard rail to the scheduler. */
@@ -79,30 +79,33 @@ export class RoundRobinScheduler {
 
         this.hasRunningAgent = true;
 
-        let remaining = this.maxTools;
+
+        await a.respond(basePrompt, this.maxTools);
+
+        //let remaining = this.maxTools;
         // multiple hops if the model requests tools
-        for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
-          const peers = this.agents.map(x => x.id);
-          Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
-          const { message, toolsUsed } = await a.respond(basePrompt, Math.max(0, remaining), peers);
-          Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
+        //for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
+        //  const peers = this.agents.map(x => x.id);
+        //  Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
+        //  const { message, toolsUsed } = await a.respond(basePrompt, Math.max(0, remaining), peers);
+        //  Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
 
-          const askedUser = await this.route(a, message);
-          didWork = true;
+        //  const askedUser = await this.route(a, message);
+        //  didWork = true;
 
-          if (askedUser) {
-            const userText = (await this.userPromptFn(a.id, message)) ?? "";
-            if (userText.trim()) this.handleUserInterjection(userText.trim());
-            break;
-          }
+        //  if (askedUser) {
+        //    const userText = (await this.userPromptFn(a.id, message)) ?? "";
+        //    if (userText.trim()) this.handleUserInterjection(userText.trim());
+        //    break;
+        //  }
 
-          if (toolsUsed > 0) {
-            remaining = Math.max(0, remaining - toolsUsed);
-            if (remaining <= 0) break;
-          } else {
-            break;
-          }
-        }
+        //  if (toolsUsed > 0) {
+        //    remaining = Math.max(0, remaining - toolsUsed);
+        //    if (remaining <= 0) break;
+        //  } else {
+        //    break;
+        //  }
+        //}
       }
 
       if (!didWork) {
