@@ -107,7 +107,7 @@ async function main() {
 
   const agents = agentSpecs.map(a => ({
     id: a.id,
-    respond: (prompt: string, budget: number, peers: string[], abortCallback: () => boolean) => a.model.respond(prompt, budget, peers, abortCallback)
+    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => a.model.respond(prompt, budget, peers, cb)
   }));
 
   // Wiring: scheduler + input

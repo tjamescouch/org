@@ -36,7 +36,7 @@ export function makeLmStudioOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
           }
           return out;
         }),
-        temperature: 0.2,
+        temperature: 0.7,
       };
       if (opts?.tools && Array.isArray(opts.tools) && opts.tools.length > 0) {
         payload.tools = opts.tools;
