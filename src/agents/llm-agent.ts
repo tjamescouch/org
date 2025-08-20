@@ -308,6 +308,7 @@ Keep responses brief unless writing files.`;
     }
     // Loop: the assistant will see tool outputs (role:"tool") now in memory.
 
+    if(allReasoning) Logger.info("");
     Logger.info(C.bold(`${finalText}`));
     Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
 
