@@ -8,11 +8,6 @@ import { ExecutionGate } from "./tools/execution-gate";
 import { restoreStdin } from "./utils/restore-stdin";
 import type { GuardRouteKind, GuardDecision } from "./guardrails/guardrail";
 
-const DEBUG = (() => {
-  const v = (process.env.DEBUG ?? "").toString().toLowerCase();
-  return v === "1" || v === "true" || v === "yes" || v === "debug";
-})();
-function dbg(...a: any[]) { if (DEBUG) Logger.info("[DBG][scheduler]", ...a); }
 
 /** Minimal interface all participant models must implement. */
 export interface Responder {
@@ -30,6 +25,7 @@ export class RoundRobinScheduler {
   private maxTools: number;
   private running = false;
   private paused = false;
+  private hasRunningAgent = false;
 
   /** After this many idle scans, we ask the user for help. */
   private readonly idlePromptEvery = 3;
@@ -61,29 +57,34 @@ export class RoundRobinScheduler {
 
     let idleTicks = 0;
     while (this.running) {
-      if (this.paused) { await this.sleep(25); continue; }
+      if (this.paused) { 
+        this.hasRunningAgent = false;
 
+        await this.sleep(25); continue; 
+      }
+        
+      this.hasRunningAgent = true;
       let didWork = false;
 
       for (const a of this.agents) {
         if (this.paused || !this.running) break;
 
-        if (this.isMuted(a.id)) { dbg(`muted: ${a.id}`); continue; }
+        if (this.isMuted(a.id)) { Logger.debug(`muted: ${a.id}`); continue; }
 
         const basePrompt = this.nextPromptFor(a.id);
         if (!basePrompt) {
-          dbg(`no work for ${a.id}`);
+          Logger.debug(`no work for ${a.id}`);
           continue;
         }
-        dbg(`drained prompt for ${a.id}:`, JSON.stringify(basePrompt));
+        Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(basePrompt));
 
         let remaining = this.maxTools;
         // multiple hops if the model requests tools
         for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
           const peers = this.agents.map(x => x.id);
-          dbg(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
+          Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
           const { message, toolsUsed } = await a.respond(basePrompt, Math.max(0, remaining), peers);
-          dbg(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
+          Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
 
           const askedUser = await this.route(a, message);
           didWork = true;
@@ -105,7 +106,7 @@ export class RoundRobinScheduler {
 
       if (!didWork) {
         idleTicks++;
-        dbg(`idle tick ${idleTicks}`);
+        Logger.debug(`idle tick ${idleTicks}`);
         // Detect true "empty scheduler" condition and fall back to the user.
         if (idleTicks >= this.idlePromptEvery && this.areAllQueuesEmpty()) {
           const peers = this.agents.map(x => x.id);
@@ -129,8 +130,20 @@ export class RoundRobinScheduler {
   };
 
   stop() { this.running = false; }
-  pause() { this.paused = true; dbg("paused"); }
-  resume() { this.paused = false; dbg("resumed"); }
+  pause() { this.paused = true; Logger.debug("paused"); }
+  resume() { this.paused = false; Logger.debug("resumed"); }
+
+  async drain(): Promise<void> { 
+    while(this.getHasRunningAgent()) {
+      Logger.info(C.magenta(`Waiting for agent to complete...`));
+
+      await this.sleep(1000);
+    }
+  }
+
+  getHasRunningAgent(): boolean {
+    return this.hasRunningAgent;
+  }
 
   handleUserInterjection(text: string) {
     const target = this.lastUserDMTarget;
@@ -177,7 +190,7 @@ export class RoundRobinScheduler {
         const dec = fromAgent.guardCheck?.("group", c, this.agents.map(x => x.id)) || null;
         if (dec) this.applyGuardDecision(fromAgent, dec);
         if (dec?.suppressBroadcast) {
-          dbg(`suppress @@group from ${fromAgent.id}`);
+          Logger.debug(`suppress @@group from ${fromAgent.id}`);
           return;
         }
         for (const a of this.agents) if (a.id !== fromAgent.id) { if ((c || "").trim()) this.ensureInbox(a.id).push(c); }
@@ -191,7 +204,7 @@ export class RoundRobinScheduler {
           if (wasRaw) process.stdin.setRawMode(false);
           await ExecutionGate.gate(cmd);
           const res = await FileWriter.write(name, cleaned);
-              Logger.info(C.yellow(`${cleaned}`));
+          Logger.info(C.yellow(`${cleaned}`));
           Logger.info(C.magenta(`Written to ${res.path} (${res.bytes} bytes)`));
         } catch (err: any) {
           Logger.error(`File write failed: ${err?.message || err}`);
@@ -210,9 +223,9 @@ export class RoundRobinScheduler {
       if (!dec?.suppressBroadcast) {
         for (const a of this.agents) if (a.id !== fromAgent.id) { if ((text || "").trim()) this.ensureInbox(a.id).push(text); }
         Logger.debug(`${fromAgent.id} → @@group (implicit): ${text}`);
-        dbg(`${fromAgent.id} -> @@group (implicit):`, JSON.stringify(text));
+        Logger.debug(`${fromAgent.id} -> @@group (implicit):`, JSON.stringify(text));
       } else {
-        dbg(`suppress implicit @@group from ${fromAgent.id}`);
+        Logger.debug(`suppress implicit @@group from ${fromAgent.id}`);
       }
     }
     return sawUser;
