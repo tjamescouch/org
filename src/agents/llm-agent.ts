@@ -163,8 +163,6 @@ Keep responses brief unless writing files.`;
 
     let hop = 0;
     let totalUsed = 0;
-    let finalText = "";
-    let allReasoning = "";
 
     Logger.info(C.green(`${this.id} ...`));
     const msgs = this.memory.messages();
@@ -181,12 +179,11 @@ Keep responses brief unless writing files.`;
       Logger.debug(`${this.id} empty-output`);
     }
 
-    const assistantText = (out.text || "").trim();
+    const finalText = (out.text || "").trim();
 
+    const allReasoning = out?.reasoning || "";
     if ((out as any).reasoning) {
       Logger.info(C.cyan(out.reasoning ?? ""));
-
-      allReasoning += `\n${out.reasoning}` || "";
     }
 
     // Inform guard rail about this assistant turn (before routing)
