@@ -161,12 +161,12 @@ Keep responses brief unless writing files.`;
     let allReasoning: string | undefined;
 
     // 2) Main loop: let the model speak; if it requests tools, execute them; feed results.
-    while (true) {
-      if(abortCallback?.()) {
-        Logger.warn("Aborted turn.");
+    //while (true) {
+    //  if(abortCallback?.()) {
+    //    Logger.warn("Aborted turn.");
 
-        break;
-      }
+    //    break;
+    //  }
 
       Logger.info(C.green(`${this.id} ...`));
       const msgs = this.memory.messages();
@@ -300,10 +300,8 @@ Keep responses brief unless writing files.`;
           Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
           await this.memory.add({ role: "assistant", content: finalText });
         }
-        break;
       }
       // Loop: the assistant will see tool outputs (role:"tool") now in memory.
-    }
 
     if (allReasoning) Logger.info(C.cyan(`${allReasoning}`));
     Logger.info(C.bold(`${finalText}`));
