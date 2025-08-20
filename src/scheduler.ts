@@ -78,7 +78,9 @@ export class RoundRobinScheduler {
         Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(basePrompt));
 
         this.hasRunningAgent = true;
+        Logger.info("Agent running");
         await a.respond(basePrompt, this.maxTools);
+        Logger.info("Agent stopped");
         this.hasRunningAgent = false;
       }
 
