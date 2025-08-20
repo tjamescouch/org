@@ -158,7 +158,7 @@ Keep responses brief unless writing files.`;
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
 
     // 1) Add user content to memory
-    await this.memory.add({ role: "user", content: prompt });
+    await this.memory.addUnique({ role: "user", content: prompt });
 
     let hop = 0;
     let totalUsed = 0;
