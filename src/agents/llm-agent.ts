@@ -147,6 +147,12 @@ Keep responses brief unless writing files.`;
    * - Stop after first assistant text with no more tool calls or when budget is hit.
    */
   async respond(prompt: string, maxTools: number, _peers: string[], abortCallback?: () => boolean): Promise<AgentReply> {
+    if (abortCallback?.()) {
+      Logger.warn("Aborted tool calls");
+
+      return {message: "Aborted", toolsUsed: 0};
+    }
+
     Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
 
     // Initialize per-turn thresholds/counters in the guard rail.
