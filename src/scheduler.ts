@@ -67,7 +67,6 @@ export class RoundRobinScheduler {
 
       for (const a of this.agents) {
         if (this.paused || !this.running) break;
-        this.hasRunningAgent = true;
 
         if (this.isMuted(a.id)) { Logger.debug(`muted: ${a.id}`); continue; }
 
@@ -77,6 +76,8 @@ export class RoundRobinScheduler {
           continue;
         }
         Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(basePrompt));
+
+        this.hasRunningAgent = true;
 
         let remaining = this.maxTools;
         // multiple hops if the model requests tools
