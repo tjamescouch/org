@@ -146,8 +146,8 @@ Keep responses brief unless writing files.`;
    * - Let the model respond; if it asks for tools, execute (sh only) and loop.
    * - Stop after first assistant text with no more tool calls or when budget is hit.
    */
-  async respond(prompt: string, maxTools: number, _peers: string[], abortCallback?: () => boolean): Promise<AgentReply> {
-    Logger.info(`${this.id} start`, { promptChars: prompt.length, maxTools });
+  async respond(prompt: string, maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply> {
+    Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
 
     // Initialize per-turn thresholds/counters in the guard rail.
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
