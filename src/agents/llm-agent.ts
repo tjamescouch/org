@@ -146,7 +146,7 @@ Keep responses brief unless writing files.`;
    * - Let the model respond; if it asks for tools, execute (sh only) and loop.
    * - Stop after first assistant text with no more tool calls or when budget is hit.
    */
-  async respond(prompt: string, maxTools: number, _peers: string[], abortCallback?: () => boolean): Promise<AgentReply> {
+  async respond(prompt: string, maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply> {
     Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
 
     // Initialize per-turn thresholds/counters in the guard rail.
@@ -158,11 +158,11 @@ Keep responses brief unless writing files.`;
     let hop = 0;  
     let totalUsed = 0;  
     let finalText = "";
-    let allReasoning: string | undefined;
+    let allReasoning = "";
 
     // 2) Main loop: let the model speak; if it requests tools, execute them; feed results.
     while (true) {
-      if(abortCallback?.()) {
+      if(abortCallback()) {
         Logger.warn("Aborted turn.");
 
         break;
@@ -184,7 +184,7 @@ Keep responses brief unless writing files.`;
 
       const assistantText = (out.text || "").trim();
 
-      if ((out as any).reasoning && out.reasoning !== "undefined") allReasoning += `\n${out.reasoning}` || "";
+      if ((out as any).reasoning) allReasoning += `\n${out.reasoning}` || "";
 
       // Inform guard rail about this assistant turn (before routing)
       this.guard.noteAssistantTurn({ text: assistantText, toolCalls: (out.toolCalls || []).length });
@@ -207,7 +207,7 @@ Keep responses brief unless writing files.`;
       let forceEndTurn = false;
 
       for (const tc of calls) {
-        if(abortCallback?.()) {
+        if(abortCallback()) {
           Logger.warn("Aborted tool calls");
 
           break;

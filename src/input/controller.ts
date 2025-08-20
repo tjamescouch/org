@@ -2,7 +2,7 @@ import * as readline from "node:readline";
 import { RoundRobinScheduler } from "../scheduler";
 import { Logger } from "../logger";
 import { InputState } from "./types";
-import { dbg, enableRawMode, disableRawMode, resumeStdin, isRaw } from "./utils";
+import { enableRawMode, disableRawMode, resumeStdin, isRaw } from "./utils";
 
 /**
  * Single-owner stdin controller:
@@ -32,8 +32,8 @@ export class InputController {
       process.stdin.on("data", this.rawHandler);
     }
     process.on("SIGINT", () => this.shutdown());
-    process.stdin.on("pause", () => dbg("stdin paused"));
-    process.stdin.on("resume", () => dbg("stdin resumed"));
+    process.stdin.on("pause", () => Logger.debug("stdin paused"));
+    process.stdin.on("resume", () => Logger.debug("stdin resumed"));
   }
 
   /** Ask the user for a line with exclusive ownership of stdin. */
@@ -47,7 +47,7 @@ export class InputController {
       try {
         this.rl.question(prompt, (ans) => resolve(ans ?? ""));
       } catch (e) {
-        dbg("rl.question error; recreating readline:", e);
+        Logger.debug("rl.question error; recreating readline:", e);
         try { this.rl.close(); } catch (e) { Logger.error(e) }
         this.rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "" });
         this.rl.question(prompt, (ans) => resolve(ans ?? ""));
@@ -63,7 +63,7 @@ export class InputController {
   /** Public helper used by scheduler for @@user. */
   async provideToScheduler(_fromAgent: string, _content: string): Promise<string | null> {
     if (this.state !== InputState.Idle) {
-      dbg("provideToScheduler requested while state=", this.state);
+      Logger.debug("provideToScheduler requested while state=", this.state);
     }
     this.state = InputState.Prompt;
     try {
@@ -110,9 +110,9 @@ export class InputController {
       try {
         this.scheduler.pause();
         await this.scheduler.drain();
-        const text = await this.askLineExclusive("interject (user): ");
+        const text = await this.askLineExclusive("user: ");
         const trimmed = (text || "").trim();
-        dbg("interject line:", JSON.stringify(trimmed));
+        Logger.debug("interject line:", JSON.stringify(trimmed));
         if (trimmed) this.scheduler.handleUserInterjection(trimmed);
       } catch (e) {
         Logger.error(`interject failed: ${e instanceof Error ? e.message : String(e)}`);

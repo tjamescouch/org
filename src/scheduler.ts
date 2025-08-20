@@ -13,7 +13,7 @@ import { LlmAgent } from "./agents/llm-agent";
 /** Minimal interface all participant models must implement. */
 export interface Responder {
   id: string;
-  respond(usersPrompt: string, maxTools: number, peers: string[], abortCallback?: () => boolean): Promise<{ message: string; toolsUsed: number }>;
+  respond(usersPrompt: string, maxTools: number, peers: string[], abortCallback: () => boolean): Promise<{ message: string; toolsUsed: number }>;
   /** Optional: scheduler can ask the agent's guard rail for idle fallback guidance. */
   guardOnIdle?: (state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }) => GuardDecision | null;
   /** Optional: expose agent-specific guard rail to the scheduler. */

@@ -27,7 +27,7 @@ ROUND ROBIN / YIELD RULES
 - You get a limited number of tool calls per turn (budget set by the orchestrator).
 - Yield your turn when:
   1) you have NO tool calls to make,
-  2) your message includes "@group" or "@user" (broadcast or hand off to user),
+  2) your message includes "@@group" or "@@user" (broadcast or hand off to user),
   3) you exhaust your tool budget this turn.
 - Otherwise, continue your turn until one of the above conditions is met.
 
