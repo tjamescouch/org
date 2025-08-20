@@ -13,7 +13,7 @@ import { LlmAgent } from "./agents/llm-agent";
 /** Minimal interface all participant models must implement. */
 export interface Responder {
   id: string;
-  respond(usersPrompt: string, maxTools: number): Promise<{ message: string; toolsUsed: number }>;
+  respond(usersPrompt: string, maxTools: number, peers: string[], abortCallback?: () => boolean): Promise<{ message: string; toolsUsed: number }>;
   /** Optional: scheduler can ask the agent's guard rail for idle fallback guidance. */
   guardOnIdle?: (state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }) => GuardDecision | null;
   /** Optional: expose agent-specific guard rail to the scheduler. */
@@ -27,6 +27,7 @@ export class RoundRobinScheduler {
   private running = false;
   private paused = false;
   private activeAgent:Responder | undefined;
+  private draining = false;
 
   /** After this many idle scans, we ask the user for help. */
   private readonly idlePromptEvery = 3;
@@ -78,11 +79,33 @@ export class RoundRobinScheduler {
         }
         Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(basePrompt));
 
-        this.activeAgent = a;
-        Logger.info("Agent running");
-        await a.respond(basePrompt, this.maxTools);
-        Logger.info("Agent stopped");
-        this.activeAgent = undefined;
+        let remaining = this.maxTools;
+
+        //multiple hops if the model requests tools
+        for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
+          const peers = this.agents.map(x => x.id);
+          Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
+          this.activeAgent = a;
+          const { message, toolsUsed } = await a.respond(basePrompt, Math.max(0, remaining), peers, () => this.draining);
+          this.activeAgent = undefined;
+          Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
+
+          const askedUser = await this.route(a, message);
+          didWork = true;
+
+          if (askedUser) {
+            const userText = (await this.userPromptFn(a.id, message)) ?? "";
+            if (userText.trim()) this.handleUserInterjection(userText.trim());
+            break;
+          }
+
+          if (toolsUsed > 0) {
+            remaining = Math.max(0, remaining - toolsUsed);
+            if (remaining <= 0) break;
+          } else {
+            break;
+          }
+        }
       }
 
       if (!didWork) {
@@ -117,11 +140,13 @@ export class RoundRobinScheduler {
   resume() { this.paused = false; Logger.debug("resumed"); }
 
   async drain(): Promise<void> { 
+    this.draining = true;
     while(this.hasActiveAgent()) {
       Logger.info(C.magenta(`Waiting for agent to complete...`));
 
       await this.sleep(1000);
     }
+    this.draining = false;
   }
 
   hasActiveAgent(): boolean {
