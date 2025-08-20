@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
+// src/app.ts
 
 import { ExecutionGate } from "./tools/execution-gate";
 import { loadConfig } from "./config";
 import { Logger } from "./logger";
 import { RoundRobinScheduler } from "./scheduler";
-import { InputController } from "./input";
+import { InputController } from "./input/controller";
 import { makeLmStudioOpenAiDriver } from "./drivers/openai-lmstudio";
 import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
@@ -15,14 +16,17 @@ function parseArgs(argv: string[]) {
   let key: string | null = null;
   for (const a of argv) {
     if (a.startsWith("--")) {
-      const [k, v] = a.split("=", 2);
-      if (v !== undefined) out[k.slice(2)] = v;
-      else key = k.slice(2);
+      const [k, v] = a.slice(2).split("=", 2);
+      if (typeof v === "string") out[k] = v;
+      else { key = k; out[k] = true; }
     } else if (key) {
       out[key] = a; key = null;
+    } else {
+      // positional: treat as --prompt if not yet set
+      if (!("prompt" in out)) out["prompt"] = a;
+      else out[`arg${Object.keys(out).length}`] = a;
     }
   }
-  if (key) out[key] = true;
   return out;
 }
 
@@ -39,21 +43,19 @@ function setupProcessGuards() {
     process.on("beforeExit", (code) => {
       Logger.info("[DBG] beforeExit", code, "— scheduler stays alive unless Ctrl+C");
       // schedule a no-op to avoid accidental early exit if the event loop is empty
-      setTimeout(() => {}, 60_000);
+      setTimeout(() => { }, 60_000);
     });
     process.on("uncaughtException", (e) => { Logger.info("[DBG] uncaughtException:", e); });
     process.on("unhandledRejection", (e) => { Logger.info("[DBG] unhandledRejection:", e); });
     process.stdin.on("end", () => Logger.info("[DBG] stdin end"));
     process.stdin.on("pause", () => Logger.info("[DBG] stdin paused"));
     process.stdin.on("resume", () => Logger.info("[DBG] stdin resumed"));
-
-
   }
 }
 
 /** ---------- Mode / safety ---------- */
 function computeMode(): { interactive: boolean; safe: boolean } {
-  const interactive = true; // scheduler + hotkey assumes interactive
+  const interactive = true; // interactive controller + hotkeys
   const cfg = loadConfig();
   const safe = !!(cfg as any)?.runtime?.safe;
   ExecutionGate.configure({ safe, interactive });
@@ -107,32 +109,41 @@ async function main() {
 
   const agents = agentSpecs.map(a => ({
     id: a.id,
-    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => a.model.respond(prompt, budget, peers, cb)
+    // Pass-through to the agent/model's respond method
+    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => (a.model as any).respond(prompt, budget, peers, cb),
+    guardOnIdle: (state: any) => (a.model as any).guardOnIdle?.(state) ?? null,
+    guardCheck: (route: any, content: string, peers: string[]) =>
+      (a.model as any).guardCheck?.(route, content, peers) ?? null,
   }));
 
-  // Wiring: scheduler + input
-  let input!: InputController;
+  // Wiring: controller + scheduler
+  const input = new InputController({
+    interjectKey: String(args["interject-key"] || "i"),
+    interjectBanner: String(args["banner"] || "You: "),
+  });
+
   const scheduler = new RoundRobinScheduler({
     agents,
     maxTools,
-    onAskUser: async (from, content) => {
-      if (process.env.DEBUG) Logger.info(`[DBG] @@user requested by ${from}:`, JSON.stringify(content));
-      return await input.provideToScheduler(from, content);
-    }
+    onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
   });
 
-  input = new InputController(scheduler);
-  input.init();
+  input.attachScheduler(scheduler);
 
-  if (process.env.DEBUG) {
-    Logger.info("[DBG] Agents:", agents.map(a => a.id).join(", "));
+  if (process.env.DEBUG && process.env.DEBUG !== "0" && process.env.DEBUG !== "false") {
+    Logger.info("[DBG] agents:", agents.map(a => a.id).join(", "));
     Logger.info("[DBG] maxTools:", maxTools);
   }
 
   // Kick off with an initial user prompt
-  await input.askInitialAndSend(args['prompt']);
+  const promptArg = ((): string | boolean | undefined => {
+    if (args["prompt"] === true) return true;       // --prompt
+    if (typeof args["prompt"] === "string") return args["prompt"];
+    return undefined;
+  })();
+  await input.askInitialAndSend(promptArg);
 
-  // Never return under normal operation; exit only on Ctrl+C
+  // Never returns in normal operation; exit only via Ctrl+C
   await scheduler.start();
 }
 
