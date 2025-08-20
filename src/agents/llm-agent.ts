@@ -157,7 +157,7 @@ Keep responses brief unless writing files.`;
     // Initialize per-turn thresholds/counters in the guard rail.
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
 
-    // 1) Add user content to memory
+    // 1) Add user content to memory - if the user message already exists we just bubble it up to the top of the memories
     await this.memory.addUnique({ role: "user", content: prompt });
 
     let hop = 0;
