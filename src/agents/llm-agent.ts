@@ -200,7 +200,7 @@ Keep responses brief unless writing files.`;
           Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
           await this.memory.add({ role: "assistant", content: finalText });
         }
-        break;
+        return {message: finalText, toolsUsed: totalUsed}
       }
 
       // Execute tools (sh only), respecting remaining budget
