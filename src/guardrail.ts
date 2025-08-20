@@ -2,6 +2,7 @@
 import { Logger } from "./logger";
 
 export type GuardRouteKind = "group" | "agent" | "user" | "file";
+export type Reason = "missing-arg";
 
 export type GuardDecision = {
   /** Add a message to the agent's context (as system guidance). */
@@ -17,6 +18,8 @@ export type GuardDecision = {
   /** Ask the user for input with this prompt (scheduler will call onAskUser). */
   askUser?: string;
 };
+
+const defaultMissingArgEndTurnLimit = 3;
 
 export interface GuardRail {
   /**
@@ -34,8 +37,7 @@ export interface GuardRail {
    */
   noteBadToolCall(info: {
     name: string;
-    /** Human/enum code like "missing-arg", "missing-args", etc. */
-    reason: string;
+    reason: Reason;
     /** If reason === missing-arg(s), specify which argument names are missing. */
     missingArgs?: string[];
   }): GuardDecision | null;
@@ -121,10 +123,10 @@ export class StandardGuardRail implements GuardRail {
     this.toolSigCounts.clear();
 
     // Compute limits for this turn.
-    const defaultHalf = Math.max(1, Math.ceil(Math.max(0, ctx.maxToolHops) / 2));
+    const defaultHalf = Math.max(1, Math.ceil(Math.max(0, defaultMissingArgEndTurnLimit)));
     this.badToolEndTurnLimit = Math.max(
       1,
-      this.overrideMissingArgEndTurnLimit ?? defaultHalf
+      this.overrideMissingArgEndTurnLimit ?? defaultMissingArgEndTurnLimit
     );
     // Allow one repeat then end (default 2); or align with the same half rule if overridden.
     this.repeatToolSigEndTurnLimit = Math.max(
@@ -144,7 +146,7 @@ export class StandardGuardRail implements GuardRail {
     missingArgs?: string[];
   }): GuardDecision | null {
     const warnings: string[] = [];
-    if (/missing-arg/.test(info.reason) || /missing-args/.test(info.reason)) {
+    if (/missing-arg/.test(info.reason) || /missing-args/.test(info.reason)) { //FIXME use an enum for reason
       this.badToolMissingArgCount++;
       const remaining = Math.max(0, this.badToolEndTurnLimit - this.badToolMissingArgCount);
       const label = remaining <= 0 ? "FINAL" : (remaining === 1 ? "STRONG" : "WARNING");
@@ -167,7 +169,7 @@ Ending your turn now. On your next turn either:
       }
       return { nudge, warnings };
     }
-    return warnings.length ? { warnings } : null;
+    return warnings.length ? { nudge: "Please mix up your tool calls!", warnings } : null;
   }
 
   noteToolCall(info: {

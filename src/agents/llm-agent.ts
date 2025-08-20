@@ -116,7 +116,9 @@ Above all - DO THE THING. Don't just talk about it.
 Speak only in your own voice as "${this.id}" in the first person.
 Do not describe your intentions (e.g., "We need to respond as Bob").
 Do not narrate plans or roles; provide the final answer only.
-Do not quote other agents’ names as prefixes like "bob:" or "carol:".
+Do not quote other agents' names as prefixes like "bob:" or "carol:".
+
+Do not do a tool call with an empty command.
 
 Keep responses brief unless writing files.`;
 
