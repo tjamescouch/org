@@ -149,7 +149,7 @@ Keep responses brief unless writing files.`;
   async respond(prompt: string, maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply> {
     Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
     if (abortCallback?.()) {
-      Logger.warn("Aborted turn");
+      Logger.debug("Aborted turn");
 
       return {message: "Turn aborted.", toolsUsed: 0};
     }
@@ -208,7 +208,7 @@ Keep responses brief unless writing files.`;
 
     for (const tc of calls) {
       if (abortCallback?.()) {
-        Logger.warn("Aborted tool calls");
+        Logger.debug("Aborted tool calls");
 
         break;
       }
