@@ -5,7 +5,7 @@ import type { ChatMessage } from "../drivers/types";
  * Subclasses call `runOnce` to serialize/queue summarization so callers never block.
  */
 export abstract class AgentMemory {
-  protected readonly messagesBuffer: ChatMessage[] = [];
+  protected messagesBuffer: ChatMessage[] = [];
 
   // Background coordination
   private summarizing = false;
@@ -18,6 +18,12 @@ export abstract class AgentMemory {
   }
 
   async add(msg: ChatMessage): Promise<void> {
+    this.messagesBuffer.push(msg);
+    await this.onAfterAdd();
+  }
+
+  async addUnique(msg: ChatMessage): Promise<void> {
+    this.messagesBuffer = this.messagesBuffer.filter(m => m.content!==msg.content);
     this.messagesBuffer.push(msg);
     await this.onAfterAdd();
   }
