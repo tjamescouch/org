@@ -130,10 +130,9 @@ export class AdvancedMemory extends AgentMemory {
       ]);
 
       const summaries: ChatMessage[] = [];
-      if (sumS) summaries.push({ role: "system",    content: `SYSTEM SUMMARY:\n${sumS}` }); // <-- duplicated for maximum impact
       if (sumA) summaries.push({ role: "assistant", content: `ASSISTANT SUMMARY:\n${sumA}` });
+      if (sumS) summaries.push({ role: "system",    content: `SYSTEM SUMMARY:\n${sumS}` });
       if (sumU) summaries.push({ role: "user",      content: `USER SUMMARY:\n${sumU}` });
-      if (sumS) summaries.push({ role: "system",    content: `SYSTEM SUMMARY:\n${sumS}` }); // <-- swapped with user for now
 
       const rebuilt = this.ordered(
         summaries, sysHead, keepAssistant, keepSystem, keepUser, keepTools, other
