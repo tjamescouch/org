@@ -63,11 +63,11 @@ export class RoundRobinScheduler {
         await this.sleep(25); continue; 
       }
         
-      this.hasRunningAgent = true;
       let didWork = false;
 
       for (const a of this.agents) {
         if (this.paused || !this.running) break;
+        this.hasRunningAgent = true;
 
         if (this.isMuted(a.id)) { Logger.debug(`muted: ${a.id}`); continue; }
 
@@ -131,7 +131,7 @@ export class RoundRobinScheduler {
     if (this.keepAlive) { clearInterval(this.keepAlive); this.keepAlive = null; }
   };
 
-  stop() { this.running = false; }
+  stop() { this.running = false; Logger.debug("stopped"); }
   pause() { this.paused = true; Logger.debug("paused"); }
   resume() { this.paused = false; Logger.debug("resumed"); }
 
