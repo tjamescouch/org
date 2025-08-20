@@ -1,4 +1,5 @@
 import { Logger } from "../logger";
+import { timedFetch } from "../utils/timed-fetch";
 
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types";
 
@@ -15,7 +16,7 @@ export interface OpenAiDriverConfig {
 export function makeLmStudioOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
   const base = cfg.baseUrl.replace(/\/+$/, "");
   const endpoint = `${base}/v1/chat/completions`;
-  const defaultTimeout = cfg.timeoutMs ?? 1_000_000;
+  const defaultTimeout = cfg.timeoutMs ?? 2*60*60*1000;
 
   async function postChat(messages: ChatMessage[], opts?: { model?: string; tools?: any[] }): Promise<ChatOutput> {
     const controller = new AbortController();
@@ -43,11 +44,13 @@ export function makeLmStudioOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
       const charSum = messages.reduce((s, m) => s + String((m as any).content ?? "").length, 0);
       Logger.debug("POST /chat", { model: opts?.model ?? cfg.model, msgs: messages.length, chars: charSum, tools: !!opts?.tools && opts.tools.length ? opts.tools.length : 0, timeoutMs: defaultTimeout });
 
-      const res = await fetch(endpoint, {
+      const res = await timedFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
         signal: controller.signal,
+        where: 'driver:openai-lmstudio',
+        timeoutMs: 2*60*60*1000
       });
 
       Logger.debug("resp", { status: res.status, ms: Date.now() - t0 });
