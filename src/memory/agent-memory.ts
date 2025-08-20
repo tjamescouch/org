@@ -5,7 +5,7 @@ import type { ChatMessage } from "../drivers/types";
  * Subclasses call `runOnce` to serialize/queue summarization so callers never block.
  */
 export abstract class AgentMemory {
-  protected readonly messagesBuffer: ChatMessage[] = [];
+  protected messagesBuffer: ChatMessage[] = [];
 
   // Background coordination
   private summarizing = false;
@@ -13,13 +13,21 @@ export abstract class AgentMemory {
 
   constructor(systemPrompt?: string) {
     if (systemPrompt && systemPrompt.trim().length > 0) {
-      this.messagesBuffer.push({ role: "system", content: systemPrompt });
+      this.messagesBuffer.push({ role: "system", content: systemPrompt, from: "System" });
     }
   }
 
   async add(msg: ChatMessage): Promise<void> {
     this.messagesBuffer.push(msg);
     await this.onAfterAdd();
+  }
+
+  async addIfNotExists(msg: ChatMessage): Promise<void> {
+    const exists = this.messagesBuffer.some(m => (m.content===msg.content && m.role === msg.role));
+    if(!exists) {
+      this.messagesBuffer.push(msg);
+      await this.onAfterAdd();
+    }
   }
 
   /** Subclasses schedule summarization here but should return quickly. */

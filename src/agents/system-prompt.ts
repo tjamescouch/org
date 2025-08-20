@@ -31,8 +31,7 @@ ROUND ROBIN / YIELD RULES
   3) you exhaust your tool budget this turn.
 - Otherwise, continue your turn until one of the above conditions is met.
 
-ROLE MAPPING
-- Other agents' messages appear to you as "role":"user". Respond in your own voice only.
+Respond in your own voice only.
 
 STYLE
 - Be concise. Prefer concrete actions. When writing code or large text, use file tags (#file:<path>) instead of inline chat.

@@ -5,10 +5,11 @@ import { SH_TOOL_DEF, runSh } from "../tools/sh";
 import { C, Logger } from "../logger";
 import { AdvancedMemory, AgentMemory } from "../memory";
 import { GuardRail, GuardRouteKind } from "../guardrails/guardrail";
-import { AdvancedGuardRail } from "../guardrails/advanced-guardrail";
+import { Agent } from "./agent";
 
 export interface AgentReply {
   message: string;   // assistant text
+  reasoning?: string;
   toolsUsed: number; // number of tool calls consumed this hop
 }
 
@@ -19,8 +20,7 @@ export interface AgentReply {
  * - Other agents & the user are presented as role:"user".
  * - Exposes a polymorphic guard rail (loop detection, tool misuse escalation).
  */
-export class LlmAgent {
-  private readonly id: string;
+export class LlmAgent extends Agent {
   private readonly driver: ChatDriver;
   private readonly model: string;
   private readonly tools = [SH_TOOL_DEF];
@@ -29,14 +29,11 @@ export class LlmAgent {
   private readonly memory: AgentMemory;
   private readonly systemPrompt: string;
 
-  // Guard rails (loop / quality signals), per-agent, pluggable.
-  private readonly guard: GuardRail;
-
   constructor(id: string, driver: ChatDriver, model: string, guard?: GuardRail) {
-    this.id = id;
+    super(id, guard);
+
     this.driver = driver;
     this.model = model;
-    this.guard = guard ?? new AdvancedGuardRail({ agentId: id });
 
     // Compose system prompt: a short agent header + the shared default.
     this.systemPrompt =
@@ -158,18 +155,17 @@ Keep responses brief unless writing files.`;
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
 
     // 1) Add user content to memory
-    await this.memory.add({ role: "user", content: prompt });
+    await this.memory.addIfNotExists({ role: "user", content: prompt, from: "User" });
 
     let hop = 0;
     let totalUsed = 0;
-    let finalText = "";
-    let allReasoning = "";
 
     Logger.info(C.green(`${this.id} ...`));
     const msgs = this.memory.messages();
     Logger.debug(`${this.id} chat ->`, { hop: hop++, msgs: msgs.length });
     const t0 = Date.now();
-    const out = await this.driver.chat(this.memory.messages(), {
+    Logger.debug('memory', this.memory.messages());
+    const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
       tools: this.tools,
     });
@@ -179,25 +175,23 @@ Keep responses brief unless writing files.`;
       Logger.debug(`${this.id} empty-output`);
     }
 
-    const assistantText = (out.text || "").trim();
+    const finalText = (out.text || "").trim();
 
-    if ((out as any).reasoning && out.reasoning !== "undefined") allReasoning += `\n${out.reasoning}` || "";
+    const allReasoning = out?.reasoning || "";
+    if ((out as any).reasoning) {
+      Logger.info(C.cyan(out.reasoning ?? ""));
+    }
 
     // Inform guard rail about this assistant turn (before routing)
-    this.guard.noteAssistantTurn({ text: assistantText, toolCalls: (out.toolCalls || []).length });
-
-    if (assistantText.length > 0) {
-      finalText = assistantText;
-    }
+    this.guard.noteAssistantTurn({ text: finalText, toolCalls: (out.toolCalls || []).length });
 
     const calls = out.toolCalls || [];
     if (!calls.length) {
       // No tools requested — capture assistant text in memory and yield.
       if (finalText) {
         Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
-        await this.memory.add({ role: "assistant", content: finalText });
+        await this.memory.add({ role: "assistant", content: finalText, from: "Me" });
       }
-      if (allReasoning) Logger.info(C.cyan(`${allReasoning}`));
       Logger.info(C.bold(`${finalText}`));
       Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
       return { message: finalText, toolsUsed: totalUsed }
@@ -232,13 +226,13 @@ Keep responses brief unless writing files.`;
             missingArgs: ["cmd"],
           });
           if (decision?.nudge) {
-            await this.memory.add({ role: "system", content: decision.nudge });
+            await this.memory.add({ role: "system", content: decision.nudge, from: "System" });
           }
           if (decision?.endTurn) {
             Logger.warn(`System ended turn.`);
             totalUsed = maxTools; // consume budget → end turn
             forceEndTurn = true;
-            if (finalText) await this.memory.add({ role: "assistant", content: finalText });
+            if (finalText) await this.memory.add({ role: "assistant", content: finalText, from: "System" });
             break;
           }
 
@@ -251,7 +245,7 @@ Keep responses brief unless writing files.`;
             cmd: "",
           });
           Logger.warn(`Execution failed: Command required.`);
-          await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh" } as ChatMessage);
+          await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh", from: "Tool" });
           totalUsed++;
           continue;
         }
@@ -270,26 +264,26 @@ Keep responses brief unless writing files.`;
           exitCode: result.exit_code,
         });
         if (repeatDecision?.nudge) {
-          await this.memory.add({ role: "system", content: repeatDecision.nudge });
+          await this.memory.add({ role: "system", content: repeatDecision.nudge, from: "System" });
         }
         if (repeatDecision?.endTurn) {
           // Still record the tool output so the model can read it later.
           const contentJSON = JSON.stringify(result);
-          await this.memory.add({ role: "tool", content: contentJSON, tool_call_id: tc.id, name: "sh" } as ChatMessage);
+          await this.memory.add({ role: "tool", content: contentJSON, tool_call_id: tc.id, name: "sh", from: "Tool"});
 
           totalUsed = maxTools;
           forceEndTurn = true;
-          if (finalText) await this.memory.add({ role: "assistant", content: finalText });
+          if (finalText) await this.memory.add({ role: "assistant", content: finalText, from: "Me" });
           break;
         }
 
         const content = JSON.stringify(result);
-        await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh" } as ChatMessage);
+        await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh", from: "Tool" });
         totalUsed++;
       } else {
         Logger.warn(`Unknown tool ${name} requested`);
         const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, cmd: "" });
-        await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name } as ChatMessage);
+        await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: "Tool" });
         totalUsed++;
       }
     }
@@ -298,26 +292,14 @@ Keep responses brief unless writing files.`;
       // Record whatever assistant text we have before yielding
       if (finalText) {
         Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
-        await this.memory.add({ role: "assistant", content: finalText });
+        await this.memory.add({ role: "assistant", content: finalText, from: "Me"});
       }
     }
     // Loop: the assistant will see tool outputs (role:"tool") now in memory.
 
-    if (allReasoning) Logger.info(C.cyan(`${allReasoning}`));
     Logger.info(C.bold(`${finalText}`));
     Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
 
-    return { message: finalText, toolsUsed: totalUsed };
-  }
-
-  /** Polymorphic guard rail hook used by the scheduler for routing checks. */
-  guardCheck(route: GuardRouteKind, content: string, peers: string[]) {
-    return this.guard.guardCheck(route, content, peers);
-  }
-
-  /** Allow scheduler to ask this agent's guard rail for idle fallbacks. */
-  guardOnIdle(state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }) {
-    const anyGuard: any = this.guard as any;
-    return typeof anyGuard.onIdle === 'function' ? anyGuard.onIdle(state) : null;
+    return { message: finalText, toolsUsed: totalUsed, reasoning: allReasoning };
   }
 }
