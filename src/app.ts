@@ -43,7 +43,7 @@ function setupProcessGuards() {
     process.on("beforeExit", (code) => {
       Logger.info("[DBG] beforeExit", code, "— scheduler stays alive unless Ctrl+C");
       // schedule a no-op to avoid accidental early exit if the event loop is empty
-      setTimeout(() => {}, 60_000);
+      setTimeout(() => { }, 60_000);
     });
     process.on("uncaughtException", (e) => { Logger.info("[DBG] uncaughtException:", e); });
     process.on("unhandledRejection", (e) => { Logger.info("[DBG] unhandledRejection:", e); });
@@ -110,8 +110,7 @@ async function main() {
   const agents = agentSpecs.map(a => ({
     id: a.id,
     // Pass-through to the agent/model's respond method
-    respond: (prompt: string, budget: number, peers: string[], draining: () => boolean) =>
-      (a.model as any).respond(prompt, budget, peers, draining),
+    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => (a.model as any).respond(prompt, budget, peers, cb),
     guardOnIdle: (state: any) => (a.model as any).guardOnIdle?.(state) ?? null,
     guardCheck: (route: any, content: string, peers: string[]) =>
       (a.model as any).guardCheck?.(route, content, peers) ?? null,

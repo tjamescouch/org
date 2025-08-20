@@ -148,6 +148,11 @@ Keep responses brief unless writing files.`;
    */
   async respond(prompt: string, maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply> {
     Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
+    if (abortCallback?.()) {
+      Logger.warn("Aborted turn");
+
+      return {message: "Turn aborted.", toolsUsed: 0};
+    }
 
     // Initialize per-turn thresholds/counters in the guard rail.
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });

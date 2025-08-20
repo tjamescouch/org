@@ -6,12 +6,12 @@ import { extractCodeGuards } from "./utils/extract-code-blocks";
 import { FileWriter } from "./io/file-writer";
 import { ExecutionGate } from "./tools/execution-gate";
 import { restoreStdin } from "./utils/restore-stdin";
-import type { GuardRouteKind, GuardDecision } from "./guardrail";
+import { GuardDecision, GuardRouteKind } from "./guardrails/guardrail";
 
 
 export interface Responder {
   id: string;
-  respond(usersPrompt: string, maxTools: number, peers: string[]): Promise<{ message: string; toolsUsed: number }>;
+  respond(usersPrompt: string, maxTools: number, peers: string[], abortCallback: () => boolean): Promise<{ message: string; toolsUsed: number }>;
   guardOnIdle?: (state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }) => GuardDecision | null;
   guardCheck?: (route: GuardRouteKind, content: string, peers: string[]) => GuardDecision | null;
 }
@@ -52,7 +52,7 @@ export class RoundRobinScheduler {
     let idleTicks = 0;
     while (this.running) {
       this.activeAgent = undefined;
-      if (this.paused) {
+      if (this.paused || this.draining) {
 
         await this.sleep(25); continue;
       }
@@ -126,14 +126,23 @@ export class RoundRobinScheduler {
   pause() { this.paused = true; Logger.debug("paused"); }
   resume() { this.paused = false; Logger.debug("resumed"); }
 
-  async drain(): Promise<void> {
+  async drain(): Promise<boolean> {
+    if (this.draining) return false;
     this.draining = true;
     while (this.hasActiveAgent()) {
       Logger.info(C.magenta(`Waiting for agent to complete...`));
 
       await this.sleep(1000);
     }
+    return true;
+  }
+
+  stopDraining(): void {
     this.draining = false;
+  }
+
+  isDraining(): boolean {
+    return this.draining;
   }
 
   hasActiveAgent(): boolean {

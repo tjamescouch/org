@@ -14,6 +14,7 @@
 import * as readline from "readline";
 import { Logger } from "../logger";
 import type { RoundRobinScheduler } from "../scheduler";
+import { resumeStdin } from "./utils";
 
 export type InputControllerOptions = {
   interjectKey?: string;         // default: "i"
@@ -90,9 +91,16 @@ export class InputController {
 
   /** Hotkey entry to interjection. */
   private async enterInterjection(): Promise<void> {
-    const text = await this.runReadlineOnce(this.interjectBanner);
-    if (text && this.scheduler) {
-      this.scheduler.handleUserInterjection(text);
+    if (this.scheduler?.isDraining()) return;
+
+    try {
+      await this.scheduler?.drain();
+      const text = await this.runReadlineOnce(this.interjectBanner);
+      if (text && this.scheduler) {
+        this.scheduler.handleUserInterjection(text);
+      }
+    } finally {
+      this.scheduler?.stopDraining();
     }
   }
 
@@ -126,12 +134,12 @@ export class InputController {
 
       // Ensure a clean line before our prompt, then ask.
       if (!promptText.endsWith(" ")) promptText = promptText + " ";
-      this.rl.question(promptText, (answer) => {
+      this.rl.question(promptText, (answer: string) => {
         try {
           resolve((answer ?? "").trim());
         } finally {
           // Cleanup + restore raw no-echo mode.
-          try { this.rl?.close(); } catch {}
+          try { this.rl?.close(); resumeStdin(); } catch (e) { Logger.error(e); }
           this.rl = null;
           this.interjecting = false;
           this.setRawMode(true);
