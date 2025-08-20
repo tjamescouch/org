@@ -7,6 +7,7 @@ import { FileWriter } from "./io/file-writer";
 import { ExecutionGate } from "./tools/execution-gate";
 import { restoreStdin } from "./utils/restore-stdin";
 import type { GuardRouteKind, GuardDecision } from "./guardrails/guardrail";
+import { LlmAgent } from "./agents/llm-agent";
 
 
 /** Minimal interface all participant models must implement. */
@@ -25,7 +26,7 @@ export class RoundRobinScheduler {
   private maxTools: number;
   private running = false;
   private paused = false;
-  private hasRunningAgent = false;
+  private activeAgent:Responder | undefined;
 
   /** After this many idle scans, we ask the user for help. */
   private readonly idlePromptEvery = 3;
@@ -57,7 +58,7 @@ export class RoundRobinScheduler {
 
     let idleTicks = 0;
     while (this.running) {
-      this.hasRunningAgent = false;
+      this.activeAgent = undefined;
       if (this.paused) { 
 
         await this.sleep(25); continue; 
@@ -77,11 +78,11 @@ export class RoundRobinScheduler {
         }
         Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(basePrompt));
 
-        this.hasRunningAgent = true;
+        this.activeAgent = a;
         Logger.info("Agent running");
         await a.respond(basePrompt, this.maxTools);
         Logger.info("Agent stopped");
-        this.hasRunningAgent = false;
+        this.activeAgent = undefined;
       }
 
       if (!didWork) {
@@ -106,6 +107,7 @@ export class RoundRobinScheduler {
       await this.sleep(didWork ? 5 : 25);
     }
     
+    this.activeAgent = undefined;
 
     if (this.keepAlive) { clearInterval(this.keepAlive); this.keepAlive = null; }
   };
@@ -115,15 +117,15 @@ export class RoundRobinScheduler {
   resume() { this.paused = false; Logger.debug("resumed"); }
 
   async drain(): Promise<void> { 
-    while(this.getHasRunningAgent()) {
+    while(this.hasActiveAgent()) {
       Logger.info(C.magenta(`Waiting for agent to complete...`));
 
       await this.sleep(1000);
     }
   }
 
-  getHasRunningAgent(): boolean {
-    return this.hasRunningAgent;
+  hasActiveAgent(): boolean {
+    return !!this.activeAgent;
   }
 
   handleUserInterjection(text: string) {
