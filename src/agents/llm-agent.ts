@@ -155,8 +155,8 @@ Keep responses brief unless writing files.`;
     // 1) Add user content to memory
     await this.memory.add({ role: "user", content: prompt });
 
-    let hop = 0;  
-    let totalUsed = 0;  
+    let hop = 0;
+    let totalUsed = 0;
     let finalText = "";
     let allReasoning: string | undefined;
 
@@ -168,140 +168,143 @@ Keep responses brief unless writing files.`;
     //    break;
     //  }
 
-      Logger.info(C.green(`${this.id} ...`));
-      const msgs = this.memory.messages();
-      Logger.debug(`${this.id} chat ->`, { hop: hop++, msgs: msgs.length });
-      const t0 = Date.now();
-      const out = await this.driver.chat(this.memory.messages(), {
-        model: this.model,
-        tools: this.tools,
-      });
-      Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
+    Logger.info(C.green(`${this.id} ...`));
+    const msgs = this.memory.messages();
+    Logger.debug(`${this.id} chat ->`, { hop: hop++, msgs: msgs.length });
+    const t0 = Date.now();
+    const out = await this.driver.chat(this.memory.messages(), {
+      model: this.model,
+      tools: this.tools,
+    });
+    Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
 
-      if ((!out.text || !out.text.trim()) && (!out.toolCalls || !out.toolCalls.length)) {
-        Logger.debug(`${this.id} empty-output`);
+    if ((!out.text || !out.text.trim()) && (!out.toolCalls || !out.toolCalls.length)) {
+      Logger.debug(`${this.id} empty-output`);
+    }
+
+    const assistantText = (out.text || "").trim();
+
+    if ((out as any).reasoning && out.reasoning !== "undefined") allReasoning += `\n${out.reasoning}` || "";
+
+    // Inform guard rail about this assistant turn (before routing)
+    this.guard.noteAssistantTurn({ text: assistantText, toolCalls: (out.toolCalls || []).length });
+
+    if (assistantText.length > 0) {
+      finalText = assistantText;
+    }
+
+    const calls = out.toolCalls || [];
+    if (!calls.length) {
+      // No tools requested — capture assistant text in memory and yield.
+      if (finalText) {
+        Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
+        await this.memory.add({ role: "assistant", content: finalText });
+      }
+      if (allReasoning) Logger.info(C.cyan(`${allReasoning}`));
+      Logger.info(C.bold(`${finalText}`));
+      Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
+      return { message: finalText, toolsUsed: totalUsed }
+    }
+
+    // Execute tools (sh only), respecting remaining budget
+    let forceEndTurn = false;
+
+    for (const tc of calls) {
+      if (abortCallback?.()) {
+        Logger.warn("Aborted tool calls");
+
+        break;
       }
 
-      const assistantText = (out.text || "").trim();
+      if (forceEndTurn) Logger.warn("Turn forcibly ended.");
 
-      if ((out as any).reasoning && out.reasoning !== "undefined") allReasoning += `\n${out.reasoning}` || "";
+      if (totalUsed >= maxTools || forceEndTurn) break;
 
-      // Inform guard rail about this assistant turn (before routing)
-      this.guard.noteAssistantTurn({ text: assistantText, toolCalls: (out.toolCalls || []).length });
+      const name = tc.function?.name || "";
+      let args: any = {};
+      try { args = JSON.parse(tc.function?.arguments || "{}"); } catch { args = {}; }
 
-      if (assistantText.length > 0) {
-        finalText = assistantText;
-      }
+      if (name === "sh") {
+        const rawCmd = String(args?.cmd ?? "");
+        const cmd = rawCmd.replace(/\s+/g, " ").trim();
 
-      const calls = out.toolCalls || [];
-      if (!calls.length) {
-        // No tools requested — capture assistant text in memory and yield.
-        if (finalText) {
-          Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
-          await this.memory.add({ role: "assistant", content: finalText });
-        }
-        return {message: finalText, toolsUsed: totalUsed}
-      }
-
-      // Execute tools (sh only), respecting remaining budget
-      let forceEndTurn = false;
-
-      for (const tc of calls) {
-        if(abortCallback?.()) {
-          Logger.warn("Aborted tool calls");
-
-          break;
-        }
-
-        if (forceEndTurn) Logger.warn("Turn forcibly ended.");
-
-        if (totalUsed >= maxTools || forceEndTurn) break;
-
-        const name = tc.function?.name || "";
-        let args: any = {};
-        try { args = JSON.parse(tc.function?.arguments || "{}"); } catch { args = {}; }
-
-        if (name === "sh") {
-          const rawCmd = String(args?.cmd ?? "");
-          const cmd = rawCmd.replace(/\s+/g, " ").trim();
-
-          if (!cmd) {
-            const decision = this.guard.noteBadToolCall({
-              name: "sh",
-              reason: "missing-arg",
-              missingArgs: ["cmd"],
-            });
-            if (decision?.nudge) {
-              await this.memory.add({ role: "system", content: decision.nudge });
-            }
-            if (decision?.endTurn) {
-              Logger.warn(`System ended turn.`);
-              totalUsed = maxTools; // consume budget → end turn
-              forceEndTurn = true;
-              if (finalText) await this.memory.add({ role: "assistant", content: finalText });
-              break;
-            }
-
-            // Synthesize a failed tool-output message back to memory (as before).
-            const content = JSON.stringify({
-              ok: false,
-              stdout: "",
-              stderr: "Execution failed: Command required.",
-              exit_code: 1,
-              cmd: "",
-            });
-            Logger.warn(`Execution failed: Command required.`);
-            await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh" } as ChatMessage);
-            totalUsed++;
-            continue;
-          }
-
-          // Normal execution
-          Logger.debug(`${this.id} tool ->`, { name, cmd: cmd.slice(0, 160) });
-          const tSh = Date.now();
-          const result = await runSh(cmd);
-          Logger.debug(`${this.id} tool <-`, { name, ms: Date.now() - tSh, exit: result.exit_code, outChars: result.stdout.length, errChars: result.stderr.length });
-
-          // Let GuardRail see the signature to stop "same command" repetition
-          const repeatDecision = this.guard.noteToolCall({
+        if (!cmd) {
+          const decision = this.guard.noteBadToolCall({
             name: "sh",
-            argsSig: cmd, // argument signature = canonicalized cmd
-            resSig: `${result.exit_code}|${(result.stdout || "").trim().slice(0, 240)}`,
-            exitCode: result.exit_code,
+            reason: "missing-arg",
+            missingArgs: ["cmd"],
           });
-          if (repeatDecision?.nudge) {
-            await this.memory.add({ role: "system", content: repeatDecision.nudge });
+          if (decision?.nudge) {
+            await this.memory.add({ role: "system", content: decision.nudge });
           }
-          if (repeatDecision?.endTurn) {
-            // Still record the tool output so the model can read it later.
-            const contentJSON = JSON.stringify(result);
-            await this.memory.add({ role: "tool", content: contentJSON, tool_call_id: tc.id, name: "sh" } as ChatMessage);
-
-            totalUsed = maxTools;
+          if (decision?.endTurn) {
+            Logger.warn(`System ended turn.`);
+            totalUsed = maxTools; // consume budget → end turn
             forceEndTurn = true;
             if (finalText) await this.memory.add({ role: "assistant", content: finalText });
             break;
           }
 
-          const content = JSON.stringify(result);
+          // Synthesize a failed tool-output message back to memory (as before).
+          const content = JSON.stringify({
+            ok: false,
+            stdout: "",
+            stderr: "Execution failed: Command required.",
+            exit_code: 1,
+            cmd: "",
+          });
+          Logger.warn(`Execution failed: Command required.`);
           await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh" } as ChatMessage);
           totalUsed++;
-        } else {
-          Logger.warn(`Unknown tool ${name} requested`);
-          const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, cmd: "" });
-          await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name } as ChatMessage);
-          totalUsed++;
+          continue;
         }
-      }
 
-      if (totalUsed >= maxTools) {
-        // Record whatever assistant text we have before yielding
-        if (finalText) {
-          Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
-          await this.memory.add({ role: "assistant", content: finalText });
+        // Normal execution
+        Logger.debug(`${this.id} tool ->`, { name, cmd: cmd.slice(0, 160) });
+        const tSh = Date.now();
+        const result = await runSh(cmd);
+        Logger.debug(`${this.id} tool <-`, { name, ms: Date.now() - tSh, exit: result.exit_code, outChars: result.stdout.length, errChars: result.stderr.length });
+
+        // Let GuardRail see the signature to stop "same command" repetition
+        const repeatDecision = this.guard.noteToolCall({
+          name: "sh",
+          argsSig: cmd, // argument signature = canonicalized cmd
+          resSig: `${result.exit_code}|${(result.stdout || "").trim().slice(0, 240)}`,
+          exitCode: result.exit_code,
+        });
+        if (repeatDecision?.nudge) {
+          await this.memory.add({ role: "system", content: repeatDecision.nudge });
         }
+        if (repeatDecision?.endTurn) {
+          // Still record the tool output so the model can read it later.
+          const contentJSON = JSON.stringify(result);
+          await this.memory.add({ role: "tool", content: contentJSON, tool_call_id: tc.id, name: "sh" } as ChatMessage);
+
+          totalUsed = maxTools;
+          forceEndTurn = true;
+          if (finalText) await this.memory.add({ role: "assistant", content: finalText });
+          break;
+        }
+
+        const content = JSON.stringify(result);
+        await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh" } as ChatMessage);
+        totalUsed++;
+      } else {
+        Logger.warn(`Unknown tool ${name} requested`);
+        const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, cmd: "" });
+        await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name } as ChatMessage);
+        totalUsed++;
       }
-      // Loop: the assistant will see tool outputs (role:"tool") now in memory.
+    }
+
+    if (totalUsed >= maxTools) {
+      // Record whatever assistant text we have before yielding
+      if (finalText) {
+        Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
+        await this.memory.add({ role: "assistant", content: finalText });
+      }
+    }
+    // Loop: the assistant will see tool outputs (role:"tool") now in memory.
 
     if (allReasoning) Logger.info(C.cyan(`${allReasoning}`));
     Logger.info(C.bold(`${finalText}`));
