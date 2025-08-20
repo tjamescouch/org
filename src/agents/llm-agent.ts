@@ -184,7 +184,7 @@ Keep responses brief unless writing files.`;
     const assistantText = (out.text || "").trim();
 
     if ((out as any).reasoning) {
-      Logger.streamInfo(C.cyan(out.reasoning ?? ""));
+      Logger.info(C.cyan(out.reasoning ?? ""));
 
       allReasoning += `\n${out.reasoning}` || "";
     }
@@ -308,7 +308,6 @@ Keep responses brief unless writing files.`;
     }
     // Loop: the assistant will see tool outputs (role:"tool") now in memory.
 
-    if(allReasoning) Logger.info("");
     Logger.info(C.bold(`${finalText}`));
     Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
 
