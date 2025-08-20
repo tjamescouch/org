@@ -169,6 +169,7 @@ Keep responses brief unless writing files.`;
     const msgs = this.memory.messages();
     Logger.debug(`${this.id} chat ->`, { hop: hop++, msgs: msgs.length });
     const t0 = Date.now();
+    console.log('memory', this.memory.messages());
     const out = await this.driver.chat(this.memory.messages(), {
       model: this.model,
       tools: this.tools,
