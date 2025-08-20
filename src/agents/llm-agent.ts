@@ -4,9 +4,8 @@ import type { ChatDriver, ChatMessage } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
 import { C, Logger } from "../logger";
 import { AdvancedMemory, AgentMemory } from "../memory";
-import { GuardRail, StandardGuardRail, GuardRouteKind } from "../guardrail";
-const DBG = /^(1|true|yes|debug)$/i.test(String(process.env.DEBUG ?? ""));
-const dbg = (...a: any[]) => { if (DBG) Logger.info("[DBG][agent]", ...a); };
+import { GuardRail, GuardRouteKind } from "../guardrails/guardrail";
+import { AdvancedGuardRail } from "../guardrails/advanced-guardrail";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -37,7 +36,7 @@ export class LlmAgent {
     this.id = id;
     this.driver = driver;
     this.model = model;
-    this.guard = guard ?? new StandardGuardRail({ agentId: id });
+    this.guard = guard ?? new AdvancedGuardRail({ agentId: id });
 
     // Compose system prompt: a short agent header + the shared default.
     this.systemPrompt =
@@ -116,7 +115,9 @@ Above all - DO THE THING. Don't just talk about it.
 Speak only in your own voice as "${this.id}" in the first person.
 Do not describe your intentions (e.g., "We need to respond as Bob").
 Do not narrate plans or roles; provide the final answer only.
-Do not quote other agents’ names as prefixes like "bob:" or "carol:".
+Do not quote other agents' names as prefixes like "bob:" or "carol:".
+
+Do not do a tool call with an empty command.
 
 Keep responses brief unless writing files.`;
 
@@ -145,8 +146,8 @@ Keep responses brief unless writing files.`;
    * - Let the model respond; if it asks for tools, execute (sh only) and loop.
    * - Stop after first assistant text with no more tool calls or when budget is hit.
    */
-  async respond(prompt: string, maxTools: number, _peers: string[]): Promise<AgentReply> {
-    dbg(`${this.id} start`, { promptChars: prompt.length, maxTools });
+  async respond(prompt: string, maxTools: number, _peers: string[], abortCallback?: () => boolean): Promise<AgentReply> {
+    Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
 
     // Initialize per-turn thresholds/counters in the guard rail.
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
@@ -161,18 +162,24 @@ Keep responses brief unless writing files.`;
 
     // 2) Main loop: let the model speak; if it requests tools, execute them; feed results.
     while (true) {
+      if(abortCallback?.()) {
+        Logger.warn("Aborted turn.");
+
+        break;
+      }
+
       Logger.info(C.green(`${this.id} ...`));
       const msgs = this.memory.messages();
-      dbg(`${this.id} chat ->`, { hop: hop++, msgs: msgs.length });
+      Logger.debug(`${this.id} chat ->`, { hop: hop++, msgs: msgs.length });
       const t0 = Date.now();
       const out = await this.driver.chat(this.memory.messages(), {
         model: this.model,
         tools: this.tools,
       });
-      dbg(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
+      Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
 
       if ((!out.text || !out.text.trim()) && (!out.toolCalls || !out.toolCalls.length)) {
-        dbg(`${this.id} empty-output`);
+        Logger.debug(`${this.id} empty-output`);
       }
 
       const assistantText = (out.text || "").trim();
@@ -190,7 +197,7 @@ Keep responses brief unless writing files.`;
       if (!calls.length) {
         // No tools requested — capture assistant text in memory and yield.
         if (finalText) {
-          dbg(`${this.id} add assistant`, { chars: finalText.length });
+          Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
           await this.memory.add({ role: "assistant", content: finalText });
         }
         break;
@@ -200,6 +207,12 @@ Keep responses brief unless writing files.`;
       let forceEndTurn = false;
 
       for (const tc of calls) {
+        if(abortCallback?.()) {
+          Logger.warn("Aborted tool calls");
+
+          break;
+        }
+
         if (forceEndTurn) Logger.warn("Turn forcibly ended.");
 
         if (totalUsed >= maxTools || forceEndTurn) break;
@@ -222,6 +235,7 @@ Keep responses brief unless writing files.`;
               await this.memory.add({ role: "system", content: decision.nudge });
             }
             if (decision?.endTurn) {
+              Logger.warn(`System ended turn.`);
               totalUsed = maxTools; // consume budget → end turn
               forceEndTurn = true;
               if (finalText) await this.memory.add({ role: "assistant", content: finalText });
@@ -243,10 +257,10 @@ Keep responses brief unless writing files.`;
           }
 
           // Normal execution
-          dbg(`${this.id} tool ->`, { name, cmd: cmd.slice(0, 160) });
+          Logger.debug(`${this.id} tool ->`, { name, cmd: cmd.slice(0, 160) });
           const tSh = Date.now();
           const result = await runSh(cmd);
-          dbg(`${this.id} tool <-`, { name, ms: Date.now() - tSh, exit: result.exit_code, outChars: result.stdout.length, errChars: result.stderr.length });
+          Logger.debug(`${this.id} tool <-`, { name, ms: Date.now() - tSh, exit: result.exit_code, outChars: result.stdout.length, errChars: result.stderr.length });
 
           // Let GuardRail see the signature to stop "same command" repetition
           const repeatDecision = this.guard.noteToolCall({
@@ -283,7 +297,7 @@ Keep responses brief unless writing files.`;
       if (totalUsed >= maxTools) {
         // Record whatever assistant text we have before yielding
         if (finalText) {
-          dbg(`${this.id} add assistant`, { chars: finalText.length });
+          Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
           await this.memory.add({ role: "assistant", content: finalText });
         }
         break;

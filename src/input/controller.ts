@@ -109,6 +109,7 @@ export class InputController {
       this.state = InputState.Interject;
       try {
         this.scheduler.pause();
+        await this.scheduler.drain();
         const text = await this.askLineExclusive("interject (user): ");
         const trimmed = (text || "").trim();
         dbg("interject line:", JSON.stringify(trimmed));

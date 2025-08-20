@@ -6,18 +6,14 @@ import { extractCodeGuards } from "./utils/extract-code-blocks";
 import { FileWriter } from "./io/file-writer";
 import { ExecutionGate } from "./tools/execution-gate";
 import { restoreStdin } from "./utils/restore-stdin";
-import type { GuardRouteKind, GuardDecision } from "./guardrail";
+import type { GuardRouteKind, GuardDecision } from "./guardrails/guardrail";
+import { LlmAgent } from "./agents/llm-agent";
 
-const DEBUG = (() => {
-  const v = (process.env.DEBUG ?? "").toString().toLowerCase();
-  return v === "1" || v === "true" || v === "yes" || v === "debug";
-})();
-function dbg(...a: any[]) { if (DEBUG) Logger.info("[DBG][scheduler]", ...a); }
 
 /** Minimal interface all participant models must implement. */
 export interface Responder {
   id: string;
-  respond(usersPrompt: string, maxTools: number, peers: string[]): Promise<{ message: string; toolsUsed: number }>;
+  respond(usersPrompt: string, maxTools: number, peers: string[], abortCallback?: () => boolean): Promise<{ message: string; toolsUsed: number }>;
   /** Optional: scheduler can ask the agent's guard rail for idle fallback guidance. */
   guardOnIdle?: (state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }) => GuardDecision | null;
   /** Optional: expose agent-specific guard rail to the scheduler. */
@@ -30,6 +26,8 @@ export class RoundRobinScheduler {
   private maxTools: number;
   private running = false;
   private paused = false;
+  private activeAgent:Responder | undefined;
+  private draining = false;
 
   /** After this many idle scans, we ask the user for help. */
   private readonly idlePromptEvery = 3;
@@ -61,29 +59,36 @@ export class RoundRobinScheduler {
 
     let idleTicks = 0;
     while (this.running) {
-      if (this.paused) { await this.sleep(25); continue; }
+      this.activeAgent = undefined;
+      if (this.paused) { 
 
+        await this.sleep(25); continue; 
+      }
+        
       let didWork = false;
 
       for (const a of this.agents) {
         if (this.paused || !this.running) break;
 
-        if (this.isMuted(a.id)) { dbg(`muted: ${a.id}`); continue; }
+        if (this.isMuted(a.id)) { Logger.debug(`muted: ${a.id}`); continue; }
 
         const basePrompt = this.nextPromptFor(a.id);
         if (!basePrompt) {
-          dbg(`no work for ${a.id}`);
+          Logger.debug(`no work for ${a.id}`);
           continue;
         }
-        dbg(`drained prompt for ${a.id}:`, JSON.stringify(basePrompt));
+        Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(basePrompt));
 
         let remaining = this.maxTools;
-        // multiple hops if the model requests tools
+
+        //multiple hops if the model requests tools
         for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
           const peers = this.agents.map(x => x.id);
-          dbg(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
-          const { message, toolsUsed } = await a.respond(basePrompt, Math.max(0, remaining), peers);
-          dbg(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
+          Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
+          this.activeAgent = a;
+          const { message, toolsUsed } = await a.respond(basePrompt, Math.max(0, remaining), peers, () => this.draining);
+          this.activeAgent = undefined;
+          Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
 
           const askedUser = await this.route(a, message);
           didWork = true;
@@ -105,7 +110,7 @@ export class RoundRobinScheduler {
 
       if (!didWork) {
         idleTicks++;
-        dbg(`idle tick ${idleTicks}`);
+        Logger.debug(`idle tick ${idleTicks}`);
         // Detect true "empty scheduler" condition and fall back to the user.
         if (idleTicks >= this.idlePromptEvery && this.areAllQueuesEmpty()) {
           const peers = this.agents.map(x => x.id);
@@ -124,13 +129,29 @@ export class RoundRobinScheduler {
 
       await this.sleep(didWork ? 5 : 25);
     }
+    
+    this.activeAgent = undefined;
 
     if (this.keepAlive) { clearInterval(this.keepAlive); this.keepAlive = null; }
   };
 
-  stop() { this.running = false; }
-  pause() { this.paused = true; dbg("paused"); }
-  resume() { this.paused = false; dbg("resumed"); }
+  stop() { this.running = false; Logger.debug("stopped"); }
+  pause() { this.paused = true; Logger.debug("paused"); }
+  resume() { this.paused = false; Logger.debug("resumed"); }
+
+  async drain(): Promise<void> { 
+    this.draining = true;
+    while(this.hasActiveAgent()) {
+      Logger.info(C.magenta(`Waiting for agent to complete...`));
+
+      await this.sleep(1000);
+    }
+    this.draining = false;
+  }
+
+  hasActiveAgent(): boolean {
+    return !!this.activeAgent;
+  }
 
   handleUserInterjection(text: string) {
     const target = this.lastUserDMTarget;
@@ -177,7 +198,7 @@ export class RoundRobinScheduler {
         const dec = fromAgent.guardCheck?.("group", c, this.agents.map(x => x.id)) || null;
         if (dec) this.applyGuardDecision(fromAgent, dec);
         if (dec?.suppressBroadcast) {
-          dbg(`suppress @@group from ${fromAgent.id}`);
+          Logger.debug(`suppress @@group from ${fromAgent.id}`);
           return;
         }
         for (const a of this.agents) if (a.id !== fromAgent.id) { if ((c || "").trim()) this.ensureInbox(a.id).push(c); }
@@ -191,7 +212,7 @@ export class RoundRobinScheduler {
           if (wasRaw) process.stdin.setRawMode(false);
           await ExecutionGate.gate(cmd);
           const res = await FileWriter.write(name, cleaned);
-              Logger.info(C.yellow(`${cleaned}`));
+          Logger.info(C.yellow(`${cleaned}`));
           Logger.info(C.magenta(`Written to ${res.path} (${res.bytes} bytes)`));
         } catch (err: any) {
           Logger.error(`File write failed: ${err?.message || err}`);
@@ -210,9 +231,9 @@ export class RoundRobinScheduler {
       if (!dec?.suppressBroadcast) {
         for (const a of this.agents) if (a.id !== fromAgent.id) { if ((text || "").trim()) this.ensureInbox(a.id).push(text); }
         Logger.debug(`${fromAgent.id} → @@group (implicit): ${text}`);
-        dbg(`${fromAgent.id} -> @@group (implicit):`, JSON.stringify(text));
+        Logger.debug(`${fromAgent.id} -> @@group (implicit):`, JSON.stringify(text));
       } else {
-        dbg(`suppress implicit @@group from ${fromAgent.id}`);
+        Logger.debug(`suppress implicit @@group from ${fromAgent.id}`);
       }
     }
     return sawUser;
