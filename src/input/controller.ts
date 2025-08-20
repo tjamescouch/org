@@ -1,87 +1,94 @@
 // src/controller.ts
 /**
- * Interactive controller that ensures keystrokes are NOT echoed unless the
- * user is actively interjecting. It uses raw TTY mode (no echo) while idle,
- * and temporarily switches to canonical line mode (echo on) only to capture
- * interjections or scheduler prompts.
+ * Input controller that guarantees keystrokes are NOT echoed unless
+ * we are actively capturing user text (interjection or scheduler prompt).
  *
- * Hotkeys (when NOT interjecting):
- *   - "i"         Enter interjection mode
- *   - Ctrl+C      Exit
+ * - Idle: raw TTY, no echo. We listen for a hotkey (default "i") to interject.
+ * - Prompting: canonical line mode via readline, echo ON, line editing enabled.
+ *   After submit, we restore raw/no-echo and reattach the hotkey listener.
  *
- * Interjection capture uses readline so the user sees their typing (echo on)
- * and has line-editing. After submission we revert to raw, no-echo mode.
+ * This file exports `InputController` and keeps a `Controller` alias for
+ * compatibility in case other files refer to it by the old name.
  */
 
 import * as readline from "readline";
-import { RoundRobinScheduler, Responder } from "../scheduler";
 import { Logger } from "../logger";
+import type { RoundRobinScheduler } from "../scheduler";
 
-type AskUser = (fromAgent: string, content: string) => Promise<string | null>;
+export type InputControllerOptions = {
+  interjectKey?: string;         // default: "i"
+  interjectBanner?: string;      // default: "You: "
+  promptTemplate?: (from: string, content: string) => string; // when a model asks the user
+};
 
-export interface ControllerOptions {
-  /** Hotkey to enter interjection mode (default: "i") */
-  interjectKey?: string;
-  /** Initial prompt prefix shown when the user voluntarily interjects */
-  interjectBanner?: string;
-}
-
-export class Controller {
-  private interjecting = false;
-  private rl: readline.Interface | null = null;
-  private keypressHandler?: (str: string, key: readline.Key) => void;
-
-  private readonly interjectKey: string;
-  private readonly interjectBanner: string;
+export class InputController {
+  private interjectKey: string;
+  private interjectBanner: string;
+  private promptTemplate: (from: string, content: string) => string;
 
   private scheduler: RoundRobinScheduler | null = null;
 
-  constructor(opts?: ControllerOptions) {
-    this.interjectKey = (opts?.interjectKey ?? "i").toLowerCase();
-    this.interjectBanner = opts?.interjectBanner ?? "(interject) Type your message and press Enter:";
-  }
+  private rl: readline.Interface | null = null;
+  private interjecting = false;
 
-  /**
-   * Wire controller to a scheduler. We pass our askUser handler so the
-   * scheduler can prompt the user when needed (idle fallback, guardrails, etc).
-   */
-  attachScheduler(args: {
-    agents: Responder[];
-    maxTools: number;
-  }): RoundRobinScheduler {
-    const onAskUser: AskUser = (fromAgent, content) => this.promptUser(fromAgent, content);
+  private keypressHandler?: (str: string, key: readline.Key) => void;
 
-    this.scheduler = new RoundRobinScheduler({
-      agents: args.agents,
-      maxTools: args.maxTools,
-      onAskUser,
-    });
+  constructor(opts: InputControllerOptions = {}) {
+    this.interjectKey = (opts.interjectKey ?? "i").toLowerCase();
+    this.interjectBanner = opts.interjectBanner ?? "You: ";
+    this.promptTemplate =
+      opts.promptTemplate ??
+      ((from, content) => `\n@@${from} requested input\n${content}\nYou: `);
 
-    // Begin listening for hotkeys in raw, no-echo mode.
+    // Put stdin into raw/no-echo immediately (if TTY).
+    this.setRawMode(true);
     this.installRawKeyListener();
-    return this.scheduler;
+
+    // Clean exit guard to avoid leaving the terminal in raw mode.
+    process.on("SIGINT", () => {
+      this.detachRawKeyListener();
+      this.setRawMode(false);
+      process.stdout.write("\n");
+      process.exit(0);
+    });
   }
 
-  async start(): Promise<void> {
-    if (!this.scheduler) throw new Error("Controller.start(): no scheduler attached");
-    await this.scheduler.start();
-  }
-
-  // --------------------------------------------------------------------------
-  // Interjection and prompt handling
-  // --------------------------------------------------------------------------
-
-  /**
-   * Programmatic prompt used by the scheduler/guardrails.
-   * Switches to canonical (echo) mode temporarily.
-   */
-  private async promptUser(_fromAgent: string, content: string): Promise<string | null> {
-    return this.runReadlineOnce(content);
+  attachScheduler(s: RoundRobinScheduler) {
+    this.scheduler = s;
   }
 
   /**
-   * Voluntary interjection triggered via hotkey.
+   * Called by app on startup to seed the conversation. If `initial` is given,
+   * we broadcast it using the scheduler’s existing fan‑out behavior.
    */
+  async askInitialAndSend(initial?: string | boolean) {
+    if (!this.scheduler) return;
+    if (typeof initial === "string" && initial.trim()) {
+      this.scheduler.handleUserInterjection(initial.trim());
+      return;
+    }
+    // If flag passed without text (true), ask once interactively.
+    if (initial === true) {
+      const text = await this.runReadlineOnce(this.interjectBanner);
+      if (text && text.trim()) this.scheduler.handleUserInterjection(text.trim());
+    }
+  }
+
+  /**
+   * Exposed as the scheduler’s `onAskUser` callback. It opens an echoing,
+   * line-edited prompt, then restores raw/no-echo.
+   */
+  askUser = async (fromAgent: string, content: string): Promise<string | null> => {
+    const promptText = this.promptTemplate(fromAgent, content);
+    const text = await this.runReadlineOnce(promptText);
+    return (text ?? "").trim() || null;
+  };
+
+  // --------------------------------------------------------------------------
+  // Interjection hotkey flow (idle → interject → idle)
+  // --------------------------------------------------------------------------
+
+  /** Hotkey entry to interjection. */
   private async enterInterjection(): Promise<void> {
     const text = await this.runReadlineOnce(this.interjectBanner);
     if (text && this.scheduler) {
@@ -89,7 +96,10 @@ export class Controller {
     }
   }
 
-  // Core: execute a single readline question with echo, then restore raw mode.
+  /**
+   * Core: perform exactly one readline question with echo on, then
+   * restore raw/no-echo and the hotkey listener.
+   */
   private runReadlineOnce(promptText: string): Promise<string | null> {
     return new Promise((resolve) => {
       if (this.interjecting) {
@@ -98,30 +108,34 @@ export class Controller {
       }
       this.interjecting = true;
 
-      // Detach raw keypress handling to avoid duplicate processing.
+      // Detach raw hotkey handling to avoid double processing.
       this.detachRawKeyListener();
 
-      // Switch to canonical (echoing) mode.
+      // Switch to canonical mode; kernel will handle echo for readline.
       this.setRawMode(false);
 
+      // Create readline interface with terminal controls enabled.
       this.rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout,
         terminal: true,
+        historySize: 50,
+        removeHistoryDuplicates: true,
+        prompt: "",
       });
 
-      // Print prompt on a fresh line to avoid mixing with streaming logs.
-      const prompt = `\n${promptText}\n> `;
-      this.rl.question(prompt, (answer: string) => {
+      // Ensure a clean line before our prompt, then ask.
+      if (!promptText.endsWith(" ")) promptText = promptText + " ";
+      this.rl.question(promptText, (answer) => {
         try {
           resolve((answer ?? "").trim());
         } finally {
-          // Cleanup + restore raw no-echo mode
-          this.rl?.close();
+          // Cleanup + restore raw no-echo mode.
+          try { this.rl?.close(); } catch {}
           this.rl = null;
           this.interjecting = false;
           this.setRawMode(true);
-          this.installRawKeyListener(); // reattach hotkeys
+          this.installRawKeyListener(); // re-attach idle hotkeys
         }
       });
     });
@@ -139,42 +153,42 @@ export class Controller {
       if (this.interjecting) return; // readline is active; ignore raw keys
       if (!key) return;
 
-      // Ctrl+C exits
+      // Ctrl+C exits (restore terminal first).
       if (key.ctrl && key.name === "c") {
-        // Restore TTY state before exiting to avoid a hosed terminal.
         this.detachRawKeyListener();
         this.setRawMode(false);
         process.stdout.write("\n");
         process.exit(0);
       }
 
-      // Enter interjection mode on hotkey (single-key, case-insensitive)
+      // Single-key, case-insensitive interjection hotkey.
       const name = (key.name || "").toLowerCase();
       if (name === this.interjectKey) {
+        // Kick off interjection capture (echo on inside).
         this.enterInterjection().catch((err) => Logger.error(err));
       }
     };
 
-    if (process.stdin.isTTY) {
-      this.setRawMode(true); // raw, no-echo while idle
-      process.stdin.on("keypress", this.keypressHandler);
-    }
+    // Important: put stdin into raw to prevent kernel echo while idle.
+    this.setRawMode(true);
+    process.stdin.on("keypress", this.keypressHandler);
   }
 
   private detachRawKeyListener() {
     if (!this.keypressHandler) return;
-    process.stdin.removeListener("keypress", this.keypressHandler);
+    try { process.stdin.removeListener("keypress", this.keypressHandler); } catch {}
     this.keypressHandler = undefined;
   }
 
-  // Keep raw mode management centralized (some tools may toggle this).
+  /** Centralized raw-mode switch with guards for non-TTY environments. */
   private setRawMode(enable: boolean) {
-    if (process.stdin.isTTY && typeof (process.stdin as any).setRawMode === "function") {
-      try {
-        (process.stdin as any).setRawMode(enable);
-      } catch (e) {
-        // Best-effort: on non-TTY CI environments this may throw.
-      }
+    const stdinAny: any = process.stdin as any;
+    if (process.stdin.isTTY && typeof stdinAny.setRawMode === "function") {
+      try { stdinAny.setRawMode(enable); } catch { /* ignore on CI/non-tty */ }
     }
   }
 }
+
+// Backward-compat alias if other code referred to Controller
+export const Controller = InputController;
+export default InputController;
