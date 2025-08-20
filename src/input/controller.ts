@@ -14,8 +14,8 @@
  */
 
 import * as readline from "readline";
-import { RoundRobinScheduler, Responder } from "./scheduler";
-import { Logger } from "./logger";
+import { RoundRobinScheduler, Responder } from "../scheduler";
+import { Logger } from "../logger";
 
 type AskUser = (fromAgent: string, content: string) => Promise<string | null>;
 
