@@ -187,11 +187,7 @@ Keep responses brief unless writing files.`;
     }
 
     // Inform guard rail about this assistant turn (before routing)
-    this.guard.noteAssistantTurn({ text: assistantText, toolCalls: (out.toolCalls || []).length });
-
-    if (assistantText.length > 0) {
-      finalText = assistantText;
-    }
+    this.guard.noteAssistantTurn({ text: finalText, toolCalls: (out.toolCalls || []).length });
 
     const calls = out.toolCalls || [];
     if (!calls.length) {
