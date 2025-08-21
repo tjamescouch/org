@@ -146,7 +146,7 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
         // Tool call streaming (OpenAI delta format)
         if (Array.isArray(delta.tool_calls)) {
           for (const item of delta.tool_calls) {
-            const idx: number = typeof item?.index === "number" ? item.index : 0;
+            const idx: number = typeof item?.index === "number" ? item.index : toolByIndex.size;
             const prev = toolByIndex.get(idx) ?? {
               id: "",
               type: "function",
