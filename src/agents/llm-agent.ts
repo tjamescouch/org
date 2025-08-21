@@ -199,6 +199,7 @@ Keep responses brief unless writing files.`;
     let forceEndTurn = false;
 
     for (const tc of calls) {
+      console.log("tc", tc);
       if (abortCallback?.()) {
         Logger.debug("Aborted tool calls");
 
@@ -279,7 +280,7 @@ Keep responses brief unless writing files.`;
         await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh", from: "Tool" });
         totalUsed++;
       } else {
-        Logger.warn(`\nUnknown tool ${name} requested`);
+        Logger.warn(`\nUnknown tool ${name} requested`, tc);
         const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, cmd: "" });
         await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: "Tool" });
         totalUsed++;
