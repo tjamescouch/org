@@ -1,5 +1,6 @@
 import { Logger } from "../logger";
 import { timedFetch } from "../utils/timed-fetch";
+import { rateLimiter } from "./utils/rate-limiter";
 
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types";
 
@@ -21,6 +22,8 @@ export function makeLmStudioOpenAiDriver(cfg: OpenAiDriverConfig): ChatDriver {
   async function postChat(messages: ChatMessage[], opts?: { model?: string; tools?: any[] }): Promise<ChatOutput> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), defaultTimeout);
+
+    await rateLimiter.limit("llm-ask", 1);
 
     try {
       const payload: any = {
