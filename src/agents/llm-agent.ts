@@ -206,6 +206,7 @@ Keep responses brief unless writing files.`;
       },
       onToolCallDelta
     });
+    Logger.info('');
     Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
 
     if ((!out.text || !out.text.trim()) && (!out.toolCalls || !out.toolCalls.length)) {
