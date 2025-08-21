@@ -1,5 +1,4 @@
 import { Logger } from "../logger";
-import { RateLimiter } from "../utils/rate-limiter";
 import { timedFetch } from "../utils/timed-fetch";
 import { rateLimiter } from "./utils/rate-limiter";
 
