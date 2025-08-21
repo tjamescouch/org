@@ -167,7 +167,7 @@ Keep responses brief unless writing files.`;
     Logger.debug('memory', this.memory.messages());
     const prevToolCallDeltas: Record<string, ChatToolCall[]> = {};
 
-    const formatToolCallDelta = (tcd: ChatToolCall) => `${tcd.function.name} ${tcd.function.arguments}`;
+    const formatToolCallDelta = (tcd: ChatToolCall) => `${tcd.function.name} ${tcd.function.arguments}`.trim();
 
     const onToolCallDelta = (tcd: ChatToolCall) => {
       if (!prevToolCallDeltas[tcd.id ?? "0"]) prevToolCallDeltas[tcd.id ?? "0"] = [];
