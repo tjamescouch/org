@@ -1,5 +1,5 @@
 // src/scheduler.ts
-import { TagParser } from "./utils/tag-parser";
+import { TagParser, TagPart } from "./utils/tag-parser";
 import { makeRouter } from "./routing/route-with-tags";
 import { C, Logger } from "./logger";
 import { extractCodeGuards } from "./utils/extract-code-blocks";
@@ -152,13 +152,20 @@ export class RoundRobinScheduler {
   }
 
   handleUserInterjection(text: string) {
-    const target = this.lastUserDMTarget; //FIXME - use text extractor and route accordingly
-    if (target) {
-      this.ensureInbox(target).push({ content: text, role: "user", from: "User" });
-      Logger.debug(`[user → @@${target}] ${text}`);
-    } else {
-      for (const a of this.agents) this.ensureInbox(a.id).push({ content: text, role: "user", from: "User" });
-      Logger.debug(`[user → @@group] ${text}`);
+    const target = this.lastUserDMTarget;
+    // Record whatever assistant text we have before yielding
+    const tagPartsWithGroup = TagParser.parse(text);
+    const hasTag = text.match(/@@\w+/);
+    const tagParts: TagPart[] = hasTag ? tagPartsWithGroup : [{ index: 0, kind: "group", tag: "group", content: text }];
+
+    for (const tagPart of tagParts) {
+      if (tagPart.kind === "agent") {
+        this.ensureInbox(tagPart.tag).push({ content: tagPart.content, role: "user", from: "User" });
+        Logger.debug(`[user → @@${tagPart.tag}] ${text}`);
+      } else {
+        for (const a of this.agents) this.ensureInbox(a.id).push({ content: tagPart.content, role: "user", from: "User" });
+        Logger.debug(`[user → @@group] ${text}`);
+      }
     }
   }
 

@@ -4,9 +4,10 @@ import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
 import { C, Logger } from "../logger";
 import { AdvancedMemory, AgentMemory } from "../memory";
-import { GuardRail, GuardRouteKind } from "../guardrails/guardrail";
+import { GuardRail } from "../guardrails/guardrail";
 import { Agent } from "./agent";
 import { sanitizeContent } from "../utils/sanitize-content";
+import { TagParser } from "../utils/tag-parser";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -251,7 +252,7 @@ Keep responses brief unless writing files.`;
       let args: any = {};
       try { args = JSON.parse(tc.function?.arguments || "{}"); } catch { args = {}; }
 
-      if (name === "sh") {
+      if (name === "sh" || name === "exec") { //The Model likes to use the alias exec for some reason
         const rawCmd = String(args?.cmd ?? "");
         const cmd = sanitizeContent(rawCmd).replace(/\s+/g, " ").trim();
 
@@ -325,7 +326,6 @@ Keep responses brief unless writing files.`;
     }
 
     if (totalUsed >= maxTools) {
-      // Record whatever assistant text we have before yielding
       if (finalText) {
         Logger.debug(`${this.id} add assistant memory`, { chars: finalText.length });
         await this.memory.add({ role: "assistant", content: finalText, from: "Me" });
