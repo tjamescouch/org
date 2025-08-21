@@ -177,6 +177,10 @@ Keep responses brief unless writing files.`;
       const text = formatToolCallDelta(tcd);
       let deltaText = text;
 
+      console.log("prevText", prevText);
+      console.log("text", text);
+      console.log("deltaText", deltaText);
+
       if (text.startsWith(prevText)) {
         deltaText = text.slice(prevText.length - 1);
       }
