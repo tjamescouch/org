@@ -1,8 +1,8 @@
 export type Role = 'user' | 'assistant' | 'system' | 'tool';
 
 export interface ChatMessage {
-  role: Role;
-  from?: string;
+  role: string;
+  from: string;
   content: string;
 }
 
