@@ -169,25 +169,24 @@ Keep responses brief unless writing files.`;
 
     const formatToolCallDelta = (tcd: ChatToolCall) => `${tcd.function.name} ${tcd.function.arguments}`.trim();
 
+    const ptcds: string[] = [];
     const onToolCallDelta = (tcd: ChatToolCall) => {
       if (!prevToolCallDeltas[tcd.id ?? "0"]) prevToolCallDeltas[tcd.id ?? "0"] = [];
 
-      const ptcds: ChatToolCall[] = prevToolCallDeltas[tcd.id ?? "0"];
-      const ptcd = ptcds[ptcds.length - 1];
+      const text: string = formatToolCallDelta(tcd);
 
-      const prevText = ptcd ? formatToolCallDelta(ptcd) : "";
-      const text = formatToolCallDelta(tcd);
+      const prevText = ptcds[ptcds.length - 1] ?? "";
       let deltaText = text;
 
       if (text.startsWith(prevText)) {
         deltaText = text.slice(prevText.length);
       }
 
-      console.log("prevText", prevText);
-      console.log("text", text);
-      console.log("deltaText", deltaText);
+      //console.log("prevText", prevText);
+      //console.log("text", text);
+      //console.log("deltaText", deltaText);
 
-      ptcds.push(tcd);
+      ptcds.push(text);
       Logger.streamInfo(C.bold(deltaText));
     }
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
