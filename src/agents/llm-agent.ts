@@ -1,6 +1,6 @@
 // src/llm-agent.ts
 import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt";
-import type { ChatDriver, ChatMessage } from "../drivers/types";
+import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
 import { C, Logger } from "../logger";
 import { AdvancedMemory, AgentMemory } from "../memory";
@@ -148,7 +148,7 @@ Keep responses brief unless writing files.`;
     if (abortCallback?.()) {
       Logger.debug("Aborted turn");
 
-      return {message: "Turn aborted.", toolsUsed: 0};
+      return { message: "Turn aborted.", toolsUsed: 0 };
     }
 
     // Initialize per-turn thresholds/counters in the guard rail.
@@ -165,12 +165,48 @@ Keep responses brief unless writing files.`;
     Logger.debug(`${this.id} chat ->`, { hop: hop++, msgs: msgs.length });
     const t0 = Date.now();
     Logger.debug('memory', this.memory.messages());
+    const prevToolCallDeltas: Record<string, ChatToolCall[]> = {};
+
+    const formatToolCallDelta = (tcd: ChatToolCall) => `${tcd.function.name} ${tcd.function.arguments}`.trim();
+
+    let streamState: "thinking" | "tool" | "content" = "thinking";
+
+    const ptcds: string[] = [];
+    const onToolCallDelta = (tcd: ChatToolCall) => {
+      if (streamState !== "tool") {
+        Logger.info("");
+        streamState = "tool";
+      }
+
+      if (!prevToolCallDeltas[tcd.id ?? "0"]) prevToolCallDeltas[tcd.id ?? "0"] = [];
+
+      const text: string = formatToolCallDelta(tcd);
+
+      const prevText = ptcds[ptcds.length - 1] ?? "";
+      let deltaText = text;
+
+      if (text.startsWith(prevText)) {
+        deltaText = text.slice(prevText.length);
+      }
+
+      ptcds.push(text);
+      Logger.streamInfo(C.red(deltaText));
+    }
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
       tools: this.tools,
       onReasoningToken: t => Logger.streamInfo(C.cyan(t)),
-      onToken: t => Logger.streamInfo(C.bold(t))
+      onToken: t => {
+        if (streamState !== "content") {
+          Logger.info("");
+          streamState = "content";
+        }
+
+        Logger.streamInfo(C.bold(t))
+      },
+      onToolCallDelta
     });
+    Logger.info('');
     Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
 
     if ((!out.text || !out.text.trim()) && (!out.toolCalls || !out.toolCalls.length)) {
@@ -267,7 +303,7 @@ Keep responses brief unless writing files.`;
         if (repeatDecision?.endTurn) {
           // Still record the tool output so the model can read it later.
           const contentJSON = JSON.stringify(result);
-          await this.memory.add({ role: "tool", content: contentJSON, tool_call_id: tc.id, name: "sh", from: "Tool"});
+          await this.memory.add({ role: "tool", content: contentJSON, tool_call_id: tc.id, name: "sh", from: "Tool" });
 
           totalUsed = maxTools;
           forceEndTurn = true;
@@ -279,7 +315,7 @@ Keep responses brief unless writing files.`;
         await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh", from: "Tool" });
         totalUsed++;
       } else {
-        Logger.warn(`\nUnknown tool ${name} requested`);
+        Logger.warn(`\nUnknown tool ${name} requested`, tc);
         const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, cmd: "" });
         await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: "Tool" });
         totalUsed++;
@@ -290,7 +326,7 @@ Keep responses brief unless writing files.`;
       // Record whatever assistant text we have before yielding
       if (finalText) {
         Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
-        await this.memory.add({ role: "assistant", content: finalText, from: "Me"});
+        await this.memory.add({ role: "assistant", content: finalText, from: "Me" });
       }
     }
     // Loop: the assistant will see tool outputs (role:"tool") now in memory.

@@ -157,7 +157,7 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
             if (typeof d.id === "string" && d.id) prev.id = d.id;
             if (typeof d.type === "string" && d.type) (prev as any).type = d.type;
 
-            const f = d.function ?? {};
+            const f = item?.function ?? {};
             if (typeof f.name === "string" && f.name) prev.function.name += f.name;
             if (typeof f.arguments === "string" && f.arguments) prev.function.arguments += f.arguments;
 
@@ -208,6 +208,7 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
         for (const part of parts) if (part) pumpEvent(part);
       }
 
+      Logger.debug("toolByIndex.entries()", toolByIndex.entries());
       const toolCalls: ChatToolCall[] = Array.from(toolByIndex.entries())
         .sort((a, b) => a[0] - b[0])
         .map(([, v]) => v);
