@@ -1,5 +1,6 @@
 import * as path from "path";
 import { PortableFS } from "./portable-fs";
+import { sanitizeContent } from "../utils/sanitize-content";
 
 /**
  * FileWriter
@@ -23,18 +24,6 @@ export class FileWriter {
   }
 
   /**
-   * Unescape simple escaped newlines if the model returned \\n without real \n.
-   * If real newlines are already present, leave content as-is.
-   */
-  static sanitizeContent(text: string): string {
-    const s = String(text ?? "");
-    if (s.includes("\\n") && !s.includes("\n")) {
-      return s.replace(/\\r\\n/g, "\r\n").replace(/\\n/g, "\n");
-    }
-    return s;
-  }
-
-  /**
    * Write content to file, ensuring parent directory exists.
    * Appends a trailing newline if one isn't present.
    */
@@ -43,7 +32,7 @@ export class FileWriter {
     const dir = path.dirname(target);
 
     // Normalize content and ensure trailing newline
-    let data = this.sanitizeContent(content);
+    let data = sanitizeContent(content);
     if (!data.endsWith("\n")) data += "\n";
 
     await PortableFS.mkdirp(dir);

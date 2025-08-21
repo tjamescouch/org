@@ -6,6 +6,7 @@ import { C, Logger } from "../logger";
 import { AdvancedMemory, AgentMemory } from "../memory";
 import { GuardRail, GuardRouteKind } from "../guardrails/guardrail";
 import { Agent } from "./agent";
+import { sanitizeContent } from "../utils/sanitize-content";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -167,7 +168,7 @@ Keep responses brief unless writing files.`;
     Logger.debug('memory', this.memory.messages());
     const prevToolCallDeltas: Record<string, ChatToolCall[]> = {};
 
-    const formatToolCallDelta = (tcd: ChatToolCall) => `${tcd.function.name} ${tcd.function.arguments}`.trim();
+    const formatToolCallDelta = (tcd: ChatToolCall) => sanitizeContent(`${tcd.function.name} ${tcd.function.arguments}`);
 
     let streamState: "thinking" | "tool" | "content" = "thinking";
 
