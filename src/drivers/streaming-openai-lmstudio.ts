@@ -208,7 +208,7 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
         for (const part of parts) if (part) pumpEvent(part);
       }
 
-      console.log("toolByIndex.entries()", toolByIndex.entries());
+      Logger.debug("toolByIndex.entries()", toolByIndex.entries());
       const toolCalls: ChatToolCall[] = Array.from(toolByIndex.entries())
         .sort((a, b) => a[0] - b[0])
         .map(([, v]) => v);

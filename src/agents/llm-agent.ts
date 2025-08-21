@@ -1,6 +1,6 @@
 // src/llm-agent.ts
 import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt";
-import type { ChatDriver, ChatMessage } from "../drivers/types";
+import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
 import { C, Logger } from "../logger";
 import { AdvancedMemory, AgentMemory } from "../memory";
@@ -169,7 +169,8 @@ Keep responses brief unless writing files.`;
       model: this.model,
       tools: this.tools,
       onReasoningToken: t => Logger.streamInfo(C.cyan(t)),
-      onToken: t => Logger.streamInfo(C.bold(t))
+      onToken: t => Logger.streamInfo(C.bold(t)),
+      onToolCallDelta: (tcd: ChatToolCall) => Logger.streamInfo(C.bold(tcd.function.name ? tcd.function.name + '' : tcd.function.arguments))
     });
     Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
 
