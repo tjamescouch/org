@@ -182,14 +182,14 @@ Keep responses brief unless writing files.`;
       }
 
       ptcds.push(tcd);
-      Logger.streamInfo(C.bold(tcd.function.name ? tcd.function.name + '' : tcd.function.arguments))
+      Logger.streamInfo(C.bold(deltaText))
     }
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
       tools: this.tools,
       onReasoningToken: t => Logger.streamInfo(C.cyan(t)),
       onToken: t => Logger.streamInfo(C.bold(t)),
-      onToolCallDelta: (tcd: ChatToolCall) => Logger.streamInfo(C.bold(tcd.function.name ? tcd.function.name + '' : tcd.function.arguments))
+      onToolCallDelta
     });
     Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
 
