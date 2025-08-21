@@ -168,7 +168,8 @@ Keep responses brief unless writing files.`;
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
       tools: this.tools,
-      onToken: t => Logger.streamInfo(t),
+      onReasoningToken:          t => Logger.streamInfo(C.cyan(t)),
+      onToken: t => Logger.info(C.bold(t))
     });
     Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
 
@@ -179,9 +180,6 @@ Keep responses brief unless writing files.`;
     const finalText = (out.text || "").trim();
 
     const allReasoning = out?.reasoning || "";
-    if ((out as any).reasoning) {
-      Logger.info(C.cyan(out.reasoning ?? ""));
-    }
 
     // Inform guard rail about this assistant turn (before routing)
     this.guard.noteAssistantTurn({ text: finalText, toolCalls: (out.toolCalls || []).length });
@@ -193,7 +191,6 @@ Keep responses brief unless writing files.`;
         Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
         await this.memory.add({ role: "assistant", content: finalText, from: "Me" });
       }
-      Logger.info(C.bold(`${finalText}`));
       Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
       return { message: finalText, toolsUsed: totalUsed }
     }
@@ -298,7 +295,6 @@ Keep responses brief unless writing files.`;
     }
     // Loop: the assistant will see tool outputs (role:"tool") now in memory.
 
-    Logger.info(C.bold(`${finalText}`));
     Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
 
     return { message: finalText, toolsUsed: totalUsed, reasoning: allReasoning };
