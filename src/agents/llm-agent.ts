@@ -178,7 +178,7 @@ Keep responses brief unless writing files.`;
       let deltaText = text;
 
       if (text.startsWith(prevText)) {
-        deltaText = text.slice(0, prevText.length - 1);
+        deltaText = text.slice(prevText.length - 1);
       }
 
       ptcds.push(tcd);
