@@ -168,6 +168,7 @@ Keep responses brief unless writing files.`;
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
       tools: this.tools,
+      onToken: t => Logger.streamInfo(t),
     });
     Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
 
