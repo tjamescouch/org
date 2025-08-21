@@ -1,12 +1,6 @@
 import type { ChatDriver, ChatMessage } from "../drivers/types";
-import { Role } from "../types";
+import { Logger } from "../logger";
 import { AgentMemory } from "./agent-memory";
-
-const DEBUG = (() => {
-  const v = (process.env.DEBUG ?? "").toString().toLowerCase();
-  return v === "1" || v === "true" || v === "yes" || v === "debug";
-})();
-function dbg(...a: any[]) { if (DEBUG) console.error("[DBG][SummaryMemory]", ...a); }
 
 /**
  * Count-based hysteresis memory with background summarization.
@@ -46,12 +40,13 @@ export class SummaryMemory extends AgentMemory {
       const end = Math.min(this.messagesBuffer.length, start + K);
       const toSummarize = this.messagesBuffer.slice(start, end);
 
-      dbg(`summarizing ${toSummarize.length} messages…`);
+      Logger.debug(`summarizing ${toSummarize.length} messages…`);
       const summaryText = await this.summarizeMessages(toSummarize);
-      dbg(`summary produced (len=${summaryText.length})`);
+      Logger.debug(`summary produced (len=${summaryText.length})`);
 
       const summaryMsg: ChatMessage = {
-        role: "system",
+        role: "system", 
+        from: "System",
         content: `CONTEXT SUMMARY:\n${summaryText}`.trim()
       };
 

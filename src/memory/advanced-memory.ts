@@ -252,6 +252,7 @@ export class AdvancedMemory extends AgentMemory {
 
     const sys: ChatMessage = {
       role: "system",
+      from: "System",
       content: [
         "You are a precise summarizer.",
         "Output concise bullet points; preserve facts, tasks, file paths, commands, constraints.",
@@ -262,6 +263,7 @@ export class AdvancedMemory extends AgentMemory {
 
     const user: ChatMessage = {
       role: "user",
+      from: "User",
       content: `${header}\n\nTranscript:\n${acc}`
     };
 
