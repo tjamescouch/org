@@ -191,7 +191,7 @@ Keep responses brief unless writing files.`;
         Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
         await this.memory.add({ role: "assistant", content: finalText, from: "Me" });
       }
-      Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
+      Logger.info(C.blue(`\n[${this.id}] wrote. [${totalUsed}] tools used.`));
       return { message: finalText, toolsUsed: totalUsed }
     }
 
@@ -295,7 +295,7 @@ Keep responses brief unless writing files.`;
     }
     // Loop: the assistant will see tool outputs (role:"tool") now in memory.
 
-    Logger.info(C.blue(`[${this.id}] wrote. [${totalUsed}] tools used.`));
+    Logger.info(C.blue(`\n[${this.id}] wrote. [${totalUsed}] tools used.`));
 
     return { message: finalText, toolsUsed: totalUsed, reasoning: allReasoning };
   }
