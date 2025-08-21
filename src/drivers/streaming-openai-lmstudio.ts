@@ -145,7 +145,6 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
 
         // Tool call streaming (OpenAI delta format)
         if (Array.isArray(delta.tool_calls)) {
-          console.log("delta.tool_calls", delta.tool_calls);
           for (const item of delta.tool_calls) {
             const idx: number = typeof item?.index === "number" ? item.index : 0;
             const prev = toolByIndex.get(idx) ?? {
@@ -209,6 +208,7 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
         for (const part of parts) if (part) pumpEvent(part);
       }
 
+      console.log("toolByIndex.entries()", toolByIndex.entries());
       const toolCalls: ChatToolCall[] = Array.from(toolByIndex.entries())
         .sort((a, b) => a[0] - b[0])
         .map(([, v]) => v);
