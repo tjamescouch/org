@@ -81,6 +81,8 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
         timeoutMs: 2 * 60 * 60 * 1000
       });
 
+      const toolCalls: ChatToolCall[] = [];
+
       Logger.debug("resp(stream)", { status: res.status, ms: Date.now() - t0 });
 
       if (!res.ok) {
@@ -105,9 +107,6 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
       let buf = "";
       let fullText = "";
       let fullReasoning = "";
-
-      // Accumulate tool call deltas per index (OpenAI streaming format)
-      const toolByIndex = new Map<number, ChatToolCall>();
 
       const pumpEvent = (rawEvent: string) => {
         // Each event is lines separated by \n, typically "data: {...}" or "data: [DONE]"
@@ -146,8 +145,7 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
         // Tool call streaming (OpenAI delta format)
         if (Array.isArray(delta.tool_calls)) {
           for (const item of delta.tool_calls) {
-            const idx: number = toolByIndex.size;
-            const prev = toolByIndex.get(idx - 1) ?? {
+            const prev = toolCalls[toolCalls.length - 1] ?? {
               id: "",
               type: "function",
               function: { name: "", arguments: "" }
@@ -161,7 +159,7 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
             if (typeof f.name === "string" && f.name) prev.function.name += f.name;
             if (typeof f.arguments === "string" && f.arguments) prev.function.arguments += f.arguments;
 
-            toolByIndex.set(idx, prev);
+            toolCalls.push(prev);
             if (onToolCallDelta) onToolCallDelta(prev);
           }
         }
@@ -208,10 +206,9 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
         for (const part of parts) if (part) pumpEvent(part);
       }
 
-      console.log("toolByIndex.entries()", toolByIndex.entries());
-      const toolCalls: ChatToolCall[] = Array.from(toolByIndex.entries())
-        .sort((a, b) => a[0] - b[0])
-        .map(([, v]) => v);
+      //const toolCalls: ChatToolCall[] = Array.from(toolByIndex.entries())
+      //  .sort((a, b) => a[0] - b[0])
+      //  .map(([, v]) => v);
 
       return { text: fullText, reasoning: fullReasoning || undefined, toolCalls };
     } catch (e: any) {
