@@ -279,7 +279,7 @@ Keep responses brief unless writing files.`;
         await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh", from: "Tool" });
         totalUsed++;
       } else {
-        Logger.warn(`Unknown tool ${name} requested`);
+        Logger.warn(`\nUnknown tool ${name} requested`);
         const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, cmd: "" });
         await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: "Tool" });
         totalUsed++;
