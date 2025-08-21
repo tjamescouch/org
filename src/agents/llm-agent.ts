@@ -165,74 +165,31 @@ Keep responses brief unless writing files.`;
     Logger.debug(`${this.id} chat ->`, { hop: hop++, msgs: msgs.length });
     const t0 = Date.now();
     Logger.debug('memory', this.memory.messages());
+    const prevToolCallDeltas: Record<string, ChatToolCall[]> = {};
+    const formatToolCallDelta = (tcd: ChatToolCall) => `${tcd.function.name} ${tcd.function.arguments}`
+    const onToolCallDelta = (tcd: ChatToolCall) => {
+      if (!prevToolCallDeltas[tcd.id ?? "0"]) prevToolCallDeltas[tcd.id ?? "0"] = [];
 
-    const onToolCallDelta = (() => {
-      const last = new Map<string, string>(); // avoid spamming identical frames
+      const ptcds: ChatToolCall[] = prevToolCallDeltas[tcd.id ?? "0"];
+      const ptcd = ptcds[ptcds.length - 1];
 
-      const isPrim = (v: any) =>
-        v === null || ["string", "number", "boolean"].includes(typeof v);
+      const prevText = ptcd ? formatToolCallDelta(ptcd) : "";
+      const text = formatToolCallDelta(tcd);
+      let deltaText = text;
 
-      const shellQuote = (v: any): string => {
-        if (v === null) return "null";
-        if (typeof v === "number" || typeof v === "boolean") return String(v);
-        if (typeof v !== "string") {
-          // objects/arrays -> compact JSON in single quotes
-          const j = JSON.stringify(v);
-          return `'${j.replace(/'/g, `'\\''`)}'`;
-        }
-        // unquoted if safe
-        if (/^[A-Za-z0-9._\-\/:@%+,=]+$/.test(v)) return v;
-        return `'${v.replace(/'/g, `'\\''`)}'`;
-      };
+      if (text.startsWith(prevText)) {
+        deltaText = text.slice(prevText.length - 1);
+      }
 
-      const formatArgsShell = (argsRaw: string): string => {
-        if (!argsRaw) return "";
-        try {
-          const parsed = JSON.parse(argsRaw);
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            const parts: string[] = [];
-            for (const k of Object.keys(parsed)) {
-              const v = (parsed as any)[k];
-              if (Array.isArray(v) && v.every(isPrim)) {
-                // repeat key for simple arrays: k[]=v1 k[]=v2 ...
-                for (const e of v) parts.push(`${k}[]=${shellQuote(e)}`);
-              } else {
-                parts.push(`${k}=${shellQuote(v)}`);
-              }
-            }
-            return parts.join(" ");
-          }
-          return shellQuote(parsed);
-        } catch {
-          // Still streaming partial JSON — show a compact best-effort preview
-          return argsRaw.replace(/\s+/g, " ").trim();
-        }
-      };
-
-      const lineFor = (name: string, argsRaw: string) => {
-        const args = formatArgsShell(argsRaw);
-        const cmd = `${name || "tool"}${args ? " " + args : ""}`;
-        return `$ ${C.bold(cmd)}`;
-      };
-
-      return (tcd: ChatToolCall) => {
-        const id = tcd.id || "0";
-        const name = tcd.function?.name ?? "";
-        const argsRaw = tcd.function?.arguments ?? "";
-        const line = lineFor(name, argsRaw);
-        if (last.get(id) !== line) {
-          last.set(id, line);
-          Logger.streamInfo(line);
-        }
-      };
-    })();
-
+      ptcds.push(tcd);
+      Logger.streamInfo(C.bold(tcd.function.name ? tcd.function.name + '' : tcd.function.arguments))
+    }
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
       tools: this.tools,
       onReasoningToken: t => Logger.streamInfo(C.cyan(t)),
       onToken: t => Logger.streamInfo(C.bold(t)),
-      onToolCallDelta
+      onToolCallDelta: (tcd: ChatToolCall) => Logger.streamInfo(C.bold(tcd.function.name ? tcd.function.name + '' : tcd.function.arguments))
     });
     Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
 
