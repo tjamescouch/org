@@ -22,5 +22,5 @@ export interface ChatOutput {
 }
 
 export interface ChatDriver {
-  chat(messages: ChatMessage[], opts?: { model?: string; tools?: any[] }): Promise<ChatOutput>;
+  chat(messages: ChatMessage[], opts?: { model?: string; tools?: any[], onToken?: (s: string) => void, onReasoningToken?: (s: string) => void }): Promise<ChatOutput>;
 }

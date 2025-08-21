@@ -6,9 +6,9 @@ import { loadConfig } from "./config";
 import { Logger } from "./logger";
 import { RoundRobinScheduler } from "./scheduler";
 import { InputController } from "./input/controller";
-import { makeLmStudioOpenAiDriver } from "./drivers/openai-lmstudio";
 import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
+import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
 
 /** ---------- CLI parsing ---------- */
 function parseArgs(argv: string[]) {
@@ -78,7 +78,7 @@ function parseAgents(
       out.push({ id, kind, model: new MockModel(id) });
     } else if (kind === "lmstudio") {
       if (llmDefaults.protocol !== "openai") throw new Error(`Unsupported protocol: ${llmDefaults.protocol}`);
-      const driver = makeLmStudioOpenAiDriver({
+      const driver = makeStreamingOpenAiLmStudio({
         baseUrl: llmDefaults.baseUrl,
         model: llmDefaults.model,
         apiKey: (llmDefaults as any).apiKey
