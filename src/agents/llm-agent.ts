@@ -169,8 +169,15 @@ Keep responses brief unless writing files.`;
 
     const formatToolCallDelta = (tcd: ChatToolCall) => `${tcd.function.name} ${tcd.function.arguments}`.trim();
 
+    let streamState: "thinking" | "tool" | "content" = "thinking";
+
     const ptcds: string[] = [];
     const onToolCallDelta = (tcd: ChatToolCall) => {
+      if (streamState !== "tool") {
+        Logger.info("");
+        streamState = "tool";
+      }
+
       if (!prevToolCallDeltas[tcd.id ?? "0"]) prevToolCallDeltas[tcd.id ?? "0"] = [];
 
       const text: string = formatToolCallDelta(tcd);
@@ -182,10 +189,6 @@ Keep responses brief unless writing files.`;
         deltaText = text.slice(prevText.length);
       }
 
-      //console.log("prevText", prevText);
-      //console.log("text", text);
-      //console.log("deltaText", deltaText);
-
       ptcds.push(text);
       Logger.streamInfo(C.bold(deltaText));
     }
@@ -193,7 +196,14 @@ Keep responses brief unless writing files.`;
       model: this.model,
       tools: this.tools,
       onReasoningToken: t => Logger.streamInfo(C.cyan(t)),
-      onToken: t => Logger.streamInfo(C.bold(t)),
+      onToken: t => {
+        if (streamState !== "content") {
+          Logger.info("");
+          streamState = "content";
+        }
+
+        Logger.streamInfo(C.bold(t))
+      },
       onToolCallDelta
     });
     Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
