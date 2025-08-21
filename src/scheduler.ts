@@ -1,5 +1,5 @@
 // src/scheduler.ts
-import { TagParser } from "./utils/tag-parser";
+import { TagParser, TagPart } from "./utils/tag-parser";
 import { makeRouter } from "./routing/route-with-tags";
 import { C, Logger } from "./logger";
 import { extractCodeGuards } from "./utils/extract-code-blocks";
@@ -7,6 +7,7 @@ import { FileWriter } from "./io/file-writer";
 import { ExecutionGate } from "./tools/execution-gate";
 import { restoreStdin } from "./utils/restore-stdin";
 import { GuardDecision, GuardRouteKind } from "./guardrails/guardrail";
+import { ChatMessage } from "./types";
 
 
 export interface Responder {
@@ -16,17 +17,18 @@ export interface Responder {
   guardCheck?: (route: GuardRouteKind, content: string, peers: string[]) => GuardDecision | null;
 }
 
+
 export class RoundRobinScheduler {
   private agents: Responder[];
   private maxTools: number;
   private running = false;
   private paused = false;
-  private activeAgent:Responder | undefined;
+  private activeAgent: Responder | undefined;
   private draining = false;
 
   private readonly idlePromptEvery = 3;
 
-  private inbox = new Map<string, string[]>();
+  private inbox = new Map<string, ChatMessage[]>();
   private lastUserDMTarget: string | null = null;
 
   private userPromptFn: (fromAgent: string, content: string) => Promise<string | null>;
@@ -64,19 +66,19 @@ export class RoundRobinScheduler {
 
         if (this.isMuted(a.id)) { Logger.debug(`muted: ${a.id}`); continue; }
 
-        const basePrompt = this.nextPromptFor(a.id);
-        if (!basePrompt) {
+        const messages = this.nextPromptFor(a.id);
+        if (messages.length === 0) {
           Logger.debug(`no work for ${a.id}`);
           continue;
         }
-        Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(basePrompt));
+        Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(messages));
 
         let remaining = this.maxTools;
         for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
           const peers = this.agents.map(x => x.id);
           Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
           this.activeAgent = a;
-          const { message, toolsUsed } = await a.respond(basePrompt, Math.max(0, remaining), peers, () => this.draining);
+          const { message, toolsUsed } = await a.respond(messages, Math.max(0, remaining), peers, () => this.draining);
           this.activeAgent = undefined;
           Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
 
@@ -151,24 +153,29 @@ export class RoundRobinScheduler {
 
   handleUserInterjection(text: string) {
     const target = this.lastUserDMTarget;
-    if (target) {
-      this.ensureInbox(target).push(text);
-      Logger.debug(`[user → @@${target}] ${text}`);
-    } else {
-      for (const a of this.agents) this.ensureInbox(a.id).push(text);
-      Logger.debug(`[user → @@group] ${text}`);
+    // Record whatever assistant text we have before yielding
+    const tagPartsWithGroup = TagParser.parse(text);
+    const hasTag = text.match(/@@\w+/);
+    const tagParts: TagPart[] = hasTag ? tagPartsWithGroup : [{ index: 0, kind: "group", tag: "group", content: text }];
+
+    for (const tagPart of tagParts) {
+      if (tagPart.kind === "agent") {
+        this.ensureInbox(tagPart.tag).push({ content: tagPart.content, role: "user", from: "User" });
+        Logger.debug(`[user → @@${tagPart.tag}] ${text}`);
+      } else {
+        for (const a of this.agents) this.ensureInbox(a.id).push({ content: tagPart.content, role: "user", from: "User" });
+        Logger.debug(`[user → @@group] ${text}`);
+      }
     }
   }
 
-  private ensureInbox(id: string) {
+  private ensureInbox(id: string): ChatMessage[] {
     if (!this.inbox.has(id)) this.inbox.set(id, []);
     return this.inbox.get(id)!;
   }
 
-  private nextPromptFor(id: string): string | null {
-    const q = this.ensureInbox(id);
-    if (q.length === 0) return null;
-    return q.splice(0, q.length).join("\n");
+  private nextPromptFor(id: string): ChatMessage[] {
+    return this.ensureInbox(id);
   }
 
   // --------------------------- Routing + GuardRail --------------------------
@@ -188,7 +195,7 @@ export class RoundRobinScheduler {
     for (const t of parts) if (t.kind === "user") sawUser = true;
 
     const router = makeRouter({
-      onAgent: async (_f, to, c) => { if ((c || "").trim()) this.ensureInbox(to).push(c); },
+      onAgent: async (f, to, c) => { if ((c || "").trim()) this.ensureInbox(to).push({ content: c, from: f, role: "user" }); },
       onGroup: async (_f, c) => {
         const dec = fromAgent.guardCheck?.("group", c, this.agents.map(x => x.id)) || null;
         if (dec) await this.applyGuardDecision(fromAgent, dec);
@@ -196,7 +203,7 @@ export class RoundRobinScheduler {
           Logger.debug(`suppress @@group from ${fromAgent.id}`);
           return;
         }
-        for (const a of this.agents) if (a.id !== fromAgent.id) { if ((c || "").trim()) this.ensureInbox(a.id).push(c); }
+        for (const a of this.agents) if (a.id !== fromAgent.id) { if ((c || "").trim()) this.ensureInbox(a.id).push({ content: c, from: fromAgent.id, role: "user" }); }
       },
       onUser: async (_f, _c) => { this.lastUserDMTarget = fromAgent.id; },
       onFile: async (_f, name, c) => {
@@ -225,7 +232,7 @@ export class RoundRobinScheduler {
       const dec = fromAgent.guardCheck?.("group", text, this.agents.map(x => x.id)) || null;
       if (dec) await this.applyGuardDecision(fromAgent, dec);
       if (!dec?.suppressBroadcast) {
-        for (const a of this.agents) if (a.id !== fromAgent.id) { if ((text || "").trim()) this.ensureInbox(a.id).push(text); }
+        for (const a of this.agents) if (a.id !== fromAgent.id) { if ((text || "").trim()) this.ensureInbox(a.id).push({ content: text, role: "user", from: fromAgent.id }); }
         Logger.debug(`${fromAgent.id} → @@group (implicit): ${text}`);
         Logger.debug(`${fromAgent.id} -> @@group (implicit):`, JSON.stringify(text));
       } else {
@@ -240,7 +247,7 @@ export class RoundRobinScheduler {
       Logger.debug(`[guard][${agent.id}] ` + dec.warnings.join("; "));
     }
     if (dec.nudge) {
-      this.ensureInbox(agent.id).push(dec.nudge);
+      this.ensureInbox(agent.id).push({ content: dec.nudge, from: "System", role: "system" });
     }
     if (dec.muteMs && dec.muteMs > 0) {
       this.mute(agent.id, dec.muteMs);

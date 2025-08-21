@@ -4,9 +4,10 @@ import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
 import { C, Logger } from "../logger";
 import { AdvancedMemory, AgentMemory } from "../memory";
-import { GuardRail, GuardRouteKind } from "../guardrails/guardrail";
+import { GuardRail } from "../guardrails/guardrail";
 import { Agent } from "./agent";
 import { sanitizeContent } from "../utils/sanitize-content";
+import { TagParser } from "../utils/tag-parser";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -144,7 +145,7 @@ Keep responses brief unless writing files.`;
    * - Let the model respond; if it asks for tools, execute (sh only) and loop.
    * - Stop after first assistant text with no more tool calls or when budget is hit.
    */
-  async respond(prompt: string, maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply> {
+  async respond(messages: ChatMessage[], maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply> {
     Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
     if (abortCallback?.()) {
       Logger.debug("Aborted turn");
@@ -155,8 +156,9 @@ Keep responses brief unless writing files.`;
     // Initialize per-turn thresholds/counters in the guard rail.
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
 
-    // 1) Add user content to memory
-    await this.memory.addIfNotExists({ role: "user", content: prompt, from: "User" });
+    for(const message of messages) {
+      await this.memory.addIfNotExists(message);
+    }
 
     let hop = 0;
     let totalUsed = 0;
@@ -250,9 +252,9 @@ Keep responses brief unless writing files.`;
       let args: any = {};
       try { args = JSON.parse(tc.function?.arguments || "{}"); } catch { args = {}; }
 
-      if (name === "sh") {
+      if (name === "sh" || name === "exec") { //The Model likes to use the alias exec for some reason
         const rawCmd = String(args?.cmd ?? "");
-        const cmd = rawCmd.replace(/\s+/g, " ").trim();
+        const cmd = sanitizeContent(rawCmd).replace(/\s+/g, " ").trim();
 
         if (!cmd) {
           const decision = this.guard.noteBadToolCall({
@@ -267,7 +269,7 @@ Keep responses brief unless writing files.`;
             Logger.warn(`System ended turn.`);
             totalUsed = maxTools; // consume budget → end turn
             forceEndTurn = true;
-            if (finalText) await this.memory.add({ role: "assistant", content: finalText, from: "System" });
+            if (finalText) await this.memory.add({ role: "system", content: finalText, from: "System" });
             break;
           }
 
@@ -280,7 +282,7 @@ Keep responses brief unless writing files.`;
             cmd: "",
           });
           Logger.warn(`Execution failed: Command required.`);
-          await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh", from: "Tool" });
+          await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: name });
           totalUsed++;
           continue;
         }
@@ -324,10 +326,12 @@ Keep responses brief unless writing files.`;
     }
 
     if (totalUsed >= maxTools) {
-      // Record whatever assistant text we have before yielding
       if (finalText) {
-        Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
+        Logger.debug(`${this.id} add assistant memory`, { chars: finalText.length });
         await this.memory.add({ role: "assistant", content: finalText, from: "Me" });
+      } else if (allReasoning) {
+        Logger.debug(`${this.id} add assistant memory`, { chars: allReasoning.length });
+        await this.memory.add({ role: "assistant", content: allReasoning, from: "Me" });
       }
     }
     // Loop: the assistant will see tool outputs (role:"tool") now in memory.
