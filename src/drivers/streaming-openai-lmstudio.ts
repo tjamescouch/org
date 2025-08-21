@@ -1,5 +1,6 @@
 // streaming-openai-lmstudio.ts
 import { Logger } from "../logger";
+import { rateLimiter } from "../utils/rate-limiter";
 import { timedFetch } from "../utils/timed-fetch";
 
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types";
@@ -29,6 +30,8 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
   const defaultTimeout = cfg.timeoutMs ?? 2 * 60 * 60 * 1000;
 
   async function chat(messages: ChatMessage[], opts?: any): Promise<ChatOutput> {
+    await rateLimiter.limit("llm-ask", 1);
+
     const controller = new AbortController();
     const userSignal: AbortSignal | undefined = opts?.signal;
     const linkAbort = () => controller.abort();
