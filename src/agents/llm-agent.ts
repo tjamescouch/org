@@ -182,7 +182,7 @@ Keep responses brief unless writing files.`;
       console.log("deltaText", deltaText);
 
       if (text.startsWith(prevText)) {
-        deltaText = text.slice(prevText.length - 1);
+        deltaText = text.slice(0, prevText.length - 1);
       }
 
       ptcds.push(tcd);
