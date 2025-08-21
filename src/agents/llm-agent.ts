@@ -190,7 +190,7 @@ Keep responses brief unless writing files.`;
       }
 
       ptcds.push(text);
-      Logger.streamInfo(C.bold(deltaText));
+      Logger.streamInfo(C.red(deltaText));
     }
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
