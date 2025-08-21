@@ -183,7 +183,7 @@ Keep responses brief unless writing files.`;
         deltaText = text.slice(prevText.length);
       }
 
-      console.log("text", text);
+      console.log("deltaText", deltaText);
 
       ptcds.push(tcd);
       Logger.streamInfo(C.bold(deltaText));
