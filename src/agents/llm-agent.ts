@@ -166,7 +166,9 @@ Keep responses brief unless writing files.`;
     const t0 = Date.now();
     Logger.debug('memory', this.memory.messages());
     const prevToolCallDeltas: Record<string, ChatToolCall[]> = {};
-    const formatToolCallDelta = (tcd: ChatToolCall) => `${tcd.function.name} ${tcd.function.arguments}`
+
+    const formatToolCallDelta = (tcd: ChatToolCall) => `${tcd.function.name} ${tcd.function.arguments}`;
+
     const onToolCallDelta = (tcd: ChatToolCall) => {
       if (!prevToolCallDeltas[tcd.id ?? "0"]) prevToolCallDeltas[tcd.id ?? "0"] = [];
 
@@ -180,6 +182,8 @@ Keep responses brief unless writing files.`;
       if (text.startsWith(prevText)) {
         deltaText = text.slice(prevText.length);
       }
+
+      console.log("text", text);
 
       ptcds.push(tcd);
       Logger.streamInfo(C.bold(deltaText));
