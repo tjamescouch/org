@@ -253,7 +253,7 @@ Keep responses brief unless writing files.`;
 
       if (name === "sh") {
         const rawCmd = String(args?.cmd ?? "");
-        const cmd = rawCmd.replace(/\s+/g, " ").trim();
+        const cmd = sanitizeContent(rawCmd).replace(/\s+/g, " ").trim();
 
         if (!cmd) {
           const decision = this.guard.noteBadToolCall({
