@@ -177,16 +177,12 @@ Keep responses brief unless writing files.`;
       const text = formatToolCallDelta(tcd);
       let deltaText = text;
 
-      console.log("prevText", prevText);
-      console.log("text", text);
-      console.log("deltaText", deltaText);
-
       if (text.startsWith(prevText)) {
         deltaText = text.slice(0, prevText.length - 1);
       }
 
       ptcds.push(tcd);
-      Logger.streamInfo(C.bold(deltaText))
+      Logger.streamInfo(C.bold(deltaText));
     }
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
