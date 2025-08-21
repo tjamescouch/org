@@ -199,7 +199,6 @@ Keep responses brief unless writing files.`;
     let forceEndTurn = false;
 
     for (const tc of calls) {
-      console.log("tc", tc);
       if (abortCallback?.()) {
         Logger.debug("Aborted tool calls");
 

@@ -209,6 +209,7 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
       //const toolCalls: ChatToolCall[] = Array.from(toolByIndex.entries())
       //  .sort((a, b) => a[0] - b[0])
       //  .map(([, v]) => v);
+      console.log('tool calls', JSON.stringify(toolCalls, null, 2));
 
       return { text: fullText, reasoning: fullReasoning || undefined, toolCalls };
     } catch (e: any) {
