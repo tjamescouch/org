@@ -69,6 +69,8 @@ export class RoundRobinScheduler {
         if (!agentOrUndeinfed) {
           throw new Error("Expected agent not found.");
         }
+
+        const a = agentOrUndeinfed;
           
         if (this.paused || !this.running) break;
 
