@@ -328,7 +328,7 @@ Keep responses brief unless writing files.`;
     if (totalUsed >= maxTools) {
       if (finalText) {
         Logger.debug(`${this.id} add assistant memory`, { chars: finalText.length });
-        await this.memory.add({ role: "assistant", content: finalText, from: "Me" });
+        await this.memory.add({ role: "assistant", content: `${allReasoning ? `${allReasoning} -> ` : ""}${finalText}`, from: "Me" });
       } else if (allReasoning) {
         Logger.debug(`${this.id} add assistant memory`, { chars: allReasoning.length });
         await this.memory.add({ role: "assistant", content: allReasoning, from: "Me" });
