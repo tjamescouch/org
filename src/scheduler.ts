@@ -24,6 +24,7 @@ export class RoundRobinScheduler {
   private running = false;
   private paused = false;
   private activeAgent: Responder | undefined;
+  private talkingAgent: Responder | undefined;
   private draining = false;
 
   private readonly idlePromptEvery = 3;
@@ -62,7 +63,13 @@ export class RoundRobinScheduler {
       let didWork = false;
 
       const shuffled = shuffle(this.agents);
-      for (const a of shuffled) {
+      while (shuffled.length > 0) {
+        const agentOrUndeinfed: Responder | undefined = this.talkingAgent ?? shuffled.pop();
+
+        if (!agentOrUndeinfed) {
+          throw new Error("Expected agent not found.");
+        }
+          
         if (this.paused || !this.running) break;
 
         if (this.isMuted(a.id)) { Logger.debug(`muted: ${a.id}`); continue; }
@@ -156,16 +163,17 @@ export class RoundRobinScheduler {
   handleUserInterjection(text: string) {
     const target = this.lastUserDMTarget;
     // Record whatever assistant text we have before yielding
-    const tagPartsWithGroup = TagParser.parse(text);
     const hasTag = text.match(/@@\w+/);
 
-    const tagParts: TagPart[] = hasTag ? tagPartsWithGroup : [target ? { index: 0, kind: "agent", tag: target, content: text } : { index: 0, kind: "group", tag: "group", content: text }];
+    const tagParts: TagPart[] = hasTag ? TagParser.parse(text) : [target ? { index: 0, kind: "agent", tag: target, content: text } : { index: 0, kind: "group", tag: "group", content: text }];
 
     for (const tagPart of tagParts) {
       if (tagPart.kind === "agent") {
+        this.talkingAgent = this.agents.find(a => a.id === tagPart.tag);
         this.ensureInbox(tagPart.tag).push({ content: tagPart.content, role: "user", from: "User" });
         Logger.debug(`[user → @@${tagPart.tag}] ${text}`);
       } else {
+        this.talkingAgent = this.agents.find(a => a.id === target);
         for (const a of this.agents) this.ensureInbox(a.id).push({ content: tagPart.content, role: "user", from: "User" });
         Logger.debug(`[user → @@group] ${text}`);
       }
