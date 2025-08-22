@@ -1,6 +1,6 @@
 import { Logger } from "../logger";
 import { timedFetch } from "../utils/timed-fetch";
-import { rateLimiter } from "./utils/rate-limiter";
+import { rateLimiter } from "../utils/rate-limiter";
 
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types";
 
