@@ -65,7 +65,7 @@ export class RandomScheduler {
 
       let didWork = false;
 
-      const shuffled = shuffle(this.agents);
+      const shuffled = this.shuffle(this.agents);
       while (shuffled.length > 0) {
         const agentOrUndeinfed: Responder | undefined = this.respondingAgent ?? shuffled.pop();
         this.respondingAgent = undefined;
