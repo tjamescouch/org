@@ -1,6 +1,7 @@
 // streaming-openai-lmstudio.ts
 import { Logger } from "../logger";
 import { rateLimiter } from "../utils/rate-limiter";
+import { sanitizeContent } from "../utils/sanitize-content";
 import { timedFetch } from "../utils/timed-fetch";
 
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types";
@@ -216,7 +217,7 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
         .sort((a, b) => a[0] - b[0])
         .map(([, v]) => v);
 
-      return { text: fullText, reasoning: fullReasoning || undefined, toolCalls };
+      return { text: sanitizeContent(fullText), reasoning: fullReasoning || undefined, toolCalls };
     } catch (e: any) {
       if (e?.name === "AbortError") Logger.debug("timeout(stream)", { ms: defaultTimeout });
       throw e;

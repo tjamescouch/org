@@ -7,7 +7,6 @@ import { AdvancedMemory, AgentMemory } from "../memory";
 import { GuardRail } from "../guardrails/guardrail";
 import { Agent } from "./agent";
 import { sanitizeContent } from "../utils/sanitize-content";
-import { TagParser } from "../utils/tag-parser";
 
 export interface AgentReply {
   message: string;   // assistant text
