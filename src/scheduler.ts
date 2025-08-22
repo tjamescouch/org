@@ -208,7 +208,10 @@ export class RoundRobinScheduler {
     for (const t of parts) if (t.kind === "user") sawUser = true;
 
     const router = makeRouter({
-      onAgent: async (f, to, c) => { if ((c || "").trim()) this.ensureInbox(to).push({ content: c, from: f, role: "user" }); },
+      onAgent: async (f, to, c) => { 
+        this.talkingAgent = this.agents.find(a => a.id === f);
+        if ((c || "").trim()) this.ensureInbox(to).push({ content: c, from: f, role: "user" }); 
+      },
       onGroup: async (_f, c) => {
         const dec = fromAgent.guardCheck?.("group", c, this.agents.map(x => x.id)) || null;
         if (dec) await this.applyGuardDecision(fromAgent, dec);
