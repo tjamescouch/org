@@ -16,8 +16,20 @@ export class NoRm extends ExecutionGuard {
   }
 }
 
+export class NoGitCommit extends ExecutionGuard {
+  async allow(cmd: string) {
+    return !/git\s+commit\s+.*/.test(cmd);
+  }
+}
+
 export class NoGitPush extends ExecutionGuard {
   async allow(cmd: string) {
     return !/git\s+push\s+.*/.test(cmd);
+  }
+}
+
+export class NoGitAdd extends ExecutionGuard {
+  async allow(cmd: string) {
+    return !/git\s+add\s+.*/.test(cmd);
   }
 }

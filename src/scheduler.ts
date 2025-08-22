@@ -3,6 +3,7 @@ import { TagParser, TagPart } from "./utils/tag-parser";
 import { makeRouter } from "./routing/route-with-tags";
 import { C, Logger } from "./logger";
 import { extractCodeGuards } from "./utils/extract-code-blocks";
+import { shuffle } from "./utils/shuffle-array";
 import { FileWriter } from "./io/file-writer";
 import { ExecutionGate } from "./tools/execution-gate";
 import { restoreStdin } from "./utils/restore-stdin";
@@ -17,13 +18,13 @@ export interface Responder {
   guardCheck?: (route: GuardRouteKind, content: string, peers: string[]) => GuardDecision | null;
 }
 
-
 export class RoundRobinScheduler {
   private agents: Responder[];
   private maxTools: number;
   private running = false;
   private paused = false;
   private activeAgent: Responder | undefined;
+  private respondingAgent: Responder | undefined;
   private draining = false;
 
   private readonly idlePromptEvery = 3;
@@ -61,7 +62,16 @@ export class RoundRobinScheduler {
 
       let didWork = false;
 
-      for (const a of this.agents) {
+      const shuffled = shuffle(this.agents);
+      while (shuffled.length > 0) {
+        const agentOrUndeinfed: Responder | undefined = this.respondingAgent ?? shuffled.pop();
+
+        if (!agentOrUndeinfed) {
+          throw new Error("Expected agent not found.");
+        }
+
+        const a = agentOrUndeinfed;
+          
         if (this.paused || !this.running) break;
 
         if (this.isMuted(a.id)) { Logger.debug(`muted: ${a.id}`); continue; }
@@ -86,8 +96,9 @@ export class RoundRobinScheduler {
           didWork = true;
 
           if (askedUser) {
-            const userText = (await this.userPromptFn(a.id, message)) ?? "";
-            if (userText.trim()) this.handleUserInterjection(userText.trim());
+            const userText = ((await this.userPromptFn(a.id, message)) ?? "").trim();
+            if (userText) this.handleUserInterjection(userText);
+
             break;
           }
 
@@ -108,9 +119,9 @@ export class RoundRobinScheduler {
           const peers = this.agents.map(x => x.id);
           const dec = this.agents[0]?.guardOnIdle?.({ idleTicks, peers, queuesEmpty: true }) || null;
           const prompt = dec?.askUser || `(scheduler)\nAll agents are idle (no queued work). Please provide the next concrete instruction or question.`;
-          const userText = (await this.userPromptFn("scheduler", prompt)) ?? "";
-          if (userText.trim()) {
-            this.handleUserInterjection(userText.trim());
+          const userText = ((await this.userPromptFn("scheduler", prompt)) ?? "").trim();
+          if (userText) {
+            this.handleUserInterjection(userText);
             idleTicks = 0;
           }
         }
@@ -154,15 +165,17 @@ export class RoundRobinScheduler {
   handleUserInterjection(text: string) {
     const target = this.lastUserDMTarget;
     // Record whatever assistant text we have before yielding
-    const tagPartsWithGroup = TagParser.parse(text);
     const hasTag = text.match(/@@\w+/);
-    const tagParts: TagPart[] = hasTag ? tagPartsWithGroup : [{ index: 0, kind: "group", tag: "group", content: text }];
+
+    const tagParts: TagPart[] = hasTag ? TagParser.parse(text) : [target ? { index: 0, kind: "agent", tag: target, content: text } : { index: 0, kind: "group", tag: "group", content: text }];
 
     for (const tagPart of tagParts) {
       if (tagPart.kind === "agent") {
+        this.respondingAgent = this.agents.find(a => a.id === tagPart.tag);
         this.ensureInbox(tagPart.tag).push({ content: tagPart.content, role: "user", from: "User" });
         Logger.debug(`[user → @@${tagPart.tag}] ${text}`);
       } else {
+        this.respondingAgent = this.agents.find(a => a.id === target);
         for (const a of this.agents) this.ensureInbox(a.id).push({ content: tagPart.content, role: "user", from: "User" });
         Logger.debug(`[user → @@group] ${text}`);
       }
@@ -195,7 +208,10 @@ export class RoundRobinScheduler {
     for (const t of parts) if (t.kind === "user") sawUser = true;
 
     const router = makeRouter({
-      onAgent: async (f, to, c) => { if ((c || "").trim()) this.ensureInbox(to).push({ content: c, from: f, role: "user" }); },
+      onAgent: async (f, to, c) => { 
+        this.respondingAgent = this.agents.find(a => a.id === to);
+        if ((c || "").trim()) this.ensureInbox(to).push({ content: c, from: f, role: "user" }); 
+      },
       onGroup: async (_f, c) => {
         const dec = fromAgent.guardCheck?.("group", c, this.agents.map(x => x.id)) || null;
         if (dec) await this.applyGuardDecision(fromAgent, dec);
