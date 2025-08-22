@@ -24,7 +24,7 @@ export class RoundRobinScheduler {
   private running = false;
   private paused = false;
   private activeAgent: Responder | undefined;
-  private talkingAgent: Responder | undefined;
+  private respondingAgent: Responder | undefined;
   private draining = false;
 
   private readonly idlePromptEvery = 3;
@@ -64,7 +64,7 @@ export class RoundRobinScheduler {
 
       const shuffled = shuffle(this.agents);
       while (shuffled.length > 0) {
-        const agentOrUndeinfed: Responder | undefined = this.talkingAgent ?? shuffled.pop();
+        const agentOrUndeinfed: Responder | undefined = this.respondingAgent ?? shuffled.pop();
 
         if (!agentOrUndeinfed) {
           throw new Error("Expected agent not found.");
@@ -171,11 +171,11 @@ export class RoundRobinScheduler {
 
     for (const tagPart of tagParts) {
       if (tagPart.kind === "agent") {
-        this.talkingAgent = this.agents.find(a => a.id === tagPart.tag);
+        this.respondingAgent = this.agents.find(a => a.id === tagPart.tag);
         this.ensureInbox(tagPart.tag).push({ content: tagPart.content, role: "user", from: "User" });
         Logger.debug(`[user → @@${tagPart.tag}] ${text}`);
       } else {
-        this.talkingAgent = this.agents.find(a => a.id === target);
+        this.respondingAgent = this.agents.find(a => a.id === target);
         for (const a of this.agents) this.ensureInbox(a.id).push({ content: tagPart.content, role: "user", from: "User" });
         Logger.debug(`[user → @@group] ${text}`);
       }
@@ -209,7 +209,7 @@ export class RoundRobinScheduler {
 
     const router = makeRouter({
       onAgent: async (f, to, c) => { 
-        this.talkingAgent = this.agents.find(a => a.id === f);
+        this.respondingAgent = this.agents.find(a => a.id === to);
         if ((c || "").trim()) this.ensureInbox(to).push({ content: c, from: f, role: "user" }); 
       },
       onGroup: async (_f, c) => {
