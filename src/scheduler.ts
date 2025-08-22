@@ -62,7 +62,7 @@ export class RoundRobinScheduler {
       let didWork = false;
 
       const shuffled = shuffle(this.agents);
-      for (const a of this.agents) {
+      for (const a of shuffled) {
         if (this.paused || !this.running) break;
 
         if (this.isMuted(a.id)) { Logger.debug(`muted: ${a.id}`); continue; }
@@ -159,7 +159,7 @@ export class RoundRobinScheduler {
     const tagPartsWithGroup = TagParser.parse(text);
     const hasTag = text.match(/@@\w+/);
 
-    const tagParts: TagPart[] = hasTag ? tagPartsWithGroup : [{ index: 0, kind: target ? "agent" : "group", tag: target ? target : "group", content: text }];
+    const tagParts: TagPart[] = hasTag ? tagPartsWithGroup : [target ? { index: 0, kind: "agent", tag: target, content: text } : { index: 0, kind: "group", tag: "group", content: text }];
 
     for (const tagPart of tagParts) {
       if (tagPart.kind === "agent") {
