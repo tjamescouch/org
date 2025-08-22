@@ -13,7 +13,7 @@
 
 import * as readline from "readline";
 import { Logger } from "../logger";
-import type { RoundRobinScheduler } from "../scheduler";
+import type { RandomScheduler } from "../scheduler";
 import { resumeStdin } from "./utils";
 
 export type InputControllerOptions = {
@@ -27,7 +27,7 @@ export class InputController {
   private interjectBanner: string;
   private promptTemplate: (from: string, content: string) => string;
 
-  private scheduler: RoundRobinScheduler | null = null;
+  private scheduler: RandomScheduler | null = null;
 
   private rl: readline.Interface | null = null;
   private interjecting = false;
@@ -54,7 +54,7 @@ export class InputController {
     });
   }
 
-  attachScheduler(s: RoundRobinScheduler) {
+  attachScheduler(s: RandomScheduler) {
     this.scheduler = s;
   }
 

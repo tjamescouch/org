@@ -3,7 +3,7 @@ import { TagParser, TagPart } from "./utils/tag-parser";
 import { makeRouter } from "./routing/route-with-tags";
 import { C, Logger } from "./logger";
 import { extractCodeGuards } from "./utils/extract-code-blocks";
-import { shuffle } from "./utils/shuffle-array";
+import { shuffle as fisherYatesShuffle } from "./utils/shuffle-array";
 import { FileWriter } from "./io/file-writer";
 import { ExecutionGate } from "./tools/execution-gate";
 import { restoreStdin } from "./utils/restore-stdin";
@@ -18,7 +18,7 @@ export interface Responder {
   guardCheck?: (route: GuardRouteKind, content: string, peers: string[]) => GuardDecision | null;
 }
 
-export class RoundRobinScheduler {
+export class RandomScheduler {
   private agents: Responder[];
   private maxTools: number;
   private running = false;
@@ -36,15 +36,18 @@ export class RoundRobinScheduler {
   private keepAlive: NodeJS.Timeout | null = null;
 
   private mutedUntil = new Map<string, number>();
+  private shuffle: (a: Responder[]) => Responder[];
 
   constructor(opts: {
     agents: Responder[];
     maxTools: number;
+    shuffle: (a: Responder[]) => Responder[]
     onAskUser: (fromAgent: string, content: string) => Promise<string | null>;
   }) {
     this.agents = opts.agents;
     this.maxTools = Math.max(0, opts.maxTools);
     this.userPromptFn = opts.onAskUser;
+    this.shuffle = opts.shuffle ?? fisherYatesShuffle;
     for (const a of this.agents) this.ensureInbox(a.id);
   }
 
@@ -72,7 +75,7 @@ export class RoundRobinScheduler {
         }
 
         const a = agentOrUndeinfed;
-          
+
         if (this.paused || !this.running) break;
 
         if (this.isMuted(a.id)) { Logger.debug(`muted: ${a.id}`); continue; }
@@ -209,9 +212,9 @@ export class RoundRobinScheduler {
     for (const t of parts) if (t.kind === "user") sawUser = true;
 
     const router = makeRouter({
-      onAgent: async (f, to, c) => { 
+      onAgent: async (f, to, c) => {
         this.respondingAgent = this.agents.find(a => a.id === to);
-        if ((c || "").trim()) this.ensureInbox(to).push({ content: c, from: f, role: "user" }); 
+        if ((c || "").trim()) this.ensureInbox(to).push({ content: c, from: f, role: "user" });
       },
       onGroup: async (_f, c) => {
         const dec = fromAgent.guardCheck?.("group", c, this.agents.map(x => x.id)) || null;
@@ -284,4 +287,14 @@ export class RoundRobinScheduler {
   }
 
   private sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+}
+
+export class RoundRobinScheduler extends RandomScheduler {
+  constructor(opts: {
+    agents: Responder[];
+    maxTools: number;
+    onAskUser: (fromAgent: string, content: string) => Promise<string | null>;
+  }) {
+    super({ agents: opts.agents, shuffle: (a) => a, maxTools: opts.maxTools, onAskUser: opts.onAskUser });
+  }
 }
