@@ -223,13 +223,13 @@ Keep responses brief unless writing files.`;
     this.guard.noteAssistantTurn({ text: finalText, toolCalls: (out.toolCalls || []).length });
 
     const calls = out.toolCalls || [];
-    if (!calls.length) {
+    if (calls.length === 0) {
       // No tools requested — capture assistant text in memory and yield.
       if (finalText) {
         Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
         await this.memory.add({ role: "assistant", content: finalText, from: "Me" });
       }
-      Logger.info(C.blue(`\n[${this.id}] wrote. [${totalUsed}] tools used.`));
+      Logger.info(C.blue(`\n[${this.id}] wrote. No tools used.`));
       return { message: finalText, toolsUsed: totalUsed }
     }
 
