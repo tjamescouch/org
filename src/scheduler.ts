@@ -3,6 +3,7 @@ import { TagParser, TagPart } from "./utils/tag-parser";
 import { makeRouter } from "./routing/route-with-tags";
 import { C, Logger } from "./logger";
 import { extractCodeGuards } from "./utils/extract-code-blocks";
+import { shuffle } from "./utils/shuffle-array";
 import { FileWriter } from "./io/file-writer";
 import { ExecutionGate } from "./tools/execution-gate";
 import { restoreStdin } from "./utils/restore-stdin";
