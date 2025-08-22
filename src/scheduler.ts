@@ -17,7 +17,6 @@ export interface Responder {
   guardCheck?: (route: GuardRouteKind, content: string, peers: string[]) => GuardDecision | null;
 }
 
-
 export class RoundRobinScheduler {
   private agents: Responder[];
   private maxTools: number;
@@ -61,6 +60,7 @@ export class RoundRobinScheduler {
 
       let didWork = false;
 
+      const shuffled = shuffle(this.agents);
       for (const a of this.agents) {
         if (this.paused || !this.running) break;
 
@@ -86,8 +86,9 @@ export class RoundRobinScheduler {
           didWork = true;
 
           if (askedUser) {
-            const userText = (await this.userPromptFn(a.id, message)) ?? "";
-            if (userText.trim()) this.handleUserInterjection(userText.trim());
+            const userText = ((await this.userPromptFn(a.id, message)) ?? "").trim();
+            if (userText) this.handleUserInterjection(userText);
+
             break;
           }
 
@@ -108,9 +109,9 @@ export class RoundRobinScheduler {
           const peers = this.agents.map(x => x.id);
           const dec = this.agents[0]?.guardOnIdle?.({ idleTicks, peers, queuesEmpty: true }) || null;
           const prompt = dec?.askUser || `(scheduler)\nAll agents are idle (no queued work). Please provide the next concrete instruction or question.`;
-          const userText = (await this.userPromptFn("scheduler", prompt)) ?? "";
-          if (userText.trim()) {
-            this.handleUserInterjection(userText.trim());
+          const userText = ((await this.userPromptFn("scheduler", prompt)) ?? "").trim();
+          if (userText) {
+            this.handleUserInterjection(userText);
             idleTicks = 0;
           }
         }
@@ -156,7 +157,8 @@ export class RoundRobinScheduler {
     // Record whatever assistant text we have before yielding
     const tagPartsWithGroup = TagParser.parse(text);
     const hasTag = text.match(/@@\w+/);
-    const tagParts: TagPart[] = hasTag ? tagPartsWithGroup : [{ index: 0, kind: "group", tag: "group", content: text }];
+
+    const tagParts: TagPart[] = hasTag ? tagPartsWithGroup : [{ index: 0, kind: target ? "agent" : "group", tag: target ? target : "group", content: text }];
 
     for (const tagPart of tagParts) {
       if (tagPart.kind === "agent") {
