@@ -65,6 +65,7 @@ export class RoundRobinScheduler {
       const shuffled = shuffle(this.agents);
       while (shuffled.length > 0) {
         const agentOrUndeinfed: Responder | undefined = this.respondingAgent ?? shuffled.pop();
+        this.respondingAgent = undefined;
 
         if (!agentOrUndeinfed) {
           throw new Error("Expected agent not found.");
