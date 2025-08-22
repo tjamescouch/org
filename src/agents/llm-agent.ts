@@ -253,7 +253,7 @@ Keep responses brief unless writing files.`;
 
       if (name === "sh" || name === "exec") { //The Model likes to use the alias exec for some reason
         const rawCmd = String(args?.cmd ?? "");
-        const cmd = sanitizeContent(rawCmd).replace(/\s+/g, " ").trim();
+        const cmd = sanitizeContent(rawCmd);
 
         if (!cmd) {
           const decision = this.guard.noteBadToolCall({
