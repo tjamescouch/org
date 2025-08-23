@@ -65,20 +65,18 @@ export class RandomScheduler {
 
       let didWork = false;
 
-      const shuffled = this.shuffle(this.agents);
-      while (shuffled.length > 0) {
-        const agentOrUndeinfed: Responder | undefined = this.respondingAgent ?? shuffled.pop();
+      const shuffled = this.shuffle(this.agents.filter(a => this.inbox.has(a.id)));
+      for (const agent of shuffled) {
+        const a: Responder | undefined = this.respondingAgent ?? agent;
         this.respondingAgent = undefined;
 
-        if (!agentOrUndeinfed) {
+        if (!a) {
           throw new Error("Expected agent not found.");
         }
 
-        const a = agentOrUndeinfed;
-
         if (this.paused || !this.running) break;
 
-        if (this.isMuted(a.id)) { Logger.debug(`muted: ${a.id}`); continue; }
+        if (this.isMuted(a.id)) { Logger.warn(`muted: ${a.id}`); continue; }
 
         const messages = this.nextPromptFor(a.id);
         if (messages.length === 0) {
