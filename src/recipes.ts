@@ -19,7 +19,8 @@ export const RECIPES: Record<string, Recipe> = {
 - Propose the smallest diff that fixes it.
 - Explain in one paragraph why it's correct.
 - Prefer surgical edits; never rewrite style wholesale.
-- After applying, re-run tests. Stop when green.`,
+- After applying, re-run tests. Stop when green.
+- Return control of the conversation to the user when you complete the task by using the @@user tag`,
     kickoff: "Please run the test suite now and fix the first failing test.",
     allowTools: ["sh", "apply_patch", "git"],
     budgets: { maxHops: 12, maxTools: 10, timeoutMs: 10 * 60_000 },
