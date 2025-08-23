@@ -306,7 +306,7 @@ test('LlmAgent executes sh tool calls and continues until assistant text is retu
     { text: 'Done!', toolCalls: [] },
   ]);
   const agent = new LlmAgent('tester', driver, 'mock-model');
-  const { message, toolsUsed } = await agent.respond('Run command', 2, ['tester']);
+  const { message, toolsUsed } = await agent.respond([{ content: 'Run command', role: "user", from: "user" }], 2, ['tester'], () => {});
   assert.equal(message, 'Done!');
   // One tool call should have been consumed
   assert.equal(toolsUsed, 1);
