@@ -5,7 +5,8 @@
   "private": true,
   "scripts": {
     "start": "bun run src/app.ts",
-    "start:node": "node --loader ts-node/esm src/app.ts"
+    "start:node": "node --loader ts-node/esm src/app.ts",
+    "test": "bun test"
   },
   "dependencies": {
   },
