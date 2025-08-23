@@ -8,6 +8,7 @@ import { GuardRail } from "../guardrails/guardrail";
 import { Agent } from "./agent";
 import { sanitizeContent } from "../utils/sanitize-content";
 import { VIMDIFF_TOOL_DEF } from "../tools/vimdiff";
+import { sanitizeAndRepairAssistantReply } from "../guard/sanitizer";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -111,7 +112,7 @@ export class LlmAgent extends Agent {
     // Initialize per-turn thresholds/counters in the guard rail.
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
 
-    for(const message of messages) {
+    for (const message of messages) {
       await this.memory.addIfNotExists(message);
     }
 
@@ -192,7 +193,28 @@ export class LlmAgent extends Agent {
     // Execute tools (sh only), respecting remaining budget
     let forceEndTurn = false;
 
-    for (const tc of calls) {
+
+    const {
+      calls: sanitizedCalls,
+      decision: firstDecision,
+      forceRetry: _forceRetry,
+    } = sanitizeAndRepairAssistantReply({ text: finalText, calls, toolsAllowed: this.tools.map(t => t.function.name), didRetry: false /* FIXME */ });
+
+    if (firstDecision) {
+      if (firstDecision?.nudge) {
+        await this.memory.add({ role: "system", content: firstDecision.nudge, from: "System" });
+      }
+      if (firstDecision?.endTurn) {
+        Logger.warn(`System ended turn.`);
+        totalUsed = maxTools; // consume budget → end turn
+        forceEndTurn = true;
+        if (finalText) await this.memory.add({ role: "system", content: finalText, from: "System" });
+        
+        return { message: finalText, toolsUsed: 0 };
+      }
+    }
+
+    for (const tc of sanitizedCalls) {
       if (abortCallback?.()) {
         Logger.debug("Aborted tool calls");
 

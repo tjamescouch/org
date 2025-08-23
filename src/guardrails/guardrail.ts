@@ -1,52 +1,47 @@
 // src/guardrail.ts
 import { Logger } from "../logger";
 
-export type GuardRouteKind = "group" | "agent" | "user" | "file";
-export type Reason = "missing-arg";
+// src/guardrail.ts
 
-export type GuardDecision = {
-  /** Add a message to the agent's context (as system guidance). */
-  nudge?: string | null;
-  /** Do not broadcast the current message to its original audience. */
-  suppressBroadcast?: boolean;
-  /** Temporarily mute the agent so others can progress (used by scheduler). */
-  muteMs?: number;
-  /** Free-form warnings for observability / logs. */
+export type Reason =
+  | "missing-arg"
+  | "invalid-args"
+  | "forbidden"
+  | "unsafe"
+  | "other";
+
+export type GuardRouteKind = "group" | "direct" | "system" | "user";
+
+export interface GuardDecision {
+  /** A short system message the agent should see next turn. */
+  nudge?: string;
+  /** Soft reasons / telemetry tags. */
   warnings?: string[];
-  /** Forcibly end the current agent turn (stop further tool hops this turn). */
+  /** If true, end the assistant turn immediately. */
   endTurn?: boolean;
-  /** Ask the user for input with this prompt (scheduler will call onAskUser). */
+  /** Optional backoff (ms) for noisy agents. */
+  muteMs?: number;
+  /** Suppress broadcast of a low‑value message. */
+  suppressBroadcast?: boolean;
+  /** Ask the user for input (scheduler text). */
   askUser?: string;
-};
-
-const defaultMissingArgEndTurnLimit = 3;
+}
 
 export interface GuardRail {
-  /**
-   * Called once at the beginning of each agent "turn" (i.e., per respond() call).
-   * Used to (re)initialize per-turn counters and thresholds.
-   */
+  /** Called once at the beginning of a turn. */
   beginTurn(ctx: { maxToolHops: number }): void;
 
-  /** Record facts about the agent's last assistant completion. */
+  /** Called after each assistant output. */
   noteAssistantTurn(info: { text: string; toolCalls: number }): void;
 
-  /**
-   * Notify guard rail of a problematic tool call (e.g., missing arguments).
-   * Return an optional decision that may include a nudge and/or endTurn=true.
-   */
+  /** Called when a tool call is syntactically bad (e.g., missing args). */
   noteBadToolCall(info: {
     name: string;
     reason: Reason;
-    /** If reason === missing-arg(s), specify which argument names are missing. */
     missingArgs?: string[];
   }): GuardDecision | null;
 
-  /**
-   * Notify guard rail of a (successful) tool call to detect repeats within a turn.
-   * argsSig should uniquely represent the arguments relevant to the call (e.g., sh cmd).
-   * resSig can summarize notable result surface (e.g., stdout snippet + exit code).
-   */
+  /** Called after a tool returns. */
   noteToolCall(info: {
     name: string;
     argsSig: string;
@@ -54,17 +49,17 @@ export interface GuardRail {
     exitCode?: number;
   }): GuardDecision | null;
 
-  /**
-   * Called by the scheduler when *all* inboxes are empty for several ticks.
-   * Gives the guard rail a chance to formulate a user-facing fallback prompt.
-   */
-  onIdle?(state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }): GuardDecision | null;
+  /** Called before broadcasting a message. */
+  guardCheck(
+    route: GuardRouteKind,
+    content: string,
+    peers: string[]
+  ): GuardDecision | null;
 
-  /**
-   * Evaluate an outgoing routed delivery from the agent (e.g., @@group).
-   * Used by the scheduler to decide broadcast suppression and nudges.
-   */
-  guardCheck(route: GuardRouteKind, content: string, peers: string[]): GuardDecision | null;
+  /** Optional: scheduler idle fallback. */
+  onIdle?(
+    state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }
+  ): GuardDecision | null;
 }
 
 /**
@@ -77,6 +72,8 @@ export interface GuardRail {
  */
 export class StandardGuardRail implements GuardRail {
   private readonly agentId: string;
+
+  private readonly defaultMissingArgEndTurnLimit = 5;
 
   // --- config knobs ----------------------------------------------------------
   /** Optional override for invalid-tool end-turn limit (per turn). */
@@ -123,10 +120,10 @@ export class StandardGuardRail implements GuardRail {
     this.toolSigCounts.clear();
 
     // Compute limits for this turn.
-    const defaultHalf = Math.max(1, Math.ceil(Math.max(0, defaultMissingArgEndTurnLimit)));
+    const defaultHalf = Math.max(1, Math.ceil(Math.max(0, this.defaultMissingArgEndTurnLimit)));
     this.badToolEndTurnLimit = Math.max(
       1,
-      this.overrideMissingArgEndTurnLimit ?? defaultMissingArgEndTurnLimit
+      this.overrideMissingArgEndTurnLimit ?? this.defaultMissingArgEndTurnLimit
     );
     // Allow one repeat then end (default 2); or align with the same half rule if overridden.
     this.repeatToolSigEndTurnLimit = Math.max(
@@ -152,13 +149,13 @@ export class StandardGuardRail implements GuardRail {
       const label = remaining <= 0 ? "FINAL" : (remaining === 1 ? "STRONG" : "WARNING");
       const missing = (info.missingArgs ?? []).join(", ") || "required argument(s)";
       const nudge =
-`SYSTEM ${label} WARNING:
+        `SYSTEM ${label} WARNING:
 You attempted to call "${info.name}" without ${missing}.
 Fix the arguments and try once more.`;
       if (remaining <= 0) {
         return {
           nudge:
-`${nudge}
+            `${nudge}
 
 Ending your turn now. On your next turn either:
 - @@user Ask a specific question, or
@@ -194,14 +191,14 @@ Ending your turn now. On your next turn either:
     else if (count >= 2) label = "STRONG WARNING";
 
     const base =
-`SYSTEM ${label}:
+      `SYSTEM ${label}:
 You are repeating the same "${info.name}" call this turn:
   args: ${info.argsSig}
 ${info.resSig ? `  last result: ${truncate(info.resSig, 160)}` : ""}`;
 
     if (count >= limit) {
       const nudge =
-`${base}
+        `${base}
 Ending your turn now. On your next turn, switch strategies:
 - @@user <ask a single, concrete question>, or
 - @@peer <delegate a specific subtask>.`;
@@ -209,7 +206,7 @@ Ending your turn now. On your next turn, switch strategies:
     }
 
     const nudge =
-`${base}
+      `${base}
 Do not re-run the same command again. Either change the arguments, run a DIFFERENT diagnostic, or DM a peer.`;
     return { nudge, warnings };
   }
@@ -234,7 +231,7 @@ Do not re-run the same command again. Either change the arguments, run a DIFFERE
     // Escalate suppression of near-duplicate, low-signal group messages.
     if (route === "group" && this.repeatCount >= this.stagnationRepeatThreshold && isLowSignal) {
       const nudge =
-`SYSTEM: Your last few @@group messages were low-signal and very similar.
+        `SYSTEM: Your last few @@group messages were low-signal and very similar.
 Switch tactics on your next turn:
 - @@user Ask a single concrete question to move the task forward, or
 - @@peer DM a specific teammate with a well-defined request.`;
@@ -255,7 +252,7 @@ Switch tactics on your next turn:
     // only nudge every few idle ticks to avoid spam
     if (state.idleTicks < 3) return null;
     const prompt =
-`(scheduler)
+      `(scheduler)
 All agents are idle (no queued messages and no recent tool calls).
 Please provide the next concrete instruction or question.
 
