@@ -1,4 +1,3 @@
-# .git/hooks/pre-commit  (make executable)
 #!/usr/bin/env bash
 set -euo pipefail
 
