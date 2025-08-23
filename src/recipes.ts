@@ -1,14 +1,11 @@
 // src/recipes.ts
+
 export type Recipe = {
   name: string;
   description: string;
-  // System prompt injected for the primary agent
-  system: string;
-  // Initial user message if the CLI doesn't supply one
-  kickoff?: string;
-  // Optional tool allowlist; omit => all registered tools available
-  allowTools?: string[];
-  // Optional run budgets to keep flows bounded
+  system: string;                  // system prompt text
+  kickoff?: string;                // initial user instruction
+  allowTools?: string[];           // optional tool allowlist
   budgets?: { maxHops?: number; maxTools?: number; timeoutMs?: number };
 };
 
@@ -23,27 +20,27 @@ export const RECIPES: Record<string, Recipe> = {
 - Explain in one paragraph why it's correct.
 - Prefer surgical edits; never rewrite style wholesale.
 - After applying, re-run tests. Stop when green.`,
-    kickoff: "Please run the test suite and fix the first failing test.",
-    allowTools: ["sh", "apply_patch", "git"], // narrow and safe
-    budgets: { maxHops: 12, maxTools: 10, timeoutMs: 10 * 60_000 }
+    kickoff: "Please run the test suite now and fix the first failing test.",
+    allowTools: ["sh", "apply_patch", "git"],
+    budgets: { maxHops: 12, maxTools: 10, timeoutMs: 10 * 60_000 },
   },
 
   docs: {
     name: "docs",
-    description: "Produce ARCHITECTURE.md with Mermaid diagram.",
+    description: "Produce ARCHITECTURE.md with a Mermaid diagram.",
     system:
 `You are a repo documenter. Inventory modules and dependencies.
-Emit an ARCHITECTURE.md with a Mermaid graph and brief section per module.`,
+Emit ARCHITECTURE.md with a Mermaid graph and brief sections per module.`,
     kickoff: "Generate ARCHITECTURE.md at the repo root.",
-    allowTools: ["sh", "apply_patch"]
+    allowTools: ["sh", "apply_patch"],
   },
 
   review: {
     name: "review",
-    description: "Propose patch; let user review with vimdiff before applying.",
+    description: "Propose a patch; human reviews with vimdiff before applying.",
     system:
 `Propose a unified diff for the requested change.
-Wait for a human review; only apply after they accept.`,
+Wait for human review; apply only after acceptance.`,
     kickoff: "Propose a minimal patch for the described change.",
     allowTools: ["apply_patch", "sh", "git"]
   },
@@ -56,13 +53,11 @@ Wait for a human review; only apply after they accept.`,
 Then implement one step at a time, asking the tester to run tests.`,
     kickoff: "Start with a 3-step plan; then propose first patch.",
     allowTools: ["apply_patch", "sh", "git"],
-    budgets: { maxHops: 18, maxTools: 14 }
   },
 };
 
-// Helper
 export function getRecipe(name?: string | null): Recipe | null {
   if (!name) return null;
-  const key = String(name).toLowerCase();
+  const key = String(name).trim().toLowerCase();
   return RECIPES[key] ?? null;
 }
