@@ -19,7 +19,7 @@ patch-debug.sh
 logs
 patch.sh
 patch.py
-
+coverage
 
 cchat_client
 cchat_server
