@@ -306,7 +306,7 @@ test('LlmAgent executes sh tool call and ends the turn when no assistant text is
     { text: '', toolCalls: [ makeToolCall('1', 'sh', { cmd: 'echo hi' }) ] },
   ]);
   const agent = new LlmAgent('tester', driver, 'mock-model');
-  const res = await agent.respond('Run command', 2, ['tester']);
+  const res = await agent.respond([{ content: 'Run command', role: "user", from: "user" }], 2, ['tester'], () => false);
 
   // No assistant text is returned; exactly one tool call was consumed.
   assert.equal(res.message, '');
@@ -319,7 +319,7 @@ test('LlmAgent handles unknown tool calls gracefully', async () => {
     { text: '', toolCalls: [ makeToolCall('1', 'unknownTool', {}) ] },
   ]);
   const agent = new LlmAgent('tester', driver, 'mock-model');
-  const res = await agent.respond('Prompt', 2, ['tester']);
+  const res = await agent.respond([{ content: 'Prompt', role: "user", from: "user" }], 2, ['tester'], () => false);
   // No assistant text is returned when the system ends the turn.
   assert.equal(res.message, '');
   // The unknown tool still counts against the tool budget.
@@ -334,7 +334,7 @@ test('LlmAgent handles malformed sh tool calls with missing cmd', async () => {
   ]);
   const agent = new LlmAgent('tester', driver, 'mock-model');
 
-  const res = await agent.respond('Bad cmd', 2, ['tester']);
+  const res = await agent.respond([{ content: 'Prompt', role: "user", from: "user" }], 2, ['tester'], () => false);
 
   assert.equal(res.message, '');  // no assistant text; turn ended
   assert.equal(res.toolsUsed, 2); // two tool usages are counted
