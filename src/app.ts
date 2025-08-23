@@ -9,6 +9,7 @@ import { InputController } from "./input/controller";
 import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
 import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
+import { getRecipe } from "./recipes";
 
 /** ---------- CLI parsing ---------- */
 function parseArgs(argv: string[]) {

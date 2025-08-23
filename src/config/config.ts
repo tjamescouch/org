@@ -1,3 +1,5 @@
+import { getRecipe } from "../recipes";
+
 export interface LlmConfig {
   driver: "lmstudio";
   protocol: "openai";
@@ -40,10 +42,20 @@ export function loadConfig(): AppConfig {
   const argv = (globalThis as any).Bun ? Bun.argv.slice(2) : process.argv.slice(2);
   const cli = parseArgs(argv);
 
-  const driver   = (cli["driver"]   ?? readEnv("LLM_DRIVER",   "lmstudio")) as "lmstudio";
-  const protocol = (cli["protocol"] ?? readEnv("LLM_PROTOCOL", "openai"))   as "openai";
-  const baseUrl  =  cli["base-url"] ?? readEnv("LLM_BASE_URL", "http://192.168.56.1:11434");
-  const model    =  cli["model"]    ?? readEnv("LLM_MODEL",    "openai/gpt-oss-120b");
+  const recipeIdx = args.indexOf("--recipe");
+  const recipeName = recipeIdx >= 0 ? args[recipeIdx + 1] : undefined;
+  const recipe = getRecipe(recipeName);
+
+  // pass through to app bootstrap
+  process.env.ORG_RECIPE = recipe?.name ?? "";
+  if (recipe?.budgets?.maxHops) process.env.ORG_MAX_HOPS = String(recipe.budgets.maxHops);
+  if (recipe?.budgets?.maxTools) process.env.ORG_MAX_TOOLS = String(recipe.budgets.maxTools);
+  if (recipe?.budgets?.timeoutMs) process.env.ORG_TIMEOUT_MS = String(recipe.budgets.timeoutMs);
+
+  const driver = (cli["driver"] ?? readEnv("LLM_DRIVER", "lmstudio")) as "lmstudio";
+  const protocol = (cli["protocol"] ?? readEnv("LLM_PROTOCOL", "openai")) as "openai";
+  const baseUrl = cli["base-url"] ?? readEnv("LLM_BASE_URL", "http://192.168.56.1:11434");
+  const model = cli["model"] ?? readEnv("LLM_MODEL", "openai/gpt-oss-120b");
 
   const safeFlag = ((): boolean => {
     if ("safe" in cli) return String(cli["safe"]).trim() !== "0";
