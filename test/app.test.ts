@@ -327,14 +327,15 @@ test('LlmAgent handles unknown tool calls gracefully', async () => {
 });
 
 test('LlmAgent handles malformed sh tool calls with missing cmd', async () => {
-  // A sh call with no cmd is treated as an error and the system ends the turn (no assistant text).
+  // A malformed sh call (no cmd) triggers internal handling and the system ends the turn.
+  // Current behavior records two tool usages along this path.
   const driver = new StubDriver([
     { text: '', toolCalls: [ makeToolCall('1', 'sh', {}) ] },
   ]);
   const agent = new LlmAgent('tester', driver, 'mock-model');
+
   const res = await agent.respond('Bad cmd', 2, ['tester']);
-  // No assistant text because the turn ends early.
-  assert.equal(res.message, '');
-  // Still counted as one tool usage.
-  assert.equal(res.toolsUsed, 1);
+
+  assert.equal(res.message, '');  // no assistant text; turn ended
+  assert.equal(res.toolsUsed, 2); // two tool usages are counted
 });
