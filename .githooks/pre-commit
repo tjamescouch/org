@@ -1,0 +1,45 @@
+# .git/hooks/pre-commit  (make executable)
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Allow bypass with: git commit --no-verify  (or SKIP_PRECOMMIT_TESTS=1)
+[ "${SKIP_PRECOMMIT_TESTS:-}" = "1" ] && exit 0
+
+# Go to repo root
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+# Make sure Bun is reachable (hooks often have a trimmed PATH)
+PATH="$HOME/.bun/bin:/usr/local/bin:/usr/bin:$PATH"
+BUN_BIN="${BUN_BIN:-$(command -v bun 2>/dev/null || true)}"
+if [ -z "$BUN_BIN" ]; then
+  echo "[pre-commit] bun not found (PATH=$PATH)" >&2
+  exit 1
+fi
+
+# If no JS/TS changed, skip tests for speed
+CHANGED="$(git diff --cached --name-only --diff-filter=ACMRTUXB || true)"
+if ! printf '%s\n' "$CHANGED" | grep -Eq '\.(mjs|cjs|js|jsx|ts|tsx)$'; then
+  exit 0
+fi
+
+# If only test files changed, run just those; otherwise run full suite
+TEST_CHANGED="$(printf '%s\n' "$CHANGED" | grep -E '(^|/)(test|tests)/|(\.test|\.spec)\.(m?js|cjs|jsx|ts|tsx)$' || true)"
+ONLY_TESTS_CHANGED=true
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  if ! printf '%s\n' "$f" | grep -qE '(^|/)(test|tests)/|(\.test|\.spec)\.(m?js|cjs|jsx|ts|tsx)$'; then
+    ONLY_TESTS_CHANGED=false
+    break
+  fi
+done <<<"$CHANGED"
+
+set -x
+if [ -n "$TEST_CHANGED" ] && [ "$ONLY_TESTS_CHANGED" = true ]; then
+  # Run only changed test files
+  exec "$BUN_BIN" test --bail $TEST_CHANGED
+else
+  # Run full test suite
+  exec "$BUN_BIN" test --bail
+fi
+

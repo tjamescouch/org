@@ -24,4 +24,9 @@ sudo rm -f /usr/local/bin/org
 sudo ln -s "$ROOTDIR/org" /usr/local/bin/org
 echo "[install.sh] Symlinked org -> /usr/local/bin/org -> $ROOTDIR/org"
 
+git config core.hooksPath .githooks
+echo "git pre commit hook path added"
+chmod +x .githooks/pre-commit
+echo "git pre commit hook made executable"
+
 echo "[install.sh] Done. Run 'org' from ANY directory; agents operate in that directory."
