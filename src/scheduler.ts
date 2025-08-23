@@ -65,16 +65,14 @@ export class RandomScheduler {
 
       let didWork = false;
 
-      const shuffled = this.shuffle(this.agents);
-      while (shuffled.length > 0) {
-        const agentOrUndeinfed: Responder | undefined = this.respondingAgent ?? shuffled.pop();
+      const shuffled = this.shuffle(this.agents.filter(a => this.inbox.has(a.id)));
+      for (const agent of shuffled) {
+        const a: Responder | undefined = this.respondingAgent ?? agent;
         this.respondingAgent = undefined;
 
-        if (!agentOrUndeinfed) {
+        if (!a) {
           throw new Error("Expected agent not found.");
         }
-
-        const a = agentOrUndeinfed;
 
         if (this.paused || !this.running) break;
 
@@ -125,6 +123,7 @@ export class RandomScheduler {
           const prompt = dec?.askUser || `(scheduler)\nAll agents are idle (no queued work). Please provide the next concrete instruction or question.`;
           const userText = ((await this.userPromptFn("scheduler", prompt)) ?? "").trim();
           if (userText) {
+            this.respondingAgent = this.agents[0];
             this.handleUserInterjection(userText);
             idleTicks = 0;
           }

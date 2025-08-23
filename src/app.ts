@@ -2,7 +2,7 @@
 // src/app.ts
 
 import { ExecutionGate } from "./tools/execution-gate";
-import { loadConfig } from "./config";
+import { loadConfig } from "./config/config";
 import { Logger } from "./logger";
 import { RoundRobinScheduler } from "./scheduler";
 import { InputController } from "./input/controller";

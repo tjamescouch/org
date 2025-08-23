@@ -25,4 +25,3 @@ sudo ln -s "$ROOTDIR/org" /usr/local/bin/org
 echo "[install.sh] Symlinked org -> /usr/local/bin/org -> $ROOTDIR/org"
 
 echo "[install.sh] Done. Run 'org' from ANY directory; agents operate in that directory."
-
