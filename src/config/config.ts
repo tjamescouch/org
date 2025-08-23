@@ -1,3 +1,4 @@
+// src/config/config.ts
 import { getRecipe } from "../recipes";
 
 export interface LlmConfig {
@@ -21,53 +22,75 @@ function readEnv(name: string, fallback: string): string {
   const v =
     (globalThis as any).process?.env?.[name] ??
     ((globalThis as any).Bun ? (Bun.env as any)?.[name] : undefined);
-  return (typeof v === "string" && v.length > 0) ? v : fallback;
+  return typeof v === "string" && v.length > 0 ? v : fallback;
 }
 
-/** Simple CLI parser: --key value. */
+/** Parse CLI flags in a minimal, POSIX-friendly way.
+ *  Supports:
+ *   --key value     -> { key: "value" }
+ *   --key=value     -> { key: "value" }
+ *   --flag          -> { flag: "1" }
+ */
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const val = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "1";
+    const tok = argv[i];
+    if (!tok.startsWith("--")) continue;
+
+    const eq = tok.indexOf("=");
+    if (eq > 2) {
+      // --key=value
+      const key = tok.slice(2, eq);
+      const val = tok.slice(eq + 1);
       out[key] = val;
+      continue;
+    }
+
+    const key = tok.slice(2);
+    const next = argv[i + 1];
+    if (next && !next.startsWith("--")) {
+      out[key] = next;
+      i++;
+    } else {
+      out[key] = "1"; // boolean flag present
     }
   }
   return out;
+}
+
+function parseBool(s: string | undefined, def = false): boolean {
+  if (s == null) return def;
+  const v = String(s).trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
 }
 
 export function loadConfig(): AppConfig {
   const argv = (globalThis as any).Bun ? Bun.argv.slice(2) : process.argv.slice(2);
   const cli = parseArgs(argv);
 
-  const recipeIdx = args.indexOf("--recipe");
-  const recipeName = recipeIdx >= 0 ? args[recipeIdx + 1] : undefined;
-  const recipe = getRecipe(recipeName);
+  // ---- Recipe passthrough (optional) ----
+  const recipeName = cli["recipe"];
+  const recipe = getRecipe(recipeName ?? null);
 
-  // pass through to app bootstrap
-  process.env.ORG_RECIPE = recipe?.name ?? "";
-  if (recipe?.budgets?.maxHops) process.env.ORG_MAX_HOPS = String(recipe.budgets.maxHops);
-  if (recipe?.budgets?.maxTools) process.env.ORG_MAX_TOOLS = String(recipe.budgets.maxTools);
-  if (recipe?.budgets?.timeoutMs) process.env.ORG_TIMEOUT_MS = String(recipe.budgets.timeoutMs);
+  // Propagate recipe choice + budgets via env for downstream consumers.
+  if (recipe?.name) (process.env as any).ORG_RECIPE = recipe.name;
+  if (recipe?.budgets?.maxHops != null) (process.env as any).ORG_MAX_HOPS = String(recipe.budgets.maxHops);
+  if (recipe?.budgets?.maxTools != null) (process.env as any).ORG_MAX_TOOLS = String(recipe.budgets.maxTools);
+  if (recipe?.budgets?.timeoutMs != null) (process.env as any).ORG_TIMEOUT_MS = String(recipe.budgets.timeoutMs);
 
+  // ---- LLM config (CLI overrides env; env overrides defaults) ----
   const driver = (cli["driver"] ?? readEnv("LLM_DRIVER", "lmstudio")) as "lmstudio";
   const protocol = (cli["protocol"] ?? readEnv("LLM_PROTOCOL", "openai")) as "openai";
   const baseUrl = cli["base-url"] ?? readEnv("LLM_BASE_URL", "http://192.168.56.1:11434");
   const model = cli["model"] ?? readEnv("LLM_MODEL", "openai/gpt-oss-120b");
 
-  const safeFlag = ((): boolean => {
-    if ("safe" in cli) return String(cli["safe"]).trim() !== "0";
-    const env = readEnv("SAFE_MODE", "");
-    if (!env) return false;
-    const v = env.toLowerCase();
-    return v === "1" || v === "true" || v === "yes";
-  })();
+  // ---- Runtime flags ----
+  const safeFromCli = cli.hasOwnProperty("safe") ? cli["safe"] : undefined;
+  const safeFlag = parseBool(safeFromCli ?? readEnv("SAFE_MODE", ""), false);
 
   return {
     llm: { driver, protocol, baseUrl, model },
     runtime: { safe: safeFlag },
-    cli
+    cli,
   };
 }
