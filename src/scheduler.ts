@@ -76,7 +76,7 @@ export class RandomScheduler {
 
         if (this.paused || !this.running) break;
 
-        if (this.isMuted(a.id)) { Logger.warn(`muted: ${a.id}`); continue; }
+        if (this.isMuted(a.id)) { Logger.debug(`muted: ${a.id}`); continue; }
 
         const messages = this.nextPromptFor(a.id);
         if (messages.length === 0) {
