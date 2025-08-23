@@ -125,6 +125,7 @@ export class RandomScheduler {
           const prompt = dec?.askUser || `(scheduler)\nAll agents are idle (no queued work). Please provide the next concrete instruction or question.`;
           const userText = ((await this.userPromptFn("scheduler", prompt)) ?? "").trim();
           if (userText) {
+            this.respondingAgent = this.agents[0];
             this.handleUserInterjection(userText);
             idleTicks = 0;
           }
