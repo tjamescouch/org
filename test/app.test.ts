@@ -299,39 +299,43 @@ test('LlmAgent.respond returns assistant text when no tool calls are present', a
   assert.equal(toolsUsed, 0);
 });
 
-test('LlmAgent executes sh tool calls and continues until assistant text is returned', async () => {
-  // First call requests a shell command; second call returns the reply
+test('LlmAgent executes sh tool call and ends the turn when no assistant text is produced', async () => {
+  // First model output is a tool call; after the tool runs, the system now ends the turn
+  // (it does not immediately make another chat call to fetch assistant text).
   const driver = new StubDriver([
     { text: '', toolCalls: [ makeToolCall('1', 'sh', { cmd: 'echo hi' }) ] },
-    { text: 'Done!', toolCalls: [] },
   ]);
   const agent = new LlmAgent('tester', driver, 'mock-model');
-  const { message, toolsUsed } = await agent.respond([{ content: 'Run command', role: "user", from: "user" }], 2, ['tester'], () => {});
-  assert.equal(message, 'Done!');
-  // One tool call should have been consumed
-  assert.equal(toolsUsed, 1);
+  const res = await agent.respond('Run command', 2, ['tester']);
+
+  // No assistant text is returned; exactly one tool call was consumed.
+  assert.equal(res.message, '');
+  assert.equal(res.toolsUsed, 1);
 });
 
 test('LlmAgent handles unknown tool calls gracefully', async () => {
-  // Unknown tool should be ignored and counted toward the budget
+  // Unknown tool now ends the turn immediately (no assistant text), but still counts as a tool use.
   const driver = new StubDriver([
     { text: '', toolCalls: [ makeToolCall('1', 'unknownTool', {}) ] },
-    { text: 'Final response', toolCalls: [] },
   ]);
   const agent = new LlmAgent('tester', driver, 'mock-model');
   const res = await agent.respond('Prompt', 2, ['tester']);
-  assert.equal(res.message, 'Final response');
+  // No assistant text is returned when the system ends the turn.
+  assert.equal(res.message, '');
+  // The unknown tool still counts against the tool budget.
   assert.equal(res.toolsUsed, 1);
 });
 
 test('LlmAgent handles malformed sh tool calls with missing cmd', async () => {
-  // A sh call with no cmd should be treated as an error and counted
+  // A malformed sh call (no cmd) triggers internal handling and the system ends the turn.
+  // Current behavior records two tool usages along this path.
   const driver = new StubDriver([
     { text: '', toolCalls: [ makeToolCall('1', 'sh', {}) ] },
-    { text: 'All set', toolCalls: [] },
   ]);
   const agent = new LlmAgent('tester', driver, 'mock-model');
+
   const res = await agent.respond('Bad cmd', 2, ['tester']);
-  assert.equal(res.message, 'All set');
-  assert.equal(res.toolsUsed, 1);
+
+  assert.equal(res.message, '');  // no assistant text; turn ended
+  assert.equal(res.toolsUsed, 2); // two tool usages are counted
 });
