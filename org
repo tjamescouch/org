@@ -1,26 +1,35 @@
 #!/usr/bin/env bash
+# org: robust launcher for the repo's Bun entrypoint.
+# - Resolves symlinks to find the repo path.
+# - Preserves caller's CWD (runs agents in the directory you invoked `org` from).
+# - Makes Bun discoverable even when PATH is sanitized (non-interactive shells, sudo).
+# - Allows manual override via ORG_BUN / BUN_BIN.
 set -euo pipefail
 
-# --- locate repo (resolve symlinks) -----------------------------------------
+# --- resolve repo directory (follow symlinks) ---------------------------------
 SELF="$0"
-# BSD readlink lacks -f; use python for portability
-REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SELF")"
+if command -v python3 >/dev/null 2>&1; then
+  REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SELF")"
+elif command -v readlink >/dev/null 2>&1; then
+  # BSD readlink may lack -f; this still helps if available
+  REAL="$(readlink -f "$SELF" 2>/dev/null || echo "$SELF")"
+else
+  REAL="$SELF"
+fi
 APPDIR="$(cd "$(dirname "$REAL")" && pwd)"
 
 RUNNER="$APPDIR/runner.ts"
 ENTRY="$APPDIR/src/app.ts"
 
-# --- environment -------------------------------------------------------------
-# Always expose repo-local helpers first
+# --- environment --------------------------------------------------------------
+# Expose repo-local helpers first
 export PATH="$APPDIR:$APPDIR/scripts:$PATH"
 
-# Ensure bun is discoverable even when PATH is sanitized (non-interactive, sudo)
-# 1) Prepend common bun locations
+# Ensure Bun is discoverable even when PATH is sanitized (non-interactive, sudo)
 PATH="$HOME/.bun/bin:/usr/local/bin:/usr/bin:$PATH"
 
-# 2) If invoked via sudo, also try the invoking user's bun dir
+# If invoked via sudo, also try the invoking user's ~/.bun/bin
 if [[ -n "${SUDO_USER:-}" ]]; then
-  # getent works on Debian/Ubuntu; fallback to /home/<user>
   SUDO_HOME="$(getent passwd "$SUDO_USER" 2>/dev/null | awk -F: '{print $6}')"
   [[ -z "${SUDO_HOME:-}" ]] && SUDO_HOME="/home/$SUDO_USER"
   if [[ -d "$SUDO_HOME/.bun/bin" ]]; then
@@ -29,13 +38,13 @@ if [[ -n "${SUDO_USER:-}" ]]; then
 fi
 export PATH
 
-# Caller’s working directory (may be overridden)
+# Respect explicit caller override of working directory
 export ORG_CALLER_CWD="${ORG_CALLER_CWD:-$(pwd)}"
 export ORG_ENTRY="$ENTRY"
 export ORG_APPDIR="$APPDIR"
 
-# --- resolve bun binary ------------------------------------------------------
-# Allow manual override via ORG_BUN or BUN_BIN
+# --- resolve Bun binary -------------------------------------------------------
+# Allow override via ORG_BUN or BUN_BIN
 BUN_BIN="${ORG_BUN:-${BUN_BIN:-}}"
 if [[ -z "${BUN_BIN:-}" ]]; then
   if command -v bun >/dev/null 2>&1; then
@@ -49,18 +58,21 @@ fi
 
 if [[ -z "${BUN_BIN:-}" ]]; then
   echo "org: bun not found. PATH=$PATH" >&2
+  echo "hint: install Bun (curl -fsSL https://bun.sh/install | bash) or set ORG_BUN=/path/to/bun" >&2
   exit 127
 fi
 
-# Optional debug
+# --- optional debug -----------------------------------------------------------
 if [[ "${ORG_DEBUG:-}" == "1" || "${DEBUG:-}" == "1" ]]; then
-  echo "[org] APPDIR=$APPDIR" >&2
-  echo "[org] RUNNER=$RUNNER" >&2
-  echo "[org] ORG_CALLER_CWD=$ORG_CALLER_CWD" >&2
-  echo "[org] bun=$BUN_BIN" >&2
-  echo "[org] PATH=$PATH" >&2
+  {
+    echo "[org] APPDIR=$APPDIR"
+    echo "[org] RUNNER=$RUNNER"
+    echo "[org] ORG_CALLER_CWD=$ORG_CALLER_CWD"
+    echo "[org] bun=$BUN_BIN"
+    echo "[org] PATH=$PATH"
+  } >&2
 fi
 
-# --- run ---------------------------------------------------------------------
+# --- run ----------------------------------------------------------------------
 # Keep the program's working directory as the caller's CWD.
 exec "$BUN_BIN" "$RUNNER" --cwd "$ORG_CALLER_CWD" "$@"
