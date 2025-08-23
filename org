@@ -1,28 +1,66 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Resolve symlink to the actual script in your repo
+# --- locate repo (resolve symlinks) -----------------------------------------
 SELF="$0"
-# BSD readlink doesn’t support -f, so use python for portability
+# BSD readlink lacks -f; use python for portability
 REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SELF")"
 APPDIR="$(cd "$(dirname "$REAL")" && pwd)"
 
 RUNNER="$APPDIR/runner.ts"
 ENTRY="$APPDIR/src/app.ts"
 
+# --- environment -------------------------------------------------------------
+# Always expose repo-local helpers first
 export PATH="$APPDIR:$APPDIR/scripts:$PATH"
-# Use the directory from which org was invoked. If the caller explicitly
-# sets ORG_CALLER_CWD, respect that; otherwise default to the current working
-# directory at execution time.
+
+# Ensure bun is discoverable even when PATH is sanitized (non-interactive, sudo)
+# 1) Prepend common bun locations
+PATH="$HOME/.bun/bin:/usr/local/bin:/usr/bin:$PATH"
+
+# 2) If invoked via sudo, also try the invoking user's bun dir
+if [[ -n "${SUDO_USER:-}" ]]; then
+  # getent works on Debian/Ubuntu; fallback to /home/<user>
+  SUDO_HOME="$(getent passwd "$SUDO_USER" 2>/dev/null | awk -F: '{print $6}')"
+  [[ -z "${SUDO_HOME:-}" ]] && SUDO_HOME="/home/$SUDO_USER"
+  if [[ -d "$SUDO_HOME/.bun/bin" ]]; then
+    PATH="$SUDO_HOME/.bun/bin:$PATH"
+  fi
+fi
+export PATH
+
+# Caller’s working directory (may be overridden)
 export ORG_CALLER_CWD="${ORG_CALLER_CWD:-$(pwd)}"
 export ORG_ENTRY="$ENTRY"
 export ORG_APPDIR="$APPDIR"
 
-command -v bun >/dev/null 2>&1 || { echo "org: bun not found in PATH" >&2; exit 127; }
+# --- resolve bun binary ------------------------------------------------------
+# Allow manual override via ORG_BUN or BUN_BIN
+BUN_BIN="${ORG_BUN:-${BUN_BIN:-}}"
+if [[ -z "${BUN_BIN:-}" ]]; then
+  if command -v bun >/dev/null 2>&1; then
+    BUN_BIN="$(command -v bun)"
+  else
+    for p in "$HOME/.bun/bin/bun" "/usr/local/bin/bun" "/usr/bin/bun"; do
+      if [[ -x "$p" ]]; then BUN_BIN="$p"; break; fi
+    done
+  fi
+fi
 
-# Ensure the runner runs in the caller's working directory. Bun does not
-# automatically inherit the current working directory when using `exec`, so we
-# explicitly pass the `--cwd` flag. This mirrors the behaviour of many CLI
-# tools that respect the directory from which they were invoked.
-exec bun "$RUNNER" --cwd "$ORG_CALLER_CWD" "$@"
+if [[ -z "${BUN_BIN:-}" ]]; then
+  echo "org: bun not found. PATH=$PATH" >&2
+  exit 127
+fi
 
+# Optional debug
+if [[ "${ORG_DEBUG:-}" == "1" || "${DEBUG:-}" == "1" ]]; then
+  echo "[org] APPDIR=$APPDIR" >&2
+  echo "[org] RUNNER=$RUNNER" >&2
+  echo "[org] ORG_CALLER_CWD=$ORG_CALLER_CWD" >&2
+  echo "[org] bun=$BUN_BIN" >&2
+  echo "[org] PATH=$PATH" >&2
+fi
+
+# --- run ---------------------------------------------------------------------
+# Keep the program's working directory as the caller's CWD.
+exec "$BUN_BIN" "$RUNNER" --cwd "$ORG_CALLER_CWD" "$@"
