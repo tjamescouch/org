@@ -2,9 +2,7 @@
 import { spawn } from "node:child_process";
 import { ExecutionGate } from "./execution-gate";
 import { C, Logger } from "../logger";
-import { buildPATH } from "../config/path";
 import { spawnInCleanEnvironment } from "../utils/spawn-clean";
-
 
 export const SH_TOOL_DEF = {
   type: "function",
@@ -33,50 +31,6 @@ export interface ShResult {
   stderr: string;
   exit_code: number;
   cmd: string;
-}
-
-function spawnWithTimeout(
-  shell: string,
-  args: string[],
-  opts: {
-    cwd?: string;
-    env?: NodeJS.ProcessEnv;
-    timeoutMs?: number;   // hard timeout
-    graceMs?: number;     // after abort/SIGTERM, wait then SIGKILL
-  } = {}
-) {
-  const timeoutMs = opts.timeoutMs ?? 120_000;
-  const graceMs = opts.graceMs ?? 5_000;
-
-  const envPATH = buildPATH(process.env.PATH || "");
-
-  const ac = new AbortController();
-  const { child } = spawnInCleanEnvironment(cmd, {
-    stdio: ["ignore", "pipe", "pipe"],
-    cwd: opts.cwd ?? process.cwd(),
-    timeoutMs
-  });
-
-  let killer: NodeJS.Timeout | null = null;
-  const timer = setTimeout(() => {
-    // 1) hard timeout reached → abort (Node sends SIGTERM)
-    ac.abort();
-
-    // 2) escalate if process doesn’t exit in grace period
-    killer = setTimeout(() => {
-      try { child.kill("SIGKILL"); } catch { }
-    }, graceMs);
-  }, timeoutMs);
-
-  const clearAll = () => {
-    clearTimeout(timer);
-    if (killer) clearTimeout(killer);
-  };
-
-  child.on("close", clearAll);
-  child.on("error", clearAll);
-
-  return child;
 }
 
 
@@ -111,7 +65,7 @@ export async function runSh(
   process.stderr.write(`sh: ${cmd} -> `);
 
   return new Promise<ShResult>((resolve) => {
-    const child = spawnWithTimeout(shell, args, {
+    const child = spawnInCleanEnvironment(shell, args, {
       cwd,
       env,
       timeoutMs: 90_000,

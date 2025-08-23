@@ -1,85 +1,134 @@
-// src/utils/spawn-clean.ts
+// utils/spawn-clean.ts
 import { spawn, type ChildProcess } from "node:child_process";
-// If you already have a builder, keep this import.
-// Otherwise pass your own via opts.pathBuilder.
-import { buildPATH } from "../config/path";
 
-export type SpawnCleanOpts = {
-  shell?: string;                 // default: /bin/bash
-  cwd?: string;                   // default: process.cwd()
-  env?: NodeJS.ProcessEnv;        // extra env to merge (PATH is overridden)
-  timeoutMs?: number;             // optional hard timeout → AbortController.abort()
-  stdio?: any;                    // default: ["ignore","pipe","pipe"]
-  pathBuilder?: (base: string) => string; // default: buildPATH(basePATH)
-  signal?: AbortSignal;           // optional external signal to chain
+export type SpawnWithTimeoutOpts = {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;   // hard timeout (default: undefined = no timeout)
+  graceMs?: number;     // after abort/SIGTERM, wait then SIGKILL (default: 5000)
+  /** Optional: build/whitelist PATH before passing to child. If omitted, reuse base PATH. */
+  pathBuilder?: (basePATH: string) => string;
+  /** Optional: override stdio. Default: ["ignore","pipe","pipe"] */
+  stdio?: any;
+  /** Optional label used for debug output on timeout. */
+  debugLabel?: string;
 };
 
 /**
- * Spawn a shell command in a "clean" environment:
- *  - does NOT source rc/profile files (bash --noprofile --norc / zsh -f)
- *  - injects a whitelisted PATH (via env and inline export)
- *  - supports timeout via AbortController
- * Returns the child process plus useful metadata.
+ * Spawn a shell in a "clean" environment:
+ *  - does NOT source rc/profile files (bash --noprofile --norc, zsh -f)
+ *  - injects a caller-controlled PATH (via env + inline `export PATH=…`)
+ *  - supports timeout via AbortController with SIGKILL escalation
+ *
+ * Signature intentionally matches the legacy `spawnWithTimeout(shell, args, opts)` so
+ * you can drop it in as a replacement.
  */
 export function spawnInCleanEnvironment(
-  cmd: string,
-  opts: SpawnCleanOpts = {}
-): {
-  child: ChildProcess;
-  abortController: AbortController;
-  shell: string;
-  args: string[];
-  envPATH: string;
-    } {
-  const shell = opts.shell ?? "/bin/bash";
+  shell: string,
+  args: string[],
+  opts: SpawnWithTimeoutOpts = {}
+): ChildProcess {
   const isBash = /(^|\/)bash$/.test(shell);
   const isZsh  = /(^|\/)zsh$/.test(shell);
 
-  const pathBuilder = opts.pathBuilder ?? buildPATH;
+  // Build PATH to pass to the child
   const basePATH = (opts.env?.PATH ?? process.env.PATH) || "";
-  const envPATH = pathBuilder(basePATH);
+  const envPATH = opts.pathBuilder ? opts.pathBuilder(basePATH) : basePATH;
 
-  // Belt & suspenders: export the PATH inline as well
-  const runCmd = `export PATH=${JSON.stringify(envPATH)}; set -euo pipefail; ${cmd}`;
+  // We’ll try to wrap the command used with -c to also export PATH inline,
+  // so even if the shell mutates PATH internally the command still sees what we want.
+  const wrapCmd = (cmd: string) =>
+    `export PATH=${JSON.stringify(envPATH)}; set -euo pipefail; ${cmd}`;
 
-  // Avoid rc/profile files so PATH isn’t clobbered
-  const args = isBash
-    ? ["--noprofile", "--norc", "-c", runCmd]
-    : isZsh
-    ? ["-f", "-c", runCmd]            // zsh: -f == NO_RCS
-    : ["-c", runCmd];                 // dash/sh: -c (login shells read .profile, non-login don't)
+  // Normalize args to avoid login/rc files and to wrap the -c command if present.
+  const normalizeArgs = (inArgs: string[]): string[] => {
+    const out: string[] = [];
 
-  // Clean env: enforce PATH and block non-interactive rc via env vars
-  const env: NodeJS.ProcessEnv = {
+    // bash: add --noprofile --norc; zsh: add -f (NO_RCS)
+    if (isBash) out.push("--noprofile", "--norc");
+    if (isZsh)  out.push("-f");
+
+    for (let i = 0; i < inArgs.length; i++) {
+      const a = inArgs[i];
+
+      // collapse "-lc" (login+command) → "-c" and drop login behavior
+      if (a === "-lc") {
+        out.push("-c");
+        const cmd = inArgs[i + 1] ?? "";
+        out.push(wrapCmd(cmd));
+        i++; // consumed the command string
+        continue;
+      }
+
+      // drop explicit login flags if present
+      if (a === "-l" || a === "--login") {
+        continue; // skip
+      }
+
+      // regular "-c <cmd>" — wrap the command to export PATH
+      if (a === "-c") {
+        out.push("-c");
+        const cmd = inArgs[i + 1] ?? "";
+        out.push(wrapCmd(cmd));
+        i++; // consumed the command string
+        continue;
+      }
+
+      // anything else is passed through
+      out.push(a);
+    }
+
+    return out;
+  };
+
+  const finalArgs = normalizeArgs(args);
+
+  // Build the child env (force PATH, remove rc hooks)
+  const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     PATH: envPATH,
     ...(opts.env ?? {}),
   };
-  delete (env as any).BASH_ENV;  // bash non-interactive rc hook
-  delete (env as any).ENV;       // POSIX shells rc hook
-  delete (env as any).ZDOTDIR;   // zsh alt rc dir
+  delete (childEnv as any).BASH_ENV; // bash non-interactive hook
+  delete (childEnv as any).ENV;      // sh/ksh/zsh rc hook
+  delete (childEnv as any).ZDOTDIR;  // zsh alt rc dir
 
-  // Abort/timeout wiring
+  // Timeout wiring
   const ac = new AbortController();
-  if (opts.signal) {
-    // Chain external signal into our controller
-    opts.signal.addEventListener("abort", () => ac.abort(), { once: true });
-  }
+  const graceMs = opts.graceMs ?? 5000;
+  let killer: NodeJS.Timeout | null = null;
   let timer: NodeJS.Timeout | null = null;
+
   if (opts.timeoutMs && Number.isFinite(opts.timeoutMs)) {
-    timer = setTimeout(() => ac.abort(), opts.timeoutMs);
+    timer = setTimeout(() => {
+      // Abort sends SIGTERM in Node's spawn with signal
+      try { ac.abort(); } catch {}
+      // Optional stderr note (comment out if you want it silent)
+      try {
+        process.stderr.write(
+          `\n[spawn] timeout after ${opts.timeoutMs}ms${opts.debugLabel ? ` (${opts.debugLabel})` : ""} → SIGTERM`
+        );
+      } catch {}
+      // Escalate to SIGKILL after grace period if still running
+      killer = setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch {}
+      }, Math.max(0, graceMs));
+    }, opts.timeoutMs);
   }
 
-  const child = spawn(shell, args, {
+  const child = spawn(shell, finalArgs, {
     stdio: opts.stdio ?? ["ignore", "pipe", "pipe"],
     cwd: opts.cwd ?? process.cwd(),
-    env,
+    env: childEnv,
     signal: ac.signal,
   });
 
-  const clear = () => { if (timer) clearTimeout(timer); };
-  child.once("close", clear);
-  child.once("error", clear);
+  const clearTimers = () => {
+    if (timer)  clearTimeout(timer);
+    if (killer) clearTimeout(killer);
+  };
+  child.once("close", clearTimers);
+  child.once("error", clearTimers);
 
-  return { child, abortController: ac, shell, args, envPATH };
+  return child;
 }
