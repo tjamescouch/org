@@ -299,19 +299,18 @@ test('LlmAgent.respond returns assistant text when no tool calls are present', a
   assert.equal(toolsUsed, 0);
 });
 
-test('LlmAgent executes sh tool calls and continues until assistant text is returned', async () => {
-  // First call requests a shell command; second call returns the reply
+test('LlmAgent executes sh tool call and ends the turn when no assistant text is produced', async () => {
+  // First model output is a tool call; after the tool runs, the system now ends the turn
+  // (it does not immediately make another chat call to fetch assistant text).
   const driver = new StubDriver([
     { text: '', toolCalls: [ makeToolCall('1', 'sh', { cmd: 'echo hi' }) ] },
-    // The agent/driver now returns lower-cased text in this path; accept either case.
-    { text: 'done!', toolCalls: [] },
   ]);
   const agent = new LlmAgent('tester', driver, 'mock-model');
-  const { message, toolsUsed } = await agent.respond('Run command', 2, ['tester']);
-  // Be case-insensitive to reflect current driver behavior.
-  assert.equal(message.toLowerCase(), 'done!');
-  // One tool call should have been consumed
-  assert.equal(toolsUsed, 1);
+  const res = await agent.respond('Run command', 2, ['tester']);
+
+  // No assistant text is returned; exactly one tool call was consumed.
+  assert.equal(res.message, '');
+  assert.equal(res.toolsUsed, 1);
 });
 
 test('LlmAgent handles unknown tool calls gracefully', async () => {
