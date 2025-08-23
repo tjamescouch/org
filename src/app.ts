@@ -55,11 +55,12 @@ function setupProcessGuards() {
 }
 
 /** ---------- Mode / safety ---------- */
-function computeMode(): { interactive: boolean; safe: boolean } {
+function computeMode(extra?: { allowTools?: string[] | undefined }) {
   const interactive = true; // interactive controller + hotkeys
   const cfg = loadConfig();
   const safe = !!(cfg as any)?.runtime?.safe;
-  ExecutionGate.configure({ safe, interactive });
+  // Allow tools allowlist to pass through if ExecutionGate supports it. Harmless if ignored.
+  ExecutionGate.configure({ safe, interactive, allowTools: extra?.allowTools });
   return { interactive, safe };
 }
 
@@ -68,7 +69,8 @@ type AgentSpec = { id: string; kind: ModelKind; model: any };
 
 function parseAgents(
   spec: string | undefined,
-  llmDefaults: { model: string; baseUrl: string; protocol: "openai"; apiKey?: string }
+  llmDefaults: { model: string; baseUrl: string; protocol: "openai"; apiKey?: string },
+  recipeSystemPrompt?: string | null
 ): AgentSpec[] {
   const list = String(spec || "alice:lmstudio").split(",").map(x => x.trim()).filter(Boolean);
   const out: AgentSpec[] = [];
@@ -76,7 +78,11 @@ function parseAgents(
     const [id, kindRaw = "mock"] = item.split(":");
     const kind = (kindRaw as ModelKind) || "mock";
     if (kind === "mock") {
-      out.push({ id, kind, model: new MockModel(id) });
+      const m = new MockModel(id);
+      if (recipeSystemPrompt && typeof (m as any).setSystemPrompt === "function") {
+        (m as any).setSystemPrompt(recipeSystemPrompt);
+      }
+      out.push({ id, kind, model: m });
     } else if (kind === "lmstudio") {
       if (llmDefaults.protocol !== "openai") throw new Error(`Unsupported protocol: ${llmDefaults.protocol}`);
       const driver = makeStreamingOpenAiLmStudio({
@@ -84,7 +90,11 @@ function parseAgents(
         model: llmDefaults.model,
         apiKey: (llmDefaults as any).apiKey
       });
-      out.push({ id, kind, model: new LlmAgent(id, driver, llmDefaults.model) as any });
+      const agentModel = new LlmAgent(id, driver, llmDefaults.model) as any;
+      if (recipeSystemPrompt && typeof agentModel.setSystemPrompt === "function") {
+        agentModel.setSystemPrompt(recipeSystemPrompt);
+      }
+      out.push({ id, kind, model: agentModel });
     } else {
       throw new Error(`Unknown model kind: ${kindRaw}`);
     }
@@ -99,10 +109,20 @@ async function main() {
   enableDebugIfRequested(args);
   setupProcessGuards();
 
-  const maxTools = Math.max(0, Number(args["max-tools"] || 20));
-  computeMode();
+  // ---- Recipe (data-driven behavior) ----
+  const recipeName =
+    (typeof args["recipe"] === "string" && args["recipe"]) ||
+    (process.env.ORG_RECIPE || "");
+  const recipe = getRecipe(recipeName || null);
 
-  const agentSpecs = parseAgents(String(args["agents"] || "alice:lmstudio"), cfg.llm);
+  // Allow a recipe to override budgets; fall back to CLI / defaults
+  let maxTools = Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20)));
+
+  // Configure runtime mode (and tool allowlist if provided by recipe)
+  computeMode({ allowTools: recipe?.allowTools });
+
+  // Build agents; inject recipe system prompt if supported by the model
+  const agentSpecs = parseAgents(String(args["agents"] || "alice:lmstudio"), cfg.llm, recipe?.system ?? null);
   if (agentSpecs.length === 0) {
     Logger.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
     process.exit(1);
@@ -111,7 +131,8 @@ async function main() {
   const agents = agentSpecs.map(a => ({
     id: a.id,
     // Pass-through to the agent/model's respond method
-    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => (a.model as any).respond(prompt, budget, peers, cb),
+    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) =>
+      (a.model as any).respond(prompt, budget, peers, cb),
     guardOnIdle: (state: any) => (a.model as any).guardOnIdle?.(state) ?? null,
     guardCheck: (route: any, content: string, peers: string[]) =>
       (a.model as any).guardCheck?.(route, content, peers) ?? null,
@@ -134,12 +155,17 @@ async function main() {
   if (process.env.DEBUG && process.env.DEBUG !== "0" && process.env.DEBUG !== "false") {
     Logger.info("[DBG] agents:", agents.map(a => a.id).join(", "));
     Logger.info("[DBG] maxTools:", maxTools);
+    if (recipe) {
+      Logger.info("[DBG] recipe:", recipe.name);
+      if (recipe.allowTools) Logger.info("[DBG] allowTools:", recipe.allowTools.join(", "));
+    }
   }
 
-  // Kick off with an initial user prompt
+  // Kick off with an initial user prompt: CLI --prompt wins; otherwise recipe kickoff; else ask
   const promptArg = ((): string | boolean | undefined => {
-    if (args["prompt"] === true) return true;       // --prompt
+    if (args["prompt"] === true) return true;       // --prompt (no value → ask)
     if (typeof args["prompt"] === "string") return args["prompt"];
+    if (recipe?.kickoff) return recipe.kickoff;
     return undefined;
   })();
   await input.askInitialAndSend(promptArg);
