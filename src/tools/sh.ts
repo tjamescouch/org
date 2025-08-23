@@ -2,6 +2,8 @@
 import { spawn } from "node:child_process";
 import { ExecutionGate } from "./execution-gate";
 import { C, Logger } from "../logger";
+import { buildPATH } from "../config/path";
+
 
 export const SH_TOOL_DEF = {
   type: "function",
@@ -45,11 +47,13 @@ function spawnWithTimeout(
   const timeoutMs = opts.timeoutMs ?? 120_000;
   const graceMs = opts.graceMs ?? 5_000;
 
+  const envPATH = buildPATH(process.env.PATH || "");
+
   const ac = new AbortController();
   const child = spawn(shell, args, {
     stdio: ["ignore", "pipe", "pipe"],
     cwd: opts.cwd ?? process.cwd(),
-    env: { ...process.env, ...(opts.env ?? {}) },
+    env: { ...process.env, PATH: envPATH, ...(opts.env ?? {}) },
     signal: ac.signal,              // <- this is the key
   });
 
