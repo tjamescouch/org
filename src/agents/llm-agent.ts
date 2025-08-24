@@ -229,11 +229,11 @@ export class LlmAgent extends Agent {
       finalText,
       agentId: this.id,
     });
-    const totalUsed = execResult.totalUsed;
+    const toolsUsed = execResult.toolsUsed;
     forceEndTurn = execResult.forceEndTurn;
     // --------------------------------------------------------
 
-    if (totalUsed >= maxTools) {
+    if (toolsUsed >= maxTools) {
       if (finalText) {
         Logger.debug(`${this.id} add assistant memory`, { chars: finalText.length });
         await this.memory.add({ role: "assistant", content: `${allReasoning ? `${allReasoning} -> ` : ""}${finalText}`, from: "Me" });
@@ -244,7 +244,7 @@ export class LlmAgent extends Agent {
     }
     // Loop: the assistant will see tool outputs (role:"tool") now in memory.
 
-    Logger.info(C.blue(`\n[${this.id}] wrote. [${calls.length}] tools requested. [${totalUsed}] tools used.`));
+    Logger.info(C.blue(`\n[${this.id}] wrote. [${calls.length}] tools requested. [${toolsUsed}] tools used.`));
 
     return [{ message: finalText, toolsUsed: calls.length, reasoning: allReasoning }];
   }
