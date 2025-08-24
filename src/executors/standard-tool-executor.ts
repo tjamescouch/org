@@ -164,7 +164,7 @@ export class StandardToolExecutor extends ToolExecutor {
                     exit_code: 1,
                     cmd: "",
                 });
-                Logger.warn(`Execution failed: Command required.`);
+                Logger.warn(`Execution failed: Command required.`, tc);
                 await memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: name });
                 totalUsed++;
                 continue;
