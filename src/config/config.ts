@@ -82,7 +82,7 @@ export function loadConfig(): AppConfig {
   const driver = (cli["driver"] ?? readEnv("LLM_DRIVER", "lmstudio")) as "lmstudio";
   const protocol = (cli["protocol"] ?? readEnv("LLM_PROTOCOL", "openai")) as "openai";
   const baseUrl = cli["base-url"] ?? readEnv("LLM_BASE_URL", "http://192.168.56.1:11434");
-  const model = cli["model"] ?? readEnv("LLM_MODEL", "openai/gpt-oss-120b");
+  const model = cli["model"] ?? readEnv("LLM_MODEL", "openai/gpt-oss-20b");
 
   // ---- Runtime flags ----
   const safeFromCli = cli.hasOwnProperty("safe") ? cli["safe"] : undefined;
