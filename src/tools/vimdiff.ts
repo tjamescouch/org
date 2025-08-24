@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import { spawnInCleanEnvironment } from "../utils/spawn-clean";
 import path from "node:path";
 import os from "node:os";
+import { pauseStdin, resumeStdin } from "../input/utils";
 
 type Args = { left: string; right: string; cwd?: string };
 
@@ -13,6 +14,8 @@ export async function runVimdiff(args: Args) {
   await fs.stat(path.resolve(cwd, args.left));
   await fs.stat(path.resolve(cwd, args.right));
 
+  resumeStdin();
+
   // Inherit TTY so the user controls vim
   const { child } = spawnInCleanEnvironment(
     "/usr/bin/vim",
@@ -20,6 +23,8 @@ export async function runVimdiff(args: Args) {
     { cwd, stdio: "inherit", debugLabel: "vimdiff" }
   );
   const code = await new Promise<number>((res) => child.on("close", (c) => res(c ?? 0)));
+
+  pauseStdin();
   return { exitCode: code };
 }
 
