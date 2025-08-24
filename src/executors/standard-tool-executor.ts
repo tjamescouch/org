@@ -19,10 +19,44 @@ interface ToolHandlerResult {
     forceEndTurn: boolean;
 }
 
-type ToolHandler = (agentId: string, cmd: string, toolcall: ChatToolCall, text: string, memory: AgentMemory, guard: GuardRail) => Promise<ToolHandlerResult>;
+type ToolHandler = (agentId: string, toolcall: ChatToolCall, text: string, memory: AgentMemory, guard: GuardRail) => Promise<ToolHandlerResult>;
 
-const shHandler = async (agentId: string, cmd: string, toolcall: ChatToolCall, text: string, memory: AgentMemory, guard: GuardRail): Promise<ToolHandlerResult> => {
+const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, memory: AgentMemory, guard: GuardRail): Promise<ToolHandlerResult> => {
+    let args: any = {};
+    try { args = JSON.parse(toolcall.function?.arguments || "{}"); } catch { args = {}; }
+    const rawCmd = String(args?.cmd ?? "");
+    const cmd = sanitizeContent(rawCmd);
     const name = toolcall.function?.name || "";
+
+    if (!cmd) {
+        const decision = guard.noteBadToolCall({
+            name: "sh",
+            reason: "missing-arg",
+            missingArgs: ["cmd"],
+        });
+        if (decision?.nudge) {
+            await memory.add({ role: "system", content: decision.nudge, from: "System" });
+        }
+        if (decision?.endTurn) {
+            Logger.warn(`System ended turn due to bad tool call.`);
+            if (text) await memory.add({ role: "system", content: text, from: "System" });
+            return { toolUsed: false, forceEndTurn: true, stdout: "", stderr: "System ended turn due to bad tool call", ok: false, exit_code: 1 };
+        }
+
+        // Synthesize a failed tool-output message back to memory (as before).
+        const content = JSON.stringify({
+            ok: false,
+            stdout: "",
+            stderr: "Execution failed: Command required.",
+            exit_code: 1,
+            cmd: "",
+        });
+        Logger.warn(`Execution failed: Command required.`, toolcall);
+        await memory.add({ role: "tool", content, tool_call_id: toolcall.id, name, from: "Tool" });
+            
+        return { toolUsed: true, forceEndTurn: false, stdout: "", stderr: "System aborted shell call tue to missing command.", ok: false, exit_code: 2 };
+    }
+
     Logger.debug(`${agentId} tool ->`, { name, cmd: cmd.slice(0, 160) });
     const t = Date.now();
     const result = await runSh(cmd);
@@ -57,11 +91,11 @@ const shHandler = async (agentId: string, cmd: string, toolcall: ChatToolCall, t
 }
 
 
-const vimdiffHandler = async (agentId: string, cmd: string, toolcall: ChatToolCall, text: string, memory: AgentMemory, guard: GuardRail): Promise<ToolHandlerResult> => {
+const vimdiffHandler = async (agentId: string, toolcall: ChatToolCall, text: string, memory: AgentMemory, guard: GuardRail): Promise<ToolHandlerResult> => {
     const name = toolcall.function?.name || "";
     let args: any = {};
     try { args = JSON.parse(toolcall.function?.arguments || "{}"); } catch { args = {}; }
-    Logger.debug(`${agentId} tool ->`, { name, cmd: cmd.slice(0, 160) });
+    Logger.debug(`${agentId} tool ->`, { name, toolcall });
     const t = Date.now();
     const result = await runVimdiff({ left: args.left, right: args.right, cwd: args.cwd });
     Logger.debug(`${agentId} tool <-`, { name, ms: Date.now() - t });
@@ -71,7 +105,7 @@ const vimdiffHandler = async (agentId: string, cmd: string, toolcall: ChatToolCa
     // Let GuardRail see the signature to stop "same command" repetition
     const repeatDecision = guard.noteToolCall({
         name: "vimdiff",
-        argsSig: cmd, // argument signature = canonicalized cmd
+        argsSig: toolcall.function?.arguments, // argument signature = canonicalized cmd
         resSig: `N/A`,
         exitCode: 0,
     });
@@ -136,39 +170,6 @@ export class StandardToolExecutor extends ToolExecutor {
             try { args = JSON.parse(tc.function?.arguments || "{}"); } catch { args = {}; }
 
 
-            const rawCmd = String(args?.cmd ?? "");
-            const cmd = sanitizeContent(rawCmd);
-
-            if (!cmd) {
-                const decision = guard.noteBadToolCall({
-                    name: "sh",
-                    reason: "missing-arg",
-                    missingArgs: ["cmd"],
-                });
-                if (decision?.nudge) {
-                    await memory.add({ role: "system", content: decision.nudge, from: "System" });
-                }
-                if (decision?.endTurn) {
-                    Logger.warn(`System ended turn due to bad tool call.`);
-                    totalUsed = maxTools; // consume budget → end turn
-                    forceEndTurn = true;
-                    if (finalText) await memory.add({ role: "system", content: finalText, from: "System" });
-                    break;
-                }
-
-                // Synthesize a failed tool-output message back to memory (as before).
-                const content = JSON.stringify({
-                    ok: false,
-                    stdout: "",
-                    stderr: "Execution failed: Command required.",
-                    exit_code: 1,
-                    cmd: "",
-                });
-                Logger.warn(`Execution failed: Command required.`, tc);
-                await memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: name });
-                totalUsed++;
-                continue;
-            }
 
             const handler = this.toolHandlers[name];
 
@@ -181,9 +182,12 @@ export class StandardToolExecutor extends ToolExecutor {
                 return { totalUsed, forceEndTurn: false };
             }
 
-            const result = await handler(agentId, cmd, tc, finalText, memory, guard);
+            const result = await handler(agentId, tc, finalText, memory, guard);
 
-            if (result.forceEndTurn) forceEndTurn = true;
+            if (result.forceEndTurn) {
+                forceEndTurn = true;
+                break;
+            }
         }
         return { totalUsed, forceEndTurn };
     }

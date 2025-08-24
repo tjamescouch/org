@@ -313,7 +313,7 @@ test('LlmAgent executes sh tool call and ends the turn when no assistant text is
   assert.equal(res.toolsUsed, 1);
 });
 
-test.only('LlmAgent handles unknown tool calls gracefully', async () => {
+test('LlmAgent handles unknown tool calls gracefully', async () => {
   // Unknown tool now ends the turn immediately (no assistant text), but still counts as a tool use.
   const driver = new StubDriver([
     { text: '', toolCalls: [ makeToolCall('1', 'unknownTool', {}) ] },
@@ -337,5 +337,5 @@ test('LlmAgent handles malformed sh tool calls with missing cmd', async () => {
   const res = await agent.respond([{ content: 'Prompt', role: "user", from: "user" }], 2, ['tester'], () => false);
 
   assert.equal(res.message, '');  // no assistant text; turn ended
-  assert.equal(res.toolsUsed, 2); // two tool usages are counted
+  assert.equal(res.toolsUsed, 1);
 });
