@@ -170,8 +170,10 @@ export class StandardToolExecutor extends ToolExecutor {
             const handler = this.toolHandlers[name];
 
             if (!handler) {
+                const rawCmd = String(args?.cmd ?? "");
+                const cmd = sanitizeContent(rawCmd);
                 Logger.warn(`\nUnknown tool ${name} requested`, tc);
-                const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, cmd: cmd, tc });
+                const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, tc, cmd });
                 await memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: "Tool" });
                 totalUsed++;
 
