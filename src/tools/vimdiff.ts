@@ -1,8 +1,8 @@
 // src/tools/vimdiff.ts
-import { promises as fs } from "node:fs";
-import { spawnInCleanEnvironment } from "../utils/spawn-clean";
 import path from "node:path";
-import os from "node:os";
+import { promises as fs } from "node:fs";
+import { type ChildProcess } from "node:child_process";
+import { spawnInCleanEnvironment } from "../utils/spawn-clean";
 import { pauseStdin, resumeStdin } from "../input/utils";
 
 type Args = { left: string; right: string; cwd?: string };
@@ -17,12 +17,18 @@ export async function runVimdiff(args: Args) {
   resumeStdin();
 
   // Inherit TTY so the user controls vim
-  const { child } = spawnInCleanEnvironment(
+  const spawned = spawnInCleanEnvironment(
     "/usr/bin/vim",
     ["-d", args.left, args.right],
-    { cwd, stdio: "inherit", debugLabel: "vimdiff" }
+    { cwd, stdio: "inherit", debugLabel: "vimdiff", shell: false }
   );
-  const code = await new Promise<number>((res) => child.on("close", (c) => res(c ?? 0)));
+
+  const child: ChildProcess =
+    (spawned && (spawned.child as ChildProcess)) ||
+    (spawned && (spawned.proc as ChildProcess)) ||
+    (spawned as ChildProcess);
+
+  const code = await new Promise<number>((res) => child.on("close", (c: any) => res(c ?? 0)));
 
   pauseStdin();
   return { exitCode: code };

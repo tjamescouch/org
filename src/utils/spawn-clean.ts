@@ -10,6 +10,7 @@ export type SpawnWithTimeoutOpts = {
   pathBuilder?: (basePATH: string) => string;
   /** Optional: override stdio. Default: ["ignore","pipe","pipe"] */
   stdio?: any;
+  shell?: boolean;
   /** Optional label used for debug output on timeout. */
   debugLabel?: string;
 };
@@ -118,6 +119,7 @@ export function spawnInCleanEnvironment(
 
   const child = spawn(shell, finalArgs, {
     stdio: opts.stdio ?? ["ignore", "pipe", "pipe"],
+    shell: opts.shell,
     cwd: opts.cwd ?? process.cwd(),
     env: childEnv,
     signal: ac.signal,
