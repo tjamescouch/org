@@ -8,15 +8,32 @@ import { Controller } from "../input/controller";
 
 type Args = { left: string; right: string; cwd?: string };
 
-export async function runVimdiff(args: Args) {
+
+type VimdiffResult = {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  cmd: string;
+};
+
+export async function runVimdiff(args: Args): Promise<VimdiffResult> {
   const cwd = args.cwd ?? process.cwd();
 
   // Ensure files exist
   await fs.stat(path.resolve(cwd, args.left));
   await fs.stat(path.resolve(cwd, args.right));
 
-  Controller.disableKeys();
-  resumeStdin();
+  // Make sure our app isn't holding the TTY in raw/paused mode
+  try { pauseStdin?.(); } catch { }
+
+  const wasRaw = (process.stdin as any)?.isTTY && (process.stdin as any).isRaw === true;
+  if ((process.stdin as any)?.isTTY && (process.stdin as any).setRawMode) {
+    try { (process.stdin as any).setRawMode(false); } catch { }
+  }
+
+  //Controller.disableKeys();
+  //resumeStdin();
 
   // Inherit TTY so the user controls vim
   const spawned = spawnInCleanEnvironment(
@@ -30,11 +47,37 @@ export async function runVimdiff(args: Args) {
     (spawned && (spawned.proc as ChildProcess)) ||
     (spawned as ChildProcess);
 
-  const code = await new Promise<number>((res) => child.on("close", (c) => res(c ?? 0)));
+  if (!child || typeof (child as any).on !== "function") {
+    // Fallback if wrapper didn't return a process
+    throw new Error("[vimdiff] spawnInCleanEnvironment did not return a child process.");
+  }
 
-  pauseStdin();
-  Controller.enableKeys();
-  return { exitCode: code };
+  return await waitForChild(child, { wasRaw });
+  //const code = await new Promise<number>((res) => child.on("close", (c) => res(c ?? 0)));
+  //pauseStdin();
+  //Controller.enableKeys();
+  //return { exitCode: code };
+}
+
+async function waitForChild(child: ChildProcess, opts: { wasRaw: boolean }): Promise<VimdiffResult> {
+  const code: number = await new Promise<number>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (c: number | null) => resolve(c ?? 0));
+  });
+
+  // restore input handling
+  if ((process.stdin as any)?.isTTY && (process.stdin as any).setRawMode) {
+    try { (process.stdin as any).setRawMode(opts.wasRaw); } catch { }
+  }
+  try { resumeStdin?.(); } catch { }
+
+  return {
+    ok: code === 0,
+    stdout: "",
+    stderr: "",
+    exit_code: code ?? 0,
+    cmd: "vim -d <left> <right>",
+  };
 }
 
 
