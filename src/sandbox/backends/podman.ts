@@ -42,19 +42,26 @@ export class PodmanSession implements ISandboxSession {
     const netArgs = this.spec.net.mode === "deny" ? ["--network=none"] : ["--network", "slirp4netns"];
     const caps = ["--read-only", "--cap-drop=ALL", "--security-opt", "no-new-privileges"];
     const limits = ["--pids-limit", String(this.spec.limits.pidsMax), "--cpus", String(this.spec.limits.cpuCores), "--memory", `${this.spec.limits.memMiB}m`];
+    const mounts = [
+      "-v", `${this.spec.projectDir}:/project:ro,z`,
+      "-v", `${this.spec.workHostDir}:/work:rw,z`,
+    ];
 
+    // NOTE: do NOT set "-w /work" here — Podman validates workdir before mounts.
     await this.execHost(this.tool, [
       "create",
       "--name", this.name,
       ...netArgs,
       ...caps,
       ...limits,
-      "-w", "/work",
+      ...mounts,
       this.spec.image,
       "sleep", "infinity",
     ]);
 
     await this.execHost(this.tool, ["start", this.name]);
+
+    // Prime /work and create baseline
     await this.execIn(["bash", "-lc", "mkdir -p /work/.org/steps && rsync -a --delete --exclude .git --exclude .org /project/ /work/"]);
     await this.execIn(["bash", "-lc", "git -C /work init && git -C /work config user.email noreply@example && git -C /work config user.name org && git -C /work add -A && git -C /work commit -m baseline >/dev/null"]);
     const rev = await this.execIn(["bash", "-lc", "git -C /work rev-parse HEAD"]);
@@ -77,8 +84,10 @@ export class PodmanSession implements ISandboxSession {
 
     const r = await this.execIn([...env, "bash", "-lc", `/work/.org/org-step.sh ${this.shQ(cmd)}`]);
 
+    // Commit if there are changes
     await this.execIn(["bash", "-lc", "git -C /work add -A && (git -C /work diff --cached --quiet || git -C /work commit -m " + this.shQ(`step #${idx}: ${cmd}`) + " >/dev/null)"]);
 
+    // Enforce write allowlist for this commit
     const show = await this.execIn(["bash", "-lc", "git -C /work diff --name-only HEAD~1..HEAD || true"]);
     const changed = show.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
     const violated = changed.filter((p) => !this.pathAllowed(p));
@@ -88,6 +97,7 @@ export class PodmanSession implements ISandboxSession {
       return { ok: false, exit: 3, stdoutFile: path.join(this.spec.runDir, "steps", `step-${idx}.out`), stderrFile: path.join(this.spec.runDir, "steps", `step-${idx}.err`) };
     }
 
+    // Copy step outputs to runDir
     await this.execHost(this.tool, ["cp", `${this.name}:/work/.org/steps/step-${idx}.out`, path.join(this.spec.runDir, "steps", `step-${idx}.out`)]);
     await this.execHost(this.tool, ["cp", `${this.name}:/work/.org/steps/step-${idx}.err`, path.join(this.spec.runDir, "steps", `step-${idx}.err`)]);
     await this.execHost(this.tool, ["cp", `${this.name}:/work/.org/steps/step-${idx}.meta.json`, path.join(this.spec.runDir, "steps", `step-${idx}.meta.json`)]);
@@ -108,15 +118,16 @@ export class PodmanSession implements ISandboxSession {
     const runPatch = path.join(this.spec.runDir, "session.patch");
     await this.execHost(this.tool, ["cp", `${this.name}:/work/.org/session.patch`, runPatch]).catch(() => Promise.resolve());
 
+    // Copy newly added files (artifacts)
     const listNew = await this.execIn(["bash", "-lc", "git -C /work diff --name-status " + this.shQ(this.baselineCommit!) + " HEAD | awk '$1 ~ /^A|^AM$/ {print $2}'"]);
     const newFiles = listNew.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
-
     for (const nf of newFiles) {
       const dst = path.join(this.spec.runDir, "artifacts", nf);
       await fsp.mkdir(path.dirname(dst), { recursive: true });
       await this.execHost(this.tool, ["cp", `${this.name}:/work/${nf}`, dst]).catch(() => Promise.resolve());
     }
 
+    // Manifest
     const stepsMeta = await this.collectStepsMeta();
     const manifest = {
       spec: this.spec,
