@@ -61,12 +61,19 @@ export class PodmanSession implements ISandboxSession {
 
         await this.execHost(this.tool, ["start", this.name]);
 
-        // Prime /work and create baseline
+        // prime /work from /project
         await this.execIn([
             "bash", "-lc",
-            // protect .org and .git from deletion while still keeping dest in sync
-            "rsync -a --delete --filter='P .org/' --filter='P .git/' /project/ /work/ && mkdir -p /work/.org/steps"
+            "rsync -a --delete --exclude .git --filter='P .org/' /project/ /work/"
         ]);
+
+        // install the runner inside the container (not under /work)
+        const hostRunner = path.join(this.spec.workHostDir, ".org", "org-step.sh");
+        await this.execHost(this.tool, ["cp", hostRunner, `${this.name}:/usr/local/bin/org-step`]);
+        await this.execIn(["bash", "-lc", "chmod +x /usr/local/bin/org-step && mkdir -p /work/.org/steps"]);
+
+
+
         await this.execIn(["bash", "-lc", "git -C /work init && git -C /work config user.email noreply@example && git -C /work config user.name org && git -C /work add -A && git -C /work commit -m baseline >/dev/null"]);
         const rev = await this.execIn(["bash", "-lc", "git -C /work rev-parse HEAD"]);
         this.baselineCommit = rev.stdout.trim();
