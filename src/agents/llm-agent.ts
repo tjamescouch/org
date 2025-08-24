@@ -25,7 +25,7 @@ function buildSystemPrompt(id: string): string {
     "TOOLS",
     "- sh(cmd): run a POSIX command. Args: {cmd:string}. Returns {ok, stdout, stderr, exit_code, cmd}.",
     "  • Use for builds/tests/git/etc. Check exit_code and stderr. Never invent outputs.",
-    "- vimdiff(left,right[,cwd]): open an interactive vimdiff for human review. Returns {exitCode} when the user quits.",
+//    "- vimdiff(left,right[,cwd]): open an interactive vimdiff for human review. Returns {exitCode} when the user quits.",
     "",
     "FILES",
     "- Prefer tag-based writes for full files (no code fences):",
@@ -63,7 +63,7 @@ function buildSystemPrompt(id: string): string {
 export class LlmAgent extends Agent {
   private readonly driver: ChatDriver;
   private readonly model: string;
-  private readonly tools = [SH_TOOL_DEF, VIMDIFF_TOOL_DEF];
+  private readonly tools = [SH_TOOL_DEF/*, VIMDIFF_TOOL_DEF */];
 
   // Memory replaces the old raw history array.
   private readonly memory: AgentMemory;
