@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import { type ChildProcess } from "node:child_process";
 import { spawnInCleanEnvironment } from "../utils/spawn-clean";
 import { pauseStdin, resumeStdin } from "../input/utils";
+import { Controller } from "../input/controller";
 
 type Args = { left: string; right: string; cwd?: string };
 
@@ -14,6 +15,7 @@ export async function runVimdiff(args: Args) {
   await fs.stat(path.resolve(cwd, args.left));
   await fs.stat(path.resolve(cwd, args.right));
 
+  Controller.disableKeys();
   resumeStdin();
 
   // Inherit TTY so the user controls vim
@@ -28,9 +30,10 @@ export async function runVimdiff(args: Args) {
     (spawned && (spawned.proc as ChildProcess)) ||
     (spawned as ChildProcess);
 
-  const code = await new Promise<number>((res) => child.on("close", (c: any) => res(c ?? 0)));
+  const code = await new Promise<number>((res) => child.on("close", (c) => res(c ?? 0)));
 
   pauseStdin();
+  Controller.enableKeys();
   return { exitCode: code };
 }
 
