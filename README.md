@@ -1,6 +1,4 @@
-Here’s a full, drop‑in replacement for your **`README.md`**. I kept the structure and wording as close as practical, corrected drift, and reflected what the code actually does (scheduler, guardrails, streaming OpenAI‑compatible driver, memory, safe mode, file routing, etc.).
 
-````markdown
 # 🚨 org is intended to be run in a VM that talks to LM Studio/Ollama on the host. If you run this on your host, use **safe mode**. 🚨
 
 # org — Minimal Multi-Agent Orchestrator (LM Studio/Ollama + Tools)
@@ -44,7 +42,7 @@ Design goals: **clarity**, **predictability**, and **Unix‑y behavior** (it ope
 
 2. **Install** (from repo root):
 
-   ```bash
+```bash
    ./install.sh
 ````
 
