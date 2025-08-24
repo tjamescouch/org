@@ -1,0 +1,1 @@
+podman build -f Dockerfile.sandbox -t org-build:debian-12 .

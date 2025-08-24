@@ -55,7 +55,7 @@ export function defaultPolicy(opts: {
   return {
     projectDir,
     runRoot,
-    image: opts.image ?? "docker.io/library/debian:12-slim",
+    image: opts.image ?? "org-build:debian-12",
     net: opts.net ?? { mode: "deny" },
     limits: {
       timeoutMs: opts.limits?.timeoutMs ?? 30_000,
