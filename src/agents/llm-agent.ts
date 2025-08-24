@@ -1,6 +1,6 @@
 // src/llm-agent.ts
 import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
-import { SH_TOOL_DEF, runSh } from "../tools/sh";
+import { SH_TOOL_DEF } from "../tools/sh";
 import { C, Logger } from "../logger";
 import { AgentMemory } from "../memory";
 import { GuardRail } from "../guardrails/guardrail";
@@ -9,6 +9,8 @@ import { sanitizeContent } from "../utils/sanitize-content";
 import { VIMDIFF_TOOL_DEF } from "../tools/vimdiff";
 import { sanitizeAndRepairAssistantReply } from "../guard/sanitizer";
 import { ScrubbedAdvancedMemory } from "../memory/scrubbed-advanced-memory";
+import { ToolExecutor } from "../executors/tool-executor";
+import { StandardToolExecutor } from "../executors/standard-tool-executor";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -67,6 +69,9 @@ export class LlmAgent extends Agent {
   private readonly memory: AgentMemory;
   private readonly systemPrompt: string;
 
+  // New: polymorphic tool executor (pure refactor)
+  private readonly toolExecutor: ToolExecutor;
+
   constructor(id: string, driver: ChatDriver, model: string, guard?: GuardRail) {
     super(id, guard);
 
@@ -93,6 +98,9 @@ export class LlmAgent extends Agent {
       keepRecentPerLane: 4,           // retain 4 most-recent per lane
       keepRecentTools: 3              // retain 3 most-recent tool outputs
     });
+
+    // Default executor used polymorphically
+    this.toolExecutor = new StandardToolExecutor();
   }
 
   /**
@@ -193,7 +201,6 @@ export class LlmAgent extends Agent {
     // Execute tools (sh only), respecting remaining budget
     let forceEndTurn = false;
 
-
     const {
       calls: sanitizedCalls,
       decision: firstDecision,
@@ -214,93 +221,19 @@ export class LlmAgent extends Agent {
       }
     }
 
-    for (const tc of sanitizedCalls) {
-      if (abortCallback?.()) {
-        Logger.debug("Aborted tool calls");
-
-        break;
-      }
-
-      if (forceEndTurn) Logger.warn("Turn forcibly ended.");
-
-      if (totalUsed >= maxTools || forceEndTurn) break;
-
-      const name = tc.function?.name || "";
-      let args: any = {};
-      try { args = JSON.parse(tc.function?.arguments || "{}"); } catch { args = {}; }
-
-      if (name === "sh" || name === "exec") { //The Model likes to use the alias exec for some reason
-        const rawCmd = String(args?.cmd ?? "");
-        const cmd = sanitizeContent(rawCmd);
-
-        if (!cmd) {
-          const decision = this.guard.noteBadToolCall({
-            name: "sh",
-            reason: "missing-arg",
-            missingArgs: ["cmd"],
-          });
-          if (decision?.nudge) {
-            await this.memory.add({ role: "system", content: decision.nudge, from: "System" });
-          }
-          if (decision?.endTurn) {
-            Logger.warn(`System ended turn due to bad tool call.`);
-            totalUsed = maxTools; // consume budget → end turn
-            forceEndTurn = true;
-            if (finalText) await this.memory.add({ role: "system", content: finalText, from: "System" });
-            break;
-          }
-
-          // Synthesize a failed tool-output message back to memory (as before).
-          const content = JSON.stringify({
-            ok: false,
-            stdout: "",
-            stderr: "Execution failed: Command required.",
-            exit_code: 1,
-            cmd: "",
-          });
-          Logger.warn(`Execution failed: Command required.`);
-          await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: name });
-          totalUsed++;
-          continue;
-        }
-
-        // Normal execution
-        Logger.debug(`${this.id} tool ->`, { name, cmd: cmd.slice(0, 160) });
-        const tSh = Date.now();
-        const result = await runSh(cmd);
-        Logger.debug(`${this.id} tool <-`, { name, ms: Date.now() - tSh, exit: result.exit_code, outChars: result.stdout.length, errChars: result.stderr.length });
-
-        // Let GuardRail see the signature to stop "same command" repetition
-        const repeatDecision = this.guard.noteToolCall({
-          name: "sh",
-          argsSig: cmd, // argument signature = canonicalized cmd
-          resSig: `${result.exit_code}|${(result.stdout || "").trim().slice(0, 240)}`,
-          exitCode: result.exit_code,
-        });
-        if (repeatDecision?.nudge) {
-          await this.memory.add({ role: "system", content: repeatDecision.nudge, from: "System" });
-        }
-        if (repeatDecision?.endTurn) {
-          // Still record the tool output so the model can read it later.
-          const contentJSON = JSON.stringify(result);
-          await this.memory.add({ role: "tool", content: contentJSON, tool_call_id: tc.id, name: "sh", from: "Tool" });
-
-          totalUsed = maxTools;
-          forceEndTurn = true;
-          if (finalText) await this.memory.add({ role: "assistant", content: finalText, from: "Me" });
-          break;
-        }
-
-        const content = JSON.stringify(result);
-        await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name: "sh", from: "Tool" });
-        totalUsed++;
-      } else {
-        Logger.warn(`\nUnknown tool ${name} requested`, tc);
-        const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, cmd: "" });
-        await this.memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: "Tool" });
-        totalUsed++;
-      }
-    }
+    // --- Refactored: delegate to executor (pure behavior) ---
+    const execResult = await this.toolExecutor.execute({
+      calls: sanitizedCalls,
+      maxTools,
+      abortCallback,
+      guard: this.guard,
+      memory: this.memory,
+      finalText,
+      agentId: this.id,
+    });
+    totalUsed = execResult.totalUsed;
+    forceEndTurn = execResult.forceEndTurn;
+    // --------------------------------------------------------
 
     if (totalUsed >= maxTools) {
       if (finalText) {
