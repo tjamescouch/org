@@ -54,9 +54,10 @@ export async function runVimdiff(args: Args): Promise<VimdiffResult> {
     }
 
     //return await waitForChild(child, { wasRaw });
-    const code = await new Promise<number>((res) => child.on("close", (c) => res(c ?? 0)));
+    const result = await waitForChild(child, cmdArgs);
     Controller.enableKeys();
-    return { ok: code === 0, exit_code: code, cmd: '', stderr: '', stdout: '' };
+
+    return result;
   } finally {
     endTtyHandoff(handoff);
   }
