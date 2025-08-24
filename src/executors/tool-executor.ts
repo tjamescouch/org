@@ -14,7 +14,7 @@ export interface ExecuteToolsParams {
 }
 
 export interface ExecuteToolsResult {
-  totalUsed: number;
+  toolsUsed: number;
   forceEndTurn: boolean;
 }
 

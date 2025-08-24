@@ -178,7 +178,7 @@ export class LlmAgent extends Agent {
       Logger.debug(`${this.id} empty-output`);
     }
 
-    const finalText = (out.text || "").trim();
+    const finalText = sanitizeContent((out.text || "").trim());
 
     const allReasoning = out?.reasoning || "";
 

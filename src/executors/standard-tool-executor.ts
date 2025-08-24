@@ -149,7 +149,7 @@ export class StandardToolExecutor extends ToolExecutor {
             agentId,
         } = params;
 
-        let totalUsed = 0;
+        let toolsUsed = 0;
         let forceEndTurn = false;
 
         for (const tc of calls) {
@@ -159,7 +159,7 @@ export class StandardToolExecutor extends ToolExecutor {
             }
 
             if (forceEndTurn) Logger.warn("Turn forcibly ended.");
-            if (totalUsed >= maxTools || forceEndTurn) break;
+            if (toolsUsed >= maxTools || forceEndTurn) break;
 
             const name = tc.function?.name || "";
             let args: any = {};
@@ -175,18 +175,18 @@ export class StandardToolExecutor extends ToolExecutor {
                 Logger.warn(`\nUnknown tool ${name} requested`, tc);
                 const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, tc, cmd });
                 await memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: "Tool" });
-                totalUsed++;
 
-                return { totalUsed, forceEndTurn: false };
+                return { toolsUsed, forceEndTurn: false };
             }
 
             const result = await handler(agentId, tc, finalText, memory, guard);
+            toolsUsed++;
 
             if (result.forceEndTurn) {
                 forceEndTurn = true;
                 break;
             }
         }
-        return { totalUsed, forceEndTurn };
+        return { toolsUsed, forceEndTurn };
     }
 }
