@@ -25,15 +25,15 @@ export async function runVimdiff(args: Args): Promise<VimdiffResult> {
   await fs.stat(path.resolve(cwd, args.right));
 
   // Make sure our app isn't holding the TTY in raw/paused mode
-  try { pauseStdin?.(); } catch { }
+  //try { pauseStdin?.(); } catch { }
 
   const wasRaw = (process.stdin as any)?.isTTY && (process.stdin as any).isRaw === true;
   if ((process.stdin as any)?.isTTY && (process.stdin as any).setRawMode) {
     try { (process.stdin as any).setRawMode(false); } catch { }
   }
 
-  //Controller.disableKeys();
-  //resumeStdin();
+  Controller.disableKeys();
+  resumeStdin();
 
   // Inherit TTY so the user controls vim
   const spawned = spawnInCleanEnvironment(
@@ -52,11 +52,11 @@ export async function runVimdiff(args: Args): Promise<VimdiffResult> {
     throw new Error("[vimdiff] spawnInCleanEnvironment did not return a child process.");
   }
 
-  return await waitForChild(child, { wasRaw });
-  //const code = await new Promise<number>((res) => child.on("close", (c) => res(c ?? 0)));
-  //pauseStdin();
-  //Controller.enableKeys();
-  //return { exitCode: code };
+  //return await waitForChild(child, { wasRaw });
+  const code = await new Promise<number>((res) => child.on("close", (c) => res(c ?? 0)));
+  pauseStdin();
+  Controller.enableKeys();
+  return { ok: code===0, exit_code: code, cmd: '', stderr: '', stdout: '' };
 }
 
 async function waitForChild(child: ChildProcess, opts: { wasRaw: boolean }): Promise<VimdiffResult> {
