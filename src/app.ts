@@ -132,11 +132,8 @@ async function main() {
 
   const agents = agentSpecs.map(a => ({
     id: a.id,
-    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) =>
-      (a.model as any).respond(prompt, budget, peers, cb),
-    guardOnIdle: (state: any) => (a.model as any).guardOnIdle?.(state) ?? null,
-    guardCheck: (route: any, content: string, peers: string[]) =>
-      (a.model as any).guardCheck?.(route, content, peers) ?? null,
+    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => a.model.respond(prompt, budget, peers, cb),
+    guardOnIdle: (state: any) => a.model.guardOnIdle?.(state) ?? null, guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null, 
   }));
 
   // IO + scheduler

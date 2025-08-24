@@ -6,7 +6,6 @@ import { AgentMemory } from "../memory";
 import { GuardRail } from "../guardrails/guardrail";
 import { Agent } from "./agent";
 import { sanitizeContent } from "../utils/sanitize-content";
-import { VIMDIFF_TOOL_DEF } from "../tools/vimdiff";
 import { sanitizeAndRepairAssistantReply } from "../guard/sanitizer";
 import { ScrubbedAdvancedMemory } from "../memory/scrubbed-advanced-memory";
 import { ToolExecutor } from "../executors/tool-executor";
@@ -109,12 +108,12 @@ export class LlmAgent extends Agent {
    * - Let the model respond; if it asks for tools, execute (sh only) and loop.
    * - Stop after first assistant text with no more tool calls or when budget is hit.
    */
-  async respond(messages: ChatMessage[], maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply> {
+  async respond(messages: ChatMessage[], maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply[]> {
     Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
     if (abortCallback?.()) {
       Logger.debug("Aborted turn");
 
-      return { message: "Turn aborted.", toolsUsed: 0 };
+      return [{ message: "Turn aborted.", toolsUsed: 0 }];
     }
 
     // Initialize per-turn thresholds/counters in the guard rail.
@@ -125,7 +124,6 @@ export class LlmAgent extends Agent {
     }
 
     let hop = 0;
-    let totalUsed = 0;
 
     Logger.info(C.green(`${this.id} ...`));
     const msgs = this.memory.messages();
@@ -195,7 +193,7 @@ export class LlmAgent extends Agent {
         await this.memory.add({ role: "assistant", content: finalText, from: "Me" });
       }
       Logger.info(C.blue(`\n[${this.id}] wrote. No tools used.`));
-      return { message: finalText, toolsUsed: totalUsed }
+      return [{ message: finalText, toolsUsed: 0 }];
     }
 
     // Execute tools (sh only), respecting remaining budget
@@ -213,11 +211,11 @@ export class LlmAgent extends Agent {
       }
       if (firstDecision?.endTurn) {
         Logger.warn(`System prematurely ended turn.`);
-        totalUsed = maxTools; // consume budget → end turn
+        const totalUsed = maxTools; // consume budget → end turn
         forceEndTurn = true;
         if (finalText) await this.memory.add({ role: "system", content: finalText, from: "System" });
         
-        return { message: finalText, toolsUsed: totalUsed };
+        return [{ message: finalText, toolsUsed: totalUsed }];
       }
     }
 
@@ -231,7 +229,7 @@ export class LlmAgent extends Agent {
       finalText,
       agentId: this.id,
     });
-    totalUsed = execResult.totalUsed;
+    const totalUsed = execResult.totalUsed;
     forceEndTurn = execResult.forceEndTurn;
     // --------------------------------------------------------
 
@@ -248,6 +246,6 @@ export class LlmAgent extends Agent {
 
     Logger.info(C.blue(`\n[${this.id}] wrote. [${calls.length}] tools requested. [${totalUsed}] tools used.`));
 
-    return { message: finalText, toolsUsed: calls.length, reasoning: allReasoning };
+    return [{ message: finalText, toolsUsed: calls.length, reasoning: allReasoning }];
   }
 }

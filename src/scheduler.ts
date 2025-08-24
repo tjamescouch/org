@@ -13,7 +13,7 @@ import { ChatMessage } from "./types";
 
 export interface Responder {
   id: string;
-  respond(messages: ChatMessage[], maxTools: number, peers: string[], abortCallback: () => boolean): Promise<{ message: string; toolsUsed: number }>;
+  respond(messages: ChatMessage[], maxTools: number, peers: string[], abortCallback: () => boolean): Promise<{ message: string; toolsUsed: number }[]>;
   guardOnIdle?: (state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }) => GuardDecision | null;
   guardCheck?: (route: GuardRouteKind, content: string, peers: string[]) => GuardDecision | null;
 }
