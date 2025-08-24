@@ -205,12 +205,12 @@ export class LlmAgent extends Agent {
         await this.memory.add({ role: "system", content: firstDecision.nudge, from: "System" });
       }
       if (firstDecision?.endTurn) {
-        Logger.warn(`System ended turn.`);
+        Logger.warn(`System prematurely ended turn.`);
         totalUsed = maxTools; // consume budget → end turn
         forceEndTurn = true;
         if (finalText) await this.memory.add({ role: "system", content: finalText, from: "System" });
         
-        return { message: finalText, toolsUsed: 0 };
+        return { message: finalText, toolsUsed: totalUsed };
       }
     }
 
@@ -243,7 +243,7 @@ export class LlmAgent extends Agent {
             await this.memory.add({ role: "system", content: decision.nudge, from: "System" });
           }
           if (decision?.endTurn) {
-            Logger.warn(`System ended turn.`);
+            Logger.warn(`System ended turn due to bad tool call.`);
             totalUsed = maxTools; // consume budget → end turn
             forceEndTurn = true;
             if (finalText) await this.memory.add({ role: "system", content: finalText, from: "System" });
@@ -313,8 +313,8 @@ export class LlmAgent extends Agent {
     }
     // Loop: the assistant will see tool outputs (role:"tool") now in memory.
 
-    Logger.info(C.blue(`\n[${this.id}] wrote. [${totalUsed}] tools used.`));
+    Logger.info(C.blue(`\n[${this.id}] wrote. [${calls.length}] tools requested. [${totalUsed}] tools used.`));
 
-    return { message: finalText, toolsUsed: totalUsed, reasoning: allReasoning };
+    return { message: finalText, toolsUsed: calls.length, reasoning: allReasoning };
   }
 }
