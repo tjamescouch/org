@@ -1,14 +1,14 @@
 // src/llm-agent.ts
-import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt";
 import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
 import { SH_TOOL_DEF, runSh } from "../tools/sh";
 import { C, Logger } from "../logger";
-import { AdvancedMemory, AgentMemory } from "../memory";
+import { AgentMemory } from "../memory";
 import { GuardRail } from "../guardrails/guardrail";
 import { Agent } from "./agent";
 import { sanitizeContent } from "../utils/sanitize-content";
 import { VIMDIFF_TOOL_DEF } from "../tools/vimdiff";
 import { sanitizeAndRepairAssistantReply } from "../guard/sanitizer";
+import { ScrubbedAdvancedMemory } from "../memory/scrubbed-advanced-memory";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -77,7 +77,7 @@ export class LlmAgent extends Agent {
     this.systemPrompt = buildSystemPrompt(this.id);
 
     // Attach a hysteresis-based memory that summarizes overflow.
-    this.memory = new AdvancedMemory({
+    this.memory = new ScrubbedAdvancedMemory({
       driver: this.driver,
       model: this.model,
       systemPrompt: this.systemPrompt,

@@ -294,7 +294,7 @@ test('LlmAgent.respond returns assistant text when no tool calls are present', a
     { text: 'Hello there!', toolCalls: [] },
   ]);
   const agent = new LlmAgent('tester', driver, 'mock-model');
-  const { message, toolsUsed } = await agent.respond('Hi', 2, ['tester']);
+  const { message, toolsUsed } = await agent.respond([{ content: 'Hi', role: "user", from: "user" }], 2, ['tester'], () => false);
   assert.equal(message, 'Hello there!');
   assert.equal(toolsUsed, 0);
 });
