@@ -9,6 +9,7 @@ import { ExecutionGate } from "./tools/execution-gate";
 import { restoreStdin } from "./utils/restore-stdin";
 import { GuardDecision, GuardRouteKind } from "./guardrails/guardrail";
 import { ChatMessage } from "./types";
+import { LLMNoiseFilter } from "./utils/llm-noise-filter";
 
 
 export interface Responder {
@@ -26,6 +27,9 @@ export class RandomScheduler {
   private activeAgent: Responder | undefined;
   private respondingAgent: Responder | undefined;
   private draining = false;
+  private readonly agentFilter = new LLMNoiseFilter();
+  private readonly groupFilter = new LLMNoiseFilter();
+  private readonly fileFilter = new LLMNoiseFilter();
 
   private readonly idlePromptEvery = 3;
 
@@ -218,27 +222,29 @@ export class RandomScheduler {
     const router = makeRouter({
       onAgent: async (f, to, c) => {
         this.respondingAgent = this.agents.find(a => a.id === to);
-        if ((c || "").trim()) this.ensureInbox(to).push({ content: c, from: f, role: "user" });
+        const content = this.agentFilter.feed(c).cleaned + this.agentFilter.flush()
+        if (content) this.ensureInbox(to).push({ content, from: f, role: "user" });
       },
       onGroup: async (_f, c) => {
-        const dec = fromAgent.guardCheck?.("group", c, this.agents.map(x => x.id)) || null;
+        const content = this.groupFilter.feed(c) + this.groupFilter.flush();
+        const dec = fromAgent.guardCheck?.("group", content, this.agents.map(x => x.id)) || null;
         if (dec) await this.applyGuardDecision(fromAgent, dec);
         if (dec?.suppressBroadcast) {
           Logger.debug(`suppress @@group from ${fromAgent.id}`);
           return;
         }
-        for (const a of this.agents) if (a.id !== fromAgent.id) { if ((c || "").trim()) this.ensureInbox(a.id).push({ content: c, from: fromAgent.id, role: "user" }); }
+        for (const a of this.agents) if (a.id !== fromAgent.id) { if (content) this.ensureInbox(a.id).push({ content, from: fromAgent.id, role: "user" }); }
       },
       onUser: async (_f, _c) => { this.lastUserDMTarget = fromAgent.id; },
       onFile: async (_f, name, c) => {
-        const { cleaned } = extractCodeGuards(c);
+        const content = this.fileFilter.feed((extractCodeGuards(c).cleaned)).cleaned + this.fileFilter.flush();
         const cmd = `${c}\n***** Write to file? [y/N] ${name}\n`;
         const wasRaw = (process.stdin as any)?.isRaw;
         try {
           if (wasRaw) process.stdin.setRawMode(false);
           await ExecutionGate.gate(cmd);
-          const res = await FileWriter.write(name, cleaned);
-          Logger.info(C.yellow(`${cleaned}`));
+          const res = await FileWriter.write(name, content);
+          Logger.info(C.yellow(`${content}`));
           Logger.info(C.magenta(`Written to ${res.path} (${res.bytes} bytes)`));
         } catch (err: any) {
           Logger.error(`File write failed: ${err?.message || err}`);
