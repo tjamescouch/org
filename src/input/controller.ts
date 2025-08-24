@@ -26,6 +26,7 @@ export class InputController {
   private interjectKey: string;
   private interjectBanner: string;
   private promptTemplate: (from: string, content: string) => string;
+  private static areKeysEnabled = true;
 
   private scheduler: RandomScheduler | null = null;
 
@@ -58,6 +59,14 @@ export class InputController {
     this.scheduler = s;
   }
 
+  static disableKeys() {
+    this.areKeysEnabled = false;
+  }
+
+  static enableKeys() {
+    this.areKeysEnabled = true;
+  }
+
   /**
    * Called by app on startup to seed the conversation. If `initial` is given,
    * we broadcast it using the scheduler’s existing fan‑out behavior.
@@ -74,6 +83,8 @@ export class InputController {
       if (text && text.trim()) this.scheduler.handleUserInterjection(text.trim());
     }
   }
+
+  
 
   /**
    * Exposed as the scheduler’s `onAskUser` callback. It opens an echoing,
@@ -167,6 +178,10 @@ export class InputController {
         this.setRawMode(false);
         process.stdout.write("\n");
         process.exit(0);
+      }
+
+      if (!Controller.areKeysEnabled) {
+        return;
       }
 
       // Single-key, case-insensitive interjection hotkey.
