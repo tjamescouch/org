@@ -47,34 +47,30 @@ export class PodmanSession implements ISandboxSession {
             "-v", `${this.spec.workHostDir}:/work:rw,z`,
         ];
 
-        // NOTE: do NOT set "-w /work" here — Podman validates workdir before mounts.
+        // NOTE: no "-w /work" here; Podman validates workdir before mounts exist.
         await this.execHost(this.tool, [
-            "create",
-            "--name", this.name,
-            ...netArgs,
-            ...caps,
-            ...limits,
-            ...mounts,
-            this.spec.image,
-            "sleep", "infinity",
+            "create", "--name", this.name,
+            ...netArgs, ...caps, ...limits, ...mounts,
+            this.spec.image, "sleep", "infinity",
         ]);
-
         await this.execHost(this.tool, ["start", this.name]);
 
-        // prime /work from /project
+        // Prime /work. Protect .org from deletion; then ensure steps dir exists.
         await this.execIn([
             "bash", "-lc",
-            "rsync -a --delete --exclude .git --filter='P .org/' /project/ /work/"
+            "mkdir -p /work/.org && " +
+            "rsync -a --delete --exclude '.git' --exclude '.org/***' /project/ /work/ && " +
+            "mkdir -p /work/.org/steps && " +
+            "test -x /work/.org/org-step.sh || { echo 'missing /work/.org/org-step.sh'; exit 98; }"
         ]);
 
-        // install the runner inside the container (not under /work)
-        const hostRunner = path.join(this.spec.workHostDir, ".org", "org-step.sh");
-        await this.execHost(this.tool, ["cp", hostRunner, `${this.name}:/usr/local/bin/org-step`]);
-        await this.execIn(["bash", "-lc", "chmod +x /usr/local/bin/org-step && mkdir -p /work/.org/steps"]);
-
-
-
-        await this.execIn(["bash", "-lc", "git -C /work init && git -C /work config user.email noreply@example && git -C /work config user.name org && git -C /work add -A && git -C /work commit -m baseline >/dev/null"]);
+        // Baseline commit.
+        await this.execIn(["bash", "-lc",
+            "git -C /work init && " +
+            "git -C /work config user.email noreply@example && " +
+            "git -C /work config user.name org && " +
+            "git -C /work add -A && git -C /work commit -m baseline >/dev/null"
+        ]);
         const rev = await this.execIn(["bash", "-lc", "git -C /work rev-parse HEAD"]);
         this.baselineCommit = rev.stdout.trim();
         await this.execIn(["bash", "-lc", "printf %s " + this.shQ(this.baselineCommit!) + " > /work/.org/baseline.txt"]);
@@ -82,7 +78,8 @@ export class PodmanSession implements ISandboxSession {
         this.started = true;
     }
 
-    async exec(cmd: string) {
+
+    async exec(cmd: string): Promise<{ ok: boolean; exit: number; stdoutFile: string; stderrFile: string }> {
         if (!this.started) throw new Error("session not started");
         const idx = this.stepIdx++;
         const env = [
@@ -93,33 +90,51 @@ export class PodmanSession implements ISandboxSession {
             "--env", `ORG_PIDS_MAX=${this.spec.limits.pidsMax}`,
         ];
 
-        const r = await this.execIn([...env, "bash", "-lc", `/work/.org/org-step.sh ${this.shQ(cmd)}`]);
+        // Run the runner from the writable mount.
+        const r = await this.execIn([
+            ...env,
+            "bash", "-lc",
+            `/work/.org/org-step.sh ${this.shQ(cmd)}`
+        ]);
 
-        // Commit if there are changes
-        await this.execIn(["bash", "-lc", "git -C /work add -A && (git -C /work diff --cached --quiet || git -C /work commit -m " + this.shQ(`step #${idx}: ${cmd}`) + " >/dev/null)"]);
+        // Commit changes (if any).
+        await this.execIn([
+            "bash", "-lc",
+            "git -C /work add -A && (git -C /work diff --cached --quiet || git -C /work commit -m " +
+            this.shQ(`step #${idx}: ${cmd}`) + " >/dev/null)"
+        ]);
 
-        // Enforce write allowlist for this commit
+        // Enforce write allowlist for the last commit.
         const show = await this.execIn(["bash", "-lc", "git -C /work diff --name-only HEAD~1..HEAD || true"]);
         const changed = show.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
         const violated = changed.filter((p) => !this.pathAllowed(p));
         if (violated.length > 0) {
             await this.execIn(["bash", "-lc", "git -C /work reset --hard HEAD~1 >/dev/null"]);
             await fsp.writeFile(path.join(this.spec.runDir, "steps", `step-${idx}.violation.txt`), violated.join("\n") + "\n", "utf8");
-            return { ok: false, exit: 3, stdoutFile: path.join(this.spec.runDir, "steps", `step-${idx}.out`), stderrFile: path.join(this.spec.runDir, "steps", `step-${idx}.err`) };
+            return {
+                ok: false, exit: 3,
+                stdoutFile: path.join(this.spec.runDir, "steps", `step-${idx}.out`),
+                stderrFile: path.join(this.spec.runDir, "steps", `step-${idx}.err`),
+            };
         }
 
-        // Copy step outputs to runDir
-        await this.execHost(this.tool, ["cp", `${this.name}:/work/.org/steps/step-${idx}.out`, path.join(this.spec.runDir, "steps", `step-${idx}.out`)]);
-        await this.execHost(this.tool, ["cp", `${this.name}:/work/.org/steps/step-${idx}.err`, path.join(this.spec.runDir, "steps", `step-${idx}.err`)]);
-        await this.execHost(this.tool, ["cp", `${this.name}:/work/.org/steps/step-${idx}.meta.json`, path.join(this.spec.runDir, "steps", `step-${idx}.meta.json`)]);
+        // Copy step outputs if they exist (don’t throw if they don’t).
+        const hostOut = path.join(this.spec.runDir, "steps", `step-${idx}.out`);
+        const hostErr = path.join(this.spec.runDir, "steps", `step-${idx}.err`);
+        const hostMeta = path.join(this.spec.runDir, "steps", `step-${idx}.meta.json`);
+
+        try { await this.execHost(this.tool, ["cp", `${this.name}:/work/.org/steps/step-${idx}.out`, hostOut]); } catch { }
+        try { await this.execHost(this.tool, ["cp", `${this.name}:/work/.org/steps/step-${idx}.err`, hostErr]); } catch { }
+        try { await this.execHost(this.tool, ["cp", `${this.name}:/work/.org/steps/step-${idx}.meta.json`, hostMeta]); } catch { }
 
         return {
             ok: r.code === 0,
             exit: r.code,
-            stdoutFile: path.join(this.spec.runDir, "steps", `step-${idx}.out`),
-            stderrFile: path.join(this.spec.runDir, "steps", `step-${idx}.err`),
+            stdoutFile: hostOut,
+            stderrFile: hostErr,
         };
     }
+
 
     async finalize() {
         if (!this.started) throw new Error("session not started");
