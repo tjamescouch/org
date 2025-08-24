@@ -6,7 +6,7 @@ import os from "node:os";
 
 type Args = { left: string; right: string; cwd?: string };
 
-export async function vimdiffTool(args: Args) {
+export async function runVimdiff(args: Args) {
   const cwd = args.cwd ?? process.cwd();
 
   // Ensure files exist
