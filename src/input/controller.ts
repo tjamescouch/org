@@ -193,7 +193,7 @@ export class InputController {
     };
 
     // Important: put stdin into raw to prevent kernel echo while idle.
-    this.setRawMode(true);
+    this.setRawMode(Controller.areKeysEnabled);
     process.stdin.on("keypress", this.keypressHandler);
   }
 
