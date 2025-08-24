@@ -28,7 +28,7 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
     const cmd = sanitizeContent(rawCmd);
     const name = toolcall.function?.name || "";
 
-    let toolsUsed = 0;
+    let toolsUsed = 1;
 
     if (!cmd) {
         const decision = guard.noteBadToolCall({
@@ -63,8 +63,6 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
     const t = Date.now();
     const result = await runSh(cmd);
     Logger.debug(`${agentId} tool <-`, { name, ms: Date.now() - t, exit: result.exit_code, outChars: result.stdout.length, errChars: result.stderr.length });
-
-    let toolUsed: boolean = false;
 
     // Let GuardRail see the signature to stop "same command" repetition
     const repeatDecision = guard.noteToolCall({
@@ -151,7 +149,7 @@ export class StandardToolExecutor extends ToolExecutor {
             agentId,
         } = params;
 
-        let totalUsed = 0;
+        let toolsUsed = 0;
         let forceEndTurn = false;
 
         for (const tc of calls) {
@@ -161,7 +159,7 @@ export class StandardToolExecutor extends ToolExecutor {
             }
 
             if (forceEndTurn) Logger.warn("Turn forcibly ended.");
-            if (totalUsed >= maxTools || forceEndTurn) break;
+            if (toolsUsed >= maxTools || forceEndTurn) break;
 
             const name = tc.function?.name || "";
             let args: any = {};
@@ -172,21 +170,23 @@ export class StandardToolExecutor extends ToolExecutor {
             const handler = this.toolHandlers[name];
 
             if (!handler) {
+                const rawCmd = String(args?.cmd ?? "");
+                const cmd = sanitizeContent(rawCmd);
                 Logger.warn(`\nUnknown tool ${name} requested`, tc);
-                const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, cmd: cmd, tc });
+                const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, tc, cmd });
                 await memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: "Tool" });
-                totalUsed++;
 
-                return { totalUsed, forceEndTurn: false };
+                return { toolsUsed, forceEndTurn: false };
             }
 
             const result = await handler(agentId, tc, finalText, memory, guard);
+            toolsUsed++;
 
             if (result.forceEndTurn) {
                 forceEndTurn = true;
                 break;
             }
         }
-        return { totalUsed, forceEndTurn };
+        return { toolsUsed, forceEndTurn };
     }
 }
