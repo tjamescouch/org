@@ -47,8 +47,9 @@ function buildSystemPrompt(id: string): string {
     "",
     "OUTPUT STYLE",
     `- Speak only in your own voice as "${id}" (first person).`,
-    "- Do not prefix lines with other agents’ names.",
+    "- Do not prefix lines with other agents' names.",
     "- Keep chat replies brief unless you are writing files.",
+    "- **When you have finished all of your work, tag the user (`@@user`).**",
   ].join("\n");
 }
 
