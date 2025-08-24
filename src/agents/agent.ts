@@ -18,7 +18,7 @@ export abstract class Agent {
     this.guard = guard ?? new AdvancedGuardRail({ agentId: id });
   }
 
-  abstract respond(messages: ChatMessage[], maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply>;
+  abstract respond(messages: ChatMessage[], maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply[]>;
 
   formatMessage(message: ChatMessage): ChatMessage {
     return {

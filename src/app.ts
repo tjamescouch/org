@@ -9,6 +9,7 @@ import { InputController } from "./input/controller";
 import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
 import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
+import { getRecipe } from "./recipes";
 
 /** ---------- CLI parsing ---------- */
 function parseArgs(argv: string[]) {
@@ -22,7 +23,6 @@ function parseArgs(argv: string[]) {
     } else if (key) {
       out[key] = a; key = null;
     } else {
-      // positional: treat as --prompt if not yet set
       if (!("prompt" in out)) out["prompt"] = a;
       else out[`arg${Object.keys(out).length}`] = a;
     }
@@ -42,8 +42,7 @@ function setupProcessGuards() {
   if (dbgOn) {
     process.on("beforeExit", (code) => {
       Logger.info("[DBG] beforeExit", code, "— scheduler stays alive unless Ctrl+C");
-      // schedule a no-op to avoid accidental early exit if the event loop is empty
-      setTimeout(() => { }, 60_000);
+      setTimeout(() => {}, 60_000); // keep the loop alive if empty
     });
     process.on("uncaughtException", (e) => { Logger.info("[DBG] uncaughtException:", e); });
     process.on("unhandledRejection", (e) => { Logger.info("[DBG] unhandledRejection:", e); });
@@ -54,11 +53,11 @@ function setupProcessGuards() {
 }
 
 /** ---------- Mode / safety ---------- */
-function computeMode(): { interactive: boolean; safe: boolean } {
-  const interactive = true; // interactive controller + hotkeys
+function computeMode(extra?: { allowTools?: string[] | undefined }) {
+  const interactive = true;
   const cfg = loadConfig();
   const safe = !!(cfg as any)?.runtime?.safe;
-  ExecutionGate.configure({ safe, interactive });
+  ExecutionGate.configure({ safe, interactive, allowTools: extra?.allowTools });
   return { interactive, safe };
 }
 
@@ -67,7 +66,8 @@ type AgentSpec = { id: string; kind: ModelKind; model: any };
 
 function parseAgents(
   spec: string | undefined,
-  llmDefaults: { model: string; baseUrl: string; protocol: "openai"; apiKey?: string }
+  llmDefaults: { model: string; baseUrl: string; protocol: "openai"; apiKey?: string },
+  recipeSystemPrompt?: string | null
 ): AgentSpec[] {
   const list = String(spec || "alice:lmstudio").split(",").map(x => x.trim()).filter(Boolean);
   const out: AgentSpec[] = [];
@@ -75,7 +75,11 @@ function parseAgents(
     const [id, kindRaw = "mock"] = item.split(":");
     const kind = (kindRaw as ModelKind) || "mock";
     if (kind === "mock") {
-      out.push({ id, kind, model: new MockModel(id) });
+      const m = new MockModel(id);
+      if (recipeSystemPrompt && typeof (m as any).setSystemPrompt === "function") {
+        (m as any).setSystemPrompt(recipeSystemPrompt);
+      }
+      out.push({ id, kind, model: m });
     } else if (kind === "lmstudio") {
       if (llmDefaults.protocol !== "openai") throw new Error(`Unsupported protocol: ${llmDefaults.protocol}`);
       const driver = makeStreamingOpenAiLmStudio({
@@ -83,7 +87,11 @@ function parseAgents(
         model: llmDefaults.model,
         apiKey: (llmDefaults as any).apiKey
       });
-      out.push({ id, kind, model: new LlmAgent(id, driver, llmDefaults.model) as any });
+      const agentModel = new LlmAgent(id, driver, llmDefaults.model) as any;
+      if (recipeSystemPrompt && typeof agentModel.setSystemPrompt === "function") {
+        agentModel.setSystemPrompt(recipeSystemPrompt);
+      }
+      out.push({ id, kind, model: agentModel });
     } else {
       throw new Error(`Unknown model kind: ${kindRaw}`);
     }
@@ -98,10 +106,25 @@ async function main() {
   enableDebugIfRequested(args);
   setupProcessGuards();
 
-  const maxTools = Math.max(0, Number(args["max-tools"] || 20));
-  computeMode();
+  // ---- Recipe wiring ----
+  const recipeName =
+    (typeof args["recipe"] === "string" && args["recipe"]) ||
+    (process.env.ORG_RECIPE || "");
+  const recipe = getRecipe(recipeName || null);
 
-  const agentSpecs = parseAgents(String(args["agents"] || "alice:lmstudio"), cfg.llm);
+  if (process.env.DEBUG && process.env.DEBUG !== "0" && process.env.DEBUG !== "false") {
+    Logger.info("[DBG] args:", args);
+    if (recipe) Logger.info("[DBG] recipe:", recipe.name);
+  }
+
+  // Budgets
+  let maxTools = Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20)));
+
+  // Mode + (optional) tool allowlist
+  computeMode({ allowTools: recipe?.allowTools });
+
+  // Build agents, set recipe system prompt if supported
+  const agentSpecs = parseAgents(String(args["agents"] || "alice:lmstudio"), cfg.llm, recipe?.system ?? null);
   if (agentSpecs.length === 0) {
     Logger.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
     process.exit(1);
@@ -109,14 +132,11 @@ async function main() {
 
   const agents = agentSpecs.map(a => ({
     id: a.id,
-    // Pass-through to the agent/model's respond method
-    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => (a.model as any).respond(prompt, budget, peers, cb),
-    guardOnIdle: (state: any) => (a.model as any).guardOnIdle?.(state) ?? null,
-    guardCheck: (route: any, content: string, peers: string[]) =>
-      (a.model as any).guardCheck?.(route, content, peers) ?? null,
+    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => a.model.respond(prompt, budget, peers, cb),
+    guardOnIdle: (state: any) => a.model.guardOnIdle?.(state) ?? null, guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null, 
   }));
 
-  // Wiring: controller + scheduler
+  // IO + scheduler
   const input = new InputController({
     interjectKey: String(args["interject-key"] || "i"),
     interjectBanner: String(args["banner"] || "You: "),
@@ -135,15 +155,22 @@ async function main() {
     Logger.info("[DBG] maxTools:", maxTools);
   }
 
-  // Kick off with an initial user prompt
-  const promptArg = ((): string | boolean | undefined => {
-    if (args["prompt"] === true) return true;       // --prompt
-    if (typeof args["prompt"] === "string") return args["prompt"];
-    return undefined;
-  })();
-  await input.askInitialAndSend(promptArg);
+  // Seed initial instruction: CLI --prompt wins; else recipe.kickoff; else ask.
+  let kickoff: string | boolean | undefined;
+  if (args["prompt"] === true) kickoff = true;                   // explicit ask
+  else if (typeof args["prompt"] === "string") kickoff = args["prompt"];
+  else if (recipe?.kickoff) kickoff = recipe.kickoff;
 
-  // Never returns in normal operation; exit only via Ctrl+C
+  if (process.env.DEBUG && process.env.DEBUG !== "0" && process.env.DEBUG !== "false") {
+    Logger.info("[DBG] kickoff:", typeof kickoff === "string" ? kickoff : kickoff === true ? "(ask)" : "(none)");
+  }
+
+  await input.askInitialAndSend(kickoff);
+
+  // Give the enqueue a tick to land before starting the loop (harmless no-op if not needed)
+  await new Promise<void>((r) => setTimeout(r, 0));
+
+  // Run
   await scheduler.start();
 }
 

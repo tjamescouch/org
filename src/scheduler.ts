@@ -13,7 +13,7 @@ import { ChatMessage } from "./types";
 
 export interface Responder {
   id: string;
-  respond(messages: ChatMessage[], maxTools: number, peers: string[], abortCallback: () => boolean): Promise<{ message: string; toolsUsed: number }>;
+  respond(messages: ChatMessage[], maxTools: number, peers: string[], abortCallback: () => boolean): Promise<{ message: string; toolsUsed: number }[]>;
   guardOnIdle?: (state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }) => GuardDecision | null;
   guardCheck?: (route: GuardRouteKind, content: string, peers: string[]) => GuardDecision | null;
 }
@@ -86,26 +86,31 @@ export class RandomScheduler {
         Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(messages));
 
         let remaining = this.maxTools;
+        let totalToolsUsed = 0;
         for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
           const peers = this.agents.map(x => x.id);
           Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
           this.activeAgent = a;
-          const { message, toolsUsed } = await a.respond(messages, Math.max(0, remaining), peers, () => this.draining);
-          this.activeAgent = undefined;
-          Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
+          const messageResult = await a.respond(messages, Math.max(0, remaining), peers, () => this.draining);
 
-          const askedUser = await this.route(a, message);
-          didWork = true;
+          for(const { message, toolsUsed } of messageResult) {
+            totalToolsUsed += toolsUsed;
+            this.activeAgent = undefined;
+            Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
 
-          if (askedUser) {
-            const userText = ((await this.userPromptFn(a.id, message)) ?? "").trim();
-            if (userText) this.handleUserInterjection(userText);
+            const askedUser = await this.route(a, message);
+            didWork = true;
 
-            break;
+            if (askedUser) {
+              const userText = ((await this.userPromptFn(a.id, message)) ?? "").trim();
+              if (userText) this.handleUserInterjection(userText);
+
+              break;
+            }
           }
 
-          if (toolsUsed > 0) {
-            remaining = Math.max(0, remaining - toolsUsed);
+          if (totalToolsUsed > 0) {
+            remaining = Math.max(0, remaining - totalToolsUsed);
             if (remaining <= 0) break;
           } else {
             break;
