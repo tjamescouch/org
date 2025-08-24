@@ -28,7 +28,7 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
     const cmd = sanitizeContent(rawCmd);
     const name = toolcall.function?.name || "";
 
-    let toolsUsed = 0;
+    let toolsUsed = 1;
 
     if (!cmd) {
         const decision = guard.noteBadToolCall({
@@ -63,8 +63,6 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
     const t = Date.now();
     const result = await runSh(cmd);
     Logger.debug(`${agentId} tool <-`, { name, ms: Date.now() - t, exit: result.exit_code, outChars: result.stdout.length, errChars: result.stderr.length });
-
-    let toolUsed: boolean = false;
 
     // Let GuardRail see the signature to stop "same command" repetition
     const repeatDecision = guard.noteToolCall({

@@ -13,7 +13,7 @@ import { ChatMessage } from "./types";
 
 export interface Responder {
   id: string;
-  respond(messages: ChatMessage[], maxTools: number, peers: string[], abortCallback: () => boolean): Promise<{ message: string; toolsUsed: number }[]>;
+  respond(messages: ChatMessage[], maxTools: number, peers: string[], abortCallback: () => boolean): Promise<{ message: string; totalUsed: number }[]>;
   guardOnIdle?: (state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }) => GuardDecision | null;
   guardCheck?: (route: GuardRouteKind, content: string, peers: string[]) => GuardDecision | null;
 }
@@ -93,7 +93,7 @@ export class RandomScheduler {
           this.activeAgent = a;
           const messageResult = await a.respond(messages, Math.max(0, remaining), peers, () => this.draining);
 
-          for(const { message, toolsUsed } of messageResult) {
+          for(const { message, totalUsed: toolsUsed } of messageResult) {
             totalToolsUsed += toolsUsed;
             this.activeAgent = undefined;
             Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
