@@ -15,7 +15,7 @@ interface ToolHandlerResult {
     stderr: string;
     ok: boolean;
     exit_code: number;
-    toolUsed: boolean;
+    toolsUsed: number;
     forceEndTurn: boolean;
 }
 
@@ -27,6 +27,8 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
     const rawCmd = String(args?.cmd ?? "");
     const cmd = sanitizeContent(rawCmd);
     const name = toolcall.function?.name || "";
+
+    let toolsUsed = 0;
 
     if (!cmd) {
         const decision = guard.noteBadToolCall({
@@ -40,7 +42,7 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
         if (decision?.endTurn) {
             Logger.warn(`System ended turn due to bad tool call.`);
             if (text) await memory.add({ role: "system", content: text, from: "System" });
-            return { toolUsed: false, forceEndTurn: true, stdout: "", stderr: "System ended turn due to bad tool call", ok: false, exit_code: 1 };
+            return { toolsUsed, forceEndTurn: true, stdout: "", stderr: "System ended turn due to bad tool call", ok: false, exit_code: 1 };
         }
 
         // Synthesize a failed tool-output message back to memory (as before).
@@ -54,7 +56,7 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
         Logger.warn(`Execution failed: Command required.`, toolcall);
         await memory.add({ role: "tool", content, tool_call_id: toolcall.id, name, from: "Tool" });
             
-        return { toolUsed: true, forceEndTurn: false, stdout: "", stderr: "System aborted shell call tue to missing command.", ok: false, exit_code: 2 };
+        return { toolsUsed, forceEndTurn: false, stdout: "", stderr: "System aborted shell call tue to missing command.", ok: false, exit_code: 2 };
     }
 
     Logger.debug(`${agentId} tool ->`, { name, cmd: cmd.slice(0, 160) });
@@ -80,14 +82,13 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
         await memory.add({ role: "tool", content: contentJSON, tool_call_id: toolcall.id, name: "sh", from: "Tool" });
 
         if (text) await memory.add({ role: "assistant", content: text, from: "Me" });
-        return { toolUsed: false, forceEndTurn: true, stdout: result.stdout, stderr: result.stderr, ok: result.exit_code === 0, exit_code: result.exit_code };
+        return { toolsUsed: 0, forceEndTurn: true, stdout: result.stdout, stderr: result.stderr, ok: result.exit_code === 0, exit_code: result.exit_code };
     }
 
     const content = JSON.stringify(result);
     await memory.add({ role: "tool", content, tool_call_id: toolcall.id, name: "sh", from: "Tool" });
-    toolUsed = true;
 
-    return { toolUsed, forceEndTurn: false, stdout: result.stdout, stderr: result.stderr, ok: result.exit_code === 0, exit_code: result.exit_code };
+    return { toolsUsed, forceEndTurn: false, stdout: result.stdout, stderr: result.stderr, ok: result.exit_code === 0, exit_code: result.exit_code };
 }
 
 
@@ -99,8 +100,6 @@ const vimdiffHandler = async (agentId: string, toolcall: ChatToolCall, text: str
     const t = Date.now();
     const result = await runVimdiff({ left: args.left, right: args.right, cwd: args.cwd });
     Logger.debug(`${agentId} tool <-`, { name, ms: Date.now() - t });
-
-    let toolUsed: boolean = false;
 
     // Let GuardRail see the signature to stop "same command" repetition
     const repeatDecision = guard.noteToolCall({
@@ -118,14 +117,13 @@ const vimdiffHandler = async (agentId: string, toolcall: ChatToolCall, text: str
         await memory.add({ role: "tool", content: contentJSON, tool_call_id: toolcall.id, name: "sh", from: "Tool" });
 
         if (text) await memory.add({ role: "assistant", content: text, from: "Me" });
-        return { toolUsed: false, forceEndTurn: true, stdout: "vimdiff completed", stderr: '', ok: true, exit_code: 0 };
+        return { toolsUsed: 1, forceEndTurn: true, stdout: "vimdiff completed", stderr: '', ok: true, exit_code: 0 };
     }
 
     const content = JSON.stringify(result);
     await memory.add({ role: "tool", content, tool_call_id: toolcall.id, name: "sh", from: "Tool" });
-    toolUsed = true;
 
-    return { toolUsed, forceEndTurn: false, stdout: "vimdiff completed", stderr: '', ok: true, exit_code: 0 };
+    return { toolsUsed: 1, forceEndTurn: false, stdout: "vimdiff completed", stderr: '', ok: true, exit_code: 0 };
 }
 
 /**
