@@ -3,7 +3,7 @@ import { ChatToolCall } from "../drivers/types";
 import { GuardRail } from "../guardrails/guardrail";
 import { Logger } from "../logger";
 import { AgentMemory } from "../memory";
-import { runSh } from "../tools/sh";
+import { sandboxedSh } from "../tools/sandboxed-sh";
 import { runVimdiff } from "../tools/vimdiff";
 import { sanitizeContent } from "../utils/sanitize-content";
 import type { ExecuteToolsParams, ExecuteToolsResult } from "./tool-executor";
@@ -61,7 +61,7 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
 
     Logger.debug(`${agentId} tool ->`, { name, cmd: cmd.slice(0, 160) });
     const t = Date.now();
-    const result = await runSh(cmd);
+    const result = await sandboxedSh({ cmd }, {agentSessionId: agentId, projectDir: args.cwd ?? process.cwd() ?? "." })
     Logger.debug(`${agentId} tool <-`, { name, ms: Date.now() - t, exit: result.exit_code, outChars: result.stdout.length, errChars: result.stderr.length });
 
     // Let GuardRail see the signature to stop "same command" repetition

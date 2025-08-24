@@ -1,6 +1,5 @@
 // src/llm-agent.ts
 import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
-import { SH_TOOL_DEF } from "../tools/sh";
 import { C, Logger } from "../logger";
 import { AgentMemory } from "../memory";
 import { GuardRail } from "../guardrails/guardrail";
@@ -10,6 +9,7 @@ import { sanitizeAndRepairAssistantReply } from "../guard/sanitizer";
 import { ScrubbedAdvancedMemory } from "../memory/scrubbed-advanced-memory";
 import { ToolExecutor } from "../executors/tool-executor";
 import { StandardToolExecutor } from "../executors/standard-tool-executor";
+import { SANDBOXED_SH_TOOL_SCHEMA } from "../tools/sandboxed-sh";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -66,7 +66,7 @@ function buildSystemPrompt(id: string): string {
 export class LlmAgent extends Agent {
   private readonly driver: ChatDriver;
   private readonly model: string;
-  private readonly tools = [SH_TOOL_DEF/*, VIMDIFF_TOOL_DEF */];
+  private readonly tools = [SANDBOXED_SH_TOOL_SCHEMA];
 
   // Memory replaces the old raw history array.
   private readonly memory: AgentMemory;

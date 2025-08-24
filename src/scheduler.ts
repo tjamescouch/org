@@ -10,6 +10,7 @@ import { restoreStdin } from "./utils/restore-stdin";
 import { GuardDecision, GuardRouteKind } from "./guardrails/guardrail";
 import { ChatMessage } from "./types";
 import { LLMNoiseFilter } from "./utils/llm-noise-filter";
+import { finalizeSandbox } from "./tools/sandboxed-sh";
 
 
 export interface Responder {
@@ -70,55 +71,60 @@ export class RandomScheduler {
       let didWork = false;
 
       const shuffled = this.shuffle(this.agents.filter(a => this.inbox.has(a.id)));
+
       for (const agent of shuffled) {
-        const a: Responder | undefined = this.respondingAgent ?? agent;
-        this.respondingAgent = undefined;
+        try {
+          const a: Responder | undefined = this.respondingAgent ?? agent;
+          this.respondingAgent = undefined;
 
-        if (!a) {
-          throw new Error("Expected agent not found.");
-        }
+          if (!a) {
+            throw new Error("Expected agent not found.");
+          }
 
-        if (this.paused || !this.running) break;
+          if (this.paused || !this.running) break;
 
-        if (this.isMuted(a.id)) { Logger.debug(`muted: ${a.id}`); continue; }
+          if (this.isMuted(a.id)) { Logger.debug(`muted: ${a.id}`); continue; }
 
-        const messages = this.nextPromptFor(a.id);
-        if (messages.length === 0) {
-          Logger.debug(`no work for ${a.id}`);
-          continue;
-        }
-        Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(messages));
+          const messages = this.nextPromptFor(a.id);
+          if (messages.length === 0) {
+            Logger.debug(`no work for ${a.id}`);
+            continue;
+          }
+          Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(messages));
 
-        let remaining = this.maxTools;
-        let totalToolsUsed = 0;
-        for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
-          const peers = this.agents.map(x => x.id);
-          Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
-          this.activeAgent = a;
-          const messageResult = await a.respond(messages, Math.max(0, remaining), peers, () => this.draining);
+          let remaining = this.maxTools;
+          let totalToolsUsed = 0;
+          for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
+            const peers = this.agents.map(x => x.id);
+            Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
+            this.activeAgent = a;
+            const messageResult = await a.respond(messages, Math.max(0, remaining), peers, () => this.draining);
 
-          for(const { message, toolsUsed } of messageResult) {
-            totalToolsUsed += toolsUsed;
-            this.activeAgent = undefined;
-            Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
+            for (const { message, toolsUsed } of messageResult) {
+              totalToolsUsed += toolsUsed;
+              this.activeAgent = undefined;
+              Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
 
-            const askedUser = await this.route(a, message);
-            didWork = true;
+              const askedUser = await this.route(a, message);
+              didWork = true;
 
-            if (askedUser) {
-              const userText = ((await this.userPromptFn(a.id, message)) ?? "").trim();
-              if (userText) this.handleUserInterjection(userText);
+              if (askedUser) {
+                const userText = ((await this.userPromptFn(a.id, message)) ?? "").trim();
+                if (userText) this.handleUserInterjection(userText);
 
+                break;
+              }
+            }
+
+            if (totalToolsUsed > 0) {
+              remaining = Math.max(0, remaining - totalToolsUsed);
+              if (remaining <= 0) break;
+            } else {
               break;
             }
           }
-
-          if (totalToolsUsed > 0) {
-            remaining = Math.max(0, remaining - totalToolsUsed);
-            if (remaining <= 0) break;
-          } else {
-            break;
-          }
+        } finally {
+          finalizeSandbox({ projectDir: process.cwd(), agentSessionId: agent.id });
         }
       }
 
