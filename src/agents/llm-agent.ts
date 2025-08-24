@@ -34,7 +34,10 @@ function buildSystemPrompt(id: string): string {
     "- For small edits use apply_patch (via sh) or redirection. Read existing files before overwriting.",
     "",
     "MESSAGING",
-    "- @@user to talk to the human. @@<agent> to DM a peer. @@group to address everyone.",
+    "- @@user to talk to the human.",
+    "- @@<agent> to DM a peer.",
+    "-  @@group to address everyone.",
+    "- **Only insert a tag when a reply from that participant is required.** If I can keep working on the task without waiting for input, I should proceed silently.",
     "",
     "POLICY",
     "- Do the work, be concise. Validate results by running commands/tests.",
@@ -47,8 +50,9 @@ function buildSystemPrompt(id: string): string {
     "",
     "OUTPUT STYLE",
     `- Speak only in your own voice as "${id}" (first person).`,
-    "- Do not prefix lines with other agents’ names.",
+    "- Do not prefix lines with other agents' names.",
     "- Keep chat replies brief unless you are writing files.",
+    "Only tag a participant when a response from them is needed; otherwise continue autonomously until completion.",
   ].join("\n");
 }
 
