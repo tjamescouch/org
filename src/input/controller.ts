@@ -169,6 +169,10 @@ export class InputController {
     readline.emitKeypressEvents(process.stdin);
 
     this.keypressHandler = (_str: string, key: readline.Key) => {
+      if (!Controller.areKeysEnabled) {
+        return;
+      }
+
       if (this.interjecting) return; // readline is active; ignore raw keys
       if (!key) return;
 
@@ -180,10 +184,6 @@ export class InputController {
         process.exit(0);
       }
 
-      if (!Controller.areKeysEnabled) {
-        return;
-      }
-
       // Single-key, case-insensitive interjection hotkey.
       const name = (key.name || "").toLowerCase();
       if (name === this.interjectKey) {
@@ -193,7 +193,7 @@ export class InputController {
     };
 
     // Important: put stdin into raw to prevent kernel echo while idle.
-    this.setRawMode(Controller.areKeysEnabled);
+    this.setRawMode(true);
     process.stdin.on("keypress", this.keypressHandler);
   }
 
