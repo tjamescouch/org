@@ -33,7 +33,7 @@ export async function runVimdiff(args: Args): Promise<VimdiffResult> {
   }
 
   Controller.disableKeys();
-  resumeStdin();
+  pauseStdin();
 
   // Inherit TTY so the user controls vim
   const spawned = spawnInCleanEnvironment(
@@ -54,7 +54,7 @@ export async function runVimdiff(args: Args): Promise<VimdiffResult> {
 
   //return await waitForChild(child, { wasRaw });
   const code = await new Promise<number>((res) => child.on("close", (c) => res(c ?? 0)));
-  pauseStdin();
+  resumeStdin();
   Controller.enableKeys();
   return { ok: code===0, exit_code: code, cmd: '', stderr: '', stdout: '' };
 }
