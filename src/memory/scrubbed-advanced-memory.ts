@@ -1,6 +1,15 @@
 import type { ChatDriver, ChatMessage } from "../drivers/types";
 import { AgentMemory } from "./agent-memory";
 
+
+const META = /<\|(?:channel|message)\|>|\\<\|\s*(?:channel|message)\s*\|\\>/g;
+const TOOLS_LINE = /^\s*to=functions\s+\w+\s*$/gm;
+
+function finalClean(s: string): string {
+  // Already fence-aware upstream; this is a last-pass sweep
+  return s.replace(META, "").replace(TOOLS_LINE, "").trim();
+}
+
 /**
  * AdvancedMemory
  *
@@ -44,7 +53,13 @@ export class ScrubbedAdvancedMemory extends AgentMemory {
     // normalize whitespace
     s = s.replace(/[ \t]+$/gm, "");
     s = s.replace(/\n{3,}/g, "\n\n");
-    return s.trim();
+    const scrubbed = s.trim();
+
+    const cleaned = finalClean(scrubbed);
+    //if (cleaned.length === 0) return; //FIXME - remove from memory
+    if (cleaned.length === 0) return "No content generated."
+
+    return cleaned;
   }
 
 
