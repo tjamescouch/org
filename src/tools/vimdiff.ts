@@ -5,6 +5,7 @@ import { type ChildProcess } from "node:child_process";
 import { spawnInCleanEnvironment } from "../utils/spawn-clean";
 import { pauseStdin, resumeStdin } from "../input/utils";
 import { Controller } from "../input/controller";
+import { beginTtyHandoff, endTtyHandoff } from "../input/tty-handoff";
 
 type Args = { left: string; right: string; cwd?: string };
 
@@ -33,30 +34,32 @@ export async function runVimdiff(args: Args): Promise<VimdiffResult> {
   }
 
   Controller.disableKeys();
-  pauseStdin();
+  const handoff = beginTtyHandoff();
+  try {
+    // Inherit TTY so the user controls vim
+    const spawned = spawnInCleanEnvironment(
+      "/usr/bin/vim",
+      ["-d", args.left, args.right],
+      { cwd, stdio: "inherit", debugLabel: "vimdiff", shell: false }
+    );
 
-  // Inherit TTY so the user controls vim
-  const spawned = spawnInCleanEnvironment(
-    "/usr/bin/vim",
-    ["-d", args.left, args.right],
-    { cwd, stdio: "inherit", debugLabel: "vimdiff", shell: false }
-  );
+    const child: ChildProcess =
+      (spawned && (spawned.child as ChildProcess)) ||
+      (spawned && (spawned.proc as ChildProcess)) ||
+      (spawned as ChildProcess);
 
-  const child: ChildProcess =
-    (spawned && (spawned.child as ChildProcess)) ||
-    (spawned && (spawned.proc as ChildProcess)) ||
-    (spawned as ChildProcess);
+    if (!child || typeof (child as any).on !== "function") {
+      // Fallback if wrapper didn't return a process
+      throw new Error("[vimdiff] spawnInCleanEnvironment did not return a child process.");
+    }
 
-  if (!child || typeof (child as any).on !== "function") {
-    // Fallback if wrapper didn't return a process
-    throw new Error("[vimdiff] spawnInCleanEnvironment did not return a child process.");
+    //return await waitForChild(child, { wasRaw });
+    const code = await new Promise<number>((res) => child.on("close", (c) => res(c ?? 0)));
+    Controller.enableKeys();
+    return { ok: code === 0, exit_code: code, cmd: '', stderr: '', stdout: '' };
+  } finally {
+    endTtyHandoff(handoff);
   }
-
-  //return await waitForChild(child, { wasRaw });
-  const code = await new Promise<number>((res) => child.on("close", (c) => res(c ?? 0)));
-  resumeStdin();
-  Controller.enableKeys();
-  return { ok: code===0, exit_code: code, cmd: '', stderr: '', stdout: '' };
 }
 
 async function waitForChild(child: ChildProcess, opts: { wasRaw: boolean }): Promise<VimdiffResult> {
