@@ -21,6 +21,7 @@ export type ChatMessage = {
   role: Role;
   content: string;
   name?: string;
+  from?: string;
 
   // Tests / helpers sometimes attach tool calls to the latest user message:
   toolcalls?: Array<{ name: string; arguments: any }>;

@@ -3,9 +3,9 @@
  * we are actively capturing user text (interjection or scheduler prompt).
  *
  * UX rules:
- *  - ESC: graceful shutdown (finalize via scheduler.stop(); optional finalizer())
+ *  - ESC: graceful shutdown (scheduler.stop(); optional finalizer())
  *  - Ctrl+C: fast exit, no finalize
- *  - Non-interactive (no TTY): auto-synthesize ESC so CI/e2e won't hang
+ *  - Non-interactive (no TTY): auto-synthesize ESC *after* the scheduler is attached
  */
 
 import * as readline from "readline";
@@ -16,7 +16,7 @@ import { resumeStdin } from "./utils";
 export type InputControllerOptions = {
   interjectKey?: string;         // default: "i"
   interjectBanner?: string;      // default: "You: "
-  promptTemplate?: (from: string, content: string) => string; // when a model asks the user
+  promptTemplate?: (from: string, content: string) => string;
   /** Optional hook invoked during graceful shutdown (ESC). Useful for tests. */
   onGracefulShutdown?: () => void | Promise<void>;
 };
@@ -39,12 +39,8 @@ export class InputController {
   // test-helper / internal hook
   public readonly _private = {
     emitKey: (key: { name: string; ctrl?: boolean }) => {
-      if (!this.keypressHandler) return;
-      try {
-        this.keypressHandler("", { name: key.name, ctrl: !!key.ctrl } as unknown as readline.Key);
-      } catch (e) {
-        Logger.warn("emitKey failed", e);
-      }
+      // Call the same logic the real keypress path uses.
+      this.handleKey(key as any);
     },
   };
 
@@ -72,14 +68,16 @@ export class InputController {
       process.exit(0);
     });
 
-    // Non-interactive auto-shutdown: synthesize an ESC so tests/CI don't hang.
-    if (!this.interactive) {
-      setTimeout(() => this._private.emitKey({ name: "escape" }), 0);
-    }
+    // NOTE: no auto-ESC here. We do it after attachScheduler() so the stop() exists.
   }
 
   attachScheduler(s: RandomScheduler) {
     this.scheduler = s;
+
+    // In non-interactive runs (CI/e2e), auto-signal ESC after scheduler is ready.
+    if (!this.interactive) {
+      setTimeout(() => this._private.emitKey({ name: "escape" }), 0);
+    }
   }
 
   static disableKeys() {
@@ -190,7 +188,49 @@ export class InputController {
   }
 
   // --------------------------------------------------------------------------
-  // Raw key handling (no echo)
+  // Key handling (shared by real events and tests)
+  // --------------------------------------------------------------------------
+
+  private handleKey(key: { name?: string; ctrl?: boolean } | null | undefined) {
+    if (!InputController.areKeysEnabled) return;
+    if (this.interjecting) return;
+    if (!key) return;
+
+    // Ctrl+C exits fast
+    if (key.ctrl && key.name === "c") {
+      this.detachRawKeyListener();
+      this.setRawMode(false);
+      process.stdout.write("\n");
+      process.exit(0);
+    }
+
+    // ESC → graceful shutdown (finalizer + scheduler.stop()).
+    if (key.name === "escape") {
+      // Run finalizer & stop on the next microtask to keep handler tight.
+      queueMicrotask(async () => {
+        try {
+          if (this.finalizer) await this.finalizer();
+        } catch (e) {
+          Logger.warn("finalizer failed", e);
+        }
+        try {
+          this.scheduler?.stop();
+        } catch (e) {
+          Logger.warn("scheduler.stop() failed", e);
+        }
+      });
+      return;
+    }
+
+    // Single-key, case-insensitive interjection hotkey.
+    const name = (key.name || "").toLowerCase();
+    if (name === this.interjectKey) {
+      this.enterInterjection().catch((err) => Logger.error(err));
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Raw key listener wiring
   // --------------------------------------------------------------------------
 
   private installRawKeyListener() {
@@ -198,41 +238,7 @@ export class InputController {
     readline.emitKeypressEvents(process.stdin);
 
     this.keypressHandler = (_str: string, key: readline.Key) => {
-      if (!InputController.areKeysEnabled) return;
-      if (this.interjecting) return; // readline active
-      if (!key) return;
-
-      // Ctrl+C exits fast (handled in process.on("SIGINT") as well)
-      if (key.ctrl && key.name === "c") {
-        this.detachRawKeyListener();
-        this.setRawMode(false);
-        process.stdout.write("\n");
-        process.exit(0);
-      }
-
-      // ESC → graceful shutdown (finalizer + scheduler.stop()).
-      if (key.name === "escape") {
-        // Run finalizer & stop on the next microtask to keep handler tight.
-        queueMicrotask(async () => {
-          try {
-            if (this.finalizer) await this.finalizer();
-          } catch (e) {
-            Logger.warn("finalizer failed", e);
-          }
-          try {
-            this.scheduler?.stop();
-          } catch (e) {
-            Logger.warn("scheduler.stop() failed", e);
-          }
-        });
-        return;
-      }
-
-      // Single-key, case-insensitive interjection hotkey.
-      const name = (key.name || "").toLowerCase();
-      if (name === this.interjectKey) {
-        this.enterInterjection().catch((err) => Logger.error(err));
-      }
+      this.handleKey(key as any);
     };
 
     // Only set raw mode if interactive; otherwise stdin may not support it.
@@ -258,3 +264,17 @@ export class InputController {
 // Backward-compat alias if other code referred to Controller
 export const Controller = InputController;
 export default InputController;
+
+/** Small factory used only by tests. */
+export function makeControllerForTests(args: {
+  scheduler: RandomScheduler;
+  finalizer?: () => void | Promise<void>;
+  interjectKey?: string;
+}) {
+  const ctl = new InputController({
+    onGracefulShutdown: args.finalizer,
+    interjectKey: args.interjectKey,
+  });
+  ctl.attachScheduler(args.scheduler);
+  return ctl;
+}
