@@ -213,7 +213,7 @@ async function main() {
   await scheduler.start();
 }
 
-main().then(() => finalizeAllSanboxes).catch((e) => {
+main().catch((e) => {
   Logger.info(e);
   process.exit(1);
 });

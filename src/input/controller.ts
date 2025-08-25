@@ -15,6 +15,7 @@ import * as readline from "readline";
 import { Logger } from "../logger";
 import type { RandomScheduler } from "../scheduler";
 import { resumeStdin } from "./utils";
+import { finalizeAllSanboxes } from "../tools/sandboxed-sh";
 
 export type InputControllerOptions = {
   interjectKey?: string;         // default: "i"
@@ -50,6 +51,9 @@ export class InputController {
     process.on("SIGINT", () => {
       this.detachRawKeyListener();
       this.setRawMode(false);
+
+      finalizeAllSanboxes();
+
       process.stdout.write("\n");
       process.exit(0);
     });
@@ -180,6 +184,9 @@ export class InputController {
       if (key.ctrl && key.name === "c") {
         this.detachRawKeyListener();
         this.setRawMode(false);
+
+        finalizeAllSanboxes();
+
         process.stdout.write("\n");
         process.exit(0);
       }
