@@ -5,6 +5,7 @@ import { NoiseFilters } from "./filters";
 import { Inbox } from "./inbox";
 import { routeWithSideEffects } from "./router";
 import { ReviewManager } from "./review-manager";
+import { TagSplitter, TagPart } from "../utils/tag-splitter";
 import type { GuardDecision } from "../guardrails/guardrail";
 import type { ChatMessage } from "../types";
 import type { Responder, SchedulerOptions, AskUserFn } from "./types";
@@ -115,9 +116,11 @@ export class RandomScheduler {
               didWork = true;
 
               if (askedUser) {
+                // Default the user's reply to DM the requester (a) unless they explicitly tag.
                 if (this.promptEnabled) {
+                  this.lastUserDMTarget = a.id;
                   const userText = ((await this.askUser(a.id, message)) ?? "").trim();
-                  if (userText) this.handleUserInterjection(userText);
+                  if (userText) this.handleUserInterjection(userText, { defaultTargetId: a.id });
                 } else {
                   Logger.info(`(${a.id}) requested @@user input, but prompt is disabled. Skipping.`);
                 }
@@ -149,15 +152,15 @@ export class RandomScheduler {
           const prompt =
             dec?.askUser
               ?? `(scheduler)
-All agents are idle (and tool budget is exhausted or no work). Please provide the next concrete instruction or question.`;
+All agents are idle. Provide the next concrete instruction or question.`;
+          // When idle, prefer the first agent to receive the reply.
+          const preferred = this.agents[0]?.id;
+          if (preferred) this.lastUserDMTarget = preferred;
           const userText = ((await this.askUser("scheduler", prompt)) ?? "").trim();
-          if (userText) {
-            this.respondingAgent = this.agents[0];
-            this.handleUserInterjection(userText);
-            idleTicks = 0;
-          }
+          if (userText) this.handleUserInterjection(userText, { defaultTargetId: preferred || undefined });
+          idleTicks = 0;
         } else {
-          // Cooperative yield when idle to prevent CPU spin and allow signals (Ctrl‑C) to be handled.
+          // Cooperative yield when idle to prevent CPU spin and allow signals (Ctrl-C) to be handled.
           await this.sleep(this.idleSleepMs);
         }
       } else {
@@ -189,37 +192,72 @@ All agents are idle (and tool budget is exhausted or no work). Please provide th
   hasActiveAgent(): boolean { return !!this.activeAgent; }
 
   /**
-   * Enqueue user text.
-   * Semantics:
-   *  - If one or more @/@@agent tags appear, DM ONLY those agent(s) with tags stripped.
-   *    Prefer the first mentioned agent to respond next and remember as last DM target.
-   *  - Otherwise, broadcast to @@group.
-   *  - Unknown tags are warned and ignored (fall back to group if no known tags present).
+   * External entry for user interjections (e.g., CLI input).
+   * If no explicit tags are present, prefer the last DM target.
    */
-  handleUserInterjection(text: string) {
+  interject(text: string) {
+    this.handleUserInterjection(text, { defaultTargetId: this.lastUserDMTarget || undefined });
+  }
+
+  /**
+   * Enqueue user text.
+   * Rules:
+   *  - If message contains explicit tags, DM ONLY those agents (strip tags).
+   *  - Otherwise, if a defaultTargetId is provided, DM that agent.
+   *  - Otherwise, broadcast to @@group.
+   */
+  handleUserInterjection(text: string, opts?: { defaultTargetId?: string }) {
     const raw = String(text ?? "");
+    const parts = TagSplitter.split(raw, {
+      // Accept both @@ and @ forms for users who prefer shorthand.
+      allowSingleAt: true,
+      allowSingleHash: true,
+      // Recognize these keywords as special
+      userTokens: ["user"],
+      groupTokens: ["group"],
+      // Agents: allow any by parser; we validate against this.agents below.
+      agentTokens: this.agents.map(a => a.id),
+      fileTokens: ["file"],
+    });
 
-    const { targets, unknown, content } = this.parseUserDM(raw);
+    const agentParts = parts.filter(p => p.kind === "agent") as Array<TagPart & { kind: "agent" }>;
 
-    if (targets.length > 0) {
-      const msg: ChatMessage = { content, role: "user", from: "User" };
-      this.respondingAgent = targets[0];
-      this.lastUserDMTarget = targets[0].id;
-
-      for (const a of targets) {
-        this.inbox.push(a.id, msg);
+    if (agentParts.length > 0) {
+      const targets: Responder[] = [];
+      for (const ap of agentParts) {
+        const ag = this.findAgentByIdExact(ap.tag);
+        if (ag && !targets.some(t => t.id === ag.id)) targets.push(ag);
       }
-      Logger.info(`[user → ${targets.map(a => `@@${a.id}`).join(", ")}] ${raw}`);
-      if (unknown.length) {
-        Logger.info(C.yellow(`[warn] Unknown agent tag(s): ${unknown.join(", ")} (known: ${this.agents.map(a => a.id).join(", ")})`));
+      if (targets.length > 0) {
+        // Prefer the first mentioned agent to respond next.
+        this.respondingAgent = targets[0];
+        this.lastUserDMTarget = targets[0].id;
+        for (const ap of agentParts) {
+          const ag = this.findAgentByIdExact(ap.tag);
+          if (!ag) continue;
+          const msg: ChatMessage = { content: ap.content, role: "user", from: "User" };
+          this.inbox.push(ag.id, msg);
+          Logger.info(`[user → @@${ag.id}] ${raw}`);
+        }
+        return;
       }
-      return;
     }
 
-    if (unknown.length) {
-      Logger.info(C.yellow(`[warn] Unknown agent tag(s): ${unknown.join(", ")}; broadcasting to @@group.`));
+    // No explicit tags → DM preferred agent if provided.
+    if (opts?.defaultTargetId) {
+      const ag = this.findAgentByIdExact(opts.defaultTargetId);
+      if (ag) {
+        const content = raw.trim();
+        const msg: ChatMessage = { content, role: "user", from: "User" };
+        this.respondingAgent = ag;
+        this.lastUserDMTarget = ag.id;
+        this.inbox.push(ag.id, msg);
+        Logger.info(`[user → @@${ag.id}] ${raw}`);
+        return;
+      }
     }
 
+    // Fallback: broadcast to group.
     for (const a of this.agents) {
       this.inbox.push(a.id, { content: raw, role: "user", from: "User" });
     }
@@ -252,55 +290,16 @@ All agents are idle (and tool budget is exhausted or no work). Please provide th
       this.mute(agent.id, (dec as any).muteMs);
     }
     if ((dec as any).askUser && this.promptEnabled) {
+      this.lastUserDMTarget = agent.id; // prefer the nudging agent
       const userText = ((await this.askUser(agent.id, (dec as any).askUser)) ?? "").trim();
-      if (userText) this.handleUserInterjection(userText);
+      if (userText) this.handleUserInterjection(userText, { defaultTargetId: agent.id });
     }
   }
 
-  /** Find an agent by exact id or (fallback) prefix match, case-insensitive. */
-  private findAgentByIdOrPrefix(key: string): Responder | undefined {
+  /** Exact id match, case-insensitive. */
+  private findAgentByIdExact(key: string): Responder | undefined {
     const t = key.toLowerCase();
-    return (
-      this.agents.find(a => a.id.toLowerCase() === t) ??
-      this.agents.find(a => a.id.toLowerCase().startsWith(t))
-    );
-  }
-
-  /**
-   * Parse user DM targets and return:
-   *  - targets: matching agents
-   *  - unknown: tags that didn't match any agent
-   *  - content: message with all tags stripped and whitespace normalized
-   *
-   * We accept single '@' or double '@@' to be tolerant of model/user output.
-   * We only treat them as tags when preceded by start-of-line or whitespace to
-   * avoid catching emails like a@b.com.
-   */
-  private parseUserDM(raw: string): { targets: Responder[]; unknown: string[]; content: string } {
-    const tagRe = /(^|\s)@{1,2}([a-z][\w-]*)\b/gi;
-
-    const seen = new Set<string>();
-    const targets: Responder[] = [];
-    const unknown: string[] = [];
-
-    let m: RegExpExecArray | null;
-    while ((m = tagRe.exec(raw)) !== null) {
-      const tag = (m[2] || "").toLowerCase();
-      if (!tag || seen.has(tag)) continue;
-      seen.add(tag);
-
-      const agent = this.findAgentByIdOrPrefix(tag);
-      if (agent) {
-        targets.push(agent);
-      } else {
-        unknown.push(tag);
-      }
-    }
-
-    // Strip all tags (known or unknown) from the delivered content.
-    const content = raw.replace(tagRe, (full, pre) => (pre || " ")).replace(/\s+/g, " ").trim();
-
-    return { targets, unknown, content };
+    return this.agents.find(a => a.id.toLowerCase() === t);
   }
 
   private sleep(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }
