@@ -35,7 +35,7 @@ export class RandomScheduler {
   private readonly agentFilter = new LLMNoiseFilter();
   private readonly groupFilter = new LLMNoiseFilter();
   private readonly fileFilter = new LLMNoiseFilter();
-  private reviewMode = "review";
+  private reviewMode = "ask";
 
   private readonly idlePromptEvery = 3;
 
@@ -62,10 +62,6 @@ export class RandomScheduler {
     this.userPromptFn = opts.onAskUser;
     this.shuffle = opts.shuffle ?? fisherYatesShuffle;
     for (const a of this.agents) this.ensureInbox(a.id);
-  }
-
-  setReviewMode(mode:string): void {
-    this.reviewMode = mode;
   }
 
   start = async (): Promise<void> => {
@@ -137,8 +133,6 @@ export class RandomScheduler {
             }
           }
         } finally {
-          if (totalToolsUsed === 0) return; 
-
           const ctx = { projectDir: process.cwd(), agentSessionId: agent.id };
           // after a batch of tool calls:
           const fin = await finalizeSandbox(ctx);
@@ -151,14 +145,14 @@ export class RandomScheduler {
             if (decision.action === "apply") {
               try {
                 await applyPatch(projectDir, patchPath, decision.commitMsg);
-                console.log("✓ patch applied");
+                Logger.info("✓ patch applied");
               } catch (e: any) {
-                console.error("Patch apply failed:", e?.message ?? e);
+                Logger.error("Patch apply failed:", e?.message ?? e);
               }
             } else if (decision.action === "reject") {
-              console.log("↷ patch rejected");
+              Logger.info("↷ patch rejected");
             } else {
-              console.log(`↷ patch skipped: ${decision.reason}`);
+              Logger.info(`↷ patch skipped: ${decision.reason}`);
             }
           } else {
             console.log("↷ no patch produced");
