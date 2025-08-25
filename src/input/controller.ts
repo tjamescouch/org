@@ -178,7 +178,7 @@ export class InputController {
   // --------------------------------------------------------------------------
 
   private async gracefulShutdown(): Promise<void> {
-    Logger.info("Shutting down...");
+    Logger.info("\nShutting down...");
     // Stop hotkeys & raw input before any async
     this.detachRawKeyListener();
     this.setRawMode(false);
