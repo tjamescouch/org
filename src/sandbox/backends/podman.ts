@@ -203,7 +203,12 @@ export class PodmanSession implements ISandboxSession {
     async finalize() {
         if (!this.started) throw new Error("session not started");
 
-        await this.execInCmd("git -C /work diff --binary --no-prefix " + this.shQ(this.baselineCommit!) + " HEAD > /work/.org/session.patch || true");
+        await this.execInCmd(
+            "git -C /work -c diff.noprefix=false diff --binary " +
+            this.shQ(this.baselineCommit!) +
+            " HEAD > /work/.org/session.patch || true"
+        );
+
         const patchDst = path.join(this.spec.runDir, "session.patch");
         await this.execHost(["cp", `${this.name}:/work/.org/session.patch`, patchDst]).catch(() => Promise.resolve());
 

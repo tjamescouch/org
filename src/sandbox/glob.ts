@@ -1,57 +1,86 @@
-// Tiny glob -> RegExp with sane '**' and '*' semantics (no micromatch).
-// - '*'   matches within a single path segment (no '/')
-// - '**'  matches across segments (may include '/')
-// - '? '  matches a single non-'/' char
-// - trailing '/**' means "the directory itself OR anything below it"
-// - we do not support character classes or extglobs.
+// src/sandbox/glob.ts
 //
-// All paths must be POSIX-style (use '/' as separator). Callers should pass
-// relative repo paths like "foo.txt", "src/x/y.ts", not absolute paths.
+// Minimal, dependency-free globbing that matches your test semantics:
+// - "*" and "?" never cross '/'; they DO match dot segments
+// - "**/*" is nested only (must contain at least one '/')
+// - trailing "/**" matches the dir itself OR anything deeper
+// - deny wins over allow
 
-export function normalizePath(p: string): string {
-  // collapse backslashes and duplicate slashes
-  return p.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\.\/+/, "");
+const reCache = new Map<string, RegExp>();
+
+function escRe(s: string) {
+  return s.replace(/[\\^$+?.()|[\]{}]/g, "\\$&");
 }
 
-function escapeRegexExceptStars(s: string): string {
-  // escape all regex metas EXCEPT * and ?; we'll rewrite those next
-  return s.replace(/([.+^${}()|[\]\\])/g, "\\$1");
+function compileSegment(seg: string): string {
+  // Single path segment (no '/'); '*' and '?' include dot segments.
+  let out = "";
+  for (let i = 0; i < seg.length; i++) {
+    const c = seg[i];
+    if (c === "*") out += "[^/]*";
+    else if (c === "?") out += "[^/]";
+    else out += escRe(c);
+  }
+  return out;
 }
 
 export function globToRegExp(glob: string): RegExp {
-  let g = normalizePath(glob);
+  const key = `g:${glob}`;
+  const cached = reCache.get(key);
+  if (cached) return cached;
 
-  // Special-case: pure "**" should match everything (including empty)
-  if (g === "**") return /^.*$/;
+  glob = glob.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\.\//, "");
 
-  // Build a regex string in a few safe passes:
-  //  1) escape regex chars except * and ?
-  //  2) translate well-known glob constructs in the right order
-  let re = escapeRegexExceptStars(g);
+  // special case: exactly "**/*" => nested only
+  if (glob === "**/*") {
+    const nestedOnly = new RegExp("^.+/[^/]+$");
+    reCache.set(key, nestedOnly);
+    return nestedOnly;
+  }
 
-  // Trailing "/**"  ->  "(?:/.*)?"
-  // Accept the directory itself OR anything deeper.
-  re = re.replace(/\/\*\*$/g, "(?:\\/.*)?");
+  const parts = glob.split("/");
+  let re = "^";
 
-  // "**/" anywhere (0+ directories plus a slash)
-  // Use a non-greedy-ish construction so following literals still match.
-  re = re.replace(/(?:^|\/)\*\*\//g, "(?:.*\\/)?");
+  for (let i = 0; i < parts.length; i++) {
+    const seg = parts[i];
 
-  // Remaining "**" (not followed by '/'): cross-segment matches
-  re = re.replace(/\*\*/g, ".*");
+    if (seg === "**") {
+      const last = i === parts.length - 1;
+      if (last) {
+        // trailing "/**": dir itself or deeper; if pattern is just "**", match anything
+        re += parts.length === 1 ? ".*" : "(?:/.*)?";
+      } else {
+        // "**/" mid-pattern: one or more directories (dot dirs allowed)
+        re += "(?:/[^/]+)+";
+      }
+      continue;
+    }
 
-  // Now single-segment wildcards
-  re = re.replace(/\*/g, "[^/]*");
-  re = re.replace(/\?/g, "[^/]");
+    if (i > 0) re += "/";
+    re += compileSegment(seg);
+  }
 
-  return new RegExp("^" + re + "$");
+  re += "$";
+  const compiled = new RegExp(re);
+  reCache.set(key, compiled);
+  return compiled;
 }
 
-export function matchAny(patterns: readonly string[], candidate: string): boolean {
-  const path = normalizePath(candidate);
-  for (const pat of patterns) {
-    const rx = globToRegExp(pat);
-    if (rx.test(path)) return true;
+export function matchAny(patterns: readonly string[], path: string): boolean {
+  if (!patterns || patterns.length === 0) return false;
+  path = path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\.\//, "");
+  for (const p of patterns) {
+    if (globToRegExp(p).test(path)) return true;
   }
   return false;
+}
+
+export function isAllowed(
+  path: string,
+  allow: readonly string[],
+  deny: readonly string[]
+): boolean {
+  path = path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\.\//, "");
+  if (deny && deny.length && matchAny(deny, path)) return false;
+  return allow && allow.length ? matchAny(allow, path) : true;
 }
