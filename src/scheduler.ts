@@ -11,7 +11,7 @@ import { restoreStdin } from "./utils/restore-stdin";
 import { GuardDecision, GuardRouteKind } from "./guardrails/guardrail";
 import { ChatMessage } from "./types";
 import { LLMNoiseFilter } from "./utils/llm-noise-filter";
-import { finalizeSandbox } from "./tools/sandboxed-sh";
+import { finalizeAllSandboxes, finalizeSandbox } from "./tools/sandboxed-sh";
 import { modeFromEnvOrFlags, decideReview, applyPatch } from "./review";
 
 
@@ -108,6 +108,8 @@ export class RandomScheduler {
             Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
             this.activeAgent = a;
             const messageResult = await a.respond(messages, Math.max(0, remaining), peers, () => this.draining);
+
+            Logger.error("message result", messageResult);
 
             for (const { message, toolsUsed } of messageResult) {
               totalToolsUsed += toolsUsed;
@@ -218,8 +220,15 @@ export class RandomScheduler {
     const target = this.lastUserDMTarget;
     // Record whatever assistant text we have before yielding
     const hasTag = text.match(/@@\w+/);
+    const hasUserTag = text.match(/@@user\s/);
 
     const tagParts: TagPart[] = hasTag ? TagParser.parse(text) : [target ? { index: 0, kind: "agent", tag: target, content: text } : { index: 0, kind: "group", tag: "group", content: text }];
+
+    if (hasUserTag && !process.stdin.isTTY) {
+      finalizeAllSandboxes();
+      
+      process.exit(0);
+    }
 
     for (const tagPart of tagParts) {
       if (tagPart.kind === "agent") {

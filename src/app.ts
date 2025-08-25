@@ -108,9 +108,6 @@ function parseAgents(
     const kind = (kindRaw as ModelKind) || "mock";
     if (kind === "mock") {
       const m = new MockModel(id);
-      if (recipeSystemPrompt && typeof (m as any).setSystemPrompt === "function") {
-        (m as any).setSystemPrompt(recipeSystemPrompt);
-      }
       out.push({ id, kind, model: m });
     } else if (kind === "lmstudio") {
       if (llmDefaults.protocol !== "openai") throw new Error(`Unsupported protocol: ${llmDefaults.protocol}`);
