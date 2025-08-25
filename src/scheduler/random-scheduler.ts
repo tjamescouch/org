@@ -36,6 +36,9 @@ export class RandomScheduler {
   private readonly promptEnabled: boolean;
   private readonly idleSleepMs: number;
 
+  // NEW: when true, break the current agent loop and start a new tick immediately
+  private rescheduleNow = false;
+
   constructor(opts: SchedulerOptions) {
     this.agents = opts.agents;
     this.maxTools = opts.maxTools;
@@ -66,12 +69,14 @@ export class RandomScheduler {
       }
 
       let didWork = false;
+      this.rescheduleNow = false;
 
       // Choose agents that currently have messages waiting.
       const ready = this.agents.filter(a => this.inbox.hasWork(a.id));
       const order = this.shuffle(ready);
 
       for (const agent of order) {
+        if (this.rescheduleNow) break;                       // <-- NEW: jump to next tick
         if (this.isMuted(agent.id)) { Logger.debug(`muted: ${agent.id}`); continue; }
 
         const a = this.respondingAgent ?? agent;
@@ -116,11 +121,14 @@ export class RandomScheduler {
               didWork = true;
 
               if (askedUser) {
-                // Default the user's reply to DM the requester (a) unless they explicitly tag.
                 if (this.promptEnabled) {
+                  // Default the user's reply to DM the requester (a) unless they explicitly tag.
                   this.lastUserDMTarget = a.id;
                   const userText = ((await this.askUser(a.id, message)) ?? "").trim();
                   if (userText) this.handleUserInterjection(userText, { defaultTargetId: a.id });
+                  // If the user explicitly tagged, handleUserInterjection sets rescheduleNow=true.
+                  // Either way, we want to jump to the next tick immediately to honor targeting.
+                  this.rescheduleNow = true;                 // <-- NEW: force immediate reschedule
                 } else {
                   Logger.info(`(${a.id}) requested @@user input, but prompt is disabled. Skipping.`);
                 }
@@ -128,6 +136,7 @@ export class RandomScheduler {
               }
             }
 
+            if (this.rescheduleNow) break;                   // <-- NEW
             if (totalToolsUsed > 0) {
               remaining = Math.max(0, remaining - totalToolsUsed);
               if (remaining <= 0) break;
@@ -153,15 +162,14 @@ export class RandomScheduler {
             dec?.askUser
               ?? `(scheduler)
 All agents are idle. Provide the next concrete instruction or question.`;
-          // When idle, prefer the first agent to receive the reply.
           const preferred = this.agents[0]?.id;
           if (preferred) this.lastUserDMTarget = preferred;
           const userText = ((await this.askUser("scheduler", prompt)) ?? "").trim();
           if (userText) this.handleUserInterjection(userText, { defaultTargetId: preferred || undefined });
           idleTicks = 0;
+          // If user replied we may have set rescheduleNow; loop naturally continues.
         } else {
-          // Cooperative yield when idle to prevent CPU spin and allow signals (Ctrl-C) to be handled.
-          await this.sleep(this.idleSleepMs);
+          await this.sleep(this.idleSleepMs); // cooperative idle
         }
       } else {
         idleTicks = 0;
@@ -191,32 +199,27 @@ All agents are idle. Provide the next concrete instruction or question.`;
   isDraining(): boolean { return this.draining; }
   hasActiveAgent(): boolean { return !!this.activeAgent; }
 
-  /**
-   * External entry for user interjections (e.g., CLI input).
-   * If no explicit tags are present, prefer the last DM target.
-   */
+  /** External entry for user interjections (e.g., CLI input). */
   interject(text: string) {
     this.handleUserInterjection(text, { defaultTargetId: this.lastUserDMTarget || undefined });
   }
 
   /**
    * Enqueue user text.
-   * Rules:
-   *  - If message contains explicit tags, DM ONLY those agents (strip tags).
-   *  - Otherwise, if a defaultTargetId is provided, DM that agent.
-   *  - Otherwise, broadcast to @@group.
+   * Rules (explicit tag **overrides** everything):
+   *  - If message contains explicit agent tags → DM ONLY those agents, set respondingAgent,
+   *    and request immediate reschedule so a targeted agent runs next.
+   *  - Else if defaultTargetId is provided → DM that agent and reschedule.
+   *  - Else → broadcast to @@group.
    */
-  handleUserInterjection(text: string, opts?: { defaultTargetId?: string }) {
+  private handleUserInterjection(text: string, opts?: { defaultTargetId?: string }) {
     const raw = String(text ?? "");
     const parts = TagSplitter.split(raw, {
-      // Accept both @@ and @ forms for users who prefer shorthand.
       allowSingleAt: true,
       allowSingleHash: true,
-      // Recognize these keywords as special
       userTokens: ["user"],
       groupTokens: ["group"],
-      // Agents: allow any by parser; we validate against this.agents below.
-      agentTokens: this.agents.map(a => a.id),
+      agentTokens: this.agents.map(a => a.id),   // allowlist
       fileTokens: ["file"],
     });
 
@@ -229,7 +232,6 @@ All agents are idle. Provide the next concrete instruction or question.`;
         if (ag && !targets.some(t => t.id === ag.id)) targets.push(ag);
       }
       if (targets.length > 0) {
-        // Prefer the first mentioned agent to respond next.
         this.respondingAgent = targets[0];
         this.lastUserDMTarget = targets[0].id;
         for (const ap of agentParts) {
@@ -239,20 +241,21 @@ All agents are idle. Provide the next concrete instruction or question.`;
           this.inbox.push(ag.id, msg);
           Logger.info(`[user → @@${ag.id}] ${raw}`);
         }
+        this.rescheduleNow = true;               // <-- NEW: explicit tags preempt others
         return;
       }
     }
 
-    // No explicit tags → DM preferred agent if provided.
+    // No explicit tags → DM default target if provided.
     if (opts?.defaultTargetId) {
       const ag = this.findAgentByIdExact(opts.defaultTargetId);
       if (ag) {
-        const content = raw.trim();
-        const msg: ChatMessage = { content, role: "user", from: "User" };
+        const msg: ChatMessage = { content: raw.trim(), role: "user", from: "User" };
         this.respondingAgent = ag;
         this.lastUserDMTarget = ag.id;
         this.inbox.push(ag.id, msg);
         Logger.info(`[user → @@${ag.id}] ${raw}`);
+        this.rescheduleNow = true;               // <-- NEW: make the requester run next
         return;
       }
     }
