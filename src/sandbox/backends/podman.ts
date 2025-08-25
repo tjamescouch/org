@@ -10,6 +10,8 @@ import { matchAny } from "../glob";
 import { ISandboxSession } from "../types";
 import { Logger } from "../../logger";
 import InputController from "../../input/controller";
+import { ensureOk } from "../sh-result";
+
 
 type ShResult = { code: number; stdout: string; stderr: string };
 
@@ -295,8 +297,9 @@ export class PodmanSession implements ISandboxSession {
     }
 
 
-    private async must(rp: Promise<ShResult>) {
-        const r = await rp; if (r.code !== 0) throw new Error(r.stderr || r.stdout); return r;
+    private async must<T extends { code?: number | null; stdout?: string; stderr?: string }>( rp: Promise<T>, context = "podman.exec"): Promise<T> {
+        const r = await rp;
+        return ensureOk(r, context);
     }
 
     private async collectStepsMeta() {
