@@ -207,13 +207,15 @@ export class PodmanSession implements ISandboxSession {
         InputController.disableKeys();
         InputController.setRawMode(false);
 
+        // src/sandbox/backends/podman.ts  (inside finalize())
         await this.execInCmd(
-            "git -C /work diff --binary " +
-            "-c color.ui=false -c core.pager=cat --no-ext-diff " +
-            this.shQ(this.baselineCommit!) + " HEAD > /work/.org/session.patch || true"
+            "git -C /work " +
+            "-c diff.noprefix=false " +     // force a/b prefixes
+            "-c color.ui=false " +          // disable ANSI colors
+            "-c core.pager=cat " +          // ensure no pager
+            "diff --binary --no-ext-diff " + this.shQ(this.baselineCommit!) + " HEAD " +
+            "> /work/.org/session.patch || true"
         );
-        // (do NOT pass --no-prefix; if you want to be extra safe, add: -c diff.noprefix=false)
-
 
         InputController.setRawMode(true);
         InputController.enableKeys();
