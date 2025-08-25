@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 // NOTE: path is from src/__tests__ to src/controller.ts
 import { makeControllerForTests } from "../input/controller";
 
-describe("ESC graceful shutdown", () => {
+describe("ESC graceful shutdown vs Ctrl+C", () => {
   let stopped = 0;
   let finalized = 0;
   let ctl: ReturnType<typeof makeControllerForTests> | null = null;
@@ -34,14 +34,54 @@ describe("ESC graceful shutdown", () => {
     ctl = null;
   });
 
-  it("calls scheduler.stop() and finalizer() on ESC", async () => {
-    // simulate ESC keypress via helper
-    ctl!._private.emitKey({ name: "escape" });
+  it("ESC calls scheduler.stop() and finalizer()", async () => {
+    let stopped = 0;
+    let finalized = 0;
 
-    // give the controller microtask tick if it schedules finalization
-    await Promise.resolve();
+    const scheduler: any = {
+      stop: () => { stopped++; },
+      isDraining: () => false,
+      drain: async () => {},
+      stopDraining: () => {},
+      handleUserInterjection: (_: string) => {},
+    };
+
+    const ctl = makeControllerForTests({
+      scheduler,
+      finalizer: async () => { finalized++; },
+    });
+
+    ctl._private.emitKey({ name: "escape" });
+    await Promise.resolve(); // allow microtask
 
     expect(stopped).toBe(1);
     expect(finalized).toBe(1);
   });
+
+  it("Ctrl+C exits fast (no finalize)", async () => {
+    let stopped = 0;
+    let finalized = 0;
+
+    const scheduler: any = {
+      stop: () => { stopped++; },
+      isDraining: () => false,
+      drain: async () => {},
+      stopDraining: () => {},
+      handleUserInterjection: (_: string) => {},
+    };
+
+    const ctl = makeControllerForTests({
+      scheduler,
+      finalizer: async () => { finalized++; },
+    });
+
+    // simulate Ctrl+C
+    ctl._private.emitKey({ name: "c", ctrl: true });
+    await Promise.resolve();
+
+    // Fast path should NOT call stop/finalize
+    expect(stopped).toBe(0);
+    expect(finalized).toBe(0);
+  });
 });
+
