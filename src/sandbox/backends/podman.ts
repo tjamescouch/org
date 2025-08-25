@@ -324,6 +324,7 @@ export class PodmanSession implements ISandboxSession {
     context = "podman.exec"
   ): Promise<T> {
     const r = await rp;
+    console.log('must', r)
     return ensureOk(r, context);
   }
 
