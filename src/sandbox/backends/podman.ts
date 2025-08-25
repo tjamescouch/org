@@ -232,7 +232,11 @@ export class PodmanSession implements ISandboxSession {
 
     private shQ(s: string) { return `'${s.replace(/'/g, `'\\''`)}'`; }
 
-    private pathAllowed(p: string) { return matchAny(this.spec.write.allow, p); }
+    private pathAllowed(p: string) {
+        // Deny takes precedence
+        if (this.spec.write.deny && matchAny(this.spec.write.deny, p)) return false;
+        return matchAny(this.spec.write.allow, p);
+    }
 
     private async must(rp: Promise<ShResult>) {
         const r = await rp; if (r.code !== 0) throw new Error(r.stderr || r.stdout); return r;
