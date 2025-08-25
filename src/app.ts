@@ -108,9 +108,6 @@ function parseAgents(
     const kind = (kindRaw as ModelKind) || "mock";
     if (kind === "mock") {
       const m = new MockModel(id);
-      if (recipeSystemPrompt && typeof (m as any).setSystemPrompt === "function") {
-        (m as any).setSystemPrompt(recipeSystemPrompt);
-      }
       out.push({ id, kind, model: m });
     } else if (kind === "lmstudio") {
       if (llmDefaults.protocol !== "openai") throw new Error(`Unsupported protocol: ${llmDefaults.protocol}`);
@@ -185,7 +182,8 @@ async function main() {
     maxTools,
     onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
     projectDir,
-    reviewMode: (args["review"] ?? 'ask') as string
+    reviewMode: (args["review"] ?? 'ask') as string,
+    promptEnabled: (typeof args["prompt"] === "boolean" ? args["prompt"] : process.stdin.isTTY),
   });
 
   input.attachScheduler(scheduler);
