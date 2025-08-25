@@ -127,7 +127,7 @@ export class PodmanSession implements ISandboxSession {
     // Baseline commit.
     await this.must(this.execInCmd("git -C /work init"));
     await this.must(this.execInCmd("git -C /work config user.email noreply@example && git -C /work config user.name org"));
-    await this.must(this.execInCmd("git -C /work add -A && git -C /work commit -m baseline >/dev/null"));
+    await this.must(this.execInCmd("git -C /work add -A && git -C /work commit -m baseline >/dev/null || true"));
     const rev = await this.execInCmd("git -C /work rev-parse HEAD");
     if (rev.code !== 0) throw new Error(`git baseline failed: ${rev.stderr || rev.stdout}`);
     this.baselineCommit = rev.stdout.trim();
