@@ -183,7 +183,7 @@ async function main() {
     onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
     projectDir,
     reviewMode: (args["review"] ?? 'ask') as string,
-    promptEnabled: !!args["prompt"],
+    promptEnabled: (typeof flags.prompt === "boolean" ? flags.prompt : process.stdin.isTTY),
   });
 
   input.attachScheduler(scheduler);
