@@ -1,7 +1,4 @@
 
-# SECURITY.md
-
-```markdown
 # Security Policy
 
 This project aims to be safe-by-default, but it is **not a sandbox**. If you run
@@ -85,6 +82,3 @@ These are strongly recommended for day-to-day use:
 
 With your permission we’ll credit reporters by name/handle in release notes or
 advisories. No monetary bounty is offered at this time.
-````
-
-If you’d like me to tailor either file to your project’s tone or move any of the new sections elsewhere, say the word and I’ll adjust.
