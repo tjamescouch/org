@@ -85,6 +85,8 @@ export class RandomScheduler {
       const shuffled = this.shuffle(this.agents.filter(a => this.inbox.has(a.id)));
 
       for (const agent of shuffled) {
+        let totalToolsUsed = 0;
+
         try {
           const a: Responder | undefined = this.respondingAgent ?? agent;
           this.respondingAgent = undefined;
@@ -105,7 +107,6 @@ export class RandomScheduler {
           Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(messages));
 
           let remaining = this.maxTools;
-          let totalToolsUsed = 0;
           for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
             const peers = this.agents.map(x => x.id);
             Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
@@ -136,6 +137,8 @@ export class RandomScheduler {
             }
           }
         } finally {
+          if (totalToolsUsed === 0) return; 
+
           const ctx = { projectDir: process.cwd(), agentSessionId: agent.id };
           // after a batch of tool calls:
           const fin = await finalizeSandbox(ctx);
