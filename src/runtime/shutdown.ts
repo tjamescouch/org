@@ -27,8 +27,8 @@ export async function gracefulExit(
       // Optional dependency — only present in sandbox-enabled builds
       const mod: any = await import("../tools/sandboxed-sh").catch(() => null);
       if (mod) {
-        if (typeof mod.finalizeAllSanboxes === "function") {
-          await mod.finalizeAllSanboxes();
+        if (typeof mod.finalizeAllSandboxes === "function") {
+          await mod.finalizeAllSandboxes();
         } else if (typeof mod.finalizeSandbox === "function") {
           // Some trees only export a per-session finalizer
           await mod.finalizeSandbox({} as any);

@@ -15,7 +15,7 @@ import * as readline from "readline";
 import { Logger } from "../logger";
 import type { RandomScheduler } from "../scheduler";
 import { resumeStdin } from "./utils";
-import { finalizeAllSanboxes } from "../tools/sandboxed-sh";
+import { finalizeAllSandboxes } from "../tools/sandboxed-sh";
 
 export type InputControllerOptions = {
   interjectKey?: string;         // default: "i"
@@ -181,6 +181,8 @@ export class InputController {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
 
+    this.scheduler?.stop();
+
     // Stop accepting new keys immediately
     InputController.disableKeys();
 
@@ -190,8 +192,8 @@ export class InputController {
 
     // Best-effort finalize; never hang forever because of an exception.
     try {
-      // finalizeAllSanboxes may be sync or async depending on build
-      await Promise.resolve(finalizeAllSanboxes());
+      // finalizeAllSandboxes may be sync or async depending on build
+      await Promise.resolve(finalizeAllSandboxes());
     } catch (e) {
       Logger.warn?.("Finalize failed:", (e as Error)?.message ?? e);
     } finally {
