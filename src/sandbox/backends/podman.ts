@@ -56,6 +56,7 @@ export class PodmanSession implements ISandboxSession {
         // Create and start container.
         const create = await sh(this.tool, [
             "create",
+            "--pull=never",
             "--name", this.name,
             "--userns=keep-id", "--user", `${uid}:${gid}`,
             ...netArgs, ...caps, ...limits, ...mounts,
