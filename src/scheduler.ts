@@ -225,11 +225,11 @@ export class RandomScheduler {
       if (tagPart.kind === "agent") {
         this.respondingAgent = this.agents.find(a => a.id === tagPart.tag);
         this.ensureInbox(tagPart.tag).push({ content: tagPart.content, role: "user", from: "User" });
-        Logger.debug(`[user → @@${tagPart.tag}] ${text}`);
+        Logger.info(`[user → @@${tagPart.tag}] ${text}`);
       } else {
         this.respondingAgent = this.agents.find(a => a.id === target);
         for (const a of this.agents) this.ensureInbox(a.id).push({ content: tagPart.content, role: "user", from: "User" });
-        Logger.debug(`[user → @@group] ${text}`);
+        Logger.info(`[user → @@group] ${text}`);
       }
     }
   }
