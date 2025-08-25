@@ -1,1 +1,9 @@
-podman build -f Dockerfile.sandbox -t org-build:debian-12 .
+FROM debian:12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash coreutils findutils grep sed gawk procps util-linux \
+    rsync git ca-certificates jq \
+ && rm -rf /var/lib/apt/lists/*
+RUN useradd -m -u 1000 runner
+USER runner
+WORKDIR /work
+ENV HOME=/nonexistent
