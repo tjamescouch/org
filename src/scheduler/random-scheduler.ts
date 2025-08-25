@@ -9,8 +9,8 @@ import { TagSplitter, TagPart } from "../utils/tag-splitter";
 import type { GuardDecision } from "../guardrails/guardrail";
 import type { ChatMessage } from "../types";
 import type { Responder, SchedulerOptions, AskUserFn } from "./types";
-import type { ISandboxSession } from "../sandbox/types";       // <-- NEW
-import { LockedDownFileWriter } from "../tools/file-writer";
+import { LockedDownFileWriter } from "../io/locked-down-file-writer";
+import { sandboxMangers } from "../sandbox/session";
 
 export class RandomScheduler {
   private readonly agents: Responder[];
@@ -19,7 +19,6 @@ export class RandomScheduler {
   private readonly review: ReviewManager;
   private readonly filters = new NoiseFilters();
   private readonly inbox = new Inbox();
-  private readonly sandbox: ISandboxSession;                   // <-- NEW
 
   private running = false;
   private paused = false;
@@ -47,8 +46,6 @@ export class RandomScheduler {
     this.shuffle = opts.shuffle ?? fisherYatesShuffle;
     this.review = new ReviewManager(opts.projectDir, opts.reviewMode ?? 'ask');
     this.askUser = opts.onAskUser;
-    this.sandbox = opts.sandbox;                               // <-- NEW
-    if (!this.sandbox) throw new Error("RandomScheduler requires opts.sandbox");
 
     this.promptEnabled = !!opts.promptEnabled;
     this.idleSleepMs = opts.idleSleepMs ?? 25;
@@ -116,6 +113,7 @@ export class RandomScheduler {
                   setLastUserDMTarget: (id) => { this.lastUserDMTarget = id; },
                   // If you've updated router to consume sandbox, pass it here:
                   // sandbox: this.sandbox,
+                  sandbox: sandboxMangers.get(id),
                 },
                 a,
                 message,

@@ -9,6 +9,8 @@ import type { GuardDecision } from "../guardrails/guardrail";
 import type { Responder } from "./types";
 import type { ChatMessage } from "../types";
 import { NoiseFilters } from "./filters";
+import { ISandboxSession } from "../sandbox/types";
+import { LockedDownFileWriter } from "../io/locked-down-file-writer";
 
 /** Side-effects required by routing (DMs, group fanout, files, user prompts). */
 export interface RouteDeps {
@@ -47,7 +49,8 @@ export async function routeWithSideEffects(
   deps: RouteDeps,
   fromAgent: Responder,
   text: string,
-  filters: NoiseFilters
+  filters: NoiseFilters,
+  sandbox: ISandboxSession,
 ): Promise<boolean> {
   const router = makeRouter({
     onAgent: async (_from, to, content) => {
@@ -85,7 +88,8 @@ export async function routeWithSideEffects(
       try {
         if (wasRaw) (process.stdin as any).setRawMode(false);
         await ExecutionGate.gate(confirm);
-        const res = await FileWriter.write(name, cleaned);
+        const writer = new LockedDownFileWriter(sandbox);
+        const res = await writer.write(name, cleaned);
         Logger.info(C.yellow(`${cleaned}`));
         Logger.info(C.magenta(`Written to ${res.path} (${res.bytes} bytes)`));
       } catch (err: any) {

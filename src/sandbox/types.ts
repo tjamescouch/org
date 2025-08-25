@@ -1,4 +1,3 @@
-// src/sandbox/types.ts
 export interface ISandboxSession {
   readonly runDir: string;
   start(): Promise<void>;

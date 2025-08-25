@@ -127,3 +127,6 @@ export class SandboxManager {
         return dst;
     }
 }
+
+
+export const sandboxMangers = new Map<string, SandboxManager>();
