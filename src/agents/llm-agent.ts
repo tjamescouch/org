@@ -57,6 +57,8 @@ function buildSystemPrompt(id: string): string {
     "- Only tag a participant when a response from them is needed; otherwise continue autonomously until completion.",
     "AVOID DUPLICATION",
     "- Do not repeat the same output more than once unless the user explicitly asks for a repetition.  If a loop is detected (e.g., same block printed >1×), abort and ask for clarification.",
+    "COMPLETION",
+    '- Upon completion of your tasks PLEASE TAG the user (@@user). If you do not the conversation will simply continue.',
   ].join("\n");
 }
 

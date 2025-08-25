@@ -258,7 +258,7 @@ export class PodmanSession implements ISandboxSession {
     private pathAllowed(p: string) {
         const deny = this.spec.write.deny ?? [];
         if (deny.length && matchAny(deny, p)) {
-            Logger.info("Patch path denied: ", p);
+            Logger.debug("Patch path denied: ", p);
             return false;     // deny takes precedence
         }
 
@@ -267,7 +267,7 @@ export class PodmanSession implements ISandboxSession {
         if (result) {
 
         }
-        Logger.info(result ? "Patch path allowed: " : "Patch path denied: ", p);
+        Logger.debug(result ? "Patch path allowed: " : "Patch path denied: ", p);
 
         return result;
     }
