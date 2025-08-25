@@ -118,9 +118,9 @@ export class PodmanSession implements ISandboxSession {
         };
         const run = await this.execInEnv(env, `/work/.org/org-step.sh ${this.shQ(cmd)}`);
 
-        // --- commit changes if any ---
         await this.execInCmd(
             "git -C /work add -A && " +
+            "(git -C /work ls-files -oi --exclude-standard -z | xargs -0 -r git -C /work add -f --) && " +
             "(git -C /work diff --cached --quiet || git -C /work commit -m " + this.shQ(`step #${idx}: ${cmd}`) + " >/dev/null)"
         );
 
