@@ -1,3 +1,15 @@
+export function normalizeContent(raw: string) {
+  let cmd = raw.trim();
+  // strip redundant leading "bash -lc ..."
+  cmd = cmd.replace(/^\s*(?:bash|sh)\s+-lc\s+/, "");
+  // collapse accidental outer quotes
+  if ((cmd.startsWith('"') && cmd.endsWith('"')) ||
+      (cmd.startsWith("'") && cmd.endsWith("'"))) {
+    cmd = cmd.slice(1, -1);
+  }
+  if (!cmd) throw new Error("Command required.");
+  return cmd;
+}
 
 /**
  * Decode common backslash escapes in model text—even when mixed with real newlines.

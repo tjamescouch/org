@@ -5,7 +5,7 @@ import { Logger } from "../logger";
 import { AgentMemory } from "../memory";
 import { sandboxedSh } from "../tools/sandboxed-sh";
 import { runVimdiff } from "../tools/vimdiff";
-import { sanitizeContent } from "../utils/sanitize-content";
+import { normalizeContent, sanitizeContent } from "../utils/sanitize-content";
 import type { ExecuteToolsParams, ExecuteToolsResult } from "./tool-executor";
 import { ToolExecutor } from "./tool-executor";
 
@@ -171,7 +171,7 @@ export class StandardToolExecutor extends ToolExecutor {
 
             if (!handler) {
                 const rawCmd = String(args?.cmd ?? "");
-                const cmd = sanitizeContent(rawCmd);
+                const cmd = sanitizeContent(normalizeContent(rawCmd));
                 Logger.warn(`\nUnknown tool ${name} requested`, tc);
                 const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, tc, cmd });
                 await memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: "Tool" });
