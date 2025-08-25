@@ -290,16 +290,16 @@ export class PodmanSession implements ISandboxSession {
     return r;
   }
 
-  /** Execute a command in the container, workdir=/work, via /bin/sh -lc, capturing output. */
-  private async execInCmd(cmdline: string): Promise<ShResult> {
-    // -i keeps stdin open (harmless here), improves portability across images
-    return sh(this.tool, ["exec", "-i", "--workdir", "/work", this.name, "sh", "-lc", cmdline]);
+  // Execute a command in the container at /work using bash -lc, capturing output.
+  private async execInCmd(cmdline: string) {
+    // IMPORTANT: no "-i" here; keep stdin closed to avoid sporadic exit 1s.
+    return sh(this.tool, ["exec", "--workdir", "/work", this.name, "bash", "-lc", cmdline]);
   }
 
-  /** Execute with environment variables inside container, capturing output. */
-  private async execInEnv(env: Record<string, string>, cmdline: string): Promise<ShResult> {
+  // Execute with env vars inside container, capturing output.
+  private async execInEnv(env: Record<string, string>, cmdline: string) {
     const envArgs = Object.entries(env).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
-    return sh(this.tool, ["exec", "-i", "--workdir", "/work", ...envArgs, this.name, "sh", "-lc", cmdline]);
+    return sh(this.tool, ["exec", "--workdir", "/work", ...envArgs, this.name, "bash", "-lc", cmdline]);
   }
 
   private shQ(s: string) { return `'${s.replace(/'/g, `'\\''`)}'`; }
@@ -313,7 +313,9 @@ export class PodmanSession implements ISandboxSession {
     }
     const allow = this.spec.write.allow ?? ["*", "**/*"];
     const result = matchAny(allow, p);
+
     Logger.debug(result ? "Patch path allowed: " : "Patch path denied: ", p);
+
     return result;
   }
 
