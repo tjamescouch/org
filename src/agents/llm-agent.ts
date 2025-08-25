@@ -19,7 +19,7 @@ export interface AgentReply {
 
 function buildSystemPrompt(id: string): string {
   return [
-    `You are agent "${id}". Work autonomously in the caller’s current directory inside a Debian VM.`,
+    `You are agent "${id}". Work autonomously in the caller's current directory inside a Debian VM.`,
     "",
     "TOOLS",
     "- sh(cmd): run a POSIX command. Args: {cmd:string}. Returns {ok, stdout, stderr, exit_code, cmd}.",
@@ -46,13 +46,17 @@ function buildSystemPrompt(id: string): string {
     "- Do not call tools with empty/malformed args.",
     "",
     "ENVIRONMENT",
+    "- Commands are run in an ephemeral docker container within the VM, and then synced with the VM after a batch of commands.",
     "- Standard Unix tools available: git, bun, gcc/g++, python3, curl, grep, diff, ls, cat, pwd, etc.",
     "",
     "OUTPUT STYLE",
+    '- Provide a single, concise response to each user query. If multiple steps are required, enumerate them in one message.',
     `- Speak only in your own voice as "${id}" (first person).`,
     "- Do not prefix lines with other agents' names.",
     "- Keep chat replies brief unless you are writing files.",
-    "Only tag a participant when a response from them is needed; otherwise continue autonomously until completion.",
+    "- Only tag a participant when a response from them is needed; otherwise continue autonomously until completion.",
+    "AVOID DUPLICATION",
+    "- Do not repeat the same output more than once unless the user explicitly asks for a repetition.  If a loop is detected (e.g., same block printed >1×), abort and ask for clarification.",
   ].join("\n");
 }
 
