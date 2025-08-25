@@ -18,6 +18,20 @@ export interface ToolCtx {
   idleHeartbeatMs?: number; // default 1000ms
 }
 
+let HEARTBEAT_MUTED = false;
+
+export function setShHeartbeatMuted(muted: boolean) {
+  HEARTBEAT_MUTED = muted;
+}
+
+// Handy helper so callers can do: await withMutedShHeartbeat(async () => { ... })
+export async function withMutedShHeartbeat<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = HEARTBEAT_MUTED;
+  HEARTBEAT_MUTED = true;
+  try { return await fn(); } finally { HEARTBEAT_MUTED = prev; }
+}
+
+
 const managers = new Map<string, SandboxManager>();
 
 async function getManager(key: string, projectDir: string, runRoot?: string) {
@@ -86,7 +100,9 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   const sessionKey = ctx.agentSessionId ?? "default";
   const projectDir = ctx.projectDir ?? process.cwd();
   const runRoot    = ctx.runRoot ?? path.join(projectDir, ".org");
-  const idleHeartbeatMs = Math.max(250, ctx.idleHeartbeatMs ?? 1000);
+  const idleHeartbeatMsRaw = ctx?.idleHeartbeatMs ?? 1000;
+  const idleHeartbeatMs = HEARTBEAT_MUTED ? 0 : Math.max(250, idleHeartbeatMsRaw);
+
 
   const mgr = await getManager(sessionKey, projectDir, runRoot);
   const session = await mgr.getOrCreate(sessionKey, ctx.policy);
