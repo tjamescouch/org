@@ -118,11 +118,30 @@ export class PodmanSession implements ISandboxSession {
         };
         const run = await this.execInEnv(env, `/work/.org/org-step.sh ${this.shQ(cmd)}`);
 
+        // 1) stage normal changes
+        await this.execInCmd("git -C /work add -A");
+
+        // 2) explicitly unstage any .org/ (belt-and-suspenders)
+        await this.execInCmd("git -C /work reset -q .org || true");
+
+        // 3) force-add ignored files, but never anything under .org/ or .git/
         await this.execInCmd(
-            "git -C /work add -A && " +
-            "(git -C /work ls-files -oi --exclude-standard -z | xargs -0 -r git -C /work add -f --) && " +
-            "(git -C /work diff --cached --quiet || git -C /work commit -m " + this.shQ(`step #${idx}: ${cmd}`) + " >/dev/null)"
+            "git -C /work ls-files -oi --exclude-standard -z | " +
+            "grep -a -z -v -e '^\\.org/' -e '^\\.git/' | " +
+            "xargs -0 -r git -C /work add -f --"
         );
+
+        // 4) commit if there is anything staged
+        await this.execInCmd(
+            "(git -C /work diff --cached --quiet || " +
+            " git -C /work commit -m " + this.shQ(`step #${idx}: ${cmd}`) + " >/dev/null)"
+        );
+
+        // (optional) breadcrumb for debugging
+        await this.execInCmd(
+            `git -C /work diff --name-only HEAD~1..HEAD > /work/.org/steps/step-${idx}.changed.txt || true`
+        );
+
 
         // --- compute violations (but DO NOT return yet) ---
         const changed = (await this.execInCmd("git -C /work diff --name-only HEAD~1..HEAD || true")).stdout
