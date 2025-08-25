@@ -33,6 +33,7 @@ export class InputController {
 
   private rl: readline.Interface | null = null;
   private interjecting = false;
+  private shuttingDown = false;
 
   private keypressHandler?: (str: string, key: readline.Key) => void;
 
@@ -48,15 +49,23 @@ export class InputController {
     this.installRawKeyListener();
 
     // Clean exit guard to avoid leaving the terminal in raw mode.
+    // NOTE: Ctrl+C should be a FAST exit (no sandbox finalize).
     process.on("SIGINT", () => {
+      if (this.shuttingDown) return;
       this.detachRawKeyListener();
       this.setRawMode(false);
-
-      finalizeAllSanboxes();
-
       process.stdout.write("\n");
-      process.exit(0);
+      // 130 is the conventional exit code for SIGINT
+      process.exit(130);
     });
+  }
+
+  /** Centralized raw-mode switch with guards for non-TTY environments. */
+  setRawMode(enable: boolean) {
+    const stdinAny: any = process.stdin as any;
+    if (process.stdin.isTTY && typeof stdinAny.setRawMode === "function") {
+      try { stdinAny.setRawMode(enable); } catch { /* ignore on CI/non-tty */ }
+    }
   }
 
   attachScheduler(s: RandomScheduler) {
@@ -88,8 +97,6 @@ export class InputController {
     }
   }
 
-  
-
   /**
    * Exposed as the scheduler’s `onAskUser` callback. It opens an echoing,
    * line-edited prompt, then restores raw/no-echo.
@@ -106,7 +113,7 @@ export class InputController {
 
   /** Hotkey entry to interjection. */
   private async enterInterjection(): Promise<void> {
-    if (this.scheduler?.isDraining()) return;
+    if (this.scheduler?.isDraining() || this.shuttingDown) return;
 
     try {
       await this.scheduler?.drain();
@@ -157,11 +164,40 @@ export class InputController {
           try { this.rl?.close(); resumeStdin(); } catch (e) { Logger.error(e); }
           this.rl = null;
           this.interjecting = false;
-          this.setRawMode(true);
-          this.installRawKeyListener(); // re-attach idle hotkeys
+          if (!this.shuttingDown) {
+            this.setRawMode(true);
+            this.installRawKeyListener(); // re-attach idle hotkeys
+          }
         }
       });
     });
+  }
+
+  // --------------------------------------------------------------------------
+  // Graceful shutdown (ESC)
+  // --------------------------------------------------------------------------
+
+  private async gracefulShutdown(): Promise<void> {
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
+
+    // Stop accepting new keys immediately
+    InputController.disableKeys();
+
+    // Detach raw handler and restore cooked mode before we print anything.
+    this.detachRawKeyListener();
+    this.setRawMode(false);
+
+    // Best-effort finalize; never hang forever because of an exception.
+    try {
+      // finalizeAllSanboxes may be sync or async depending on build
+      await Promise.resolve(finalizeAllSanboxes());
+    } catch (e) {
+      Logger.warn?.("Finalize failed:", (e as Error)?.message ?? e);
+    } finally {
+      process.stdout.write("\n");
+      process.exit(0);
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -173,22 +209,22 @@ export class InputController {
     readline.emitKeypressEvents(process.stdin);
 
     this.keypressHandler = (_str: string, key: readline.Key) => {
-      if (!Controller.areKeysEnabled) {
-        return;
-      }
-
-      if (this.interjecting) return; // readline is active; ignore raw keys
+      if (!InputController.areKeysEnabled) return;
+      if (this.interjecting || this.shuttingDown) return; // readline is active or we are quitting
       if (!key) return;
 
-      // Ctrl+C exits (restore terminal first).
+      // Ctrl+C — IMMEDIATE exit (do NOT finalize; keep it snappy)
       if (key.ctrl && key.name === "c") {
         this.detachRawKeyListener();
         this.setRawMode(false);
-
-        finalizeAllSanboxes();
-
         process.stdout.write("\n");
-        process.exit(0);
+        process.exit(130);
+      }
+
+      // ESC — graceful exit, finalize sandbox first
+      if (key.name === "escape") {
+        this.gracefulShutdown().catch((err) => Logger.error(err));
+        return;
       }
 
       // Single-key, case-insensitive interjection hotkey.
@@ -208,14 +244,6 @@ export class InputController {
     if (!this.keypressHandler) return;
     try { process.stdin.removeListener("keypress", this.keypressHandler); } catch {}
     this.keypressHandler = undefined;
-  }
-
-  /** Centralized raw-mode switch with guards for non-TTY environments. */
-  private setRawMode(enable: boolean) {
-    const stdinAny: any = process.stdin as any;
-    if (process.stdin.isTTY && typeof stdinAny.setRawMode === "function") {
-      try { stdinAny.setRawMode(enable); } catch { /* ignore on CI/non-tty */ }
-    }
   }
 }
 

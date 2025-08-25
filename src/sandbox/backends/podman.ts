@@ -9,6 +9,7 @@ import { initRunDirs, writeJsonPretty, rel } from "../../replay/manifest";
 import { matchAny } from "../glob";
 import { ISandboxSession } from "../types";
 import { Logger } from "../../logger";
+import { inputController } from "../../app";
 
 type ShResult = { code: number; stdout: string; stderr: string };
 
@@ -203,11 +204,17 @@ export class PodmanSession implements ISandboxSession {
     async finalize() {
         if (!this.started) throw new Error("session not started");
 
+        inputController.setSuppressed(true);
+        inputController.setRawMode(false);
+
         await this.execInCmd(
             "git -C /work -c diff.noprefix=false diff --binary " +
             this.shQ(this.baselineCommit!) +
             " HEAD > /work/.org/session.patch || true"
         );
+
+        inputController.setRawMode(true);
+        inputController.setSuppressed(false);
 
         const patchDst = path.join(this.spec.runDir, "session.patch");
         await this.execHost(["cp", `${this.name}:/work/.org/session.patch`, patchDst]).catch(() => Promise.resolve());

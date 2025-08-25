@@ -13,7 +13,6 @@ import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
 import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
 import { getRecipe } from "./recipes";
-import { finalizeAllSanboxes } from "./tools/sandboxed-sh";
 
 /** ---------- CLI parsing ---------- */
 function parseArgs(argv: string[]) {
@@ -33,6 +32,9 @@ function parseArgs(argv: string[]) {
   }
   return out;
 }
+
+// IO + scheduler
+const inputController = new InputController(/*{ interjectKey: String(args["interject-key"] || "i"), interjectBanner: String(args["banner"] || "You: "), }*/);
 
 
 function resolveProjectDir(seed: string): string {
@@ -160,6 +162,8 @@ async function main() {
   // Mode + (optional) tool allowlist
   computeMode({ allowTools: recipe?.allowTools });
 
+  Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
+
   // Build agents, set recipe system prompt if supported
   const agentSpecs = parseAgents(String(args["agents"] || "alice:lmstudio"), cfg.llm, recipe?.system ?? null);
   if (agentSpecs.length === 0) {
@@ -173,16 +177,12 @@ async function main() {
     guardOnIdle: (state: any) => a.model.guardOnIdle?.(state) ?? null, guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null,
   }));
 
-  // IO + scheduler
-  const input = new InputController({
-    interjectKey: String(args["interject-key"] || "i"),
-    interjectBanner: String(args["banner"] || "You: "),
-  });
+
 
   const scheduler = new RoundRobinScheduler({
     agents,
     maxTools,
-    onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
+    onAskUser: (fromAgent: string, content: string) => inputController.askUser(fromAgent, content),
     projectDir,
     reviewMode: (args["review"] ?? 'ask') as string
   });
@@ -217,3 +217,5 @@ main().catch((e) => {
   Logger.info(e);
   process.exit(1);
 });
+
+export { inputController };
