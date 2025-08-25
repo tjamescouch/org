@@ -98,10 +98,10 @@ Common options:
 | `--agents "alice:lmstudio,…"`  | Configure agent(s) and driver(s)                          |                            |                                                   |
 | `--max-tools N`                | Cap total tool invocations per run                        |                            |                                                   |
 | `--safe` / `SAFE_MODE=1`       | Extra confirmation gates for shell & writes               |                            |                                                   |
-| \`--review ask                 | auto                                                      | never\`                    | Patch review mode (interactive by default on TTY) |
+| `--review ask                  | auto                                                      | never`                     | Patch review mode (interactive by default on TTY) |
 | `-C <dir>` / `--project <dir>` | Run **from any directory**; treat `<dir>` as project root |                            |                                                   |
 | `--debug` / `DEBUG=1`          | Verbose logging                                           |                            |                                                   |
-| \`SANDBOX\_BACKEND=podman      | none\`                                                    | Choose backend (see below) |                                                   |
+| `SANDBOX\_BACKEND=podman       | none\`                                                    | Choose backend (see below) |                                                   |
 
 Examples:
 
