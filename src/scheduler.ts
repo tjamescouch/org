@@ -133,29 +133,31 @@ export class RandomScheduler {
             }
           }
         } finally {
-          const ctx = { projectDir: process.cwd(), agentSessionId: agent.id };
-          // after a batch of tool calls:
-          const fin = await finalizeSandbox(ctx);
-          const patchPath = fin?.patchPath;  // this is already produced by your sandbox
-          const projectDir = ctx.projectDir;
+          if (totalToolsUsed > 0) {
+            const ctx = { projectDir: process.cwd(), agentSessionId: agent.id };
+            // after a batch of tool calls:
+            const fin = await finalizeSandbox(ctx);
+            const patchPath = fin?.patchPath;  // this is already produced by your sandbox
+            const projectDir = ctx.projectDir;
 
-          if (patchPath && fs.existsSync(patchPath)) {
-            const mode = modeFromEnvOrFlags(this.reviewMode); // e.g. --review=auto|ask|never
-            const decision = await decideReview(mode, projectDir, patchPath);
-            if (decision.action === "apply") {
-              try {
-                await applyPatch(projectDir, patchPath, decision.commitMsg);
-                Logger.info("✓ patch applied");
-              } catch (e: any) {
-                Logger.error("Patch apply failed:", e?.message ?? e);
+            if (patchPath && fs.existsSync(patchPath)) {
+              const mode = modeFromEnvOrFlags(this.reviewMode); // e.g. --review=auto|ask|never
+              const decision = await decideReview(mode, projectDir, patchPath);
+              if (decision.action === "apply") {
+                try {
+                  await applyPatch(projectDir, patchPath, decision.commitMsg);
+                  Logger.info("✓ patch applied");
+                } catch (e: any) {
+                  Logger.error("Patch apply failed:", e?.message ?? e);
+                }
+              } else if (decision.action === "reject") {
+                Logger.info("↷ patch rejected");
+              } else {
+                Logger.info(`↷ patch skipped: ${decision.reason}`);
               }
-            } else if (decision.action === "reject") {
-              Logger.info("↷ patch rejected");
             } else {
-              Logger.info(`↷ patch skipped: ${decision.reason}`);
+              console.log("↷ no patch produced");
             }
-          } else {
-            console.log("↷ no patch produced");
           }
         }
       }
