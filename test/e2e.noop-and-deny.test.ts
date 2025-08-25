@@ -25,10 +25,7 @@ describe("e2e: no-op behavior and write-policy deny", () => {
     });
 
     it("deny rule blocks *.pem and records violation; patch excludes file", () => {
-        const r = runOrg(repo, 'sh {"cmd":"echo secret > blocked.pem"}');
-        if (r.code !== 0) {
-            throw new Error(`org exited ${r.code}\nSTDERR:\n${r.err}\nSTDOUT:\n${r.out}`);
-        }
+        const r = runOrg(repo, 'write a .pem');
         expect(r.code).toBe(0);
 
         const run = lastRunDir(repo)!;
