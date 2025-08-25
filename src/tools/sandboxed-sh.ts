@@ -179,7 +179,7 @@ export async function finalizeSandbox(ctx: ToolCtx) {
   return m.finalize(sessionKey);
 }
 
-export async function finalizeAllSanboxes() {
+export async function finalizeAllSandboxes() {
   for (const [k, v] of Array.from(managers.entries())) v?.finalize(k);
 }
 
