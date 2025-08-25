@@ -36,7 +36,7 @@ export class MockProvider implements Provider {
       if (Math.random() < 0.25) {
         return { toolCalls: [], finalText: "Okay. (no tools needed)" };
       } else if (Math.random() < 0.5) {
-        return { toolCalls: [], finalText: "@@user done" };
+        return { toolCalls: [], finalText: "🧍‍♂️user done" };
       }
       // otherwise ask for a date for fun
       return { toolCalls: [{ name: 'date', args: {} }], finalText: undefined };

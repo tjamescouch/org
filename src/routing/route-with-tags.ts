@@ -15,8 +15,8 @@ export type RouteOutcome = {
 
 /**
  * Parse & route textual content. Also returns yield hints:
- *  - yieldForUser: message contains @@user
- *  - yieldForGroup: message contains @@group
+ *  - yieldForUser: message contains 🧍‍♂️user
+ *  - yieldForGroup: message contains 🧍‍♂️group
  */
 export function routeWithTags(s: string): RouteOutcome {
   const parts: TagPart[] = TagParser.parse(s);

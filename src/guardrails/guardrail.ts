@@ -64,8 +64,8 @@ export interface GuardRail {
 
 /**
  * StandardGuardRail:
- *  - Detects near-duplicate / low-signal repeated @@group messages.
- *  - Encourages switching to @@user or direct @@peer when stuck.
+ *  - Detects near-duplicate / low-signal repeated 🧍‍♂️group messages.
+ *  - Encourages switching to 🧍‍♂️user or direct 🧍‍♂️peer when stuck.
  *  - Tracks repeated invalid tool calls (e.g., sh missing "cmd"), escalates warnings,
  *    and can force end-turn when the limit is reached.
  *  - Tracks repeated *identical tool calls* in the same turn; escalates and can end turn.
@@ -83,7 +83,7 @@ export class StandardGuardRail implements GuardRail {
 
   /** Similarity threshold for considering two messages near-duplicates. */
   private readonly nearDupThreshold = 0.80;
-  /** Repeats needed to flag repeated near-duplicate @@group messages. */
+  /** Repeats needed to flag repeated near-duplicate 🧍‍♂️group messages. */
   private readonly stagnationRepeatThreshold = 3;
 
   /** When the guard suggests muting, default duration. */
@@ -158,8 +158,8 @@ Fix the arguments and try once more.`;
             `${nudge}
 
 Ending your turn now. On your next turn either:
-- @@user Ask a specific question, or
-- @@peer Delegate a well-scoped subtask.`,
+- 🧍‍♂️user Ask a specific question, or
+- 🧍‍♂️peer Delegate a well-scoped subtask.`,
           endTurn: true,
           warnings
         };
@@ -200,8 +200,8 @@ ${info.resSig ? `  last result: ${truncate(info.resSig, 160)}` : ""}`;
       const nudge =
         `${base}
 Ending your turn now. On your next turn, switch strategies:
-- @@user <ask a single, concrete question>, or
-- @@peer <delegate a specific subtask>.`;
+- 🧍‍♂️user <ask a single, concrete question>, or
+- 🧍‍♂️peer <delegate a specific subtask>.`;
       return { nudge, endTurn: true, warnings };
     }
 
@@ -222,7 +222,7 @@ Do not re-run the same command again. Either change the arguments, run a DIFFERE
 
     if (isLowSignal) warnings.push("low-signal message");
     if (!/@{2}(user|group|[A-Za-z0-9._-]+)/.test(content)) {
-      warnings.push("no explicit @@tag detected");
+      warnings.push("no explicit 🧍‍♂️tag detected");
     }
     if (this.consecutiveNoToolCalls >= 2) {
       warnings.push("multiple assistant turns without tool calls");
@@ -231,10 +231,10 @@ Do not re-run the same command again. Either change the arguments, run a DIFFERE
     // Escalate suppression of near-duplicate, low-signal group messages.
     if (route === "group" && this.repeatCount >= this.stagnationRepeatThreshold && isLowSignal) {
       const nudge =
-        `SYSTEM: Your last few @@group messages were low-signal and very similar.
+        `SYSTEM: Your last few 🧍‍♂️group messages were low-signal and very similar.
 Switch tactics on your next turn:
-- @@user Ask a single concrete question to move the task forward, or
-- @@peer DM a specific teammate with a well-defined request.`;
+- 🧍‍♂️user Ask a single concrete question to move the task forward, or
+- 🧍‍♂️peer DM a specific teammate with a well-defined request.`;
       return {
         nudge,
         suppressBroadcast: true,
@@ -257,8 +257,8 @@ All agents are idle (no queued messages and no recent tool calls).
 Please provide the next concrete instruction or question.
 
 Examples:
-- "@@user Give Alice one specific task to run next."
-- "@@alice Please run <command> and post the output."
+- "🧍‍♂️user Give Alice one specific task to run next."
+- "🧍‍♂️alice Please run <command> and post the output."
 - "Switch focus to <topic>."`;
     return { askUser: prompt, warnings: ["scheduler-idle"] };
   }

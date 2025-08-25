@@ -49,7 +49,7 @@ export class InputController {
     this.interjectBanner = opts.interjectBanner ?? "You: ";
     this.promptTemplate =
       opts.promptTemplate ??
-      ((from, _content) => `\n@@${from} requested input\nYou: `);
+      ((from, _content) => `\n🧍‍♂️${from} requested input\nYou: `);
 
     this.escFinalizer = opts.finalizer;
     this.testMode = !!opts._testMode;

@@ -102,8 +102,8 @@ ${guidance}`;
           nudge: `${nudge}
 
 Ending your turn now. Next turn: either
-- @@user Ask a single, concrete question, or
-- @@peer Delegate a well‑scoped subtask.`,
+- 🧍‍♂️user Ask a single, concrete question, or
+- 🧍‍♂️peer Delegate a well‑scoped subtask.`,
           endTurn: true,
           muteMs: this.defaultMuteMs,
           warnings: ["missing-arg-retry-limit-reached"],
@@ -148,7 +148,7 @@ You are repeating "${info.name}" with identical arguments:
 Stop retrying the same command. Either:
 - Change the command/arguments,
 - Run a different diagnostic, or
-- @@user Ask for a clarifying input.`;
+- 🧍‍♂️user Ask for a clarifying input.`;
       return {
         nudge,
         endTurn: true,
@@ -163,7 +163,7 @@ The last ${noChange + 1} "${info.name}" runs produced the *same* result for the 
   args: ${info.argsSig}
 This indicates a no‑progress loop. Switch strategy now:
 - Try a different command or alter parameters
-- Or @@user request guidance to unblock.`;
+- Or 🧍‍♂️user request guidance to unblock.`;
       return {
         nudge,
         endTurn: true,
@@ -178,7 +178,7 @@ Two consecutive failures from "${info.name}" for:
   args: ${info.argsSig}
 Do NOT keep retrying blindly. Consider:
 - Inspect error output and choose a different command,
-- Or ask @@user for missing preconditions (paths, permissions, credentials).`;
+- Or ask 🧍‍♂️user for missing preconditions (paths, permissions, credentials).`;
       return { nudge, warnings: ["consecutive-tool-failures"] };
     }
 
@@ -210,7 +210,7 @@ Avoid redundant calls; change inputs or pivot strategy.`;
       const nudge = `SYSTEM:
 Do not use "apply_patch <<PATCH". To write files, emit a literal file block:
 
-##file:path/to/file.ext
+📁file:path/to/file.ext
 <content here>
 
 To run shell commands, call the "sh" tool with: {"cmd":"<command>"} .`;
@@ -229,10 +229,10 @@ To run shell commands, call the "sh" tool with: {"cmd":"<command>"} .`;
       if (lowSignal && nearDup) {
         const suggest = this.suggestHandoff(peers);
         const nudge = `SYSTEM:
-Your last few @@group messages are low‑signal and very similar.
+Your last few 🧍‍♂️group messages are low‑signal and very similar.
 Switch tactics on your next turn:
-- @@user Ask one concrete question to move work forward${
-          suggest ? `, or\n- @@${suggest} DM a well‑scoped subtask` : ""
+- 🧍‍♂️user Ask one concrete question to move work forward${
+          suggest ? `, or\n- 🧍‍♂️${suggest} DM a well‑scoped subtask` : ""
         }.`;
         this.rememberGroup(norm);
         return {
@@ -266,15 +266,15 @@ Your message adds little new information. Prefer a specific ask or a concrete ne
     if (state.idleTicks < 3) return null;
 
     const peerLine = state.peers.length
-      ? `- "@@${state.peers[0]}" Ask that agent to run a specific command and report back.`
-      : `- "@@user" Direct a specific agent with a command.`;
+      ? `- "🧍‍♂️${state.peers[0]}" Ask that agent to run a specific command and report back.`
+      : `- "🧍‍♂️user" Direct a specific agent with a command.`;
 
     const prompt = `(scheduler)
 All agents are idle — no queued work and no actionable outputs.
 Please provide the next *concrete* instruction.
 
 Examples:
-- "@@user Outline the next milestone and first task."
+- "🧍‍♂️user Outline the next milestone and first task."
 ${peerLine}
 - "Switch context to <topic> and set a single success criterion."`;
 

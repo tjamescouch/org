@@ -52,7 +52,7 @@ function stripAlienWrappers(text: string): string {
 }
 
 function containsFileTag(text: string): boolean {
-  return /##file\s*:\s*[^\s]+/i.test(text);
+  return /📁file\s*:\s*[^\s]+/i.test(text);
 }
 
 function normalizeAllowed(toolsAllowed?: readonly string[]): Set<string> | undefined {
