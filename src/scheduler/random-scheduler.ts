@@ -113,7 +113,7 @@ export class RandomScheduler {
                   setLastUserDMTarget: (id) => { this.lastUserDMTarget = id; },
                   // If you've updated router to consume sandbox, pass it here:
                   // sandbox: this.sandbox,
-                  sandbox: sandboxMangers.get(id),
+                  sandbox: sandboxMangers.get(a.id),
                 },
                 a,
                 message,
@@ -215,16 +215,6 @@ All agents are idle. Provide the next concrete instruction or question.`;
       fileTokens: ["file"],
       allowFileShorthand: false,
     });
-
-//    // 1) File parts -> sandboxed write
-//    const fileParts = parts.filter(p => p.kind === "file");
-//    if (fileParts.length) {
-//      const fw = new LockedDownFileWriter(this.sandbox, { maxBytes: 1_000_000 }); // <-- use this.sandbox
-//      for (const fp of fileParts) {
-//        const rel = fp.tag.replace(/^\.\/+/, "");
-//        await fw.write(rel, fp.content);
-//      }
-//    }
 
     // 2) Explicit agent tags
     const agentParts = parts.filter(p => p.kind === "agent") as Array<TagPart & { kind: "agent" }>;
