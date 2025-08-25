@@ -25,8 +25,23 @@ export interface RouteDeps {
 }
 
 /**
+ * Heuristic: detect a "talk to the human" request even if a model emitted `@user`
+ * (single '@') or mixed case. We only accept it when it appears at the start
+ * of a line (ignoring leading whitespace and an optional '>' quote marker),
+ * to avoid false positives in email addresses etc.
+ */
+function looksLikeUserTag(text: string): boolean {
+  if (/@{2}user\b/i.test(text)) return true; // canonical @@user anywhere
+  const lines = String(text ?? "").split(/\r?\n/);
+  for (const line of lines) {
+    if (/^\s*>?\s*@user\b/i.test(line)) return true;
+  }
+  return false;
+}
+
+/**
  * Route a model message that may contain @@agent, @@group, @@user, ##file.
- * Returns true if the message contained @@user (caller will prompt the human).
+ * Returns true if the message contained a request to talk to the user.
  */
 export async function routeWithSideEffects(
   deps: RouteDeps,
@@ -81,8 +96,19 @@ export async function routeWithSideEffects(
     },
   });
 
+  // Run the canonical router first.
   const outcome = await router(fromAgent.id, text || "");
-  // If there were no tags and no explicit @@user, treat it as an implicit group broadcast.
-  // The router already emitted a group delivery in that case.
+
+  // Fallback: treat leading-line `@user` as `@@user` (case-insensitive).
+  if (!outcome.yieldForUser && looksLikeUserTag(text)) {
+    if (!process.stdin.isTTY) {
+      try { await finalizeAllSandboxes(); } catch {}
+      process.stdout.write("\n");
+      process.exit(0);
+    }
+    deps.setLastUserDMTarget(fromAgent.id);
+    return true;
+  }
+
   return outcome.yieldForUser;
 }
