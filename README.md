@@ -81,6 +81,19 @@ Apply a unified diff (what the agent proposes). You get to approve first.
 
 ## Sandboxed runs (optional)
 
+### Why run in a sandbox?
+| Concern / Feature                        | Host (no sandbox) | Rootless container (our sandbox) | VM (recommended hard boundary) |
+| ---------------------------------------- | ----------------: | :------------------------------: | :----------------------------: |
+| Perf / startup                           |         ✅ fastest |              ✅ fast              |            ❌ slowest           |
+| Reproducibility (pinned toolchain image) |                 ❌ |       ✅ (image pin/digest)       |      ✅ (snapshot + image)      |
+| Read-only project view                   |                 ❌ |         ✅ (`/project:ro`)        |      ✅ (mounts you choose)     |
+| Controlled write surface (allow/deny)    |         ⚠️ ad-hoc |     ✅ (policy check + revert)    |  ✅ (plus filesystem isolation) |
+| No network by default                    |                 ❌ |       ✅ (`--network=none`)       |   ✅ (host-only/ NAT control)   |
+| Cap drops / seccomp / userns remap       |                 ❌ |   ✅ (`--cap-drop=ALL`, keep-id)  |    ✅ via hypervisor boundary   |
+| Kernel isolation                         |                 ❌ |      ❌ (shared host kernel)      |       ✅ (separate kernel)      |
+| Blast radius for a bad command           |       ❌ host-wide |    ⚠️ bounded to mounted dirs    |     ✅ contained to VM disk     |
+
+
 You can run tools in a disposable Podman container. This improves **repeatability**
 and reduces accidental host modifications, while still keeping everything
 auditable.
