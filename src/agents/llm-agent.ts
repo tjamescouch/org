@@ -149,7 +149,6 @@ export class LlmAgent extends Agent {
     const ptcds: string[] = [];
 
     const onToolCallDelta = (tcd: ChatToolCall) => {
-      Logger.info("onToolCallDelta");
       if (streamState !== "tool") {
         Logger.info("");
         streamState = "tool";

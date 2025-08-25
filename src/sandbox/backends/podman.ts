@@ -35,6 +35,12 @@ export class PodmanSession implements ISandboxSession {
         this.runDir = spec.runDir;
     }
 
+    getStepsHostDir(): string {
+        // spec.workHostDir is the host side of /work
+        // .org/steps inside that directory is written live by org-step.sh
+        return path.join(this.spec.workHostDir, ".org", "steps");
+    }
+
     // ---------- lifecycle ----------
 
     async start() {
