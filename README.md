@@ -21,6 +21,7 @@ and approve every change._
 
 ## Contents
 
+- [Vision](#vision)
 - [Quick start](#quick-start)
 - [Installation](#installation)
 - [CLI](#cli)
@@ -37,6 +38,22 @@ and approve every change._
 - [License](#license)
 
 ---
+
+## Vision
+
+Developers and operators deserve AI teammates they can **trust, understand, and control**.
+Most tools either go fully automated (opaque, risky) or stay passive (just suggest, never act). This project takes a different stance:
+
+* **Dev + DevOps, one CLI**: A single agentic workflow that works for both coding and operations. Write code, run infra, and patch your repo — all inside the same safe loop.
+* **Multi-agent as a first-class feature**: Collaboration isn’t a bolt-on. Agents can coordinate, debate, and hand off tasks, while you oversee and approve every change.
+* **Sandbox + patch review**: Every command runs in isolation. Every file change is surfaced as a patch. Nothing merges until you say so.
+* **Safety as a value, not a feature**: Guardrails, glob-based policies, and human-in-the-loop review make it impossible for an agent to “go rogue” in your repo.
+* **Composable workflows**: Use it solo as a powerful dev helper, or spin up multiple agents to cover testing, ops, and review simultaneously.
+
+The vision is simple: **an agent CLI that feels like a real teammate — fast, opinionated, and safe.**
+
+---
+
 
 ## Quick start
 
