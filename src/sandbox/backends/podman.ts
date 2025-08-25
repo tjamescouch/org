@@ -204,7 +204,7 @@ export class PodmanSession implements ISandboxSession {
     async finalize() {
         if (!this.started) throw new Error("session not started");
 
-        InputController.disableKeys();
+        InputController.enableKeys();
         InputController.setRawMode(false);
 
         await this.execInCmd(
@@ -214,7 +214,7 @@ export class PodmanSession implements ISandboxSession {
         );
 
         InputController.setRawMode(true);
-        InputController.enableKeys();
+        InputController.disableKeys();
 
         const patchDst = path.join(this.spec.runDir, "session.patch");
         await this.execHost(["cp", `${this.name}:/work/.org/session.patch`, patchDst]).catch(() => Promise.resolve());
