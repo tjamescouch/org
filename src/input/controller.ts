@@ -55,14 +55,14 @@ export class InputController {
     this.testMode = !!opts._testMode;
 
     // Put stdin into raw/no-echo immediately (if TTY).
-    this.setRawMode(true);
+    InputController.setRawMode(true);
     this.installRawKeyListener();
 
     // Clean exit guard to avoid leaving the terminal in raw mode.
     process.on("SIGINT", () => {
       // Fast abort; do NOT finalize (user wanted instant cancel)
       this.detachRawKeyListener();
-      this.setRawMode(false);
+      InputController.setRawMode(false);
       if (!this.testMode) {
         process.stdout.write("\n");
         process.exit(130);
@@ -144,7 +144,7 @@ export class InputController {
       this.detachRawKeyListener();
 
       // Switch to canonical mode; kernel will handle echo for readline.
-      this.setRawMode(false);
+      InputController.setRawMode(false);
 
       // Create readline interface with terminal controls enabled.
       this.rl = readline.createInterface({
@@ -166,7 +166,7 @@ export class InputController {
           try { this.rl?.close(); resumeStdin(); } catch (e) { Logger.error(e); }
           this.rl = null;
           this.interjecting = false;
-          this.setRawMode(true);
+          InputController.setRawMode(true);
           this.installRawKeyListener(); // re-attach idle hotkeys
         }
       });
@@ -180,7 +180,7 @@ export class InputController {
   private async gracefulShutdown(): Promise<void> {
     // Stop hotkeys & raw input before any async
     this.detachRawKeyListener();
-    this.setRawMode(false);
+    InputController.setRawMode(false);
 
     try { await this.scheduler?.stop?.(); } catch (e) { Logger.error(e); }
 
@@ -209,7 +209,7 @@ export class InputController {
       // Ctrl+C exits quickly (fast abort, no finalize)
       if (key.ctrl && key.name === "c") {
         this.detachRawKeyListener();
-        this.setRawMode(false);
+        InputController.setRawMode(false);
         if (!this.testMode) {
           process.stdout.write("\n");
           process.exit(130);
@@ -232,7 +232,7 @@ export class InputController {
     };
 
     // Important: put stdin into raw to prevent kernel echo while idle.
-    this.setRawMode(true);
+    InputController.setRawMode(true);
     process.stdin.on("keypress", this.keypressHandler);
   }
 
@@ -243,7 +243,7 @@ export class InputController {
   }
 
   /** Centralized raw-mode switch with guards for non-TTY environments. */
-  private setRawMode(enable: boolean) {
+  public static setRawMode(enable: boolean) {
     const stdinAny: any = process.stdin as any;
     if (process.stdin.isTTY && typeof stdinAny.setRawMode === "function") {
       try { stdinAny.setRawMode(enable); } catch { /* ignore on CI/non-tty */ }
