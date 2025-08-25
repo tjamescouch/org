@@ -56,11 +56,11 @@ export async function routeWithSideEffects(
     },
     onUser: async (_from, _content) => {
       // In non-interactive mode, an @@user tag should terminate cleanly
-      if (!process.stdin.isTTY) {
-        try { await finalizeAllSandboxes(); } catch {}
-        process.stdout.write("\n");
-        process.exit(0);
-      }
+      //if (!process.stdin.isTTY) {
+      //  try { await finalizeAllSandboxes(); } catch {}
+      //  process.stdout.write("\n");
+      //  process.exit(0);
+      //}
       deps.setLastUserDMTarget(fromAgent.id);
     },
     onFile: async (_from, name, content) => {
