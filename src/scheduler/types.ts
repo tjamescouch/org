@@ -1,4 +1,4 @@
-// src/scheduler/types.ts
+import type { ISandboxSession } from "../sandbox/types";
 import type { ChatMessage } from "../types";
 import type { GuardDecision, GuardRouteKind } from "../guardrails/guardrail";
 
@@ -28,22 +28,15 @@ export interface Responder {
 
 export type AskUserFn = (fromAgent: string, content: string) => Promise<string | null>;
 
+
 export type SchedulerOptions = {
   agents: Responder[];
-  /** Max number of tool hops the scheduler will allow per turn (per agent). */
   maxTools: number;
-  /** Optional shuffle policy (defaults to Fisher–Yates). */
-  shuffle?: <T>(arr: T[]) => T[];
-  /** Callback used by the scheduler whenever it needs to prompt the human. */
-  onAskUser: AskUserFn;
-  /** Project directory (used for patch application, etc.). */
   projectDir: string;
-  /** Review mode: 'ask' | 'auto' | 'never'. */
-  reviewMode: string;
-
-  /** When false, the scheduler never asks the human (idle or @@user). Defaults to false. */
+  reviewMode?: "off" | "light" | "strict";
+  onAskUser: AskUserFn;
   promptEnabled?: boolean;
-
-  /** Sleep duration in ms when idle (prevents CPU spin & lets signals through). Defaults to 25ms. */
   idleSleepMs?: number;
+  shuffle?: <T>(arr: T[]) => T[];
+  sandbox: ISandboxSession;            // <-- NEW (required)
 };
