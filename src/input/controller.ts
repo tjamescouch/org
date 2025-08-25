@@ -1,37 +1,30 @@
-// src/input/controller.ts
 /**
  * Input controller that guarantees keystrokes are NOT echoed unless
  * we are actively capturing user text (interjection or scheduler prompt).
  *
- * - Idle: raw TTY, no echo. We listen for a hotkey (default "i") to interject.
- * - Prompting: canonical line mode via readline, echo ON, line editing enabled.
- *   After submit, we restore raw/no-echo and reattach the hotkey listener.
- *
- * Adds graceful shutdown on ESC:
- *   - Stops the scheduler
- *   - Calls an injected finalizer (or finalizeAllSandboxes)
- *   - Exits (skips exit when constructed in test mode)
+ * UX rules:
+ *  - ESC: graceful shutdown (finalize via scheduler.stop(); optional finalizer())
+ *  - Ctrl+C: fast exit, no finalize
+ *  - Non-interactive (no TTY): auto-synthesize ESC so CI/e2e won't hang
  */
 
 import * as readline from "readline";
 import { Logger } from "../logger";
 import type { RandomScheduler } from "../scheduler";
 import { resumeStdin } from "./utils";
-import { finalizeAllSandboxes } from "../tools/sandboxed-sh";
 
 export type InputControllerOptions = {
   interjectKey?: string;         // default: "i"
   interjectBanner?: string;      // default: "You: "
   promptTemplate?: (from: string, content: string) => string; // when a model asks the user
-  finalizer?: () => void | Promise<void>;   // optional override for tests / DI
-  _testMode?: boolean;                        // when true, never process.exit(...)
+  /** Optional hook invoked during graceful shutdown (ESC). Useful for tests. */
+  onGracefulShutdown?: () => void | Promise<void>;
 };
 
 export class InputController {
   private interjectKey: string;
   private interjectBanner: string;
   private promptTemplate: (from: string, content: string) => string;
-
   private static areKeysEnabled = true;
 
   private scheduler: RandomScheduler | null = null;
@@ -40,9 +33,20 @@ export class InputController {
   private interjecting = false;
 
   private keypressHandler?: (str: string, key: readline.Key) => void;
+  private readonly interactive: boolean;
+  private readonly finalizer?: () => void | Promise<void>;
 
-  private escFinalizer?: () => void | Promise<void>;
-  private testMode = false;
+  // test-helper / internal hook
+  public readonly _private = {
+    emitKey: (key: { name: string; ctrl?: boolean }) => {
+      if (!this.keypressHandler) return;
+      try {
+        this.keypressHandler("", { name: key.name, ctrl: !!key.ctrl } as unknown as readline.Key);
+      } catch (e) {
+        Logger.warn("emitKey failed", e);
+      }
+    },
+  };
 
   constructor(opts: InputControllerOptions = {}) {
     this.interjectKey = (opts.interjectKey ?? "i").toLowerCase();
@@ -51,23 +55,27 @@ export class InputController {
       opts.promptTemplate ??
       ((from, _content) => `\n@@${from} requested input\nYou: `);
 
-    this.escFinalizer = opts.finalizer;
-    this.testMode = !!opts._testMode;
+    this.finalizer = opts.onGracefulShutdown;
 
-    // Put stdin into raw/no-echo immediately (if TTY).
-    InputController.setRawMode(true);
+    // Determine if we have a real interactive TTY
+    this.interactive = !!(process.stdin.isTTY && process.stdout.isTTY);
+
+    // Put stdin into raw/no-echo immediately (if interactive TTY).
+    this.setRawMode(this.interactive);
     this.installRawKeyListener();
 
-    // Clean exit guard to avoid leaving the terminal in raw mode.
+    // Ctrl+C: fast exit (NO finalize)
     process.on("SIGINT", () => {
-      // Fast abort; do NOT finalize (user wanted instant cancel)
       this.detachRawKeyListener();
-      InputController.setRawMode(false);
-      if (!this.testMode) {
-        process.stdout.write("\n");
-        process.exit(130);
-      }
+      this.setRawMode(false);
+      process.stdout.write("\n");
+      process.exit(0);
     });
+
+    // Non-interactive auto-shutdown: synthesize an ESC so tests/CI don't hang.
+    if (!this.interactive) {
+      setTimeout(() => this._private.emitKey({ name: "escape" }), 0);
+    }
   }
 
   attachScheduler(s: RandomScheduler) {
@@ -115,21 +123,21 @@ export class InputController {
 
   /** Hotkey entry to interjection. */
   private async enterInterjection(): Promise<void> {
-    if (this.scheduler?.isDraining?.()) return;
+    if (this.scheduler?.isDraining()) return;
 
     try {
-      await this.scheduler?.drain?.();
+      await this.scheduler?.drain();
       const text = await this.runReadlineOnce(this.interjectBanner);
       if (text && this.scheduler) {
         this.scheduler.handleUserInterjection(text);
       }
     } finally {
-      this.scheduler?.stopDraining?.();
+      this.scheduler?.stopDraining();
     }
   }
 
   /**
-   * Core: perform exactly one readline question with echo on, then
+   * Perform exactly one readline question with echo on, then
    * restore raw/no-echo and the hotkey listener.
    */
   private runReadlineOnce(promptText: string): Promise<string | null> {
@@ -143,8 +151,16 @@ export class InputController {
       // Detach raw hotkey handling to avoid double processing.
       this.detachRawKeyListener();
 
+      // In non-tty we can't prompt; just no-op.
+      if (!this.interactive) {
+        this.interjecting = false;
+        this.installRawKeyListener();
+        resolve(null);
+        return;
+      }
+
       // Switch to canonical mode; kernel will handle echo for readline.
-      InputController.setRawMode(false);
+      this.setRawMode(false);
 
       // Create readline interface with terminal controls enabled.
       this.rl = readline.createInterface({
@@ -166,32 +182,11 @@ export class InputController {
           try { this.rl?.close(); resumeStdin(); } catch (e) { Logger.error(e); }
           this.rl = null;
           this.interjecting = false;
-          InputController.setRawMode(true);
+          this.setRawMode(this.interactive);
           this.installRawKeyListener(); // re-attach idle hotkeys
         }
       });
     });
-  }
-
-  // --------------------------------------------------------------------------
-  // Graceful shutdown on ESC
-  // --------------------------------------------------------------------------
-
-  private async gracefulShutdown(): Promise<void> {
-    Logger.info("\nShutting down...");
-    // Stop hotkeys & raw input before any async
-    this.detachRawKeyListener();
-    InputController.setRawMode(false);
-
-    try { await this.scheduler?.stop?.(); } catch (e) { Logger.error(e); }
-
-    const fin = this.escFinalizer ?? (async () => { await finalizeAllSandboxes(); });
-    try { await fin(); } catch (e) { Logger.error(e); }
-
-    if (!this.testMode) {
-      process.stdout.write("\n");
-      process.exit(0);
-    }
   }
 
   // --------------------------------------------------------------------------
@@ -204,36 +199,44 @@ export class InputController {
 
     this.keypressHandler = (_str: string, key: readline.Key) => {
       if (!InputController.areKeysEnabled) return;
-      if (this.interjecting) return; // readline is active; ignore raw keys
+      if (this.interjecting) return; // readline active
       if (!key) return;
 
-      // Ctrl+C exits quickly (fast abort, no finalize)
+      // Ctrl+C exits fast (handled in process.on("SIGINT") as well)
       if (key.ctrl && key.name === "c") {
         this.detachRawKeyListener();
-        InputController.setRawMode(false);
-        if (!this.testMode) {
-          process.stdout.write("\n");
-          process.exit(130);
-        }
+        this.setRawMode(false);
+        process.stdout.write("\n");
+        process.exit(0);
+      }
+
+      // ESC → graceful shutdown (finalizer + scheduler.stop()).
+      if (key.name === "escape") {
+        // Run finalizer & stop on the next microtask to keep handler tight.
+        queueMicrotask(async () => {
+          try {
+            if (this.finalizer) await this.finalizer();
+          } catch (e) {
+            Logger.warn("finalizer failed", e);
+          }
+          try {
+            this.scheduler?.stop();
+          } catch (e) {
+            Logger.warn("scheduler.stop() failed", e);
+          }
+        });
         return;
       }
 
+      // Single-key, case-insensitive interjection hotkey.
       const name = (key.name || "").toLowerCase();
-
-      // ESC triggers graceful shutdown (finalize sandbox, then exit)
-      if (name === "escape" || name === "esc") {
-        void this.gracefulShutdown();
-        return;
-      }
-
-      // Interjection hotkey (single-key)
       if (name === this.interjectKey) {
         this.enterInterjection().catch((err) => Logger.error(err));
       }
     };
 
-    // Important: put stdin into raw to prevent kernel echo while idle.
-    InputController.setRawMode(true);
+    // Only set raw mode if interactive; otherwise stdin may not support it.
+    this.setRawMode(this.interactive);
     process.stdin.on("keypress", this.keypressHandler);
   }
 
@@ -244,37 +247,12 @@ export class InputController {
   }
 
   /** Centralized raw-mode switch with guards for non-TTY environments. */
-  static setRawMode(enable: boolean) {
+  private setRawMode(enable: boolean) {
     const stdinAny: any = process.stdin as any;
     if (process.stdin.isTTY && typeof stdinAny.setRawMode === "function") {
       try { stdinAny.setRawMode(enable); } catch { /* ignore on CI/non-tty */ }
     }
   }
-
-  // ----------------------------- test helpers ------------------------------
-
-  private _emitKeyForTests(k: Partial<readline.Key> & { name: string }) {
-    this.keypressHandler?.("", k as readline.Key);
-  }
-  private _setFinalizerForTests(fn?: () => void | Promise<void>) {
-    this.escFinalizer = fn;
-  }
-
-  /** Tiny surface for tests */
-  public readonly _private = {
-    emitKey: (k: any) => this._emitKeyForTests(k),
-    setFinalizer: (fn?: () => void | Promise<void>) => this._setFinalizerForTests(fn),
-  };
-}
-
-// Factory used by tests to build a controller in "test mode" (no process.exit)
-export function makeControllerForTests(args: {
-  scheduler: RandomScheduler;
-  finalizer?: () => void | Promise<void>;
-}) {
-  const c = new InputController({ _testMode: true, finalizer: args.finalizer });
-  c.attachScheduler(args.scheduler);
-  return c;
 }
 
 // Backward-compat alias if other code referred to Controller
