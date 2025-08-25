@@ -318,6 +318,95 @@ When running **inside** a repo, just call `org` normally.
 
 ---
 
+### Keyboard shortcuts
+
+* **`i`** — Interject. Opens a one-line prompt (`You:`) with line editing; after submit, the run resumes.
+* **`Esc`** — **Graceful shutdown.** Finalizes the sandbox (if active), saves `session.patch` and artifacts, then exits.
+* **`Ctrl+C`** — Immediate abort (best-effort cleanup only). Prefer **Esc** when you want patches/artifacts preserved.
+
+---
+
+### Quick run inspection (handy `jq` one-liners)
+
+```bash
+# Last run directory
+RUN="$(ls -d .org/runs/* 2>/dev/null | sort | tail -1)"
+
+# See the effective write policy that was used
+jq -s '.[-1].spec.write' .org/runs/*/manifest.json
+
+# Or just the last run’s policy:
+jq '.spec.write' "$RUN/manifest.json"
+
+# Show any policy violations (one file per step if blocked)
+ls "$RUN"/steps/*violation.txt 2>/dev/null || echo "no violations"
+
+# Pretty-view the patch (falls back to less if delta isn't available)
+(delta "$RUN/session.patch" 2>/dev/null) || less -R "$RUN/session.patch"
+
+# What changed between baseline and final?
+jq -r '.steps[-1].exitCode as $ec | "last step exit=\($ec)"' "$RUN/manifest.json"
+```
+
+---
+
+### Patch headers & root-level files (why you’ll see `a/…` and `b/…`)
+
+`org` generates diffs with Git’s default *prefixed* headers so top-level files (e.g., `README.md`) are handled the same as nested paths. If you’re debugging outside the sandbox, mirror the exact flags we use:
+
+```bash
+git -c diff.noprefix=false diff --binary <BASE>..HEAD
+```
+
+This yields headers like:
+
+```
+diff --git a/README.md b/README.md
+```
+
+and ensures the patch viewer behaves the same for root and nested edits.
+
+---
+
+### Pager & heartbeat
+
+* The patch viewer is a pager (`delta` if present, otherwise `less`). Press **`q`** to exit, then approve or reject.
+* The **heartbeat dot** (period printed to `stderr` while a long command runs) is automatically **suppressed** whenever the patch UI or confirmation prompt is visible, so your review screen stays clean.
+
+---
+
+### Environment cheat-sheet (extras)
+
+| Variable          | Typical values           | Purpose                                               |
+| ----------------- | ------------------------ | ----------------------------------------------------- |
+| `ORG_PAGER`       | `delta`, `less`, `cat`   | Force a specific pager for `session.patch`.           |
+| `ORG_REVIEW`      | `ask`, `auto`, `never`   | Patch review mode (defaults to interactive on a TTY). |
+| `ORG_PROJECT_DIR` | `/path/to/repo`          | Operate on a repo without `cd` (alternate to `-C`).   |
+| `SANDBOX_BACKEND` | `podman`, `none`, `auto` | Choose/disable the sandbox backend.                   |
+| `SAFE_MODE`       | `1`/`true`               | Extra confirmation gates for shell & writes.          |
+
+---
+
+### Troubleshooting quick hits
+
+* **“No patch produced”**
+  The command didn’t change tracked files, the write policy blocked the path (check `steps/*violation.txt`), or the change lives under `.org/`/`.git/` which are intentionally excluded.
+
+* **Root-level file didn’t appear**
+  Ensure your allow list includes **both** `'*'` (top-level) **and** `'**/*'` (nested). This is the default policy; verify with the `jq` snippet above.
+
+* **Heartbeat dots over the patch view**
+  Update to the current build — dots are suppressed while the review UI is active.
+
+---
+
+### Multi-agent workflows (optional)
+
+* 🧩 **Works in multi-agent setups:** run several named agents (e.g., `"alice:lmstudio,bob:lmstudio"`). Agents can hand off tasks and you can interject at any time with **`i`** to steer the plan, while the same review-before-apply loop protects your repo.
+
+
+---
+
 ## Tests
 
 We include tests that exercise:
