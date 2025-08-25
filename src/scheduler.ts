@@ -31,6 +31,7 @@ export class RandomScheduler {
   private readonly agentFilter = new LLMNoiseFilter();
   private readonly groupFilter = new LLMNoiseFilter();
   private readonly fileFilter = new LLMNoiseFilter();
+  private projectDir = ".";
 
   private readonly idlePromptEvery = 3;
 
@@ -48,6 +49,7 @@ export class RandomScheduler {
     maxTools: number;
     shuffle: (a: Responder[]) => Responder[]
     onAskUser: (fromAgent: string, content: string) => Promise<string | null>;
+    projectDir: string;
   }) {
     this.agents = opts.agents;
     this.maxTools = Math.max(0, opts.maxTools);

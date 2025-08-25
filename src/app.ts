@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 // src/app.ts
 
+import * as fs from "fs";
+import * as path from "path";
+import { execFileSync } from "child_process";
 import { ExecutionGate } from "./tools/execution-gate";
 import { loadConfig } from "./config/config";
 import { Logger } from "./logger";
@@ -30,6 +33,35 @@ function parseArgs(argv: string[]) {
   return out;
 }
 
+
+function resolveProjectDir(seed: string): string {
+  // 1) If inside a git repo, use its toplevel
+  try {
+    const out = execFileSync("git", ["-C", seed, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+    if (out) return out;
+  } catch { }
+  // 2) Walk up for a .git folder
+  let d = path.resolve(seed);
+  while (true) {
+    if (fs.existsSync(path.join(d, ".git"))) return d;
+    const up = path.dirname(d);
+    if (up === d) break;
+    d = up;
+  }
+  // 3) Give up
+  throw new Error(`Could not locate project root from ${seed}. Pass --project <dir> or run inside the repo.`);
+}
+
+// very small arg parser for -C/--project
+function getProjectFromArgs(argv: string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "-C" || argv[i] === "--project") return argv[i + 1];
+  }
+  return process.env.ORG_PROJECT_DIR;
+}
+
+
+
 function enableDebugIfRequested(args: Record<string, string | boolean>) {
   if (args["debug"] || process.env.DEBUG) {
     process.env.DEBUG = String(args["debug"] ?? process.env.DEBUG ?? "1");
@@ -42,7 +74,7 @@ function setupProcessGuards() {
   if (dbgOn) {
     process.on("beforeExit", (code) => {
       Logger.info("[DBG] beforeExit", code, "— scheduler stays alive unless Ctrl+C");
-      setTimeout(() => {}, 60_000); // keep the loop alive if empty
+      setTimeout(() => { }, 60_000); // keep the loop alive if empty
     });
     process.on("uncaughtException", (e) => { Logger.info("[DBG] uncaughtException:", e); });
     process.on("unhandledRejection", (e) => { Logger.info("[DBG] unhandledRejection:", e); });
@@ -106,6 +138,10 @@ async function main() {
   enableDebugIfRequested(args);
   setupProcessGuards();
 
+  // ---- main entry ----
+  const seed = getProjectFromArgs(process.argv) ?? process.cwd();
+  const projectDir = resolveProjectDir(seed);
+
   // ---- Recipe wiring ----
   const recipeName =
     (typeof args["recipe"] === "string" && args["recipe"]) ||
@@ -133,7 +169,7 @@ async function main() {
   const agents = agentSpecs.map(a => ({
     id: a.id,
     respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => a.model.respond(prompt, budget, peers, cb),
-    guardOnIdle: (state: any) => a.model.guardOnIdle?.(state) ?? null, guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null, 
+    guardOnIdle: (state: any) => a.model.guardOnIdle?.(state) ?? null, guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null,
   }));
 
   // IO + scheduler
