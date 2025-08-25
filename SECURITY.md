@@ -1,65 +1,90 @@
+
+# SECURITY.md
+
+```markdown
 # Security Policy
 
 This project aims to be safe-by-default, but it is **not a sandbox**. If you run
-`org` outside a disposable VM, follow the hardening guidance below.
+`org` outside a disposable VM, follow the guidance below.
 
 ## Reporting a Vulnerability
 
-Use GitHub’s **“Report a vulnerability”** (Security → Advisories) for
-this repository so we can coordinate privately.
+Use GitHub’s **“Report a vulnerability”** (Security → Advisories) for this
+repository so we can coordinate privately.
 
 Please **do not** open public issues or PRs for vulnerabilities.
 
 Include when possible:
 - affected commit or release tag
 - environment (OS/VM, backend LLM server, network mode)
-- precise reproduction steps and expected/actual behavior
-- impact assessment (confidentiality/integrity/availability)
+- a minimal reproduction and expected/actual behavior
+- any logs from `.org/runs/<id>/steps/*` and the `session.patch` if relevant
 
-## Scope
+We’ll acknowledge receipt within 5 business days and keep you updated.
 
-In scope:
-- This repository’s source, installer scripts, and default tools provided here
-  (e.g., `sh`, `apply_patch`) **as wired by this repo**.
+---
 
-Out of scope:
-- Third‑party backends (LM Studio, Ollama, OpenAI, etc.), their models, or their
-  deployment/configuration.
-- Host OS / hypervisor issues unrelated to this code.
-- Misconfiguration exposure (e.g., binding LLM servers to `0.0.0.0` on bridged/Wi‑Fi).
+## Threat model (overview)
 
-## Supported Versions
+- The agent can run **shell commands** (`sh`) and write files via patch review.
+- We rely on **human approval** for patch application.
+- The optional **containerized sandbox** improves *safety* and *repeatability*,
+  but is **not** a hardened escape-proof jail.
 
-We provide security fixes for:
-- `main` branch
-- the **latest tagged release**
+---
 
-Older releases are not maintained.
+## Hardening recommendations
 
-## Coordinated Disclosure & Timelines
+These are strongly recommended for day-to-day use:
 
-Target timelines (non‑binding, severity‑dependent):
-- **Acknowledge** receipt: **≤ 3 business days**
-- **Initial triage** / repro attempt: **≤ 7 days**
-- **Fix / mitigation / advisory**: **≤ 90 days** from triage (expedited for critical issues)
+1. **Run inside a VM**  
+   Prefer a small Linux VM with a host-only network. Point `LLM_BASE_URL` to the
+   host-only IP to keep the model interface private.
 
-We prefer **coordinated disclosure**. If active exploitation is suspected, we may
-issue an interim public advisory.
+2. **Use the sandbox backend**  
+   Set `SANDBOX_BACKEND=podman`. By default we start containers with:
+   - read-only bind for `/project` (your repo),
+   - a writable `/work` scratch copy,
+   - **network disabled**,
+   - dropped capabilities and `--userns=keep-id`.
+   This shrinks the blast radius for accidental commands.
 
-## Operational Hardening (Recommendations)
+3. **Keep “safe mode” on**  
+   The `--safe` flag (or `SAFE_MODE=1`) preserves additional guardrails. Treat
+   the `sh` tool as untrusted input even in safe mode; guards are heuristics.
 
-These aren’t required for reporting, but strongly recommended for day‑to‑day use:
+4. **Review every patch**  
+   Never auto-apply changes without reading the patch. Deny patterns override
+   allows; keep `.git/**`, `.org/**`, `.env`, `**/*.pem`, `.github/**` denied.
 
-- Run inside a **VM** with **host‑only networking**; point `LLM_BASE_URL` to the host‑only IP.
-- Keep **safe mode** enabled (`--safe` or `SAFE_MODE=1`) outside disposable environments.
-- Treat the `sh` tool as untrusted input; built‑in guards are **heuristics**, not containment.
-- Avoid sending secrets to models; `transcript.txt` (now git‑ignored) may contain sensitive data.
-- Prefer a dedicated working directory; if you add custom tools, hard‑check that file writes
-  cannot escape the working dir via `..` or symlinks.
-- Do **not** expose unauthenticated LLM endpoints to untrusted networks; bind to a private
-  interface or firewall them.
+5. **Mind secrets and transcripts**  
+   Avoid sending secrets to models. The run directory (`.org/runs/<id>/`) stores
+   `transcript.txt` and step outputs; keep the repo private and rotate secrets
+   if something leaks.
+
+6. **Prefer dedicated working directories**  
+   If you add custom tools, validate they cannot escape the working directory
+   via `..` or symlinks.
+
+7. **Keep your LLM endpoint private**  
+   Do not expose unauthenticated local model servers to untrusted networks. Bind
+   to a private interface or firewall them.
+
+---
+
+## Notes on containerization
+
+- The Podman backend uses a local image `localhost/org-build:debian-12`. If you
+  cannot pull images, you can load an offline tarball via `podman load -i …`.
+- Containerization is for **safety and reproducibility**, not for strong
+  isolation. Treat it as a convenience boundary, not a security boundary.
+
+---
 
 ## Credit
 
-With your permission, we will credit reporters by name/handle in release notes or advisories.
-No monetary bounty is offered at this time.
+With your permission we’ll credit reporters by name/handle in release notes or
+advisories. No monetary bounty is offered at this time.
+````
+
+If you’d like me to tailor either file to your project’s tone or move any of the new sections elsewhere, say the word and I’ll adjust.
