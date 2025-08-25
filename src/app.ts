@@ -182,6 +182,8 @@ async function main() {
     agents,
     maxTools,
     onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
+    projectDir,
+    reviewMode: args["review"]
   });
 
   input.attachScheduler(scheduler);

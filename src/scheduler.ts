@@ -11,6 +11,9 @@ import { GuardDecision, GuardRouteKind } from "./guardrails/guardrail";
 import { ChatMessage } from "./types";
 import { LLMNoiseFilter } from "./utils/llm-noise-filter";
 import { finalizeSandbox } from "./tools/sandboxed-sh";
+import { modeFromEnvOrFlags, decideReview, applyPatch } from "./review";
+
+
 
 
 export interface Responder {
@@ -31,7 +34,7 @@ export class RandomScheduler {
   private readonly agentFilter = new LLMNoiseFilter();
   private readonly groupFilter = new LLMNoiseFilter();
   private readonly fileFilter = new LLMNoiseFilter();
-  private projectDir = ".";
+  private reviewMode = "review";
 
   private readonly idlePromptEvery = 3;
 
@@ -50,12 +53,18 @@ export class RandomScheduler {
     shuffle: (a: Responder[]) => Responder[]
     onAskUser: (fromAgent: string, content: string) => Promise<string | null>;
     projectDir: string;
+    reviewMode: string;
   }) {
+    this.reviewMode = opts.reviewMode;
     this.agents = opts.agents;
     this.maxTools = Math.max(0, opts.maxTools);
     this.userPromptFn = opts.onAskUser;
     this.shuffle = opts.shuffle ?? fisherYatesShuffle;
     for (const a of this.agents) this.ensureInbox(a.id);
+  }
+
+  setReviewMode(mode:string): void {
+    this.reviewMode = mode;
   }
 
   start = async (): Promise<void> => {
@@ -126,7 +135,30 @@ export class RandomScheduler {
             }
           }
         } finally {
-          finalizeSandbox({ projectDir: process.cwd(), agentSessionId: agent.id });
+          const ctx = { projectDir: process.cwd(), agentSessionId: agent.id };
+          // after a batch of tool calls:
+          const fin = await finalizeSandbox(ctx);
+          const patchPath = fin?.patchPath;  // this is already produced by your sandbox
+          const projectDir = ctx.projectDir;
+
+          if (patchPath && fs.existsSync(patchPath)) {
+            const mode = modeFromEnvOrFlags(this.reviewMode); // e.g. --review=auto|ask|never
+            const decision = await decideReview(mode, projectDir, patchPath);
+            if (decision.action === "apply") {
+              try {
+                await applyPatch(projectDir, patchPath, decision.commitMsg);
+                console.log("✓ patch applied");
+              } catch (e: any) {
+                console.error("Patch apply failed:", e?.message ?? e);
+              }
+            } else if (decision.action === "reject") {
+              console.log("↷ patch rejected");
+            } else {
+              console.log(`↷ patch skipped: ${decision.reason}`);
+            }
+          } else {
+            console.log("↷ no patch produced");
+          }
         }
       }
 
@@ -312,7 +344,8 @@ export class RoundRobinScheduler extends RandomScheduler {
     agents: Responder[];
     maxTools: number;
     onAskUser: (fromAgent: string, content: string) => Promise<string | null>;
+    projectDir: string;
   }) {
-    super({ agents: opts.agents, shuffle: (a) => a, maxTools: opts.maxTools, onAskUser: opts.onAskUser });
+    super({ agents: opts.agents, shuffle: (a) => a, maxTools: opts.maxTools, onAskUser: opts.onAskUser, projectDir: opts.projectDir });
   }
 }
