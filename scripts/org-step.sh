@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # scripts/org-step.sh
-# Runs a single command inside the sandbox session and records stdout/stderr/metadata.
-# Requires: bash, coreutils, timeout, date, kill, setsid
+# Run one tool command inside the sandbox session; record stdout/stderr/metadata.
 
 set -euo pipefail
 
@@ -17,7 +16,9 @@ OUT_DIR="${ORG_OUT_DIR:-/work/.org/steps}"
 TIMEOUT_MS="${ORG_TIMEOUT_MS:-30000}"
 STDOUT_MAX="${ORG_STDOUT_MAX:-1048576}" # 1 MiB
 LIMIT_PIDS="${ORG_PIDS_MAX:-128}"
-# Note: memory/cpu mostly enforced by container cgroups
+
+# Always run from /work (our writable workspace)
+cd /work || { echo "cannot cd to /work" >&2; exit 97; }
 
 mkdir -p "$OUT_DIR"
 
@@ -30,11 +31,10 @@ ulimit -u "${LIMIT_PIDS}" || true
 ulimit -n 1024 || true
 
 start_ts="$(date -Is)"
-# Run in its own process group so we can cleanly kill children.
-# We capture raw stdout/stderr into files; truncate after.
+
+# Execute in its own process group so we can kill the whole tree on timeout
 set +e
 timeout_s=$(( (TIMEOUT_MS + 999) / 1000 ))
-# shellcheck disable=SC3045
 setsid bash -lc "$CMD" >"$OUT_FILE" 2>"$ERR_FILE" &
 pid="$!"
 wait "$pid"
@@ -51,7 +51,6 @@ fi
 if [[ -f "$OUT_FILE" ]]; then
   size=$(stat -c%s "$OUT_FILE" 2>/dev/null || stat -f%z "$OUT_FILE")
   if (( size > STDOUT_MAX )); then
-    # truncate/cut without loading to RAM
     dd if="$OUT_FILE" of="${OUT_FILE}.tmp" bs="${STDOUT_MAX}" count=1 status=none || true
     mv "${OUT_FILE}.tmp" "$OUT_FILE"
   fi
@@ -64,8 +63,7 @@ if [[ -f "$ERR_FILE" ]]; then
   fi
 fi
 
-# Kill any stragglers from the step (its process group)
-# pgrep -g requires procps; fall back to kill -- -pid
+# Best-effort PGID cleanup
 pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
 if [[ -n "$pgid" ]]; then
   kill -TERM "-$pgid" 2>/dev/null || true
@@ -73,9 +71,10 @@ if [[ -n "$pgid" ]]; then
   kill -KILL "-$pgid" 2>/dev/null || true
 fi
 
-# Clean /tmp for next step
+# Clean tmp for next step
 rm -rf /tmp/* 2>/dev/null || true
 
+# Metadata
 cat >"$META_FILE" <<JSON
 {
   "idx": ${IDX},

@@ -174,14 +174,15 @@ export class PodmanSession implements ISandboxSession {
 
     /** Run a shell command inside the container (no extra env). */
     private async execInCmd(cmdline: string) {
-        return sh(this.tool, ["exec", this.name, "bash", "-lc", cmdline]);
+        return sh(this.tool, ["exec", "--workdir", "/work", this.name, "bash", "-lc", cmdline]);
     }
 
     /** Run with env injected (options go BEFORE the container name). */
     private async execInEnv(env: Record<string, string>, cmdline: string) {
         const envArgs = Object.entries(env).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
-        return sh(this.tool, ["exec", ...envArgs, this.name, "bash", "-lc", cmdline]);
+        return sh(this.tool, ["exec", "--workdir", "/work", ...envArgs, this.name, "bash", "-lc", cmdline]);
     }
+
 
     private shQ(s: string) {
         return `'${s.replace(/'/g, `'\\''`)}'`;
