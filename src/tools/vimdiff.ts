@@ -3,7 +3,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { type ChildProcess } from "node:child_process";
 import { spawnInCleanEnvironment } from "../utils/spawn-clean";
-import { pauseStdin, resumeStdin } from "../input/utils";
+import { resumeStdin } from "../input/utils";
 import { Controller } from "../input/controller";
 import { beginTtyHandoff, endTtyHandoff } from "../input/tty-handoff";
 
