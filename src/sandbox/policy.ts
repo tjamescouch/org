@@ -1,8 +1,7 @@
 // src/sandbox/policy.ts
-// Execution policy → concrete ExecSpec used by the sandbox backend.
-
 import { randomUUID } from "crypto";
 import * as path from "path";
+import * as os from "os";
 
 export type NetPolicy =
   | { mode: "deny" }
@@ -22,20 +21,20 @@ export interface WritePolicy {
 
 export interface ExecPolicy {
   projectDir: string;      // host absolute path to the repo root
-  runRoot: string;         // host absolute path for .org/runs and scratch
-  image: string;           // container image (pin by digest if possible)
-  net: NetPolicy;          // network policy for the whole session
-  limits: ExecLimits;      // per-call ceilings; container has coarser caps
-  write: WritePolicy;      // allowed write locations (under /work)
+  runRoot: string;         // host absolute path for .org/runs (artifacts)
+  image: string;           // container image
+  net: NetPolicy;
+  limits: ExecLimits;
+  write: WritePolicy;
   keepScratch?: boolean;   // keep /work host dir for debugging
 }
 
 export interface ExecSpec {
-  id: string;                      // run/session id (uuid)
-  image: string;                   // image name@digest
-  projectDir: string;              // host repo dir (mounted RO at /project)
-  workHostDir: string;             // host scratch dir (mounted RW at /work)
-  runDir: string;                  // host run dir (.org/runs/<id>)
+  id: string;
+  image: string;
+  projectDir: string;      // mounted RO at /project
+  workHostDir: string;     // mounted RW at /work  (now OUTSIDE the repo)
+  runDir: string;          // .org/runs/<id> (inside repo, fine)
   net: NetPolicy;
   limits: ExecLimits;
   write: WritePolicy;
@@ -59,12 +58,13 @@ export function defaultPolicy(opts: {
     net: opts.net ?? { mode: "deny" },
     limits: {
       timeoutMs: opts.limits?.timeoutMs ?? 30_000,
-      memMiB: opts.limits?.memMiB ?? 512,
-      cpuCores: opts.limits?.cpuCores ?? 1,
-      stdoutMax: opts.limits?.stdoutMax ?? 1_048_576, // 1 MiB
-      pidsMax: opts.limits?.pidsMax ?? 128,
+      memMiB:    opts.limits?.memMiB    ?? 512,
+      cpuCores:  opts.limits?.cpuCores  ?? 1,
+      stdoutMax: opts.limits?.stdoutMax ?? 1_048_576,
+      pidsMax:   opts.limits?.pidsMax   ?? 128,
     },
     write: {
+      // keep conservative defaults
       allow: opts.write?.allow ?? ["src/**", "include/**", "build/**", "tmp/**", "CMakeLists.txt"],
     },
     keepScratch: opts.keepScratch ?? false,
@@ -74,7 +74,14 @@ export function defaultPolicy(opts: {
 export function toSpec(p: ExecPolicy): ExecSpec {
   const id = randomUUID();
   const runDir = path.join(p.runRoot, "runs", id);
-  const workHostDir = path.join(p.runRoot, "tmp", `session-${id}`);
+
+  // IMPORTANT: scratch goes OUTSIDE the project to avoid rsync self-copy.
+  const scratchBase =
+    process.env.ORG_SCRATCH_BASE
+      ? path.resolve(process.env.ORG_SCRATCH_BASE)
+      : path.join(os.tmpdir(), "org-sessions");
+
+  const workHostDir = path.join(scratchBase, `session-${id}`);
   return {
     id,
     image: p.image,
