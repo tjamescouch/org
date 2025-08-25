@@ -1,7 +1,7 @@
 
 # org
 
-_Agentic dev helper that can “do things” in your repo while you watch, review,
+_Agentic dev helpers that can “do things” in your repo while you watch, review,
 and approve every change._
 
 - ✍️ **Conversational**: give a task, the agent plans and executes.
