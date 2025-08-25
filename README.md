@@ -2,7 +2,7 @@
 # org
 
 _Agentic dev helper that can “do things” in your repo while you watch, review,
-and approve every change._ :contentReference[oaicite:1]{index=1}
+and approve every change._
 
 - ✍️ **Conversational**: give a task, the agent plans and executes.
 - 🧰 **Tools**: `sh`, `apply_patch`, etc. 100% auditable.
@@ -11,7 +11,7 @@ and approve every change._ :contentReference[oaicite:1]{index=1}
 - 🧪 **Deterministic runs**: all stdout/stderr, artifacts, and a git patch are
   saved under `.org/runs/<id>` for inspection or CI upload.
 - 🛡️ **Optional containerized sandbox**: run steps inside a Podman container
-  with no network by default. :contentReference[oaicite:2]{index=2}
+  with no network by default. :contentReference
 
 > This is a developer productivity tool, not a security boundary. See
 > [SECURITY.md](SECURITY.md) for hardening guidance.
