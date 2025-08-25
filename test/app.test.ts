@@ -19,6 +19,7 @@ import { NoDangerousRm, NoRm, NoGitPush } from '../src/tools/execution-guards';
 import { runSh } from '../src/tools/sh';
 import { LlmAgent } from '../src/agents/llm-agent';
 import type { ChatDriver, ChatOutput, ChatToolCall } from '../src/drivers/types';
+import { AgentReply } from '../src/agents/agent';
 
 // -----------------------------------------------------------------------------
 // Helper definitions
@@ -141,7 +142,7 @@ test('TagParser parses multiple tags in order', () => {
 // routeWithTags Tests
 
 test('routeWithTags treats untagged text as a group message', () => {
-  const outcome = routeWithTags('hello');
+  const outcome = routeWithTags('hello', []);
   assert.equal(outcome.deliveries.length, 1);
   assert.equal(outcome.deliveries[0].kind, 'group');
   assert.equal(outcome.deliveries[0].content, 'hello');
@@ -150,7 +151,7 @@ test('routeWithTags treats untagged text as a group message', () => {
 });
 
 test('routeWithTags handles agent targeted messages', () => {
-  const outcome = routeWithTags('@@alice Hi Alice');
+  const outcome = routeWithTags('@@alice Hi Alice', ['alice', 'bob']);
   assert.equal(outcome.deliveries.length, 1);
   const d = outcome.deliveries[0];
   assert.equal(d.kind, 'agent');
@@ -161,7 +162,7 @@ test('routeWithTags handles agent targeted messages', () => {
 });
 
 test('routeWithTags handles group directed messages', () => {
-  const outcome = routeWithTags('@@group Team update');
+  const outcome = routeWithTags('@@group Team update', []);
   assert.equal(outcome.deliveries.length, 1);
   const d = outcome.deliveries[0];
   assert.equal(d.kind, 'group');
@@ -170,7 +171,7 @@ test('routeWithTags handles group directed messages', () => {
 });
 
 test('routeWithTags handles user directed messages', () => {
-  const outcome = routeWithTags('@@user Need input');
+  const outcome = routeWithTags('@@user Need input', []);
   assert.equal(outcome.deliveries.length, 1);
   const d = outcome.deliveries[0];
   assert.equal(d.kind, 'user');
@@ -180,7 +181,7 @@ test('routeWithTags handles user directed messages', () => {
 
 test('routeWithTags handles mixed tags and sets flags appropriately', () => {
   const input = '@@bob Hi Bob @@group All @@user Ping';
-  const outcome = routeWithTags(input);
+  const outcome = routeWithTags(input, ['bob']);
   assert.equal(outcome.deliveries.length, 3);
   // agent
   const d0 = outcome.deliveries[0];
@@ -214,7 +215,7 @@ test('makeRouter dispatches calls to provided callbacks', async () => {
     onFile: (from, name, content) => {
       calls.push({ kind: 'file', from, name, content });
     },
-  });
+  }, [{ id: 'dave', respond: async (): Promise<AgentReply[]> => [] }])
   const msg = 'Intro @@dave Hi @@group Everyone ##doc.txt Contents @@user Please review';
   const outcome = await router('alice', msg);
   // Four deliveries: preamble group, agent, group, file, user
@@ -252,7 +253,7 @@ test('ExecutionGate.configure rejects unsafe non‑interactive combinations', ()
 
 test('ExecutionGate.gate denies commands when a guard vetoes', async () => {
   // Install a guard that always denies
-  ExecutionGate.configure({ safe: false, interactive: true, guards: [ { allow: () => false } as any ] });
+  ExecutionGate.configure({ safe: false, interactive: true, guards: [{ allow: () => false } as any] });
   // Denied commands should throw
   await assert.rejects(() => ExecutionGate.gate('echo test'));
   // Restore defaults
@@ -303,7 +304,7 @@ test('LlmAgent executes sh tool call and ends the turn when no assistant text is
   // First model output is a tool call; after the tool runs, the system now ends the turn
   // (it does not immediately make another chat call to fetch assistant text).
   const driver = new StubDriver([
-    { text: '', toolCalls: [ makeToolCall('1', 'sh', { cmd: 'echo hi' }) ] },
+    { text: '', toolCalls: [makeToolCall('1', 'sh', { cmd: 'echo hi' })] },
   ]);
   const agent = new LlmAgent('tester', driver, 'mock-model');
   const res = (await agent.respond([{ content: 'Run command', role: "user", from: "user" }], 2, ['tester'], () => false))[0];
@@ -316,7 +317,7 @@ test('LlmAgent executes sh tool call and ends the turn when no assistant text is
 test('LlmAgent handles unknown tool calls gracefully', async () => {
   // Unknown tool now ends the turn immediately (no assistant text), but still counts as a tool use.
   const driver = new StubDriver([
-    { text: '', toolCalls: [ makeToolCall('1', 'unknownTool', {}) ] },
+    { text: '', toolCalls: [makeToolCall('1', 'unknownTool', {})] },
   ]);
   const agent = new LlmAgent('tester', driver, 'mock-model');
   const res = (await agent.respond([{ content: 'Prompt', role: "user", from: "user" }], 2, ['tester'], () => false))[0];
@@ -330,7 +331,7 @@ test('LlmAgent handles malformed sh tool calls with missing cmd', async () => {
   // A malformed sh call (no cmd) triggers internal handling and the system ends the turn.
   // Current behavior records two tool usages along this path.
   const driver = new StubDriver([
-    { text: '', toolCalls: [ makeToolCall('1', 'sh', {}) ] },
+    { text: '', toolCalls: [makeToolCall('1', 'sh', {})] },
   ]);
   const agent = new LlmAgent('tester', driver, 'mock-model');
 

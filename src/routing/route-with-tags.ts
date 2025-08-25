@@ -1,10 +1,12 @@
+import { Responder } from "../scheduler";
 import { TagParser, TagPart } from "../utils/tag-parser";
+import { TagSplitter } from "../utils/tag-splitter";
 
 export type Delivery =
   | { kind: "group"; content: string }
   | { kind: "agent"; to: string; content: string }
-  | { kind: "user";  content: string }
-  | { kind: "file";  name: string; content: string };
+  | { kind: "user"; content: string }
+  | { kind: "file"; name: string; content: string };
 
 export type RouteOutcome = {
   deliveries: Delivery[];
@@ -18,8 +20,8 @@ export type RouteOutcome = {
  *  - yieldForUser: message contains @@user
  *  - yieldForGroup: message contains @@group
  */
-export function routeWithTags(s: string): RouteOutcome {
-  const parts: TagPart[] = TagParser.parse(s);
+export function routeWithTags(s: string, agentTokens: string[]): RouteOutcome {
+  const parts: TagPart[] = TagSplitter.split(s, { agentTokens });
   const deliveries: Delivery[] = [];
   let sawUser = false, sawGroup = false, sawFile = false, sawAgent = false;
 
@@ -57,17 +59,17 @@ export function routeWithTags(s: string): RouteOutcome {
 export type RouterCallbacks = {
   onGroup?: (from: string, content: string) => Promise<void> | void;
   onAgent?: (from: string, to: string, content: string) => Promise<void> | void;
-  onUser?:  (from: string, content: string) => Promise<void> | void;
-  onFile?:  (from: string, name: string, content: string) => Promise<void> | void;
+  onUser?: (from: string, content: string) => Promise<void> | void;
+  onFile?: (from: string, name: string, content: string) => Promise<void> | void;
 };
 
 /**
  * makeRouter(callbacks) → route(from, text) → RouteOutcome
  * Provides a small adapter that app.ts can call directly.
  */
-export function makeRouter(cb: RouterCallbacks) {
+export function makeRouter(cb: RouterCallbacks, agents: Responder[]) {
   return async (from: string, text: string): Promise<RouteOutcome> => {
-    const outcome = routeWithTags(text || "");
+    const outcome = routeWithTags(text || "", agents.map(a => a.id));
     for (const d of outcome.deliveries) {
       if (d.kind === "group" && cb.onGroup) {
         await cb.onGroup(from, d.content);

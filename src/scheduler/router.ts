@@ -94,7 +94,8 @@ export async function routeWithSideEffects(
         restoreStdin(!!wasRaw);
       }
     },
-  });
+  },
+    deps.agents);
 
   // Run the canonical router first.
   const outcome = await router(fromAgent.id, text || "");
