@@ -41,7 +41,7 @@ export class InputController {
     this.interjectBanner = opts.interjectBanner ?? "You: ";
     this.promptTemplate =
       opts.promptTemplate ??
-      ((from, content) => `\n@@${from} requested input\n${content}\nYou: `);
+      ((from, _content) => `\n@@${from} requested input\nYou: `);
 
     // Put stdin into raw/no-echo immediately (if TTY).
     this.setRawMode(true);
