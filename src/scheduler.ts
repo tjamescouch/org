@@ -1,4 +1,5 @@
 // src/scheduler.ts
+import * as fs from "fs";
 import { TagParser, TagPart } from "./utils/tag-parser";
 import { makeRouter } from "./routing/route-with-tags";
 import { C, Logger } from "./logger";
@@ -10,6 +11,10 @@ import { restoreStdin } from "./utils/restore-stdin";
 import { GuardDecision, GuardRouteKind } from "./guardrails/guardrail";
 import { ChatMessage } from "./types";
 import { LLMNoiseFilter } from "./utils/llm-noise-filter";
+import { finalizeSandbox } from "./tools/sandboxed-sh";
+import { modeFromEnvOrFlags, decideReview, applyPatch } from "./review";
+
+
 
 
 export interface Responder {
@@ -30,6 +35,7 @@ export class RandomScheduler {
   private readonly agentFilter = new LLMNoiseFilter();
   private readonly groupFilter = new LLMNoiseFilter();
   private readonly fileFilter = new LLMNoiseFilter();
+  private reviewMode = "ask";
 
   private readonly idlePromptEvery = 3;
 
@@ -47,7 +53,10 @@ export class RandomScheduler {
     maxTools: number;
     shuffle: (a: Responder[]) => Responder[]
     onAskUser: (fromAgent: string, content: string) => Promise<string | null>;
+    projectDir: string;
+    reviewMode: string;
   }) {
+    this.reviewMode = opts.reviewMode;
     this.agents = opts.agents;
     this.maxTools = Math.max(0, opts.maxTools);
     this.userPromptFn = opts.onAskUser;
@@ -70,54 +79,85 @@ export class RandomScheduler {
       let didWork = false;
 
       const shuffled = this.shuffle(this.agents.filter(a => this.inbox.has(a.id)));
+
       for (const agent of shuffled) {
-        const a: Responder | undefined = this.respondingAgent ?? agent;
-        this.respondingAgent = undefined;
-
-        if (!a) {
-          throw new Error("Expected agent not found.");
-        }
-
-        if (this.paused || !this.running) break;
-
-        if (this.isMuted(a.id)) { Logger.debug(`muted: ${a.id}`); continue; }
-
-        const messages = this.nextPromptFor(a.id);
-        if (messages.length === 0) {
-          Logger.debug(`no work for ${a.id}`);
-          continue;
-        }
-        Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(messages));
-
-        let remaining = this.maxTools;
         let totalToolsUsed = 0;
-        for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
-          const peers = this.agents.map(x => x.id);
-          Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
-          this.activeAgent = a;
-          const messageResult = await a.respond(messages, Math.max(0, remaining), peers, () => this.draining);
 
-          for(const { message, toolsUsed } of messageResult) {
-            totalToolsUsed += toolsUsed;
-            this.activeAgent = undefined;
-            Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
+        try {
+          const a: Responder | undefined = this.respondingAgent ?? agent;
+          this.respondingAgent = undefined;
 
-            const askedUser = await this.route(a, message);
-            didWork = true;
+          if (!a) {
+            throw new Error("Expected agent not found.");
+          }
 
-            if (askedUser) {
-              const userText = ((await this.userPromptFn(a.id, message)) ?? "").trim();
-              if (userText) this.handleUserInterjection(userText);
+          if (this.paused || !this.running) break;
 
+          if (this.isMuted(a.id)) { Logger.debug(`muted: ${a.id}`); continue; }
+
+          const messages = this.nextPromptFor(a.id);
+          if (messages.length === 0) {
+            Logger.debug(`no work for ${a.id}`);
+            continue;
+          }
+          Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(messages));
+
+          let remaining = this.maxTools;
+          for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
+            const peers = this.agents.map(x => x.id);
+            Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
+            this.activeAgent = a;
+            const messageResult = await a.respond(messages, Math.max(0, remaining), peers, () => this.draining);
+
+            for (const { message, toolsUsed } of messageResult) {
+              totalToolsUsed += toolsUsed;
+              this.activeAgent = undefined;
+              Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
+
+              const askedUser = await this.route(a, message);
+              didWork = true;
+
+              if (askedUser) {
+                const userText = ((await this.userPromptFn(a.id, message)) ?? "").trim();
+                if (userText) this.handleUserInterjection(userText);
+
+                break;
+              }
+            }
+
+            if (totalToolsUsed > 0) {
+              remaining = Math.max(0, remaining - totalToolsUsed);
+              if (remaining <= 0) break;
+            } else {
               break;
             }
           }
-
+        } finally {
           if (totalToolsUsed > 0) {
-            remaining = Math.max(0, remaining - totalToolsUsed);
-            if (remaining <= 0) break;
-          } else {
-            break;
+            const ctx = { projectDir: process.cwd(), agentSessionId: agent.id };
+            // after a batch of tool calls:
+            const fin = await finalizeSandbox(ctx);
+            const patchPath = fin?.patchPath;  // this is already produced by your sandbox
+            const projectDir = ctx.projectDir;
+
+            if (patchPath && fs.existsSync(patchPath)) {
+              const mode = modeFromEnvOrFlags(this.reviewMode); // e.g. --review=auto|ask|never
+              const decision = await decideReview(mode, projectDir, patchPath);
+              if (decision.action === "apply") {
+                try {
+                  await applyPatch(projectDir, patchPath, decision.commitMsg);
+                  Logger.info("✓ patch applied");
+                } catch (e: any) {
+                  Logger.error("Patch apply failed:", e?.message ?? e);
+                }
+              } else if (decision.action === "reject") {
+                Logger.info("↷ patch rejected");
+              } else {
+                Logger.info(`↷ patch skipped: ${decision.reason}`);
+              }
+            } else {
+              console.log("↷ no patch produced");
+            }
           }
         }
       }
@@ -304,7 +344,9 @@ export class RoundRobinScheduler extends RandomScheduler {
     agents: Responder[];
     maxTools: number;
     onAskUser: (fromAgent: string, content: string) => Promise<string | null>;
+    projectDir: string;
+    reviewMode: string;
   }) {
-    super({ agents: opts.agents, shuffle: (a) => a, maxTools: opts.maxTools, onAskUser: opts.onAskUser });
+    super({ agents: opts.agents, shuffle: (a) => a, maxTools: opts.maxTools, onAskUser: opts.onAskUser, projectDir: opts.projectDir, reviewMode: opts.reviewMode });
   }
 }

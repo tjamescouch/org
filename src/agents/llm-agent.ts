@@ -1,6 +1,5 @@
 // src/llm-agent.ts
 import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
-import { SH_TOOL_DEF } from "../tools/sh";
 import { C, Logger } from "../logger";
 import { AgentMemory } from "../memory";
 import { GuardRail } from "../guardrails/guardrail";
@@ -10,6 +9,7 @@ import { sanitizeAndRepairAssistantReply } from "../guard/sanitizer";
 import { ScrubbedAdvancedMemory } from "../memory/scrubbed-advanced-memory";
 import { ToolExecutor } from "../executors/tool-executor";
 import { StandardToolExecutor } from "../executors/standard-tool-executor";
+import { SANDBOXED_SH_TOOL_SCHEMA } from "../tools/sandboxed-sh";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -19,7 +19,7 @@ export interface AgentReply {
 
 function buildSystemPrompt(id: string): string {
   return [
-    `You are agent "${id}". Work autonomously in the caller’s current directory inside a Debian VM.`,
+    `You are agent "${id}". Work autonomously in the caller's current directory inside a Debian VM.`,
     "",
     "TOOLS",
     "- sh(cmd): run a POSIX command. Args: {cmd:string}. Returns {ok, stdout, stderr, exit_code, cmd}.",
@@ -46,13 +46,19 @@ function buildSystemPrompt(id: string): string {
     "- Do not call tools with empty/malformed args.",
     "",
     "ENVIRONMENT",
+    "- Commands are run in an ephemeral docker container within the VM, and then synced with the VM after a batch of commands.",
     "- Standard Unix tools available: git, bun, gcc/g++, python3, curl, grep, diff, ls, cat, pwd, etc.",
     "",
     "OUTPUT STYLE",
+    '- Provide a single, concise response to each user query. If multiple steps are required, enumerate them in one message.',
     `- Speak only in your own voice as "${id}" (first person).`,
     "- Do not prefix lines with other agents' names.",
     "- Keep chat replies brief unless you are writing files.",
-    "Only tag a participant when a response from them is needed; otherwise continue autonomously until completion.",
+    "- Only tag a participant when a response from them is needed; otherwise continue autonomously until completion.",
+    "AVOID DUPLICATION",
+    "- Do not repeat the same output more than once unless the user explicitly asks for a repetition.  If a loop is detected (e.g., same block printed >1×), abort and ask for clarification.",
+    "COMPLETION",
+    '- Upon completion of your tasks PLEASE TAG the user (@@user). If you do not the conversation will simply continue.',
   ].join("\n");
 }
 
@@ -66,7 +72,7 @@ function buildSystemPrompt(id: string): string {
 export class LlmAgent extends Agent {
   private readonly driver: ChatDriver;
   private readonly model: string;
-  private readonly tools = [SH_TOOL_DEF/*, VIMDIFF_TOOL_DEF */];
+  private readonly tools = [SANDBOXED_SH_TOOL_SCHEMA];
 
   // Memory replaces the old raw history array.
   private readonly memory: AgentMemory;
@@ -141,6 +147,7 @@ export class LlmAgent extends Agent {
     let streamState: "thinking" | "tool" | "content" = "thinking";
 
     const ptcds: string[] = [];
+
     const onToolCallDelta = (tcd: ChatToolCall) => {
       if (streamState !== "tool") {
         Logger.info("");
@@ -161,6 +168,7 @@ export class LlmAgent extends Agent {
       ptcds.push(text);
       Logger.streamInfo(C.red(deltaText));
     }
+
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
       tools: this.tools,

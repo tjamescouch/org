@@ -3,9 +3,9 @@ import { ChatToolCall } from "../drivers/types";
 import { GuardRail } from "../guardrails/guardrail";
 import { Logger } from "../logger";
 import { AgentMemory } from "../memory";
-import { runSh } from "../tools/sh";
+import { sandboxedSh } from "../tools/sandboxed-sh";
 import { runVimdiff } from "../tools/vimdiff";
-import { sanitizeContent } from "../utils/sanitize-content";
+import { normalizeContent, sanitizeContent } from "../utils/sanitize-content";
 import type { ExecuteToolsParams, ExecuteToolsResult } from "./tool-executor";
 import { ToolExecutor } from "./tool-executor";
 
@@ -55,13 +55,13 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
         });
         Logger.warn(`Execution failed: Command required.`, toolcall);
         await memory.add({ role: "tool", content, tool_call_id: toolcall.id, name, from: "Tool" });
-            
+
         return { toolsUsed, forceEndTurn: false, stdout: "", stderr: "System aborted shell call tue to missing command.", ok: false, exit_code: 2 };
     }
 
     Logger.debug(`${agentId} tool ->`, { name, cmd: cmd.slice(0, 160) });
     const t = Date.now();
-    const result = await runSh(cmd);
+    const result = await sandboxedSh({ cmd }, { agentSessionId: agentId, projectDir: args.cwd ?? process.cwd() ?? ".", policy: { image: "localhost/org-build:debian-12" } })
     Logger.debug(`${agentId} tool <-`, { name, ms: Date.now() - t, exit: result.exit_code, outChars: result.stdout.length, errChars: result.stderr.length });
 
     // Let GuardRail see the signature to stop "same command" repetition
@@ -171,7 +171,7 @@ export class StandardToolExecutor extends ToolExecutor {
 
             if (!handler) {
                 const rawCmd = String(args?.cmd ?? "");
-                const cmd = sanitizeContent(rawCmd);
+                const cmd = sanitizeContent(normalizeContent(rawCmd));
                 Logger.warn(`\nUnknown tool ${name} requested`, tc);
                 const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, tc, cmd });
                 await memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: "Tool" });
