@@ -5,7 +5,6 @@ import { NoiseFilters } from "./filters";
 import { Inbox } from "./inbox";
 import { routeWithSideEffects } from "./router";
 import { ReviewManager } from "./review-manager";
-import { TagParser, TagPart } from "../utils/tag-parser";
 import type { GuardDecision } from "../guardrails/guardrail";
 import type { ChatMessage } from "../types";
 import type { Responder, SchedulerOptions, AskUserFn } from "./types";
@@ -189,28 +188,50 @@ All agents are idle (and tool budget is exhausted or no work). Please provide th
   isDraining(): boolean { return this.draining; }
   hasActiveAgent(): boolean { return !!this.activeAgent; }
 
-  /** Enqueue user text, interpreting @@tags (agent/group). */
+  /**
+   * Enqueue user text.
+   * Semantics:
+   *  - If one or more @@agent tags appear anywhere, DM ONLY those agent(s)
+   *    with the tags stripped from the content. Prefer the first mentioned
+   *    agent as the immediate responder.
+   *  - Otherwise, broadcast to @@group.
+   */
   handleUserInterjection(text: string) {
-    const target = this.lastUserDMTarget;
-    const hasTag = /@@\w+/.test(text);
+    const raw = String(text ?? "");
+    const tagRe = /@@([a-z][\w-]*)\b/gi;
 
-    const tagParts: TagPart[] = hasTag
-      ? TagParser.parse(text)
-      : [{ index: 0, kind: "group", tag: "group", content: text } as any];
-
-    for (const tagPart of tagParts) {
-      if (tagPart.kind === "agent") {
-        this.respondingAgent = this.agents.find(a => a.id === tagPart.tag);
-        this.inbox.push(tagPart.tag, { content: tagPart.content, role: "user", from: "User" });
-        Logger.info(`[user → @@${tagPart.tag}] ${text}`);
-      } else {
-        this.respondingAgent = this.agents.find(a => a.id === target);
-        for (const a of this.agents) {
-          this.inbox.push(a.id, { content: tagPart.content, role: "user", from: "User" });
-        }
-        Logger.info(`[user → @@group] ${text}`);
-      }
+    const found: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = tagRe.exec(raw)) !== null) {
+      found.push(m[1]);
     }
+
+    const uniqueTargets = Array.from(new Set(found.map(s => s.toLowerCase())));
+    const knownTargets: Responder[] = uniqueTargets
+      .map(t => this.findAgentById(t))
+      .filter((a): a is Responder => !!a);
+
+    if (knownTargets.length > 0) {
+      // Strip all tags for delivery.
+      const content = raw.replace(tagRe, "").trim();
+      const msg: ChatMessage = { content, role: "user", from: "User" };
+
+      // Prefer the first mentioned agent to respond next.
+      this.respondingAgent = knownTargets[0];
+      this.lastUserDMTarget = knownTargets[0].id;
+
+      for (const a of knownTargets) {
+        this.inbox.push(a.id, msg);
+        Logger.info(`[user → @@${a.id}] ${raw}`);
+      }
+      return;
+    }
+
+    // No agent tags -> group broadcast.
+    for (const a of this.agents) {
+      this.inbox.push(a.id, { content: raw, role: "user", from: "User" });
+    }
+    Logger.info(`[user → @@group] ${raw}`);
   }
 
   // ------------------------------ Internals ------------------------------
@@ -242,6 +263,11 @@ All agents are idle (and tool budget is exhausted or no work). Please provide th
       const userText = ((await this.askUser(agent.id, (dec as any).askUser)) ?? "").trim();
       if (userText) this.handleUserInterjection(userText);
     }
+  }
+
+  private findAgentById(idOrTag: string): Responder | undefined {
+    const target = idOrTag.toLowerCase();
+    return this.agents.find(a => a.id.toLowerCase() === target);
   }
 
   private sleep(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }
