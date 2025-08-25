@@ -101,11 +101,13 @@ export class PodmanSession implements ISandboxSession {
         this.started = true;
     }
 
-    async exec(cmd: string) {
+    // Always copy step artifacts; never return without creating meta/out/err.
+    async exec(cmd: string): Promise<{ ok: boolean; exit: number; stdoutFile: string; stderrFile: string }> {
         if (!this.started) throw new Error("session not started");
         const idx = this.stepIdx++;
 
-        // Run the step; all options BEFORE the container name, with workdir=/work.
+        // --- run the step (workdir=/work already enforced by helpers) ---
+        await this.execInCmd("mkdir -p /work/.org/steps");
         const env: Record<string, string> = {
             ORG_STEP_IDX: String(idx),
             ORG_OUT_DIR: "/work/.org/steps",
@@ -113,45 +115,60 @@ export class PodmanSession implements ISandboxSession {
             ORG_STDOUT_MAX: String(this.spec.limits.stdoutMax),
             ORG_PIDS_MAX: String(this.spec.limits.pidsMax),
         };
-        // Pre-create steps dir (belt & suspenders)
-        await this.execInCmd("mkdir -p /work/.org/steps");
-
         const run = await this.execInEnv(env, `/work/.org/org-step.sh ${this.shQ(cmd)}`);
 
-        // Commit changes if any
+        // --- commit changes if any ---
         await this.execInCmd(
             "git -C /work add -A && " +
             "(git -C /work diff --cached --quiet || git -C /work commit -m " + this.shQ(`step #${idx}: ${cmd}`) + " >/dev/null)"
         );
 
-        // Enforce write allowlist on the last commit
+        // --- compute violations (but DO NOT return yet) ---
         const changed = (await this.execInCmd("git -C /work diff --name-only HEAD~1..HEAD || true")).stdout
             .split("\n").map(s => s.trim()).filter(Boolean);
         const violated = changed.filter(p => !this.pathAllowed(p));
-        if (violated.length > 0) {
-            await this.execInCmd("git -C /work reset --hard HEAD~1 >/dev/null");
-            await fsp.mkdir(path.join(this.spec.runDir, "steps"), { recursive: true });
-            await fsp.writeFile(path.join(this.spec.runDir, "steps", `step-${idx}.violation.txt`), violated.join("\n") + "\n", "utf8");
-            return {
-                ok: false,
-                exit: 3,
-                stdoutFile: path.join(this.spec.runDir, "steps", `step-${idx}.out`),
-                stderrFile: path.join(this.spec.runDir, "steps", `step-${idx}.err`),
-            };
-        }
 
-        // Copy step outputs (best-effort)
+        // --- copy artifacts to host (best-effort; create placeholders if needed) ---
         const hostSteps = path.join(this.spec.runDir, "steps");
         await fsp.mkdir(hostSteps, { recursive: true }).catch(() => { });
         const hostOut = path.join(hostSteps, `step-${idx}.out`);
         const hostErr = path.join(hostSteps, `step-${idx}.err`);
         const hostMeta = path.join(hostSteps, `step-${idx}.meta.json`);
-        await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.out`, hostOut]).catch(() => { });
-        await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.err`, hostErr]).catch(() => { });
-        await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.meta.json`, hostMeta]).catch(() => { });
+
+        // try to copy what the runner produced
+        try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.out`, hostOut]); } catch { }
+        try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.err`, hostErr]); } catch { }
+        let metaCopied = true;
+        try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.meta.json`, hostMeta]); }
+        catch { metaCopied = false; }
+
+        // synthesize a tiny meta if copy failed (so the CLI always has a file)
+        if (!metaCopied) {
+            const now = new Date().toISOString();
+            const meta = {
+                idx,
+                cmd,
+                startedAt: now,
+                endedAt: now,
+                exitCode: run.code,
+                killedBy: null,
+                stdoutPath: `/work/.org/steps/step-${idx}.out`,
+                stderrPath: `/work/.org/steps/step-${idx}.err`,
+                note: "host-generated meta (copy failed or runner did not write meta)",
+            };
+            await fsp.writeFile(hostMeta, JSON.stringify(meta, null, 2), "utf8").catch(() => { });
+        }
+
+        // --- if violated, revert commit and record the violation file, but keep artifacts available ---
+        if (violated.length > 0) {
+            await this.execInCmd("git -C /work reset --hard HEAD~1 >/dev/null");
+            await fsp.writeFile(path.join(hostSteps, `step-${idx}.violation.txt`), violated.join("\n") + "\n", "utf8");
+            return { ok: false, exit: 3, stdoutFile: hostOut, stderrFile: hostErr };
+        }
 
         return { ok: run.code === 0, exit: run.code, stdoutFile: hostOut, stderrFile: hostErr };
     }
+
 
     async finalize() {
         if (!this.started) throw new Error("session not started");
