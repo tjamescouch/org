@@ -15,8 +15,8 @@ describe("git diff patch generation mirrors sandbox finalize flow", () => {
   beforeEach(() => {
     wd = mkdtempSync(join(tmpdir(), "org-patch-"));
     sh(wd, "git init -q");
-    sh(wd, 'git config user.email noreply@example.com');
-    sh(wd, 'git config user.name org');
+    sh(wd, "git config user.email noreply@example.com");
+    sh(wd, "git config user.name org");
     writeFileSync(join(wd, ".gitignore"), "\n");
     sh(wd, "git add -A && git commit -m init -q");
   });
@@ -30,7 +30,12 @@ describe("git diff patch generation mirrors sandbox finalize flow", () => {
     sh(wd, "git add -A && git commit -m add-root -q");
 
     const base = sh(wd, "git rev-parse HEAD~1").trim();
-    const patch = sh(wd, `git -c diff.noprefix=false diff --binary -c color.ui=false -c core.pager=cat --no-ext-diff ${base} HEAD`);
+    // NOTE: `-c` flags must come BEFORE the subcommand; disable color/pager; keep prefixes a/ and b/
+    const patch = sh(
+      wd,
+      `git -c color.ui=false -c core.pager=cat --no-pager diff --binary --no-ext-diff ${base} HEAD`
+    );
+
     expect(patch).toContain("diff --git a/hello-root.txt b/hello-root.txt");
     expect(patch).toContain("new file mode 100644");
     expect(patch).toContain("+Hello Root");
@@ -42,8 +47,13 @@ describe("git diff patch generation mirrors sandbox finalize flow", () => {
     sh(wd, "git add -A && git commit -m add-sub -q");
 
     const base = sh(wd, "git rev-parse HEAD~1").trim();
-    const patch = sh(wd, `git -c diff.noprefix=false diff --binary -c color.ui=false -c core.pager=cat --no-ext-diff ${base} HEAD`);
-    expect(patch).toContain("diff --git a/test/hello-sub.txt a/test/hello-sub.txt");
+    // Same flags/order as above; keep prefixes a/ and b/
+    const patch = sh(
+      wd,
+      `git -c color.ui=false -c core.pager=cat --no-pager diff --binary --no-ext-diff ${base} HEAD`
+    );
+
+    expect(patch).toContain("diff --git a/test/hello-sub.txt b/test/hello-sub.txt");
     expect(patch).toContain("new file mode 100644");
     expect(patch).toContain("+Hello Sub");
   });
