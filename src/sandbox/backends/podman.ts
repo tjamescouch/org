@@ -264,12 +264,12 @@ export class PodmanSession implements ISandboxSession {
 
     private pathAllowed(p: string) {
         const deny = this.spec.write.deny ?? [];
-        if (deny.length && matchAny(deny, p)) {
+        if (deny.length && matchAny(deny, p, { matchBase: true })) {
             Logger.debug("Patch path denied: ", p);
             return false;     // deny takes precedence
         }
 
-        const result = matchAny(this.spec.write.allow, p);
+        const result = matchAny(this.spec.write.allow, p, { matchBase: true });
 
         if (result) {
 
