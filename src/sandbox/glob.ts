@@ -1,33 +1,35 @@
 // src/sandbox/glob.ts
-// Tiny glob matcher for allowlists; supports **, *, ? (posix style)
+// Tiny glob matcher for allowlists; supports **, *, ? (posix-style).
+// Key semantics: "**" matches zero or more characters INCLUDING '/'
+
+function escapeRe(s: string): string {
+  return s.replace(/[-/\\^$+?.()|[\]{}]/g, "\\$&");
+}
 
 export function globToRegExp(glob: string): RegExp {
   // Normalize leading "./"
   glob = glob.replace(/^[.][/\\]/, "");
-  const special = /[\\^$+.|()[\]{}]/g;
   let re = "^";
-  let i = 0;
-  while (i < glob.length) {
+  for (let i = 0; i < glob.length; ) {
     const c = glob[i]!;
     if (c === "*") {
       if (glob[i + 1] === "*") {
-        // ** (match across path separators)
+        // "**" → match anything (including '/'), zero or more chars
+        re += ".*";
         i += 2;
-        // optional following slash
-        if (glob[i] === "/" || glob[i] === "\\") i++;
-        re += "(.+?/)*";
       } else {
+        // "*" → match within a single path segment (no '/')
         re += "[^/]*";
         i++;
       }
     } else if (c === "?") {
       re += "[^/]";
       i++;
-    } else if (c === "/") {
+    } else if (c === "/" || c === "\\") {
       re += "/";
       i++;
     } else {
-      re += c.replace(special, "\\$&");
+      re += escapeRe(c);
       i++;
     }
   }
@@ -36,6 +38,7 @@ export function globToRegExp(glob: string): RegExp {
 }
 
 export function matchAny(globs: string[], pathUnderWork: string): boolean {
-  const p = pathUnderWork.replace(/^[.][/\\]/, "");
+  // Always normalize to forward slashes and strip any leading "./"
+  const p = pathUnderWork.replace(/^[.][/\\]/, "").replace(/\\/g, "/");
   return globs.some((g) => globToRegExp(g).test(p));
 }
