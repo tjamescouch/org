@@ -5,16 +5,15 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 function resolveCli(): string {
-  // 1) Allow override (useful in CI and dev)
+  // allow CI/dev override
   const envBin = process.env.ORG_BIN?.trim();
   if (envBin) return envBin;
 
-  // 2) Repo-local wrapper script (./org) if present
-  const localBin = join(process.cwd(), "org");
-  if (existsSync(localBin)) return `"${localBin}"`;
+  // repo-local wrapper (./org) if present
+  const local = join(process.cwd(), "org");
+  if (existsSync(local)) return `"${local}"`;
 
-  // 3) Fallback to Bun entrypoint (works in bun test)
-  //    If your entry file differs, change it here.
+  // fallback to Bun entrypoint
   return `bun run src/app.ts`;
 }
 
@@ -67,17 +66,14 @@ export function readFileSafe(repo: string, rel: string): string {
 
 export function patchSize(repo: string, runDir: string): number {
   const p = join(runDir, "session.patch");
-  try {
-    return statSync(p).size;
-  } catch {
-    return 0;
-  }
+  try { return statSync(p).size; } catch { return 0; }
 }
 
 /**
  * Spawn org against a repo.
- * - Resolves a repo-local CLI first (./org), then falls back to `bun run src/app.ts`.
- * - Sets SANDBOX_BACKEND=none and ORG_REVIEW=auto by default for headless CI.
+ * - Forces LLM_DRIVER=mock so we never hit a real model in CI/tests.
+ * - Defaults SANDBOX_BACKEND=none and ORG_REVIEW=auto for headless runs.
+ * - Returns code/out/err; caller should assert code===0 and print err if not.
  */
 export function runOrg(
   repo: string,
@@ -86,12 +82,13 @@ export function runOrg(
 ) {
   const CLI = resolveCli();
   const env = {
+    LLM_DRIVER: "mock",     // <-- make the agent deterministic & offline
     SANDBOX_BACKEND: "none",
     ORG_REVIEW: "auto",
     ...extraEnv,
   };
 
-  const cmd = `${CLI} -C "${repo}" --agents "alice:lmstudio" --max-tools 10 --prompt '${prompt}'`;
+  const cmd = `${CLI} -C "${repo}" --agents "alice:mock" --max-tools 10 --prompt '${prompt}'`;
 
   const r = spawnSync("bash", ["-lc", cmd], {
     cwd: process.cwd(),
