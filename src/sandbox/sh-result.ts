@@ -11,7 +11,7 @@ function trimOrUndefined(s?: string) {
 
 export function ensureOk<T extends ShResult>(r: T, context = "command"): T {
   const code = typeof r.code === "number" ? r.code : 0;
-  if (code === 0) return r;
+  if (code === 0) return { ...r, code: 0};
 
   const msg = trimOrUndefined(r.stderr) ?? trimOrUndefined(r.stdout) ?? "unknown error";
   const err = new Error(`${context} failed (code ${code}): ${msg}`);
