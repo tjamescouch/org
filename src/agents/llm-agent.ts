@@ -1,463 +1,263 @@
-/**
- * LlmAgent — backwards compatible agent with robust model output handling.
- *
- * Goals (aligned to your unit tests):
- *  - Legacy ctor supported: new LlmAgent(id, driver?, _modelName?)
- *  - Modern ctor supported: new LlmAgent({ id, projectDir?, runRoot?, policy?, modelClient?, tools?, maxToolCallsPerTurn? })
- *  - respond() never throws; always returns [{ message: string, toolsUsed: number }]
- *  - If tool calls exist (from user msg directives/arrays or from model output), execute them and end the turn with ""
- *  - If no tool calls, and the driver returns text, return that text
- */
+// src/llm-agent.ts
+import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
+import { C, Logger } from "../logger";
+import { AgentMemory } from "../memory";
+import { GuardRail } from "../guardrails/guardrail";
+import { Agent } from "./agent";
+import { sanitizeContent } from "../utils/sanitize-content";
+import { sanitizeAndRepairAssistantReply } from "../guard/sanitizer";
+import { ScrubbedAdvancedMemory } from "../memory/scrubbed-advanced-memory";
+import { ToolExecutor } from "../executors/tool-executor";
+import { StandardToolExecutor } from "../executors/standard-tool-executor";
+import { SANDBOXED_SH_TOOL_SCHEMA } from "../tools/sandboxed-sh";
 
-import * as path from "node:path";
-import type { ExecPolicy } from "../sandbox/policy";
-import { sandboxedSh, SANDBOXED_SH_TOOL_SCHEMA } from "../tools/sandboxed-sh";
-
-/* ---------------- Types ---------------- */
-
-export type Role = "system" | "user" | "assistant" | "tool";
-
-export type ChatMessage = {
-  role: Role;
-  content: string;
-  name?: string;
-  from?: string;
-
-  // Tests / helpers sometimes attach tool calls to the latest user message:
-  toolcalls?: Array<{ name: string; arguments: any }>;
-  toolCalls?: Array<{ name: string; arguments: any }>;
-};
-
-export type RespondResult = { message: string; toolsUsed: number };
-
-export interface ChatModelClient {
-  chat(input: {
-    messages: ChatMessage[];
-    tools?: any[];
-    maxTokens?: number;
-    temperature?: number;
-  }): Promise<any>; // deliberately loose; we normalize below
+export interface AgentReply {
+  message: string;   // assistant text
+  reasoning?: string;
+  toolsUsed: number; // number of tool calls consumed this hop
 }
 
-export interface ToolContext {
-  projectDir: string;
-  runRoot: string;
-  agentSessionId: string;
-  policy?: ExecPolicy;
+function buildSystemPrompt(id: string): string {
+  return [
+    `You are agent "${id}". Work autonomously in the caller's current directory inside a Debian VM.`,
+    "",
+    "TOOLS",
+    "- sh(cmd): run a POSIX command. Args: {cmd:string}. Returns {ok, stdout, stderr, exit_code, cmd}.",
+    "  • Use for builds/tests/git/etc. Check exit_code and stderr. Never invent outputs.",
+//    "- vimdiff(left,right[,cwd]): open an interactive vimdiff for human review. Returns {exitCode} when the user quits.",
+    "",
+    "FILES",
+    "- Prefer tag-based writes for full files (no code fences):",
+    "  ##file:path/to/file.ext",
+    "  <entire file content>",
+    "  (Everything until the next tag or end goes into that file.)",
+    "- For small edits use apply_patch (via sh) or redirection. Read existing files before overwriting.",
+    "",
+    "MESSAGING",
+    "- @@user to talk to the human.",
+    "- @@<agent> to DM a peer.",
+    "-  @@group to address everyone.",
+    "- **Only insert a tag when a reply from that participant is required.** If I can keep working on the task without waiting for input, I should proceed silently.",
+    "",
+    "POLICY",
+    "- Do the work, be concise. Validate results by running commands/tests.",
+    "- Avoid loops: do not repeat the same failing action; change approach or ask @@user.",
+    "- Use git locally and commit often; NEVER push.",
+    "- Do not call tools with empty/malformed args.",
+    "",
+    "ENVIRONMENT",
+    "- Commands are run in an ephemeral docker container within the VM, and then synced with the VM after a batch of commands.",
+    "- Standard Unix tools available: git, bun, gcc/g++, python3, curl, grep, diff, ls, cat, pwd, etc.",
+    "",
+    "OUTPUT STYLE",
+    '- Provide a single, concise response to each user query. If multiple steps are required, enumerate them in one message.',
+    `- Speak only in your own voice as "${id}" (first person).`,
+    "- Do not prefix lines with other agents' names.",
+    "- Keep chat replies brief unless you are writing files.",
+    "- Only tag a participant when a response from them is needed; otherwise continue autonomously until completion.",
+    "AVOID DUPLICATION",
+    "- Do not repeat the same output more than once unless the user explicitly asks for a repetition.  If a loop is detected (e.g., same block printed >1×), abort and ask for clarification.",
+    "COMPLETION",
+    '- Upon completion of your tasks PLEASE TAG the user (@@user). If you do not the conversation will simply continue.',
+  ].join("\n");
 }
-
-export interface ToolResult {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-  exit_code: number;
-  cmd: string;
-}
-
-export type ToolRunner = (args: any, ctx: ToolContext) => Promise<ToolResult>;
-
-export class ToolRegistry {
-  private tools = new Map<string, ToolRunner>();
-  private schemas: any[] = [];
-
-  register(name: string, runner: ToolRunner, schema?: any) {
-    this.tools.set(name, runner);
-    if (schema) this.schemas.push(schema);
-  }
-  getRunner(name: string): ToolRunner | undefined {
-    return this.tools.get(name);
-  }
-  getSchemas(): any[] {
-    return this.schemas.slice();
-  }
-}
-
-/* ---------------- Model result helpers ---------------- */
-
-type RawModelResult =
-  | string
-  | {
-      text?: string;
-      content?: string;
-      toolCalls?: any[];
-      tool_calls?: any[];
-      choices?: Array<{
-        message?: { content?: string; tool_calls?: any[] };
-        text?: string;
-      }>;
-      type?: string;
-      calls?: any[];
-    }
-  | null
-  | undefined;
 
 /**
- * Prefer text when tool calls are absent or an empty array.
- * Works with stub output ({ text, toolCalls }) and OpenAI-style choices.
+ * LlmAgent
+ * - Keeps conversation state via pluggable memory (SummaryMemory with hysteresis).
+ * - Executes the "sh" tool (gated elsewhere) and feeds results back as role:"tool".
+ * - Other agents & the user are presented as role:"user".
+ * - Exposes a polymorphic guard rail (loop detection, tool misuse escalation).
  */
-function pickAssistant(raw: RawModelResult): { text: string; toolCalls: any[] } {
-  if (raw == null) return { text: "", toolCalls: [] };
+export class LlmAgent extends Agent {
+  private readonly driver: ChatDriver;
+  private readonly model: string;
+  private readonly tools = [SANDBOXED_SH_TOOL_SCHEMA];
 
-  // plain string
-  if (typeof raw === "string") return { text: raw, toolCalls: [] };
+  // Memory replaces the old raw history array.
+  private readonly memory: AgentMemory;
+  private readonly systemPrompt: string;
 
-  // OpenAI-style choice
-  const choice = Array.isArray(raw.choices) ? raw.choices[0] : undefined;
-  const choiceMsg = choice?.message ?? {};
-  const choiceText = choice?.text ?? choiceMsg?.content;
+  // New: polymorphic tool executor (pure refactor)
+  private readonly toolExecutor: ToolExecutor;
 
-  // tool calls in any common spelling
-  const tc =
-    (raw as any).tool_calls ??
-    (raw as any).toolCalls ??
-    choiceMsg?.tool_calls ??
-    [];
+  constructor(id: string, driver: ChatDriver, model: string, guard?: GuardRail) {
+    super(id, guard);
 
-  const text =
-    (raw as any).content ??
-    (raw as any).text ??
-    choiceText ??
-    "";
+    this.driver = driver;
+    this.model = model;
 
-  // The key behavior: only treat as tools if non-empty
-  const toolCalls = Array.isArray(tc) ? tc : [];
-  return { text, toolCalls };
-}
+    // Compose system prompt: a short agent header + the shared default.
+    this.systemPrompt = buildSystemPrompt(this.id);
 
-/* ------------- Default registry: sh ------------- */
+    // Attach a hysteresis-based memory that summarizes overflow.
+    this.memory = new ScrubbedAdvancedMemory({
+      driver: this.driver,
+      model: this.model,
+      systemPrompt: this.systemPrompt,
 
-export function makeDefaultToolRegistry(): ToolRegistry {
-  const reg = new ToolRegistry();
+      contextTokens: 30_000,          // model window
+      reserveHeaderTokens: 1200,      // header/tool schema reserve
+      reserveResponseTokens: 800,     // space for the next reply
+      highRatio: 0.70,                // trigger summarization earlier than overflow
+      lowRatio: 0.50,                 // target after summarization
+      summaryRatio: 0.35,             // 35% of budget for the 3 summaries
 
-  reg.register(
-    "sh",
-    async (args: any, ctx: ToolContext) => {
-      const cmd = typeof args?.cmd === "string" ? args.cmd : "";
-      if (!cmd.trim()) {
-        return {
-          ok: false,
-          stdout: "",
-          stderr: "missing 'cmd' for sh tool",
-          exit_code: 2,
-          cmd,
-        };
-      }
+      avgCharsPerToken: 4,            // char→token estimate
+      keepRecentPerLane: 4,           // retain 4 most-recent per lane
+      keepRecentTools: 3              // retain 3 most-recent tool outputs
+    });
 
-      const r = await sandboxedSh(
-        { cmd },
-        {
-          projectDir: ctx.projectDir,
-          runRoot: ctx.runRoot,
-          agentSessionId: ctx.agentSessionId,
-          policy: ctx.policy,
-        }
-      );
-
-      return {
-        ok: r.ok,
-        stdout: r.stdout,
-        stderr: r.stderr,
-        exit_code: r.exit_code,
-        cmd,
-      };
-    },
-    SANDBOXED_SH_TOOL_SCHEMA
-  );
-
-  return reg;
-}
-
-/* ------------- Directive parsing (robust JSON) ------------- */
-
-function extractBalancedJSONObject(text: string, start: number): { json: string; end: number } | null {
-  if (text[start] !== "{") return null;
-
-  let i = start;
-  let depth = 0;
-  let inStr = false;
-  let q: '"' | "'" | null = null;
-  let esc = false;
-
-  while (i < text.length) {
-    const ch = text[i];
-
-    if (inStr) {
-      if (esc) {
-        esc = false;
-      } else if (ch === "\\") {
-        esc = true;
-      } else if (ch === q) {
-        inStr = false;
-        q = null;
-      }
-      i++;
-      continue;
-    }
-
-    if (ch === '"' || ch === "'") {
-      inStr = true;
-      q = ch as '"' | "'";
-      i++;
-      continue;
-    }
-    if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) {
-        const json = text.slice(start, i + 1);
-        return { json, end: i + 1 };
-      }
-    }
-    i++;
+    // Default executor used polymorphically
+    this.toolExecutor = new StandardToolExecutor();
   }
-  return null;
-}
-
-/** Parse `<tool> { ... }` anywhere in text. */
-function parseDirectives(text: string): Array<{ name: string; args: any }> {
-  const out: Array<{ name: string; args: any }> = [];
-  const nameAndBrace = /([A-Za-z_][A-Za-z0-9_-]*)\s*\{/g;
-
-  let m: RegExpExecArray | null;
-  while ((m = nameAndBrace.exec(text)) !== null) {
-    const name = m[1];
-    const braceIdx = m.index + m[0].lastIndexOf("{");
-    const obj = extractBalancedJSONObject(text, braceIdx);
-    if (!obj) continue;
-    try {
-      out.push({ name, args: JSON.parse(obj.json) });
-    } catch {
-      out.push({ name, args: {} });
-    }
-    nameAndBrace.lastIndex = obj.end;
-  }
-  return out;
-}
-
-/* ------------- Normalize model outputs ------------- */
-
-type Normalized =
-  | { kind: "message"; text: string }
-  | { kind: "tool_calls"; calls: Array<{ name: string; arguments: any }> };
-
-function normalizeModelOutput(res: any): Normalized | null {
-  if (res == null) return null;
-
-  // plain string → text message
-  if (typeof res === "string") {
-    return { kind: "message", text: res };
-  }
-
-  // explicit union with type field
-  if (typeof res === "object" && typeof res.type === "string") {
-    if (res.type === "message" && typeof res.content === "string") {
-      return { kind: "message", text: res.content };
-    }
-    if (res.type === "tool_calls" && Array.isArray(res.calls) && res.calls.length > 0) {
-      const calls = res.calls.map((c: any) => ({
-        name: String(c?.name ?? ""),
-        arguments: c?.arguments ?? {},
-      }));
-      return { kind: "tool_calls", calls };
-    }
-  }
-
-  // assistant-style content
-  if (typeof res.content === "string") {
-    return { kind: "message", text: res.content };
-  }
-
-  // OpenAI function/tool_calls style
-  const tc =
-    res?.tool_calls ?? res?.toolCalls ?? res?.toolcalls ??
-    (Array.isArray(res?.choices) ? res.choices[0]?.message?.tool_calls : undefined);
-
-  if (Array.isArray(tc) && tc.length > 0) {
-    const calls = tc
-      .map((x: any) => {
-        // { type: 'function', function: { name, arguments: string } }
-        if (x?.type === "function" && x?.function) {
-          const name = String(x.function.name ?? "");
-          const raw = x.function.arguments;
-          let args: any = {};
-          if (typeof raw === "string") {
-            try {
-              args = JSON.parse(raw);
-            } catch {
-              args = {};
-            }
-          } else if (raw && typeof raw === "object") {
-            args = raw;
-          }
-          return { name, arguments: args };
-        }
-        // Fallback shape { name, arguments }
-        return {
-          name: String(x?.name ?? ""),
-          arguments: x?.arguments ?? {},
-        };
-      })
-      .filter((c: any) => c && c.name);
-    if (calls.length > 0) return { kind: "tool_calls", calls };
-  }
-
-  // choices with text
-  if (Array.isArray(res?.choices)) {
-    const msg = res.choices[0]?.message?.content ?? res.choices[0]?.text;
-    if (typeof msg === "string") {
-      return { kind: "message", text: msg };
-    }
-  }
-
-  return null;
-}
-
-/* ---------------- Agent ---------------- */
-
-export type LlmAgentConfig = {
-  id: string;
-  projectDir?: string;
-  runRoot?: string;
-  policy?: ExecPolicy;
-  modelClient?: ChatModelClient;
-  tools?: ToolRegistry;
-  maxToolCallsPerTurn?: number;
-};
-
-function isModelClient(x: any): x is ChatModelClient {
-  return x && typeof x.chat === "function";
-}
-
-export class LlmAgent {
-  readonly id: string;
-  private projectDir: string;
-  private runRoot: string;
-  private policy?: ExecPolicy;
-  private model?: ChatModelClient;
-  private tools: ToolRegistry;
-  private maxToolCalls: number;
 
   /**
-   * Back-compat:
-   *  - new LlmAgent(id: string, driver?: ChatModelClient, _name?: string)
-   *  - new LlmAgent({ id, ... })
+   * Respond to a prompt.
+   * - Add the user's text to memory.
+   * - Let the model respond; if it asks for tools, execute (sh only) and loop.
+   * - Stop after first assistant text with no more tool calls or when budget is hit.
    */
-  constructor(cfgOrId: LlmAgentConfig | string, maybeDriver?: any, _maybeName?: any) {
-    if (typeof cfgOrId === "string") {
-      const id = cfgOrId;
-      this.id = id;
-      this.model = isModelClient(maybeDriver) ? maybeDriver : undefined;
-      this.projectDir = path.resolve(process.cwd());
-      this.runRoot = path.resolve(path.join(this.projectDir, ".org"));
-      this.policy = undefined;
-      this.tools = makeDefaultToolRegistry();
-      this.maxToolCalls = 8;
-      return;
+  async respond(messages: ChatMessage[], maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply[]> {
+    Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
+    if (abortCallback?.()) {
+      Logger.debug("Aborted turn");
+
+      return [{ message: "Turn aborted.", toolsUsed: 0 }];
     }
 
-    const cfg = cfgOrId;
-    this.id = cfg.id;
+    // Initialize per-turn thresholds/counters in the guard rail.
+    this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
 
-    const base = typeof cfg.projectDir === "string" && cfg.projectDir.length > 0 ? cfg.projectDir : process.cwd();
-    this.projectDir = path.resolve(base);
-    this.runRoot = path.resolve(cfg.runRoot ?? path.join(this.projectDir, ".org"));
-    this.policy = cfg.policy;
-    this.model = cfg.modelClient;
-    this.tools = cfg.tools ?? makeDefaultToolRegistry();
-    this.maxToolCalls = Math.max(1, cfg.maxToolCallsPerTurn ?? 8);
-  }
-
-  private async runToolCalls(calls: Array<{ name: string; arguments: any }>): Promise<number> {
-    let used = 0;
-    for (const call of calls.slice(0, this.maxToolCalls)) {
-      const runner = this.tools.getRunner(call.name);
-      if (!runner) {
-        used++; // consume unknown tools silently
-        continue;
-      }
-      try {
-        await runner(call.arguments, {
-          projectDir: this.projectDir,
-          runRoot: this.runRoot,
-          agentSessionId: this.id,
-          policy: this.policy,
-        });
-      } catch {
-        // swallow tool failures; tests only care that we didn't crash and consumed the turn
-      }
-      used++;
+    for (const message of messages) {
+      await this.memory.addIfNotExists(message);
     }
-    return used;
-  }
 
-  async respond(
-    messages: ChatMessage[],
-    _budget: number,
-    _peers?: any[],
-    _isDraining?: boolean | (() => boolean)
-  ): Promise<RespondResult[]> {
-    try {
-      const convo = messages.slice();
-      const lastUser = [...convo].reverse().find((m) => m.role === "user");
+    let hop = 0;
 
-      // 1) Tool calls attached to the last user message (legacy helpers)
-      const explicitCalls =
-        (lastUser?.toolcalls as any[]) ||
-        (lastUser?.toolCalls as any[]) ||
-        [];
+    Logger.info(C.green(`${this.id} ...`));
+    const msgs = this.memory.messages();
+    Logger.debug(`${this.id} chat ->`, { hop: hop++, msgs: msgs.length });
+    const t0 = Date.now();
+    Logger.debug('memory', this.memory.messages());
+    const prevToolCallDeltas: Record<string, ChatToolCall[]> = {};
 
-      // 2) Inline directives in user text: e.g., `sh { "cmd": "ls" }`
-      const directiveCalls = lastUser ? parseDirectives(lastUser.content).map(d => ({ name: d.name, arguments: d.args })) : [];
+    const formatToolCallDelta = (tcd: ChatToolCall) => sanitizeContent(`${tcd.function.name} ${tcd.function.arguments}`);
 
-      const pendingUserCalls = [...explicitCalls, ...directiveCalls].filter(Boolean);
+    let streamState: "thinking" | "tool" | "content" = "thinking";
 
-      if (pendingUserCalls.length > 0) {
-        const used = await this.runToolCalls(pendingUserCalls);
-        return [{ message: "", toolsUsed: used }];
+    const ptcds: string[] = [];
+
+    const onToolCallDelta = (tcd: ChatToolCall) => {
+      if (streamState !== "tool") {
+        Logger.info("");
+        streamState = "tool";
       }
 
-      // 3) No explicit calls → ask model (if available)
-      if (this.model) {
-        let norm: Normalized | null = null;
-        try {
-          const raw = await this.model.chat({ messages: convo, tools: this.tools.getSchemas() });
+      if (!prevToolCallDeltas[tcd.id ?? "0"]) prevToolCallDeltas[tcd.id ?? "0"] = [];
 
-          // FIRST: prefer the assistant picker (fixes empty toolCalls => text)
-          const { text, toolCalls } = pickAssistant(raw);
-          if (Array.isArray(toolCalls) && toolCalls.length > 0) {
-            const used = await this.runToolCalls(toolCalls);
-            return [{ message: "", toolsUsed: used }];
-          }
-          if (typeof text === "string" && text.length > 0) {
-            return [{ message: text, toolsUsed: 0 }];
-          }
+      const text: string = formatToolCallDelta(tcd);
 
-          // FALLBACK: generic normalizer for other shapes
-          norm = normalizeModelOutput(raw);
-        } catch (e: any) {
-          return [{ message: `model error: ${String(e?.message ?? e)}`, toolsUsed: 0 }];
-        }
+      const prevText = ptcds[ptcds.length - 1] ?? "";
+      let deltaText = text;
 
-        if (!norm) {
-          // Nonstandard but harmless: end turn quietly
-          return [{ message: "", toolsUsed: 0 }];
-        }
-
-        if (norm.kind === "tool_calls") {
-          const used = await this.runToolCalls(norm.calls);
-          return [{ message: "", toolsUsed: used }];
-        }
-
-        // plain assistant text
-        return [{ message: norm.text ?? "", toolsUsed: 0 }];
+      if (text.startsWith(prevText)) {
+        deltaText = text.slice(prevText.length);
       }
 
-      // 4) No model at all: simple OK (keeps legacy tests happy)
-      return [{ message: "OK.", toolsUsed: 0 }];
-    } catch (e: any) {
-      return [{ message: `agent error: ${String(e?.message ?? e)}`, toolsUsed: 0 }];
+      ptcds.push(text);
+      Logger.streamInfo(C.red(deltaText));
     }
+
+    const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
+      model: this.model,
+      tools: this.tools,
+      onReasoningToken: t => Logger.streamInfo(C.cyan(t)),
+      onToken: t => {
+        if (streamState !== "content") {
+          Logger.info("");
+          streamState = "content";
+        }
+
+        Logger.streamInfo(C.bold(t))
+      },
+      onToolCallDelta
+    });
+    Logger.info('');
+    Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
+
+    if ((!out.text || !out.text.trim()) && (!out.toolCalls || !out.toolCalls.length)) {
+      Logger.debug(`${this.id} empty-output`);
+    }
+
+    const finalText = sanitizeContent((out.text || "").trim());
+
+    const allReasoning = out?.reasoning || "";
+
+    // Inform guard rail about this assistant turn (before routing)
+    this.guard.noteAssistantTurn({ text: finalText, toolCalls: (out.toolCalls || []).length });
+
+    const calls = out.toolCalls || [];
+    if (calls.length === 0) {
+      // No tools requested — capture assistant text in memory and yield.
+      if (finalText) {
+        Logger.debug(`${this.id} add assistant`, { chars: finalText.length });
+        await this.memory.add({ role: "assistant", content: finalText, from: "Me" });
+      }
+      Logger.info(C.blue(`\n[${this.id}] wrote. No tools used.`));
+      return [{ message: finalText, toolsUsed: 0 }];
+    }
+
+    // Execute tools (sh only), respecting remaining budget
+    let forceEndTurn = false;
+
+    const {
+      calls: sanitizedCalls,
+      decision: firstDecision,
+      forceRetry: _forceRetry,
+    } = sanitizeAndRepairAssistantReply({ text: finalText, calls, toolsAllowed: this.tools.map(t => t.function.name), didRetry: false /* FIXME */ });
+
+    if (firstDecision) {
+      if (firstDecision?.nudge) {
+        await this.memory.add({ role: "system", content: firstDecision.nudge, from: "System" });
+      }
+      if (firstDecision?.endTurn) {
+        Logger.warn(`System prematurely ended turn.`);
+        const totalUsed = maxTools; // consume budget → end turn
+        forceEndTurn = true;
+        if (finalText) await this.memory.add({ role: "system", content: finalText, from: "System" });
+        
+        return [{ message: finalText, toolsUsed: totalUsed }];
+      }
+    }
+
+    // --- Refactored: delegate to executor (pure behavior) ---
+    const execResult = await this.toolExecutor.execute({
+      calls: sanitizedCalls,
+      maxTools,
+      abortCallback,
+      guard: this.guard,
+      memory: this.memory,
+      finalText,
+      agentId: this.id,
+    });
+    const toolsUsed = execResult.toolsUsed;
+    forceEndTurn = execResult.forceEndTurn;
+    // --------------------------------------------------------
+
+    if (toolsUsed >= maxTools) {
+      if (finalText) {
+        Logger.debug(`${this.id} add assistant memory`, { chars: finalText.length });
+        await this.memory.add({ role: "assistant", content: `${allReasoning ? `${allReasoning} -> ` : ""}${finalText}`, from: "Me" });
+      } else if (allReasoning) {
+        Logger.debug(`${this.id} add assistant memory`, { chars: allReasoning.length });
+        await this.memory.add({ role: "assistant", content: allReasoning, from: "Me" });
+      }
+    }
+    // Loop: the assistant will see tool outputs (role:"tool") now in memory.
+
+    Logger.info(C.blue(`\n[${this.id}] wrote. [${calls.length}] tools requested. [${toolsUsed}] tools used.`));
+
+    return [{ message: finalText, toolsUsed: calls.length, reasoning: allReasoning }];
   }
 }
-
-export default LlmAgent;

@@ -107,19 +107,9 @@ export class RandomScheduler {
             const peers = this.agents.map(x => x.id);
             Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
             this.activeAgent = a;
-            let rawResult: any;
-            try {
-              rawResult = await a.respond(messages, Math.max(0, remaining), peers, () => this.draining);
-            } catch (err) {
-              // Never let one agent crash the run
-              Logger.error(`agent ${a.id} respond() threw`, err);
-              continue;
-            }
+            const messageResult = await a.respond(messages, Math.max(0, remaining), peers, () => this.draining);
 
-            // Normalize to an array so the loop never explodes
-            const results: Array<{ message?: string; toolsUsed?: number }> = Array.isArray(rawResult) ? rawResult : (rawResult == null ? [] : [rawResult]);
-
-            for (const { message = "", toolsUsed = 0 } of results) {
+            for (const { message, toolsUsed } of messageResult) {
               totalToolsUsed += toolsUsed;
               this.activeAgent = undefined;
               Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
