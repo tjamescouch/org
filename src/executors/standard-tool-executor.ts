@@ -55,13 +55,13 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
         });
         Logger.warn(`Execution failed: Command required.`, toolcall);
         await memory.add({ role: "tool", content, tool_call_id: toolcall.id, name, from: "Tool" });
-            
+
         return { toolsUsed, forceEndTurn: false, stdout: "", stderr: "System aborted shell call tue to missing command.", ok: false, exit_code: 2 };
     }
 
     Logger.debug(`${agentId} tool ->`, { name, cmd: cmd.slice(0, 160) });
     const t = Date.now();
-    const result = await sandboxedSh({ cmd }, {agentSessionId: agentId, projectDir: args.cwd ?? process.cwd() ?? "." })
+    const result = await sandboxedSh({ cmd }, { agentSessionId: agentId, projectDir: args.cwd ?? process.cwd() ?? ".", policy: { image: "localhost/org-build:debian-12" } })
     Logger.debug(`${agentId} tool <-`, { name, ms: Date.now() - t, exit: result.exit_code, outChars: result.stdout.length, errChars: result.stderr.length });
 
     // Let GuardRail see the signature to stop "same command" repetition
