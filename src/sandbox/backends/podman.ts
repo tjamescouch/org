@@ -208,7 +208,7 @@ export class PodmanSession implements ISandboxSession {
         InputController.setRawMode(false);
 
         await this.execInCmd(
-            "git -C /work -c diff.noprefix=false diff --binary " +
+            "git -C /work -c diff.noprefix=false diff --binary --no-prefix " +
             this.shQ(this.baselineCommit!) +
             " HEAD > /work/.org/session.patch || true"
         );

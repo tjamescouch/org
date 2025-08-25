@@ -224,7 +224,7 @@ export class InputController {
       }
 
       // ESC — graceful exit, finalize sandbox first
-      if (key.name === "escape") {
+      if (key.name === "escape" || key.name === "esc") {
         this.gracefulShutdown().catch((err) => Logger.error(err));
         return;
       }
