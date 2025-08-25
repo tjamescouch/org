@@ -1,62 +1,47 @@
-// src/__tests__/esc_graceful-exit.test.ts
-import { describe, it, expect, beforeEach } from "bun:test";
-import { EventEmitter } from "events";
-
-// simple spy
-function createSpy<T extends (...args: any[]) => any>(impl?: T) {
-  const fn: any = (...args: any[]) => {
-    fn.calls.push(args);
-    return impl?.(...args);
-  };
-  fn.calls = [] as any[];
-  return fn as T & { calls: any[] };
-}
-
-// minimal scheduler stub
-class SchedulerStub extends EventEmitter {
-  stop = createSpy(() => {});
-  drain = async () => {};
-  stopDraining = () => {};
-  isDraining = () => false;
-}
-
-let fakeStdin: any;
-let InputController: any;
-
-beforeEach(() => {
-  // fresh fake stdin each time
-  fakeStdin = new EventEmitter();
-  fakeStdin.isTTY = true;
-  fakeStdin.setRawMode = () => {};
-
-  // swap process.stdin
-  Object.defineProperty(process, "stdin", { value: fakeStdin });
-  // clear module cache so we import controller after patching stdin
-  const k = require.resolve("../../controller");
-  delete require.cache[k];
-  InputController = require("../../controller").InputController || require("../../controller").default;
-});
+// src/__tests__/__esc_graceful-exit.test.ts
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+// NOTE: path is from src/__tests__ to src/controller.ts
+import { makeControllerForTests } from "../input/controller";
 
 describe("ESC graceful shutdown", () => {
-  it("calls scheduler.stop() and finalizer()", async () => {
-    const scheduler = new SchedulerStub();
-    const finalizer = createSpy(() => {});
+  let stopped = 0;
+  let finalized = 0;
+  let ctl: ReturnType<typeof makeControllerForTests> | null = null;
 
-    const c = new InputController({
-      interjectKey: "i",
-      // inject finalizer via option if supported; otherwise, attach later (see below)
-      finalizeSandbox: finalizer, // if your controller constructor accepts this
-    } as any);
+  beforeEach(() => {
+    stopped = 0;
+    finalized = 0;
 
-    // if your controller doesn't take finalize in constructor, assign hook directly:
-    (c as any)._onFinalizeSandbox = finalizer;
+    const scheduler = {
+      stop: () => {
+        stopped++;
+      },
+      isDraining: () => false,
+      drain: async () => {},
+      stopDraining: () => {},
+      handleUserInterjection: (_s: string) => {},
+    };
 
-    c.attachScheduler(scheduler as any);
+    const finalizer = async () => {
+      finalized++;
+    };
 
-    // simulate ESC
-    fakeStdin.emit("keypress", "", { name: "escape" });
+    ctl = makeControllerForTests({ scheduler: scheduler as any, finalizer });
+  });
 
-    expect(scheduler.stop.calls.length).toBe(1);
-    expect(finalizer.calls.length).toBe(1);
+  afterEach(() => {
+    // dispose if your helper returns one; otherwise ignore
+    ctl = null;
+  });
+
+  it("calls scheduler.stop() and finalizer() on ESC", async () => {
+    // simulate ESC keypress via helper
+    ctl!._private.emitKey({ name: "escape" });
+
+    // give the controller microtask tick if it schedules finalization
+    await Promise.resolve();
+
+    expect(stopped).toBe(1);
+    expect(finalized).toBe(1);
   });
 });
