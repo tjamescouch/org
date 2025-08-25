@@ -83,6 +83,12 @@ export class PodmanSession implements ISandboxSession {
         const hasRunner = await this.execInCmd("test -x /work/.org/org-step.sh");
         if (hasRunner.code !== 0) throw new Error("runner missing at /work/.org/org-step.sh");
 
+        // after priming /work and mkdir -p /work/.org/steps
+        await this.execInCmd(
+            // Ignore sandbox internals in this working copy:
+            "mkdir -p /work/.git/info && printf '.org/\\n' >> /work/.git/info/exclude"
+        );
+
         // Baseline commit.
         await this.must(this.execInCmd("git -C /work init"));
         await this.must(this.execInCmd("git -C /work config user.email noreply@example && git -C /work config user.name org"));
