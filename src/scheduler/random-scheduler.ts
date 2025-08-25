@@ -191,43 +191,35 @@ All agents are idle (and tool budget is exhausted or no work). Please provide th
   /**
    * Enqueue user text.
    * Semantics:
-   *  - If one or more @@agent tags appear anywhere, DM ONLY those agent(s)
-   *    with the tags stripped from the content. Prefer the first mentioned
-   *    agent as the immediate responder.
+   *  - If one or more @/@@agent tags appear, DM ONLY those agent(s) with tags stripped.
+   *    Prefer the first mentioned agent to respond next and remember as last DM target.
    *  - Otherwise, broadcast to @@group.
+   *  - Unknown tags are warned and ignored (fall back to group if no known tags present).
    */
   handleUserInterjection(text: string) {
     const raw = String(text ?? "");
-    const tagRe = /@@([a-z][\w-]*)\b/gi;
 
-    const found: string[] = [];
-    let m: RegExpExecArray | null;
-    while ((m = tagRe.exec(raw)) !== null) {
-      found.push(m[1]);
-    }
+    const { targets, unknown, content } = this.parseUserDM(raw);
 
-    const uniqueTargets = Array.from(new Set(found.map(s => s.toLowerCase())));
-    const knownTargets: Responder[] = uniqueTargets
-      .map(t => this.findAgentById(t))
-      .filter((a): a is Responder => !!a);
-
-    if (knownTargets.length > 0) {
-      // Strip all tags for delivery.
-      const content = raw.replace(tagRe, "").trim();
+    if (targets.length > 0) {
       const msg: ChatMessage = { content, role: "user", from: "User" };
+      this.respondingAgent = targets[0];
+      this.lastUserDMTarget = targets[0].id;
 
-      // Prefer the first mentioned agent to respond next.
-      this.respondingAgent = knownTargets[0];
-      this.lastUserDMTarget = knownTargets[0].id;
-
-      for (const a of knownTargets) {
+      for (const a of targets) {
         this.inbox.push(a.id, msg);
-        Logger.info(`[user → @@${a.id}] ${raw}`);
+      }
+      Logger.info(`[user → ${targets.map(a => `@@${a.id}`).join(", ")}] ${raw}`);
+      if (unknown.length) {
+        Logger.info(C.yellow(`[warn] Unknown agent tag(s): ${unknown.join(", ")} (known: ${this.agents.map(a => a.id).join(", ")})`));
       }
       return;
     }
 
-    // No agent tags -> group broadcast.
+    if (unknown.length) {
+      Logger.info(C.yellow(`[warn] Unknown agent tag(s): ${unknown.join(", ")}; broadcasting to @@group.`));
+    }
+
     for (const a of this.agents) {
       this.inbox.push(a.id, { content: raw, role: "user", from: "User" });
     }
@@ -265,9 +257,50 @@ All agents are idle (and tool budget is exhausted or no work). Please provide th
     }
   }
 
-  private findAgentById(idOrTag: string): Responder | undefined {
-    const target = idOrTag.toLowerCase();
-    return this.agents.find(a => a.id.toLowerCase() === target);
+  /** Find an agent by exact id or (fallback) prefix match, case-insensitive. */
+  private findAgentByIdOrPrefix(key: string): Responder | undefined {
+    const t = key.toLowerCase();
+    return (
+      this.agents.find(a => a.id.toLowerCase() === t) ??
+      this.agents.find(a => a.id.toLowerCase().startsWith(t))
+    );
+  }
+
+  /**
+   * Parse user DM targets and return:
+   *  - targets: matching agents
+   *  - unknown: tags that didn't match any agent
+   *  - content: message with all tags stripped and whitespace normalized
+   *
+   * We accept single '@' or double '@@' to be tolerant of model/user output.
+   * We only treat them as tags when preceded by start-of-line or whitespace to
+   * avoid catching emails like a@b.com.
+   */
+  private parseUserDM(raw: string): { targets: Responder[]; unknown: string[]; content: string } {
+    const tagRe = /(^|\s)@{1,2}([a-z][\w-]*)\b/gi;
+
+    const seen = new Set<string>();
+    const targets: Responder[] = [];
+    const unknown: string[] = [];
+
+    let m: RegExpExecArray | null;
+    while ((m = tagRe.exec(raw)) !== null) {
+      const tag = (m[2] || "").toLowerCase();
+      if (!tag || seen.has(tag)) continue;
+      seen.add(tag);
+
+      const agent = this.findAgentByIdOrPrefix(tag);
+      if (agent) {
+        targets.push(agent);
+      } else {
+        unknown.push(tag);
+      }
+    }
+
+    // Strip all tags (known or unknown) from the delivered content.
+    const content = raw.replace(tagRe, (full, pre) => (pre || " ")).replace(/\s+/g, " ").trim();
+
+    return { targets, unknown, content };
   }
 
   private sleep(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }
