@@ -72,6 +72,7 @@ export class MockSession implements ISandboxSession {
 
     const manifestPath = path.join(this.runDir, "manifest.json");
     await writeJsonPretty(manifestPath, {
+      writePolicy: this.spec.write,
       spec: this.spec,
       startedAt: new Date().toISOString(),
       endedAt: new Date().toISOString(),

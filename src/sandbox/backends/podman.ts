@@ -8,6 +8,7 @@ import { ExecSpec } from "../policy";
 import { initRunDirs, writeJsonPretty, rel } from "../../replay/manifest";
 import { matchAny } from "../glob";
 import { ISandboxSession } from "../types";
+import { Logger } from "../../logger";
 
 type ShResult = { code: number; stdout: string; stderr: string };
 
@@ -128,6 +129,9 @@ export class PodmanSession implements ISandboxSession {
             .split("\n").map(s => s.trim()).filter(Boolean);
         const violated = changed.filter(p => !this.pathAllowed(p));
 
+        await this.execInCmd(`git -C /work diff --name-only HEAD~1..HEAD > /work/.org/steps/step-${idx}.changed.txt || true`);
+        await this.execInCmd(`git -C /work diff --name-status HEAD~1..HEAD > /work/.org/steps/step-${idx}.status.txt || true`);
+
         // --- copy artifacts to host (best-effort; create placeholders if needed) ---
         const hostSteps = path.join(this.spec.runDir, "steps");
         await fsp.mkdir(hostSteps, { recursive: true }).catch(() => { });
@@ -233,10 +237,22 @@ export class PodmanSession implements ISandboxSession {
     private shQ(s: string) { return `'${s.replace(/'/g, `'\\''`)}'`; }
 
     private pathAllowed(p: string) {
-        // Deny takes precedence
-        if (this.spec.write.deny && matchAny(this.spec.write.deny, p)) return false;
-        return matchAny(this.spec.write.allow, p);
+        const deny = this.spec.write.deny ?? [];
+        if (deny.length && matchAny(deny, p)) {
+            Logger.info("Patch path denied: ", p);
+            return false;     // deny takes precedence
+        }
+
+        const result = matchAny(this.spec.write.allow, p);
+
+        if (result) {
+
+        }
+        Logger.info(result ? "Patch path allowed: " : "Patch path denied: ", p);
+
+        return result;
     }
+
 
     private async must(rp: Promise<ShResult>) {
         const r = await rp; if (r.code !== 0) throw new Error(r.stderr || r.stdout); return r;
