@@ -71,6 +71,58 @@ export class ToolRegistry {
   }
 }
 
+/* ---------------- Model result helpers ---------------- */
+
+type RawModelResult =
+  | string
+  | {
+      text?: string;
+      content?: string;
+      toolCalls?: any[];
+      tool_calls?: any[];
+      choices?: Array<{
+        message?: { content?: string; tool_calls?: any[] };
+        text?: string;
+      }>;
+      type?: string;
+      calls?: any[];
+    }
+  | null
+  | undefined;
+
+/**
+ * Prefer text when tool calls are absent or an empty array.
+ * Works with stub output ({ text, toolCalls }) and OpenAI-style choices.
+ */
+function pickAssistant(raw: RawModelResult): { text: string; toolCalls: any[] } {
+  if (raw == null) return { text: "", toolCalls: [] };
+
+  // plain string
+  if (typeof raw === "string") return { text: raw, toolCalls: [] };
+
+  // OpenAI-style choice
+  const choice = Array.isArray(raw.choices) ? raw.choices[0] : undefined;
+  const choiceMsg = choice?.message ?? {};
+  const choiceText = choice?.text ?? choiceMsg?.content;
+
+  // tool calls in any common spelling
+  const tc =
+    (raw as any).tool_calls ??
+    (raw as any).toolCalls ??
+    choiceMsg?.tool_calls ??
+    [];
+
+  const text =
+    (raw as any).content ??
+    (raw as any).text ??
+    choiceText ??
+    "";
+
+  // The key behavior: only treat as tools if non-empty
+  const toolCalls = Array.isArray(tc) ? tc : [];
+  return { text, toolCalls };
+}
+
 /* ------------- Default registry: sh ------------- */
 
 export function makeDefaultToolRegistry(): ToolRegistry {
@@ -200,7 +252,7 @@ function normalizeModelOutput(res: any): Normalized | null {
     if (res.type === "message" && typeof res.content === "string") {
       return { kind: "message", text: res.content };
     }
-    if (res.type === "tool_calls" && Array.isArray(res.calls)) {
+    if (res.type === "tool_calls" && Array.isArray(res.calls) && res.calls.length > 0) {
       const calls = res.calls.map((c: any) => ({
         name: String(c?.name ?? ""),
         arguments: c?.arguments ?? {},
@@ -216,10 +268,10 @@ function normalizeModelOutput(res: any): Normalized | null {
 
   // OpenAI function/tool_calls style
   const tc =
-    res?.tool_calls ?? res?.toolCalls ?? res?.toolcalls ?? // variations
+    res?.tool_calls ?? res?.toolCalls ?? res?.toolcalls ??
     (Array.isArray(res?.choices) ? res.choices[0]?.message?.tool_calls : undefined);
 
-  if (Array.isArray(tc)) {
+  if (Array.isArray(tc) && tc.length > 0) {
     const calls = tc
       .map((x: any) => {
         // { type: 'function', function: { name, arguments: string } }
@@ -245,7 +297,7 @@ function normalizeModelOutput(res: any): Normalized | null {
         };
       })
       .filter((c: any) => c && c.name);
-    return { kind: "tool_calls", calls };
+    if (calls.length > 0) return { kind: "tool_calls", calls };
   }
 
   // choices with text
@@ -368,6 +420,18 @@ export class LlmAgent {
         let norm: Normalized | null = null;
         try {
           const raw = await this.model.chat({ messages: convo, tools: this.tools.getSchemas() });
+
+          // FIRST: prefer the assistant picker (fixes empty toolCalls => text)
+          const { text, toolCalls } = pickAssistant(raw);
+          if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+            const used = await this.runToolCalls(toolCalls);
+            return [{ message: "", toolsUsed: used }];
+          }
+          if (typeof text === "string" && text.length > 0) {
+            return [{ message: text, toolsUsed: 0 }];
+          }
+
+          // FALLBACK: generic normalizer for other shapes
           norm = normalizeModelOutput(raw);
         } catch (e: any) {
           return [{ message: `model error: ${String(e?.message ?? e)}`, toolsUsed: 0 }];
