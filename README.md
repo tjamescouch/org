@@ -5,6 +5,7 @@ _Agentic dev helper that can “do things” in your repo while you watch, revie
 and approve every change._
 
 - ✍️ **Conversational**: give a task, the agent plans and executes.
+- 🤝 Collaborative: works as part of a multi-agent setup, coordinating steps and maintaining a conversation between the agents.
 - 🧰 **Tools**: `sh`, `apply_patch`, etc. 100% auditable.
 - 🔒 **Safe-by-default**: denylist for dangerous paths; *every* change turns into
   a patch you review before it lands.
