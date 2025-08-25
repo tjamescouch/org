@@ -22,6 +22,11 @@ export class MockModel extends Agent {
     // After tools are done, emit a few variations that include tags.
     this.turn++;
 
+    const writePem = messages.find(m => m.content.match(/\.pem/i));
+    if (writePem) {
+      return [{ message: 'sh {"cmd":"echo secret > test.pem"}', toolsUsed: 1 }];
+    }
+
     const peer = messages.find((m) => m.from !== this.name) || "group";
     const patterns = [
       `@@${peer} did you see the update?`,
