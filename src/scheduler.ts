@@ -1,4 +1,5 @@
 // src/scheduler.ts
+import * as fs from "fs";
 import { TagParser, TagPart } from "./utils/tag-parser";
 import { makeRouter } from "./routing/route-with-tags";
 import { C, Logger } from "./logger";
@@ -345,7 +346,8 @@ export class RoundRobinScheduler extends RandomScheduler {
     maxTools: number;
     onAskUser: (fromAgent: string, content: string) => Promise<string | null>;
     projectDir: string;
+    reviewMode: string;
   }) {
-    super({ agents: opts.agents, shuffle: (a) => a, maxTools: opts.maxTools, onAskUser: opts.onAskUser, projectDir: opts.projectDir });
+    super({ agents: opts.agents, shuffle: (a) => a, maxTools: opts.maxTools, onAskUser: opts.onAskUser, projectDir: opts.projectDir, reviewMode: opts.reviewMode });
   }
 }
