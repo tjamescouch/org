@@ -66,8 +66,8 @@ export function defaultPolicy(opts: {
         },
         write: {
             // keep conservative defaults
-            allow: opts.write?.allow ?? ["**"],
-            deny: opts.write?.deny ?? [".git/**", ".org/**", ".env", "**/*.pem", ".github/**"]
+            allow: ["**"],
+            deny:  [".git/**", ".org/**", ".env", "**/*.pem", ".github/**"]
         },
         keepScratch: opts.keepScratch ?? false,
     };
