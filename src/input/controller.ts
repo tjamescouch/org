@@ -45,7 +45,7 @@ export class InputController {
       ((from, _content) => `\n@@${from} requested input\nYou: `);
 
     // Put stdin into raw/no-echo immediately (if TTY).
-    this.setRawMode(true);
+    InputController.setRawMode(true);
     this.installRawKeyListener();
 
     // Clean exit guard to avoid leaving the terminal in raw mode.
@@ -53,7 +53,7 @@ export class InputController {
     process.on("SIGINT", () => {
       if (this.shuttingDown) return;
       this.detachRawKeyListener();
-      this.setRawMode(false);
+      InputController.setRawMode(false);
       process.stdout.write("\n");
       // 130 is the conventional exit code for SIGINT
       process.exit(130);
@@ -61,7 +61,7 @@ export class InputController {
   }
 
   /** Centralized raw-mode switch with guards for non-TTY environments. */
-  setRawMode(enable: boolean) {
+  static setRawMode(enable: boolean) {
     const stdinAny: any = process.stdin as any;
     if (process.stdin.isTTY && typeof stdinAny.setRawMode === "function") {
       try { stdinAny.setRawMode(enable); } catch { /* ignore on CI/non-tty */ }
@@ -142,7 +142,7 @@ export class InputController {
       this.detachRawKeyListener();
 
       // Switch to canonical mode; kernel will handle echo for readline.
-      this.setRawMode(false);
+      InputController.setRawMode(false);
 
       // Create readline interface with terminal controls enabled.
       this.rl = readline.createInterface({
@@ -165,7 +165,7 @@ export class InputController {
           this.rl = null;
           this.interjecting = false;
           if (!this.shuttingDown) {
-            this.setRawMode(true);
+            InputController.setRawMode(true);
             this.installRawKeyListener(); // re-attach idle hotkeys
           }
         }
@@ -186,7 +186,7 @@ export class InputController {
 
     // Detach raw handler and restore cooked mode before we print anything.
     this.detachRawKeyListener();
-    this.setRawMode(false);
+    InputController.setRawMode(false);
 
     // Best-effort finalize; never hang forever because of an exception.
     try {
@@ -216,7 +216,7 @@ export class InputController {
       // Ctrl+C — IMMEDIATE exit (do NOT finalize; keep it snappy)
       if (key.ctrl && key.name === "c") {
         this.detachRawKeyListener();
-        this.setRawMode(false);
+        InputController.setRawMode(false);
         process.stdout.write("\n");
         process.exit(130);
       }
@@ -236,7 +236,7 @@ export class InputController {
     };
 
     // Important: put stdin into raw to prevent kernel echo while idle.
-    this.setRawMode(true);
+    InputController.setRawMode(true);
     process.stdin.on("keypress", this.keypressHandler);
   }
 

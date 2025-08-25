@@ -33,9 +33,6 @@ function parseArgs(argv: string[]) {
   return out;
 }
 
-// IO + scheduler
-const inputController = new InputController(/*{ interjectKey: String(args["interject-key"] || "i"), interjectBanner: String(args["banner"] || "You: "), }*/);
-
 
 function resolveProjectDir(seed: string): string {
   // 1) If inside a git repo, use its toplevel
@@ -177,12 +174,16 @@ async function main() {
     guardOnIdle: (state: any) => a.model.guardOnIdle?.(state) ?? null, guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null,
   }));
 
-
+  // IO + scheduler
+  const input = new InputController({
+    interjectKey: String(args["interject-key"] || "i"),
+    interjectBanner: String(args["banner"] || "You: "),
+  });
 
   const scheduler = new RoundRobinScheduler({
     agents,
     maxTools,
-    onAskUser: (fromAgent: string, content: string) => inputController.askUser(fromAgent, content),
+    onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
     projectDir,
     reviewMode: (args["review"] ?? 'ask') as string
   });
@@ -217,5 +218,3 @@ main().catch((e) => {
   Logger.info(e);
   process.exit(1);
 });
-
-export { inputController };
