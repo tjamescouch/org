@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 # scripts/org-step.sh
-# Run one tool command inside the sandbox session; record stdout/stderr/metadata.
-
 set -euo pipefail
 
 CMD="${1:-}"
@@ -17,24 +15,21 @@ TIMEOUT_MS="${ORG_TIMEOUT_MS:-30000}"
 STDOUT_MAX="${ORG_STDOUT_MAX:-1048576}" # 1 MiB
 LIMIT_PIDS="${ORG_PIDS_MAX:-128}"
 
-# Always run from /work (our writable workspace)
+# Always operate in the writable workspace
 cd /work || { echo "cannot cd to /work" >&2; exit 97; }
-
 mkdir -p "$OUT_DIR"
 
 OUT_FILE="$OUT_DIR/step-$IDX.out"
 ERR_FILE="$OUT_DIR/step-$IDX.err"
 META_FILE="$OUT_DIR/step-$IDX.meta.json"
 
-# Per-call hygiene
 ulimit -u "${LIMIT_PIDS}" || true
 ulimit -n 1024 || true
 
 start_ts="$(date -Is)"
 
-# Execute in its own process group so we can kill the whole tree on timeout
+# Run the command; capture stdout/stderr; create the files even if empty
 set +e
-timeout_s=$(( (TIMEOUT_MS + 999) / 1000 ))
 setsid bash -lc "$CMD" >"$OUT_FILE" 2>"$ERR_FILE" &
 pid="$!"
 wait "$pid"
@@ -47,7 +42,7 @@ if [[ $ec -eq 124 || $ec -eq 137 ]]; then
   killedBy="timeout"
 fi
 
-# Truncate large outputs
+# Truncate overly large outputs (best-effort)
 if [[ -f "$OUT_FILE" ]]; then
   size=$(stat -c%s "$OUT_FILE" 2>/dev/null || stat -f%z "$OUT_FILE")
   if (( size > STDOUT_MAX )); then
@@ -63,28 +58,37 @@ if [[ -f "$ERR_FILE" ]]; then
   fi
 fi
 
-# Best-effort PGID cleanup
-pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
-if [[ -n "$pgid" ]]; then
+# Kill stray children
+pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+if [[ -n "${pgid:-}" ]]; then
   kill -TERM "-$pgid" 2>/dev/null || true
   sleep 0.1
   kill -KILL "-$pgid" 2>/dev/null || true
 fi
 
-# Clean tmp for next step
 rm -rf /tmp/* 2>/dev/null || true
 
-# Metadata
+# Write a tiny meta (jq optional; fall back to raw JSON)
+if command -v jq >/dev/null 2>&1; then
+  cmd_json=$(printf '%s' "$CMD" | jq -Rs '.')
+  s_json=$(printf '%s' "$start_ts" | jq -Rs '.')
+  e_json=$(printf '%s' "$end_ts" | jq -Rs '.')
+else
+  # crude escape; enough for debugging
+  esc() { printf '"%s"' "$(printf '%s' "$1" | sed 's/"/\\"/g')"; }
+  cmd_json=$(esc "$CMD"); s_json=$(esc "$start_ts"); e_json=$(esc "$end_ts");
+fi
+
 cat >"$META_FILE" <<JSON
 {
   "idx": ${IDX},
-  "cmd": $(printf '%s' "$CMD" | jq -Rs '.'),
-  "startedAt": $(printf '%s' "$start_ts" | jq -Rs '.'),
-  "endedAt": $(printf '%s' "$end_ts" | jq -Rs '.'),
-  "exitCode": $ec,
-  "killedBy": $( [[ -n "$killedBy" ]] && printf '%s' "$killedBy" | jq -Rs '.' || echo null ),
-  "stdoutPath": $(printf '%s' "$OUT_FILE" | jq -Rs '.'),
-  "stderrPath": $(printf '%s' "$ERR_FILE" | jq -Rs '.')
+  "cmd": ${cmd_json},
+  "startedAt": ${s_json},
+  "endedAt": ${e_json},
+  "exitCode": ${ec},
+  "killedBy": $( [[ -n "$killedBy" ]] && printf '%s' "$killedBy" | sed 's/.*/"&"/' || echo null ),
+  "stdoutPath": "$(printf '%s' "$OUT_FILE")",
+  "stderrPath": "$(printf '%s' "$ERR_FILE")"
 }
 JSON
 
