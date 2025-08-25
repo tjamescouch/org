@@ -220,15 +220,8 @@ export class RandomScheduler {
     const target = this.lastUserDMTarget;
     // Record whatever assistant text we have before yielding
     const hasTag = text.match(/@@\w+/);
-    const hasUserTag = text.match(/@@user\s/);
 
     const tagParts: TagPart[] = hasTag ? TagParser.parse(text) : [target ? { index: 0, kind: "agent", tag: target, content: text } : { index: 0, kind: "group", tag: "group", content: text }];
-
-    if (hasUserTag && !process.stdin.isTTY) {
-      finalizeAllSandboxes();
-      
-      process.exit(0);
-    }
 
     for (const tagPart of tagParts) {
       if (tagPart.kind === "agent") {
@@ -284,7 +277,16 @@ export class RandomScheduler {
         }
         for (const a of this.agents) if (a.id !== fromAgent.id) { if (content) this.ensureInbox(a.id).push({ content, from: fromAgent.id, role: "user" }); }
       },
-      onUser: async (_f, _c) => { this.lastUserDMTarget = fromAgent.id; },
+      onUser: async (_f, _c) => {
+        if (!process.stdin.isTTY) {
+          finalizeAllSandboxes();
+
+          process.stdout.write("\n");
+          process.exit(0);
+        }
+
+        this.lastUserDMTarget = fromAgent.id;
+      },
       onFile: async (_f, name, c) => {
         const content = this.fileFilter.feed((extractCodeGuards(c).cleaned)).cleaned + this.fileFilter.flush();
         const cmd = `${c}\n***** Write to file? [y/N] ${name}\n`;
@@ -312,7 +314,7 @@ export class RandomScheduler {
       if (dec) await this.applyGuardDecision(fromAgent, dec);
       if (!dec?.suppressBroadcast) {
         for (const a of this.agents) if (a.id !== fromAgent.id) { if ((text || "").trim()) this.ensureInbox(a.id).push({ content: text, role: "user", from: fromAgent.id }); }
-        Logger.debug(`${fromAgent.id} → @@group (implicit): ${text}`);
+        Logger.info(`${fromAgent.id} → @@group (implicit): ${text}`);
         Logger.debug(`${fromAgent.id} -> @@group (implicit):`, JSON.stringify(text));
       } else {
         Logger.debug(`suppress implicit @@group from ${fromAgent.id}`);

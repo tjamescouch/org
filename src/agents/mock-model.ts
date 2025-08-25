@@ -27,6 +27,7 @@ export class MockModel extends Agent {
       `@@${peer} did you see the update?`,
       `##notes-${this.name}.txt Here are some notes for the team.\nLine 2.`,
       `@@group All good on my side.`,
+      `@@user Done.`,
     ];
     const msg = patterns[this.turn % patterns.length];
 
