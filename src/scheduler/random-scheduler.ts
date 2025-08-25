@@ -1,7 +1,6 @@
 // src/scheduler/random-scheduler.ts
 import { shuffle as fisherYatesShuffle } from "../utils/shuffle-array";
 import { C, Logger } from "../logger";
-import { restoreStdin } from "../utils/restore-stdin";
 import { NoiseFilters } from "./filters";
 import { Inbox } from "./inbox";
 import { routeWithSideEffects } from "./router";
@@ -34,6 +33,8 @@ export class RandomScheduler {
   private readonly idlePromptEvery = 3;
 
   private readonly askUser: AskUserFn;
+  private readonly promptEnabled: boolean;
+  private readonly idleSleepMs: number;
 
   constructor(opts: SchedulerOptions) {
     this.agents = opts.agents;
@@ -41,6 +42,9 @@ export class RandomScheduler {
     this.shuffle = opts.shuffle ?? fisherYatesShuffle;
     this.review = new ReviewManager(opts.projectDir, opts.reviewMode);
     this.askUser = opts.onAskUser;
+
+    this.promptEnabled = !!opts.promptEnabled;
+    this.idleSleepMs = opts.idleSleepMs ?? 25;
 
     for (const a of this.agents) this.inbox.ensure(a.id);
   }
@@ -112,8 +116,12 @@ export class RandomScheduler {
               didWork = true;
 
               if (askedUser) {
-                const userText = ((await this.askUser(a.id, message)) ?? "").trim();
-                if (userText) this.handleUserInterjection(userText);
+                if (this.promptEnabled) {
+                  const userText = ((await this.askUser(a.id, message)) ?? "").trim();
+                  if (userText) this.handleUserInterjection(userText);
+                } else {
+                  Logger.info(`(${a.id}) requested @@user input, but prompt is disabled. Skipping.`);
+                }
                 break;
               }
             }
@@ -135,7 +143,8 @@ export class RandomScheduler {
       if (!didWork) {
         idleTicks++;
         const queuesEmpty = this.inbox.allEmpty(this.agents.map(a => a.id));
-        if (queuesEmpty && (idleTicks % this.idlePromptEvery) === 0) {
+
+        if (queuesEmpty && (idleTicks % this.idlePromptEvery) === 0 && this.promptEnabled) {
           const peers = this.agents.map(x => x.id);
           const dec = this.agents[0]?.guardOnIdle?.({ idleTicks, peers, queuesEmpty: true }) || null;
           const prompt =
@@ -148,6 +157,9 @@ All agents are idle (and tool budget is exhausted or no work). Please provide th
             this.handleUserInterjection(userText);
             idleTicks = 0;
           }
+        } else {
+          // Cooperative yield when idle to prevent CPU spin and allow signals (Ctrl‑C) to be handled.
+          await this.sleep(this.idleSleepMs);
         }
       } else {
         idleTicks = 0;
@@ -180,7 +192,7 @@ All agents are idle (and tool budget is exhausted or no work). Please provide th
   /** Enqueue user text, interpreting @@tags (agent/group). */
   handleUserInterjection(text: string) {
     const target = this.lastUserDMTarget;
-    const hasTag = /@@\\w+/.test(text);
+    const hasTag = /@@\w+/.test(text);
 
     const tagParts: TagPart[] = hasTag
       ? TagParser.parse(text)
@@ -226,7 +238,7 @@ All agents are idle (and tool budget is exhausted or no work). Please provide th
     if ((dec as any).muteMs && (dec as any).muteMs > 0) {
       this.mute(agent.id, (dec as any).muteMs);
     }
-    if ((dec as any).askUser) {
+    if ((dec as any).askUser && this.promptEnabled) {
       const userText = ((await this.askUser(agent.id, (dec as any).askUser)) ?? "").trim();
       if (userText) this.handleUserInterjection(userText);
     }

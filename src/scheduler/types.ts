@@ -40,4 +40,10 @@ export type SchedulerOptions = {
   projectDir: string;
   /** Review mode: 'ask' | 'auto' | 'never'. */
   reviewMode: string;
+
+  /** When false, the scheduler never asks the human (idle or @@user). Defaults to false. */
+  promptEnabled?: boolean;
+
+  /** Sleep duration in ms when idle (prevents CPU spin & lets signals through). Defaults to 25ms. */
+  idleSleepMs?: number;
 };

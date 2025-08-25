@@ -30,10 +30,10 @@ export class Inbox {
     return (this.queues.get(id) ?? []).length > 0;
   }
 
-  /** True iff *every* queue is currently empty. */
+  /** True iff *every* queue is currently empty. (Fixed inversion bug.) */
   allEmpty(ids: string[]): boolean {
     for (const id of ids) {
-      if (!this.hasWork(id)) return false;
+      if (this.hasWork(id)) return false; // <- correct: any work => not all empty
     }
     return true;
   }
