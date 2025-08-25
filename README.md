@@ -12,7 +12,7 @@ and approve every change._
 - 🧪 **Deterministic runs**: all stdout/stderr, artifacts, and a git patch are
   saved under `.org/runs/<id>` for inspection or CI upload.
 - 🛡️ **Optional containerized sandbox**: run steps inside a Podman container
-  with no network by default. :contentReference
+  with no network by default.
 
 > This is a developer productivity tool, not a security boundary. See
 > [SECURITY.md](SECURITY.md) for hardening guidance.
