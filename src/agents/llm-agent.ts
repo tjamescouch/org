@@ -147,7 +147,9 @@ export class LlmAgent extends Agent {
     let streamState: "thinking" | "tool" | "content" = "thinking";
 
     const ptcds: string[] = [];
+
     const onToolCallDelta = (tcd: ChatToolCall) => {
+      Logger.info("onToolCallDelta");
       if (streamState !== "tool") {
         Logger.info("");
         streamState = "tool";
@@ -167,6 +169,7 @@ export class LlmAgent extends Agent {
       ptcds.push(text);
       Logger.streamInfo(C.red(deltaText));
     }
+
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
       tools: this.tools,
