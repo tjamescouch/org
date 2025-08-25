@@ -20,7 +20,7 @@ export interface RouteDeps {
   setRespondingAgent: (id?: string) => void;
   /** Called when guardrails return a decision. */
   applyGuard: (from: Responder, dec: GuardDecision) => Promise<void>;
-  /** Remember last agent that addressed 🧍‍♂️user. */
+  /** Remember last agent that addressed @@user. */
   setLastUserDMTarget: (id: string) => void;
 }
 
@@ -31,7 +31,7 @@ export interface RouteDeps {
  * to avoid false positives in email addresses etc.
  */
 function looksLikeUserTag(text: string): boolean {
-  if (/@{2}user\b/i.test(text)) return true; // canonical 🧍‍♂️user anywhere
+  if (/@{2}user\b/i.test(text)) return true; // canonical @@user anywhere
   const lines = String(text ?? "").split(/\r?\n/);
   for (const line of lines) {
     if (/^\s*>?\s*@user\b/i.test(line)) return true;
@@ -40,7 +40,7 @@ function looksLikeUserTag(text: string): boolean {
 }
 
 /**
- * Route a model message that may contain 🧍‍♂️agent, 🧍‍♂️group, 🧍‍♂️user, 📁file.
+ * Route a model message that may contain @@agent, @@group, @@user, ##file.
  * Returns true if the message contained a request to talk to the user.
  */
 export async function routeWithSideEffects(
@@ -61,7 +61,7 @@ export async function routeWithSideEffects(
       const dec = fromAgent.guardCheck?.("group", cleaned, peers) || null;
       if (dec) await deps.applyGuard(fromAgent, dec);
       if (dec?.suppressBroadcast) {
-        Logger.debug(`suppress 🧍‍♂️group from ${fromAgent.id}`);
+        Logger.debug(`suppress @@group from ${fromAgent.id}`);
         return;
       }
       for (const a of deps.agents) {
@@ -70,7 +70,7 @@ export async function routeWithSideEffects(
       }
     },
     onUser: async (_from, _content) => {
-      // In non-interactive mode, an 🧍‍♂️user tag should terminate cleanly
+      // In non-interactive mode, an @@user tag should terminate cleanly
       if (!process.stdin.isTTY) {
         try { await finalizeAllSandboxes(); } catch {}
         process.stdout.write("\n");
@@ -99,7 +99,7 @@ export async function routeWithSideEffects(
   // Run the canonical router first.
   const outcome = await router(fromAgent.id, text || "");
 
-  // Fallback: treat leading-line `@user` as `🧍‍♂️user` (case-insensitive).
+  // Fallback: treat leading-line `@user` as `@@user` (case-insensitive).
   if (!outcome.yieldForUser && looksLikeUserTag(text)) {
     if (!process.stdin.isTTY) {
       try { await finalizeAllSandboxes(); } catch {}

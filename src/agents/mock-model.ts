@@ -16,7 +16,7 @@ export class MockModel extends Agent {
       this.turn++;
       const iso = new Date().toISOString();
       // Show it's grouped (and to keep routers exercised)
-      return [{ message: `🧍‍♂️group ${this.name} ran a tool: ${iso}`, toolsUsed: 1 }];
+      return [{ message: `@@group ${this.name} ran a tool: ${iso}`, toolsUsed: 1 }];
     }
 
     // After tools are done, emit a few variations that include tags.
@@ -29,10 +29,10 @@ export class MockModel extends Agent {
 
     const peer = messages.find((m) => m.from !== this.name) || "group";
     const patterns = [
-      `🧍‍♂️${peer} did you see the update?`,
-      `📁notes-${this.name}.txt Here are some notes for the team.\nLine 2.`,
-      `🧍‍♂️group All good on my side.`,
-      `🧍‍♂️user Done.`,
+      `@@${peer} did you see the update?`,
+      `##notes-${this.name}.txt Here are some notes for the team.\nLine 2.`,
+      `@@group All good on my side.`,
+      `@@user Done.`,
     ];
     const msg = patterns[this.turn % patterns.length];
 

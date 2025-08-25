@@ -20,7 +20,7 @@ export interface Responder {
    */
   guardOnIdle?: (state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }) => GuardDecision | null;
   /**
-   * Optional per-message guard hook used during 🧍‍♂️group delivery.
+   * Optional per-message guard hook used during @@group delivery.
    * Can request to suppress broadcast, add a nudge, ask the user, or mute temporarily.
    */
   guardCheck?: (route: GuardRouteKind, content: string, peers: string[]) => GuardDecision | null;
@@ -41,7 +41,7 @@ export type SchedulerOptions = {
   /** Review mode: 'ask' | 'auto' | 'never'. */
   reviewMode: string;
 
-  /** When false, the scheduler never asks the human (idle or 🧍‍♂️user). Defaults to false. */
+  /** When false, the scheduler never asks the human (idle or @@user). Defaults to false. */
   promptEnabled?: boolean;
 
   /** Sleep duration in ms when idle (prevents CPU spin & lets signals through). Defaults to 25ms. */

@@ -11,13 +11,13 @@ const S = {
   end: "\uE001",
 };
 
-const TAG_RE = /🧍‍♂️(?:user|group|[a-z][\w-]*)\b/gi;
+const TAG_RE = /@@(?:user|group|[a-z][\w-]*)\b/gi;
 
 function protectTags(s: string): string {
   return s.replace(TAG_RE, m => `${S.start}${m}${S.end}`);
 }
 function unprotectTags(s: string): string {
-  const re = new RegExp(`${S.start}(🧍‍♂️(?:user|group|[a-z][\\w-]*)\\b)${S.end}`, "gi");
+  const re = new RegExp(`${S.start}(@@(?:user|group|[a-z][\\w-]*)\\b)${S.end}`, "gi");
   return s.replace(re, (_m, tag) => tag);
 }
 

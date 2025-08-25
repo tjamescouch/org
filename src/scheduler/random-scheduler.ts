@@ -119,7 +119,7 @@ export class RandomScheduler {
                   const userText = ((await this.askUser(a.id, message)) ?? "").trim();
                   if (userText) this.handleUserInterjection(userText);
                 } else {
-                  Logger.info(`(${a.id}) requested 🧍‍♂️user input, but prompt is disabled. Skipping.`);
+                  Logger.info(`(${a.id}) requested @@user input, but prompt is disabled. Skipping.`);
                 }
                 break;
               }
@@ -191,14 +191,14 @@ All agents are idle (and tool budget is exhausted or no work). Please provide th
   /**
    * Enqueue user text.
    * Semantics:
-   *  - If one or more 🧍‍♂️agent tags appear anywhere, DM ONLY those agent(s)
+   *  - If one or more @@agent tags appear anywhere, DM ONLY those agent(s)
    *    with the tags stripped from the content. Prefer the first mentioned
    *    agent as the immediate responder.
-   *  - Otherwise, broadcast to 🧍‍♂️group.
+   *  - Otherwise, broadcast to @@group.
    */
   handleUserInterjection(text: string) {
     const raw = String(text ?? "");
-    const tagRe = /🧍‍♂️([a-z][\w-]*)\b/gi;
+    const tagRe = /@@([a-z][\w-]*)\b/gi;
 
     const found: string[] = [];
     let m: RegExpExecArray | null;
@@ -222,7 +222,7 @@ All agents are idle (and tool budget is exhausted or no work). Please provide th
 
       for (const a of knownTargets) {
         this.inbox.push(a.id, msg);
-        Logger.info(`[user → 🧍‍♂️${a.id}] ${raw}`);
+        Logger.info(`[user → @@${a.id}] ${raw}`);
       }
       return;
     }
@@ -231,7 +231,7 @@ All agents are idle (and tool budget is exhausted or no work). Please provide th
     for (const a of this.agents) {
       this.inbox.push(a.id, { content: raw, role: "user", from: "User" });
     }
-    Logger.info(`[user → 🧍‍♂️group] ${raw}`);
+    Logger.info(`[user → @@group] ${raw}`);
   }
 
   // ------------------------------ Internals ------------------------------
