@@ -4,6 +4,7 @@ import * as path from "path";
 import { SandboxManager } from "../sandbox/session";
 import { ExecPolicy } from "../sandbox/policy";
 import { detectBackend } from "../sandbox/detect";
+import { Logger } from "../logger";
 
 type ToolArgs = { cmd: string };
 type ToolResult = { ok: boolean; stdout: string; stderr: string; exit_code: number; cmd: string };
@@ -43,9 +44,18 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
 
 export async function finalizeSandbox(ctx: ToolCtx) {
     const sessionKey = ctx.agentSessionId ?? "default";
+
+    Logger.info("Finalizing sandbox", sessionKey);
     const m = managers.get(sessionKey);
     if (!m) return;
     return m.finalize(sessionKey);
+}
+
+export async function finalizeAllSanboxes() {
+    const sandboxeMangers = Object.entries(managers);
+    for (const [k, v] of sandboxeMangers) {
+        v?.finalize(k);
+    }
 }
 
 // Optional: expose what backend got selected (useful for debug/tests)

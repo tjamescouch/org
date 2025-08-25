@@ -13,6 +13,7 @@ import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
 import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
 import { getRecipe } from "./recipes";
+import { finalizeAllSanboxes } from "./tools/sandboxed-sh";
 
 /** ---------- CLI parsing ---------- */
 function parseArgs(argv: string[]) {
@@ -212,7 +213,7 @@ async function main() {
   await scheduler.start();
 }
 
-main().catch((e) => {
+main().then(() => finalizeAllSanboxes).catch((e) => {
   Logger.info(e);
   process.exit(1);
 });
