@@ -21,7 +21,6 @@ import { sandboxMangers } from "./sandbox/session";
 import { installShutdown } from "./runtime/shutdown";
 import { buildPATH } from "./config/path";
 
-buildPATH('', []);
 installTtyGuard();
 
 /** ---------- CLI parsing ---------- */
