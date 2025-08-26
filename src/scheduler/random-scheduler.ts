@@ -281,6 +281,8 @@ All agents are idle. Provide the next concrete instruction or question.`;
     for (const a of this.agents) {
       this.inbox.push(a.id, { content: raw, role: "user", from: "User" });
     }
+
+    Logger.info('HERE');
     Logger.info(`[user → @@group] ${raw}`);
   }
 

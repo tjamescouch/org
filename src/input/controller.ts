@@ -146,7 +146,6 @@ export class InputController {
     if (!this.scheduler) return;
     if (typeof initial === "string" && initial.trim()) {
       // Fire-and-forget; scheduler may be async but we don't block startup.
-      //(this.scheduler as any).handleUserInterjection?.(initial.trim());
       (this.scheduler as any).interject?.(initial.trim());
       return;
     }
@@ -154,7 +153,6 @@ export class InputController {
     if (initial === true) {
       const text = await this.runReadlineOnce(this.interjectBanner);
       if (text && text.trim()) {
-        //(this.scheduler as any).handleUserInterjection?.(text.trim());
         (this.scheduler as any).interject?.(text.trim());
       }
     }
