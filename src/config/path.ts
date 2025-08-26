@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import { PATHS } from "./paths";
-import { Logger } from "../logger";
 
 /** Expand "~" and ignore nonsense; only keep existing dirs; de-dupe; whitelist first. */
 export function buildPATH(basePATH: string, extra: string[] = []): string {
