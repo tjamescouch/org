@@ -15,7 +15,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 
-# --- Bun (pinned, linux/arm64-friendly) --------------------------------------
+
+# --- Bun (pinned) ------------------------------------------------------------
 ARG BUN_VERSION=1.1.20
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; echo "dpkg arch=$arch"; \
@@ -24,12 +25,12 @@ RUN set -eux; \
     url="${base}/bun-linux-${bun_arch}.zip"; echo "URL=$url"; \
     curl -fsSL "$url" -o /tmp/bun.zip; \
     unzip -q /tmp/bun.zip -d /tmp; \
-    ls -l /tmp; \
-    # move the binary *file* (not a dir) and set exec
-    mv "/tmp/bun-linux-${bun_arch}" /usr/local/bin/bun; \
-    chmod 0755 /usr/local/bin/bun; \
-    # sanity: show arch and ELF type before running
+    # pick source: either a file or bun inside the dir
+    if [ -f "/tmp/bun-linux-${bun_arch}" ]; then src="/tmp/bun-linux-${bun_arch}"; \
+    elif [ -f "/tmp/bun-linux-${bun_arch}/bun" ]; then src="/tmp/bun-linux-${bun_arch}/bun"; \
+    else echo "bun binary not found in zip"; ls -R /tmp; exit 1; fi; \
+    install -m 0755 "$src" /usr/local/bin/bun; \
+    rm -rf /tmp/bun.zip "/tmp/bun-linux-${bun_arch}"; \
     uname -m; dpkg --print-architecture; file /usr/local/bin/bun; \
-    /usr/local/bin/bun --version; \
-    rm -f /tmp/bun.zip
+    /usr/local/bin/bun --version
 
