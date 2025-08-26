@@ -33,6 +33,16 @@ This prompt instructs `alice` to create a directory `hello/` and write “Hello,
 - Once added, link to: `examples/hello-world/session.patch`
 - Expected: A Git patch creating `hello/hello-world.txt` with “Hello, World!”.
 
+Prompt:
+```
+ollama@ollama-vm:~/dev/cchat$ HIDE_COT=1 org --agents "alice:lmstudio,bob:lmstudio" "alice - you are the programmer on this project. Just write the code and follow instructions from bob, bob you are the product person. You make all decisions. The project is to write a C++ chat application that. Start small then grow it. eventually I want real time bidirectional communication via a socket protocol. Test and run your code. If it doesn' compile, test, and run do not tag me for input. Make small file edits. Check for existing files." --max-tools 50
+Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.
+```
+
+Output (required some encouragement to compile and run tests)
+<img width="1337" height="1058" alt="image" src="https://github.com/user-attachments/assets/59400288-449a-470c-9780-7979f9c1e5fa" />
+
+
 ## Example 2: Multi-Agent Code and Test Workflow
 **Prompt**:
 ```bash
