@@ -3,6 +3,7 @@ import * as fs from "fs";
 import { Logger } from "../logger";
 import { finalizeSandbox } from "../tools/sandboxed-sh";
 import { modeFromEnvOrFlags, decideReview, applyPatch } from "../review";
+import { applySessionPatch } from "../cli/apply-patch";
 
 /**
  * Handles post-tool-call patch finalization and review/apply workflow.
@@ -22,7 +23,7 @@ export class ReviewManager {
       const decision = await decideReview(mode, this.projectDir, patchPath);
       if (decision.action === "apply") {
         try {
-          await applyPatch(this.projectDir, patchPath, decision.commitMsg);
+          await applySessionPatch(this.projectDir, patchPath, decision.commitMsg);
           Logger.info("✓ patch applied");
         } catch (e: any) {
           Logger.error("Patch apply failed:", e?.message ?? e);
