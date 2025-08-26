@@ -7,10 +7,10 @@
  * - Prompting: canonical line mode via readline, echo ON, line editing enabled.
  *   After submit, we restore raw/no-echo and reattach the hotkey listener.
  *
- * Adds graceful shutdown on ESC:
+ * Adds graceful shutdown on ESC (debounced bare-ESC; arrows won't exit):
  *   - Stops the scheduler
  *   - Calls an injected finalizer (or finalizeAllSandboxes)
- *   - Exits (skips exit when constructed in test mode)
+ *   - Exits (skips exit when constructed in test mode, or when exitOnEsc=false)
  */
 
 import * as readline from "readline";
@@ -18,14 +18,15 @@ import { Logger } from "../logger";
 import type { RandomScheduler } from "../scheduler";
 import { resumeStdin } from "./utils";
 import { finalizeAllSandboxes } from "../tools/sandboxed-sh";
+import { Hotkeys } from "../runtime/hotkeys";
 
 export type InputControllerOptions = {
   interjectKey?: string;         // default: "i"
   interjectBanner?: string;      // default: "You: "
   promptTemplate?: (from: string, content: string) => string; // when a model asks the user
   finalizer?: () => void | Promise<void>;   // optional override for tests / DI
-  _testMode?: boolean;                        // when true, never process.exit(...)
-  exitOnEsc?: boolean;
+  _testMode?: boolean;           // when true, never process.exit(...)
+  exitOnEsc?: boolean;           // default: true
 };
 
 export class InputController {
@@ -41,10 +42,11 @@ export class InputController {
   private rl: readline.Interface | null = null;
   private interjecting = false;
 
-  private keypressHandler?: (str: string, key: readline.Key) => void;
-
   private escFinalizer?: () => void | Promise<void>;
   private testMode = false;
+
+  private hotkeys: Hotkeys | null = null;
+  private exiting = false;
 
   // ---- Raw-mode / guard helpers -------------------------------------------
 
@@ -80,18 +82,20 @@ export class InputController {
     process.on("unhandledRejection", (reason: any) => { restore(); Logger.error?.(reason); });
   }
 
-  /** Run a block in cooked (non-raw) mode and restore previous raw state. */
+  /** Run a block in cooked (non-raw) mode and restore previous raw state + hotkeys. */
   private async withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> {
     const prevRaw = InputController.isRawMode();
     try {
       InputController.disableKeys();
+      // Temporarily disable hotkeys to avoid interpreting typed characters
+      this.hotkeys?.disable();
       if (prevRaw) InputController.setRawMode(false);
       return await fn();
     } finally {
       try { if (prevRaw) InputController.setRawMode(true); } catch { }
       InputController.enableKeys();
-      // Re-attach idle hotkeys if we are not already listening.
-      this.installRawKeyListener();
+      // Re-enable hotkeys for idle/raw mode
+      this.hotkeys?.enable();
     }
   }
 
@@ -106,24 +110,39 @@ export class InputController {
 
     this.escFinalizer = opts.finalizer;
     this.testMode = !!opts._testMode;
+    this.exitOnEsc = opts.exitOnEsc ?? true;
 
     // Global safety net: always restore cooked mode on termination.
     InputController.installGlobalTtyGuardsOnce();
 
-    // Put stdin into raw/no-echo immediately (if TTY) and listen for hotkeys.
+    // Put stdin into raw/no-echo immediately (if TTY).
     InputController.setRawMode(true);
-    this.installRawKeyListener();
 
-    // Clean exit guard to avoid leaving the terminal in raw mode.
-    process.on("SIGINT", () => {
-      // Fast abort; do NOT finalize (user wanted instant cancel)
-      this.detachRawKeyListener();
-      try { InputController.setRawMode(false); } catch { }
-      if (!this.testMode && this.exitOnEsc) {
-        process.stdout.write("\n");
-        process.exit(130);
-      }
-    });
+    // Debounced-ESC hotkeys: ESC (graceful), Ctrl+C (fast abort), interject
+    this.hotkeys = new Hotkeys(
+      {
+        onInterject: () => this.enterInterjection().catch((e) => Logger.error(e)),
+        onEsc: () => this.gracefulShutdown(),
+        onCtrlC: () => this.fastAbort(),
+      },
+      { interjectKey: this.interjectKey, escDelayMs: 80, debug: !!process.env.DEBUG }
+    );
+    this.hotkeys.enable();
+
+    // Process-level SIGINT (belt-and-suspenders for terminals that don’t deliver keypress)
+    process.on("SIGINT", () => this.fastAbort());
+  }
+
+  private fastAbort() {
+    if (this.exiting) return;
+    // Fast abort; do NOT finalize (user wanted instant cancel)
+    this.hotkeys?.disable();
+    InputController.setRawMode(false);
+    if (!this.testMode) {
+      this.exiting = true;
+      process.stdout.write("\n");
+      process.exit(130);
+    }
   }
 
   attachScheduler(s: RandomScheduler) {
@@ -145,15 +164,15 @@ export class InputController {
   async askInitialAndSend(initial?: string | boolean) {
     if (!this.scheduler) return;
     if (typeof initial === "string" && initial.trim()) {
-      // Fire-and-forget; scheduler may be async but we don't block startup.
-      (this.scheduler as any).interject?.(initial.trim());
+      // Use scheduler's public interject entry
+      await (this.scheduler as any).interject?.(initial.trim());
       return;
     }
     // If flag passed without text (true), ask once interactively.
     if (initial === true) {
       const text = await this.runReadlineOnce(this.interjectBanner);
       if (text && text.trim()) {
-        (this.scheduler as any).interject?.(text.trim());
+        await (this.scheduler as any).interject?.(text.trim());
       }
     }
   }
@@ -180,8 +199,8 @@ export class InputController {
       await this.scheduler?.drain?.();
       const text = await this.runReadlineOnce(this.interjectBanner);
       if (text && this.scheduler) {
-        (this.scheduler as any).handleUserInterjection?.(text);
-        (this.scheduler as any).interject?.(text);
+        // Single point of truth for routing user text
+        await (this.scheduler as any).interject?.(text);
       }
     } finally {
       this.scheduler?.stopDraining?.();
@@ -200,15 +219,8 @@ export class InputController {
       }
       this.interjecting = true;
 
-      // Detach raw hotkey handling to avoid double processing.
-      this.detachRawKeyListener();
-
-      // Execute the readline interaction in cooked mode and restore afterwards.
       void this.withCookedTTY(async () => {
-        // Switch to canonical mode; kernel will handle echo for readline.
-        try { InputController.setRawMode(false); } catch { }
-
-        // Create readline interface with terminal controls enabled.
+        // Create readline interface with terminal controls enabled (cooked mode)
         this.rl = readline.createInterface({
           input: process.stdin,
           output: process.stdout,
@@ -227,11 +239,10 @@ export class InputController {
 
         resolve((answer ?? "").trim());
       }).finally(() => {
-        // Cleanup + mark not interjecting, regardless of success/failure.
+        // Cleanup regardless of success/failure.
         try { this.rl?.close(); resumeStdin(); } catch (e) { Logger.error(e); }
         this.rl = null;
         this.interjecting = false;
-        // withCookedTTY will restore raw mode and re-attach hotkeys.
       });
     });
   }
@@ -241,7 +252,10 @@ export class InputController {
   // --------------------------------------------------------------------------
 
   private async gracefulShutdown(): Promise<void> {
-    this.detachRawKeyListener();
+    if (this.exiting) return;
+    this.exiting = true;
+
+    this.hotkeys?.disable();
     InputController.setRawMode(false);
 
     try { await this.scheduler?.stop?.(); } catch (e) { Logger.error(e); }
@@ -253,7 +267,7 @@ export class InputController {
     if (hasCustomFinalizer) {
       try { await this.escFinalizer!(); } catch (e) { Logger.error(e); }
     } else if (willExitHere) {
-      // old behavior remains for exit-on-ESC
+      // Default finalizer: finalize all sandboxes to preserve patches/artifacts
       try { await finalizeAllSandboxes(); } catch (e) { Logger.error(e); }
     }
 
@@ -263,60 +277,14 @@ export class InputController {
     }
   }
 
-
-  // --------------------------------------------------------------------------
-  // Raw key handling (no echo)
-  // --------------------------------------------------------------------------
-
-  private installRawKeyListener() {
-    if (this.keypressHandler) return; // already installed
-    readline.emitKeypressEvents(process.stdin);
-
-    this.keypressHandler = (_str: string, key: readline.Key) => {
-      if (!InputController.areKeysEnabled) return;
-      if (this.interjecting) return; // readline is active; ignore raw keys
-      if (!key) return;
-
-      // Ctrl+C exits quickly (fast abort, no finalize)
-      if (key.ctrl && key.name === "c") {
-        this.detachRawKeyListener();
-        try { InputController.setRawMode(false); } catch { }
-        if (!this.testMode) {
-          process.stdout.write("\n");
-          process.exit(130);
-        }
-        return;
-      }
-
-      const name = (key.name || "").toLowerCase();
-
-      // ESC triggers graceful shutdown (finalize sandbox, then exit)
-      if (name === "escape" || name === "esc") {
-        void this.gracefulShutdown();
-        return;
-      }
-
-      // Interjection hotkey (single-key)
-      if (name === this.interjectKey) {
-        this.enterInterjection().catch((err) => Logger.error(err));
-      }
-    };
-
-    // Important: put stdin into raw to prevent kernel echo while idle.
-    InputController.setRawMode(true);
-    process.stdin.on("keypress", this.keypressHandler);
-  }
-
-  private detachRawKeyListener() {
-    if (!this.keypressHandler) return;
-    try { process.stdin.removeListener("keypress", this.keypressHandler); } catch { }
-    this.keypressHandler = undefined;
-  }
-
   // ----------------------------- test helpers ------------------------------
 
   private _emitKeyForTests(k: Partial<readline.Key> & { name: string }) {
-    this.keypressHandler?.("", k as readline.Key);
+    // Minimal simulation for tests without plumbed keypress stream:
+    const name = (k.name || "").toLowerCase();
+    if (k.ctrl && name === "c") { this.fastAbort(); return; }
+    if (name === "escape" || name === "esc") { void this.gracefulShutdown(); return; }
+    if (name === this.interjectKey) { void this.enterInterjection(); return; }
   }
   private _setFinalizerForTests(fn?: () => void | Promise<void>) {
     this.escFinalizer = fn;
@@ -334,7 +302,7 @@ export function makeControllerForTests(args: {
   scheduler: RandomScheduler;
   finalizer?: () => void | Promise<void>;
 }) {
-  const c = new InputController({ _testMode: true, finalizer: args.finalizer });
+  const c = new InputController({ _testMode: true, finalizer: args.finalizer, exitOnEsc: false });
   c.attachScheduler(args.scheduler);
   return c;
 }

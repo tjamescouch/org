@@ -16,7 +16,7 @@ import { ReviewManager } from "./scheduler/review-manager";
 import { parseArgs, getProjectFromArgs, enableDebugIfRequested } from "./cli/args";
 import { resolveProjectDir } from "./project/resolve";
 import { setupProcessGuards } from "./runtime/process-guards";
-import { initHotkeys, disposeHotkeys } from "./runtime/hotkeys";
+import { disposeHotkeys, installHotkeys } from "./runtime/hotkeys";
 import { finalizeRun } from "./review/finalize-run";
 
 installTtyGuard();
@@ -148,7 +148,7 @@ async function main() {
   }
 
   // --- ESC graceful finalize (non-blocking hotkey) ---
-  initHotkeys({
+  installHotkeys({
     onEsc: async () => {
       Logger.info("ESC: graceful shutdown requested…");
       try {
