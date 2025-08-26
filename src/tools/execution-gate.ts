@@ -40,6 +40,15 @@ export class ExecutionGate {
     const yes = typeof answer === "string" && /^y(es)?$/i.test(answer.trim());
     if (!yes) throw new Error(`User denied: ${hint}`);
   }
+
+  static async allow(hint: string): Promise<boolean> {
+    try {
+      this.gate(hint);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
 async function promptLine(q: string): Promise<string> {
