@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import { PATHS } from "./paths";
+import { Logger } from "../logger";
 
 /** Expand "~" and ignore nonsense; only keep existing dirs; de-dupe; whitelist first. */
 export function buildPATH(basePATH: string, extra: string[] = []): string {
@@ -18,7 +19,7 @@ export function buildPATH(basePATH: string, extra: string[] = []): string {
         seen.add(dir);
         out.push(dir);
       }
-    } catch { /* skip */ }
+    } catch(e) { Logger.error("Failed to add path", e) }
   };
 
   // 1) Whitelist (authoritative, comes first)
