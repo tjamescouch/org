@@ -24,8 +24,8 @@ type ToolHandler = (agentId: string, toolcall: ChatToolCall, text: string, memor
 const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, memory: AgentMemory, guard: GuardRail): Promise<ToolHandlerResult> => {
     let args: any = {};
     try { args = JSON.parse(toolcall.function?.arguments || "{}"); } catch { args = {}; }
-    const rawCmd = String(args?.cmd ?? "");
-    const cmd = sanitizeContent(rawCmd);
+    const cmd = String(args?.cmd ?? "");
+    //const cmd = sanitizeContent(rawCmd);
     const name = toolcall.function?.name || "";
 
     let toolsUsed = 1;
