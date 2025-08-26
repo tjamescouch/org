@@ -91,7 +91,7 @@ export async function routeWithSideEffects(
                 const writer = sandbox ? new LockedDownFileWriter(sandbox) : new FileWriter();
                 const res = await writer.write(name, cleaned);
                 Logger.info(C.yellow(`${cleaned}`));
-                Logger.info(C.magenta(`Written to ${res.path} (${res.bytes} bytes)`));
+                Logger.info(C.magenta(`Written to ${name} (${res?.bytes ?? 0} bytes)`));
             } catch (err: any) {
                 Logger.error(`File write failed: ${err?.message || err}`);
             } finally {

@@ -9,8 +9,7 @@ import { TagSplitter, TagPart } from "../utils/tag-splitter";
 import type { GuardDecision } from "../guardrails/guardrail";
 import type { ChatMessage } from "../types";
 import type { Responder, SchedulerOptions, AskUserFn } from "./types";
-import { LockedDownFileWriter } from "../io/locked-down-file-writer";
-import { SandboxManager, sandboxMangers } from "../sandbox/session";
+import { sandboxMangers } from "../sandbox/session";
 
 export class RandomScheduler {
   private readonly agents: Responder[];

@@ -35,7 +35,6 @@ export function routeWithTags(s: string, agentTokens: string[]): RouteOutcome {
       deliveries.push({ kind: "user", content: p.content });
       sawUser = true;
     } else if (p.kind === "file") {
-      Logger.info("file", p);
       deliveries.push({ kind: "file", name: p.tag, content: p.content });
       sawFile = true;
     } else if (p.kind === "agent") {
