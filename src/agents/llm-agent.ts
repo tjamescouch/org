@@ -172,7 +172,15 @@ export class LlmAgent extends Agent {
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
       tools: this.tools,
-      onReasoningToken: t => Logger.streamInfo(C.cyan(t)),
+      onReasoningToken: t => {
+        if (process.env.HIDE_COT) {
+          Logger.streamInfo(C.cyan('.'));
+
+          return;
+        }
+
+        Logger.streamInfo(C.cyan(t))
+      },
       onToken: t => {
         if (streamState !== "content") {
           Logger.info("");
