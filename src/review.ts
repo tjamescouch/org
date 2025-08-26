@@ -74,6 +74,7 @@ async function showPatch(patchPath: string) {
     // Prefer delta if present; fall back to less -R
     const viewers: Array<{ cmd: string, args: string[] }> = [
         { cmd: "delta", args: [patchPath] },
+        { cmd: "diff", args: ["-color=auto", "-u", patchPath] },
         { cmd: "less", args: ["-R", patchPath] },
     ];
     for (const v of viewers) {

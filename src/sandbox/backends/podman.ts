@@ -237,7 +237,7 @@ export class PodmanSession implements ISandboxSession {
             await this.execInCmd(
                 "git -C /work " +
                 "-c diff.noprefix=false " +   // force a/b prefixes (consistent headers)
-                "-c color.ui=true " +
+                "-c color.ui=false" +
                 "-c core.pager=cat " +        // ensure no pager inside the container
                 "diff --binary --no-ext-diff " + this.shQ(this.baselineCommit!) + " HEAD " +
                 "> /work/.org/session.patch || true"
