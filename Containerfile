@@ -15,28 +15,21 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 
-# --- Bun (pinned) ------------------------------------------------------------
+# --- Bun (pinned, linux/arm64-friendly) --------------------------------------
 ARG BUN_VERSION=1.1.20
 RUN set -eux; \
-    arch="$(dpkg --print-architecture)"; \
-    case "$arch" in \
-      amd64)  bun_arch="x64" ;; \
-      arm64)  bun_arch="aarch64" ;; \
-      *) echo "unsupported arch: $arch" && exit 1 ;; \
-    esac; \
-    tag="bun-v${BUN_VERSION}"; \
-    base="https://github.com/oven-sh/bun/releases/download/${tag}"; \
-    # pick the first asset that exists (aarch64 preferred on arm64)
-    asset=""; \
-    for name in "bun-linux-${bun_arch}.zip" "bun-linux-${arch}.zip"; do \
-      if curl -fsSLI "${base}/${name}" >/dev/null 2>&1; then asset="$name"; break; fi; \
-    done; \
-    [ -n "$asset" ] || { echo "no Bun asset found for arch=$arch"; exit 1; }; \
-    curl -fsSL "${base}/${asset}" -o /tmp/bun.zip; \
+    arch="$(dpkg --print-architecture)"; echo "dpkg arch=$arch"; \
+    case "$arch" in amd64) bun_arch="x64" ;; arm64) bun_arch="aarch64" ;; *) echo "unsupported: $arch"; exit 1;; esac; \
+    tag="bun-v${BUN_VERSION}"; base="https://github.com/oven-sh/bun/releases/download/${tag}"; \
+    url="${base}/bun-linux-${bun_arch}.zip"; echo "URL=$url"; \
+    curl -fsSL "$url" -o /tmp/bun.zip; \
     unzip -q /tmp/bun.zip -d /tmp; \
-    # the zip contains a single file named bun-linux-<arch>
-    mv /tmp/bun-linux-* /usr/local/bin/bun; \
-    chmod +x /usr/local/bin/bun; \
-    rm -rf /tmp/bun.zip /tmp/bun-linux-*; \
-    bun --version
+    ls -l /tmp; \
+    # move the binary *file* (not a dir) and set exec
+    mv "/tmp/bun-linux-${bun_arch}" /usr/local/bin/bun; \
+    chmod 0755 /usr/local/bin/bun; \
+    # sanity: show arch and ELF type before running
+    uname -m; dpkg --print-architecture; file /usr/local/bin/bun; \
+    /usr/local/bin/bun --version; \
+    rm -f /tmp/bun.zip
 
