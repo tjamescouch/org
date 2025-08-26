@@ -13,7 +13,7 @@ export class MockModel extends Agent {
     await sleep(1000);
     const writePem = messages.some(m => m.content.match(/\.pem/i));
     if (writePem) {
-      return [{ message: 'sh {"cmd":"echo secret > test.pem"}', toolsUsed: 1 }];
+      return [{ message: 'sh {"cmd":"echo secret > test.pem"}', toolsUsed: 1 }, { message: '@@user your turn', toolsUsed: 0 }];
     }
 
     console.log("MESSAGES", messages)
