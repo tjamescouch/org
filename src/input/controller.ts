@@ -249,11 +249,6 @@ export class InputController {
 
     const fin = this.escFinalizer ?? (async () => { await finalizeAllSandboxes(); });
     try { await fin(); } catch (e) { Logger.error(e); }
-
-    if (!this.testMode) {
-      process.stdout.write("\n");
-      process.exit(0);
-    }
   }
 
   // --------------------------------------------------------------------------
