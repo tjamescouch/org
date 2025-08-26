@@ -37,13 +37,14 @@ export class RandomScheduler {
   private readonly promptEnabled: boolean;
   private readonly idleSleepMs: number;
 
+  // when true, break the current agent loop and start a new tick immediately
   private rescheduleNow = false;
 
   constructor(opts: SchedulerOptions) {
     this.agents = opts.agents;
     this.maxTools = opts.maxTools;
     this.shuffle = opts.shuffle ?? fisherYatesShuffle;
-    this.review = new ReviewManager(opts.projectDir, opts.reviewMode ?? 'ask');
+    this.review = new ReviewManager(opts.projectDir, opts.reviewMode ?? "ask");
     this.askUser = opts.onAskUser;
 
     this.promptEnabled = !!opts.promptEnabled;
@@ -52,10 +53,11 @@ export class RandomScheduler {
     for (const a of this.agents) this.inbox.ensure(a.id);
   }
 
+  /** Start the scheduling loop (idempotent). */
   start = async (): Promise<void> => {
     if (this.running) return;
     this.running = true;
-    this.keepAlive = setInterval(() => { }, 30_000);
+    this.keepAlive = setInterval(() => { /* keep event loop alive during idle */ }, 30_000);
 
     let idleTicks = 0;
 
@@ -70,6 +72,7 @@ export class RandomScheduler {
       let didWork = false;
       this.rescheduleNow = false;
 
+      // Choose agents that currently have messages waiting.
       const ready = this.agents.filter(a => this.inbox.hasWork(a.id));
       const order = this.shuffle(ready);
 
@@ -103,7 +106,6 @@ export class RandomScheduler {
               this.activeAgent = undefined;
               Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
 
-              // src/scheduler/random-scheduler.ts (where you call routeWithSideEffects)
               const askedUser = await routeWithSideEffects(
                 {
                   agents: this.agents,
@@ -111,28 +113,27 @@ export class RandomScheduler {
                   setRespondingAgent: (id) => { this.respondingAgent = this.agents.find(x => x.id === id); },
                   applyGuard: (from, dec) => this.applyGuardDecision(from, dec),
                   setLastUserDMTarget: (id) => { this.lastUserDMTarget = id; },
-                  sandbox: await (sandboxMangers.get(a.id))?.getOrCreate(a.id), 
                 },
                 a,
                 message,
-                this.filters
+                this.filters,
+                await (sandboxMangers.get(a.id))?.getOrCreate(a.id)
               );
 
               didWork = true;
 
               if (askedUser) {
                 if (this.promptEnabled) {
-                  // Interactive: open a one-shot prompt as before
+                  // interactive: open prompt as before
                   this.lastUserDMTarget = a.id;
                   const userText = ((await this.askUser(a.id, message)) ?? "").trim();
-                  console.log('XXXXXXXXXXXXX');
-                  if (userText) this.handleUserInterjection(userText, { defaultTargetId: a.id });
+                  if (userText) await this.handleUserInterjection(userText, { defaultTargetId: a.id });
                   this.rescheduleNow = true;
                 } else {
-                  // **Non-interactive**: interpret @@user as "conversation complete"
-                  Logger.info(`(${a.id}) requested @@user; non-interactive mode → ending run.`);
-                  this.stop();               // causes start() loop to return
-                  this.rescheduleNow = true; // break out of current tick immediately
+                  // non-interactive: end the loop; finalization happens in CLI shutdown
+                  Logger.info(`(${a.id}) requested @@user; ending run (non-interactive).`);
+                  this.stop();
+                  this.rescheduleNow = true;
                 }
                 break;
               }
@@ -147,7 +148,9 @@ export class RandomScheduler {
             }
           }
         } finally {
-          if (totalToolsUsed > 0) await this.review.afterToolBatch(agent.id);
+          if (totalToolsUsed > 0) {
+            await this.review.afterToolBatch(agent.id);
+          }
         }
       }
 
@@ -165,11 +168,10 @@ All agents are idle. Provide the next concrete instruction or question.`;
           const preferred = this.agents[0]?.id;
           if (preferred) this.lastUserDMTarget = preferred;
           const userText = ((await this.askUser("scheduler", prompt)) ?? "").trim();
-          console.log('***********');
-          if (userText) await this.handleUserInterjection(userText, { defaultTargetId: preferred || undefined }); // <-- await
+          if (userText) await this.handleUserInterjection(userText, { defaultTargetId: preferred || undefined });
           idleTicks = 0;
         } else {
-          await this.sleep(this.idleSleepMs);
+          await this.sleep(this.idleSleepMs); // cooperative idle
         }
       } else {
         idleTicks = 0;
@@ -178,6 +180,8 @@ All agents are idle. Provide the next concrete instruction or question.`;
 
     if (this.keepAlive) { clearInterval(this.keepAlive); this.keepAlive = null; }
   };
+
+  // ------------------------------ Public API ------------------------------
 
   stop() { this.running = false; Logger.debug("stopped"); }
   pause() { this.paused = true; Logger.debug("paused"); }
@@ -198,30 +202,28 @@ All agents are idle. Provide the next concrete instruction or question.`;
   hasActiveAgent(): boolean { return !!this.activeAgent; }
 
   /** External entry for user interjections (e.g., CLI input). */
-  async interject(text: string) {                              // <-- async
-    console.log('IIIIIIIIIIIIIIIIIIII');
+  async interject(text: string) {
     await this.handleUserInterjection(text, { defaultTargetId: this.lastUserDMTarget || undefined });
   }
 
   /**
    * Enqueue user text.
-   * - File parts are written via LockedDownFileWriter in the sandbox.
    * - Explicit agent tags override everything (we reschedule immediately).
    * - Otherwise DM the default target, else broadcast to group.
    */
-  private async handleUserInterjection(text: string, opts?: { defaultTargetId?: string }) { // <-- async
+  private async handleUserInterjection(text: string, opts?: { defaultTargetId?: string }) {
     const raw = String(text ?? "");
     const parts = TagSplitter.split(raw, {
       allowSingleAt: true,
       allowSingleHash: true,
       userTokens: ["user"],
       groupTokens: ["group"],
-      agentTokens: this.agents.map(a => a.id),
+      agentTokens: this.agents.map(a => a.id),   // allowlist
       fileTokens: ["file"],
       allowFileShorthand: false,
     });
 
-    // 2) Explicit agent tags
+    // Explicit @@agent tags
     const agentParts = parts.filter(p => p.kind === "agent") as Array<TagPart & { kind: "agent" }>;
     if (agentParts.length > 0) {
       const targets: Responder[] = [];
@@ -244,7 +246,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
       }
     }
 
-    // 3) No explicit tags -> DM default if available
+    // No explicit tags -> DM default if provided
     if (opts?.defaultTargetId) {
       const ag = this.findAgentByIdExact(opts.defaultTargetId);
       if (ag) {
@@ -258,13 +260,14 @@ All agents are idle. Provide the next concrete instruction or question.`;
       }
     }
 
-    // 4) Fallback: broadcast
+    // Fallback: broadcast to group
     for (const a of this.agents) {
       this.inbox.push(a.id, { content: raw, role: "user", from: "User" });
     }
-    console.log('wtf');
     Logger.info(`[user → @@group] ${raw}`);
   }
+
+  // ------------------------------ Internals ------------------------------
 
   private nextPromptFor(id: string): ChatMessage[] { return this.inbox.drain(id); }
 
@@ -288,13 +291,13 @@ All agents are idle. Provide the next concrete instruction or question.`;
       this.mute(agent.id, (dec as any).muteMs);
     }
     if ((dec as any).askUser && this.promptEnabled) {
-      this.lastUserDMTarget = agent.id;
+      this.lastUserDMTarget = agent.id; // prefer the nudging agent
       const userText = ((await this.askUser(agent.id, (dec as any).askUser)) ?? "").trim();
-      console.log('FFFFFFFFFFF');
       if (userText) await this.handleUserInterjection(userText, { defaultTargetId: agent.id });
     }
   }
 
+  /** Exact id match, case-insensitive. */
   private findAgentByIdExact(key: string): Responder | undefined {
     const t = key.toLowerCase();
     return this.agents.find(a => a.id.toLowerCase() === t);

@@ -24,7 +24,6 @@ export interface RouteDeps {
     applyGuard: (from: Responder, dec: GuardDecision) => Promise<void>;
     /** Remember last agent that addressed @@user. */
     setLastUserDMTarget: (id: string) => void;
-    sandbox?: ISandboxSession | null;
 }
 
 /**
@@ -100,12 +99,7 @@ export async function routeWithSideEffects(
                 }
             }
 
-            if (!deps.sandbox) {
-                Logger.error("##file: no sandbox session; refusing to write.");
-                return;
-            }
-
-            const writer = new LockedDownFileWriter(deps.sandbox, { maxBytes: 1_000_000 });
+            const writer = sandbox ? new LockedDownFileWriter(sandbox, { maxBytes: 1_000_000 }) : new FileWriter();
             await writer.write(rel, body);
 
             Logger.info(C.magenta(`Written to /work/${rel} (${bytes} bytes)`));
