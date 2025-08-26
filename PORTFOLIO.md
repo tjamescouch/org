@@ -3,7 +3,7 @@
 
 <xaiArtifact artifact_id="9a3b0310-ab0a-41ca-ab25-11ce60a16d98" artifact_version_id="a78fb826-83c8-457e-a017-3a75324f48f7" title="PORTFOLIO.md" contentType="text/markdown">
 
-# org <placeholder WIP>
+# org placeholder WIP
 
 This portfolio showcases `org`’s capabilities as a safe, auditable, and collaborative AI-driven CLI for developer and DevOps tasks. Each example includes a prompt you can run with `org`, a description of what it does, and a placeholder for the output (e.g., patches, logs) generated when you execute it. We’ll link to artifacts in the `examples/` directory once they’re added to the repository. Try these prompts in your own repo to see `org` in action!
 
