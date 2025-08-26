@@ -33,6 +33,8 @@ and approve every change._
 - [Artifacts](#artifacts)
 - [How it works (high level)](#how-it-works-high-level)
 - [Running from any directory](#running-from-any-directory)
+- [Architecture overview](#architecture-overview)
+- [Interaction protocols and routing](#interaction-protocol--routing-rules)
 - [Troubleshooting](#troubleshooting)
 - [Tests](#tests)
 - [License](#license)
