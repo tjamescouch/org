@@ -55,7 +55,7 @@ export class RandomScheduler {
   start = async (): Promise<void> => {
     if (this.running) return;
     this.running = true;
-    this.keepAlive = setInterval(() => {}, 30_000);
+    this.keepAlive = setInterval(() => { }, 30_000);
 
     let idleTicks = 0;
 
@@ -121,12 +121,17 @@ export class RandomScheduler {
 
               if (askedUser) {
                 if (this.promptEnabled) {
+                  // Interactive: open a one-shot prompt as before
                   this.lastUserDMTarget = a.id;
                   const userText = ((await this.askUser(a.id, message)) ?? "").trim();
-                  if (userText) await this.handleUserInterjection(userText, { defaultTargetId: a.id }); // <-- await
+                  console.log('XXXXXXXXXXXXX');
+                  if (userText) this.handleUserInterjection(userText, { defaultTargetId: a.id });
                   this.rescheduleNow = true;
                 } else {
-                  Logger.info(`(${a.id}) requested @@user input, but prompt is disabled. Skipping.`);
+                  // **Non-interactive**: interpret @@user as "conversation complete"
+                  Logger.info(`(${a.id}) requested @@user; non-interactive mode → ending run.`);
+                  this.stop();               // causes start() loop to return
+                  this.rescheduleNow = true; // break out of current tick immediately
                 }
                 break;
               }
@@ -154,11 +159,12 @@ export class RandomScheduler {
           const dec = this.agents[0]?.guardOnIdle?.({ idleTicks, peers, queuesEmpty: true }) || null;
           const prompt =
             dec?.askUser
-              ?? `(scheduler)
+            ?? `(scheduler)
 All agents are idle. Provide the next concrete instruction or question.`;
           const preferred = this.agents[0]?.id;
           if (preferred) this.lastUserDMTarget = preferred;
           const userText = ((await this.askUser("scheduler", prompt)) ?? "").trim();
+          console.log('***********');
           if (userText) await this.handleUserInterjection(userText, { defaultTargetId: preferred || undefined }); // <-- await
           idleTicks = 0;
         } else {
@@ -192,6 +198,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
 
   /** External entry for user interjections (e.g., CLI input). */
   async interject(text: string) {                              // <-- async
+          console.log('IIIIIIIIIIIIIIIIIIII');
     await this.handleUserInterjection(text, { defaultTargetId: this.lastUserDMTarget || undefined });
   }
 
@@ -254,6 +261,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
     for (const a of this.agents) {
       this.inbox.push(a.id, { content: raw, role: "user", from: "User" });
     }
+          console.log('wtf');
     Logger.info(`[user → @@group] ${raw}`);
   }
 
@@ -281,6 +289,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
     if ((dec as any).askUser && this.promptEnabled) {
       this.lastUserDMTarget = agent.id;
       const userText = ((await this.askUser(agent.id, (dec as any).askUser)) ?? "").trim();
+          console.log('FFFFFFFFFFF');
       if (userText) await this.handleUserInterjection(userText, { defaultTargetId: agent.id });
     }
   }

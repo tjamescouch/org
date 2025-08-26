@@ -16,8 +16,6 @@ export class MockModel extends Agent {
       return [{ message: 'sh {"cmd":"echo secret > test.pem"}', toolsUsed: 1 }, { message: '@@user your turn', toolsUsed: 0 }];
     }
 
-    console.log("MESSAGES", messages)
-
     // First two turns: pretend to "use tools" up to the budget
     if (maxTools > 0 && this.turn < 2) {
       this.turn++;
