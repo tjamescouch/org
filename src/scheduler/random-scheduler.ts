@@ -111,8 +111,6 @@ export class RandomScheduler {
                   setRespondingAgent: (id) => { this.respondingAgent = this.agents.find(x => x.id === id); },
                   applyGuard: (from, dec) => this.applyGuardDecision(from, dec),
                   setLastUserDMTarget: (id) => { this.lastUserDMTarget = id; },
-                  // If you've updated router to consume sandbox, pass it here:
-                  // sandbox: this.sandbox,
                 },
                 a,
                 message,

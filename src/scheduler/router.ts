@@ -75,7 +75,7 @@ export async function routeWithSideEffects(
         onUser: async (_from, _content) => {
             // In non-interactive mode, an @@user tag should terminate cleanly
             if (!process.stdin.isTTY) {
-                try { await finalizeAllSandboxes(); } catch { }
+                try { await finalizeAllSandboxes(); } catch (e) { Logger.error(e); }
                 process.stdout.write("\n");
                 process.exit(0);
             }
