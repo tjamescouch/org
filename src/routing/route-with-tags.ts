@@ -1,5 +1,6 @@
+import { Logger } from "../logger";
 import { Responder } from "../scheduler";
-import { TagParser, TagPart } from "../utils/tag-parser";
+import { TagPart } from "../utils/tag-parser";
 import { TagSplitter } from "../utils/tag-splitter";
 
 export type Delivery =

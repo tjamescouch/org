@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
-import { SandboxManager } from "../sandbox/session";
+import { SandboxManager, sandboxMangers } from "../sandbox/session";
 import { ExecPolicy } from "../sandbox/policy";
 import { detectBackend } from "../sandbox/detect";
 import { Logger } from "../logger";
@@ -32,13 +32,12 @@ export async function withMutedShHeartbeat<T>(fn: () => Promise<T>): Promise<T> 
 }
 
 
-const managers = new Map<string, SandboxManager>();
 
 async function getManager(key: string, projectDir: string, runRoot?: string) {
-  let m = managers.get(key);
+  let m = sandboxMangers.get(key);
   if (!m) {
     m = new SandboxManager(projectDir, runRoot, { backend: "auto" });
-    managers.set(key, m);
+    sandboxMangers.set(key, m);
   }
   return m;
 }
@@ -174,13 +173,13 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
 export async function finalizeSandbox(ctx: ToolCtx) {
   const sessionKey = ctx.agentSessionId ?? "default";
   Logger.info("Finalizing sandbox", sessionKey);
-  const m = managers.get(sessionKey);
+  const m = sandboxMangers.get(sessionKey);
   if (!m) return;
   return m.finalize(sessionKey);
 }
 
 export async function finalizeAllSandboxes() {
-  for (const [k, v] of Array.from(managers.entries())) v?.finalize(k);
+  for (const [k, v] of Array.from(sandboxMangers.entries())) v?.finalize(k);
 }
 
 export function selectedSandboxBackend(): string {

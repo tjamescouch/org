@@ -13,6 +13,7 @@ import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
 import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
 import { getRecipe } from "./recipes";
+import { sandboxMangers } from "./sandbox/session";
 
 /** ---------- CLI parsing ---------- */
 function parseArgs(argv: string[]) {
