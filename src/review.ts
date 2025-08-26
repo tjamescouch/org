@@ -131,10 +131,14 @@ export async function decideReview(mode: ReviewMode, projectDir: string, patchPa
     let ok = false;
     // ask: show patch, then confirm
     await withMutedShHeartbeat(async () => {
+        const view = await askYesNo("View patch?", true);
+        if (!view) {
+            return;
+        }
         await showPatch(patchPath);
         ok = await askYesNo("Apply this patch?", false);
     });
-    
+
     return ok ? { action: "apply", commitMsg: autoMsg(s) } : { action: "reject" };
 }
 

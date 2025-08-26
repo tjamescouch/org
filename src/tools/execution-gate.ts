@@ -5,6 +5,7 @@
  * - Extensible guard chain allows policy checks (denylist, cwd, etc.)
  */
 
+import { promptLine } from "../utils/prompt-line";
 import { ExecutionGuard, NoDangerousRm, NoGitAdd, NoGitCommit, NoGitPush, NoRm } from "./execution-guards";
 
 
@@ -51,14 +52,3 @@ export class ExecutionGate {
   }
 }
 
-async function promptLine(q: string): Promise<string> {
-  // Node & Bun both support readline interface
-  const readline = await import("node:readline");
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-  const res = await new Promise<string>((resolve) => rl.question(q, resolve));
-  rl.close();
-  return res;
-}

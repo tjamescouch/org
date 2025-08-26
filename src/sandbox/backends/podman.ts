@@ -12,6 +12,7 @@ import { Logger } from "../../logger";
 import { ensureOk } from "../sh-result";
 import { withCookedTTY } from "../../input/tty-guard";
 import { ExecutionGate } from "../../tools/execution-gate";
+import { promptLine } from "../../utils/prompt-line";
 
 type ShResult = { code: number; stdout: string; stderr: string };
 
@@ -229,12 +230,6 @@ export class PodmanSession implements ISandboxSession {
 
         // Generate the session patch while the terminal is in cooked mode.
         await withCookedTTY(async () => {
-
-            if (!(await ExecutionGate.allow("View patch?"))) {
-                Logger.error("Discarding patch");
-                return;
-            }
-
             await this.execInCmd(
                 "git -C /work " +
                 "-c diff.noprefix=false " +   // force a/b prefixes (consistent headers)
