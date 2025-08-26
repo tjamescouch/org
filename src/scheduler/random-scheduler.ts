@@ -181,7 +181,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
 
   // ------------------------------ Public API ------------------------------
   async start() {
-    try { this.startBody() }
+    try { await this.startBody() }
     catch (e) { Logger.error("Scheduler start failed.", e) }
     finally {
       if (this.keepAlive) { clearInterval(this.keepAlive); this.keepAlive = null; }
