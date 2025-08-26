@@ -61,11 +61,11 @@ export class PodmanSession implements ISandboxSession {
       "--memory", `${this.spec.limits.memMiB}m`,
     ];
     const mounts = [
-      "-v", `${this.spec.projectDir}:/project:ro`,  // project is RO
-      "-v", `${this.spec.workHostDir}:/work:rw`,    // scratch is RW (no :U; we use --userns=keep-id)
+      "-v", `${this.spec.projectDir}:/project:ro`,  // project is RO in container
+      "-v", `${this.spec.workHostDir}:/work:rw`,    // working copy is RW
     ];
 
-    // Create and start container.
+    // Create and start container
     const create = await sh(this.tool, [
       "create",
       "--pull=never",
@@ -76,11 +76,12 @@ export class PodmanSession implements ISandboxSession {
       "sleep", "infinity",
     ]);
     if (create.code !== 0) throw new Error(`podman create failed: ${create.stderr || create.stdout}`);
+
     const start = await sh(this.tool, ["start", this.name]);
     if (start.code !== 0) throw new Error(`podman start failed: ${start.stderr || start.stdout}`);
 
     // Prime /work from /project; PROTECT .org/ from rsync --delete.
-    // Also exclude ephemeral backup dirs like org.bak.* created by host tooling.
+    // Also exclude ephemeral backups like org.bak.*
     const prime = await this.execInCmd(
       "mkdir -p /work/.org && " +
       "rsync -a --delete " +
@@ -92,11 +93,18 @@ export class PodmanSession implements ISandboxSession {
     );
     if (prime.code !== 0) throw new Error(`sandbox prime failed: ${prime.stderr || prime.stdout}`);
 
-    // The runner must already be mounted under /work/.org by the host (ensureOrgStepScript).
+    // The runner must already be mounted under /work/.org by the host (ensureOrgStepScript)
     const hasRunner = await this.execInCmd("test -x /work/.org/org-step.sh");
     if (hasRunner.code !== 0) throw new Error("runner missing at /work/.org/org-step.sh");
 
-    // Ignore sandbox internals and ephemeral backups in this working copy.
+    // Init a repo in /work and configure an identity (baseline/patches are computed here)
+    await this.must(this.execInCmd("git -C /work init"), "git init /work");
+    await this.must(
+      this.execInCmd("git -C /work config user.email noreply@example && git -C /work config user.name org"),
+      "git config identity"
+    );
+
+    // Ignore sandbox internals & ephemeral backups in this working copy
     await this.execInCmd(
       "mkdir -p /work/.git/info && " +
       "printf '.org/\\norg.bak*/\\norg.bak.*/\\n*.rej\\n' >> /work/.git/info/exclude"
@@ -147,7 +155,7 @@ export class PodmanSession implements ISandboxSession {
     // 2) explicitly unstage any .org/ (belt-and-suspenders)
     await this.execInCmd("git -C /work reset -q .org || true");
 
-    // 3) force-add ignored files, but never anything under .org/, .git/, or org.bak*/ and no *.rej
+    // 3) force-add ignored files, but never anything under .org/, .git/, org.bak*/, or *.rej
     await this.execInCmd(
       "git -C /work ls-files -oi --exclude-standard -z | " +
       "grep -a -z -v -e '^\\.org/' -e '^\\.git/' -e '^org\\.bak' -e '\\.rej$' | " +
@@ -161,19 +169,18 @@ export class PodmanSession implements ISandboxSession {
     );
 
     // --- compute changes / violations (but DO NOT return yet) ---
-    const changed = (await this.execInCmd("git -C /work diff --name-only HEAD~1..HEAD || true")).stdout
+    const changedAll = (await this.execInCmd("git -C /work diff --name-only HEAD~1..HEAD || true")).stdout
       .split("\n").map(s => s.trim()).filter(Boolean);
 
-    // Filter ephemeral backup paths (belt-and-suspenders; they should be ignored already)
     const isEphemeral = (p: string) => p.startsWith("org.bak") || p.endsWith(".rej");
-    const effective = changed.filter(p => !isEphemeral(p));
+    const changed = changedAll.filter(p => !isEphemeral(p));
 
-    const violated = effective.filter(p => !this.pathAllowed(p));
+    const violated = changed.filter(p => !this.pathAllowed(p));
 
-    // Persist step breadcrumbs (filtered list)
+    // Persist step breadcrumbs to host
     const hostSteps = path.join(this.spec.runDir, "steps");
     await fsp.mkdir(hostSteps, { recursive: true }).catch(() => { });
-    await fsp.writeFile(path.join(hostSteps, `step-${idx}.changed.txt`), effective.join("\n") + (effective.length ? "\n" : ""), "utf8")
+    await fsp.writeFile(path.join(hostSteps, `step-${idx}.changed.txt`), changed.join("\n") + (changed.length ? "\n" : ""), "utf8")
       .catch(() => { });
     const statusTxt = (await this.execInCmd("git -C /work diff --name-status HEAD~1..HEAD || true")).stdout;
     await fsp.writeFile(path.join(hostSteps, `step-${idx}.status.txt`), statusTxt, "utf8").catch(() => { });
@@ -183,14 +190,12 @@ export class PodmanSession implements ISandboxSession {
     const hostErr = path.join(hostSteps, `step-${idx}.err`);
     const hostMeta = path.join(hostSteps, `step-${idx}.meta.json`);
 
-    // try to copy what the runner produced
     try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.out`, hostOut]); } catch { }
     try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.err`, hostErr]); } catch { }
     let metaCopied = true;
     try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.meta.json`, hostMeta]); }
     catch { metaCopied = false; }
 
-    // synthesize a tiny meta if copy failed (so the CLI always has a file)
     if (!metaCopied) {
       const now = new Date().toISOString();
       const meta = {
@@ -220,7 +225,7 @@ export class PodmanSession implements ISandboxSession {
   async finalize() {
     if (!this.started) throw new Error("session not started");
 
-    // Generate the session patch while the terminal is in cooked mode (no raw).
+    // Generate the session patch while the terminal is in cooked mode.
     await withCookedTTY(async () => {
       await this.execInCmd(
         "git -C /work " +
