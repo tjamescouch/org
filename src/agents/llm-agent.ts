@@ -20,6 +20,8 @@ export interface AgentReply {
 function buildSystemPrompt(id: string): string {
   return [
     `You are agent "${id}". Work autonomously in the caller's current directory inside a Debian VM.`,
+    "- DO NOT LIE",
+    "- Do not pretend or hallucinate tool call results. Do not misrepresent the facts.",
     "",
     "TOOLS",
     "- sh(cmd): run a POSIX command. Args: {cmd:string}. Returns {ok, stdout, stderr, exit_code, cmd}.",
