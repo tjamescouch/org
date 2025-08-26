@@ -11,6 +11,13 @@ export class MockModel extends Agent {
 
   async respond(messages: ChatMessage[], maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply[]> { 
     await sleep(1000);
+    const writePem = messages.some(m => m.content.match(/\.pem/i));
+    if (writePem) {
+      return [{ message: 'sh {"cmd":"echo secret > test.pem"}', toolsUsed: 1 }];
+    }
+
+    console.log("MESSAGES", messages)
+
     // First two turns: pretend to "use tools" up to the budget
     if (maxTools > 0 && this.turn < 2) {
       this.turn++;
@@ -21,11 +28,6 @@ export class MockModel extends Agent {
 
     // After tools are done, emit a few variations that include tags.
     this.turn++;
-
-    const writePem = messages.find(m => m.content.match(/\.pem/i));
-    if (writePem) {
-      return [{ message: 'sh {"cmd":"echo secret > test.pem"}', toolsUsed: 1 }];
-    }
 
     const peer = messages.find((m) => m.from !== this.name) || "group";
     const patterns = [

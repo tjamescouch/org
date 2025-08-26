@@ -53,7 +53,7 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
             exit_code: 1,
             cmd: "",
         });
-        Logger.warn(`Execution failed: Command required.`, toolcall);
+        Logger.warn(`Execution failed: Command required.`, toolcall, rawCmd, cmd);
         await memory.add({ role: "tool", content, tool_call_id: toolcall.id, name, from: "Tool" });
 
         return { toolsUsed, forceEndTurn: false, stdout: "", stderr: "System aborted shell call tue to missing command.", ok: false, exit_code: 2 };
