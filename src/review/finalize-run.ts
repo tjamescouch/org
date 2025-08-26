@@ -1,84 +1,105 @@
-import * as path from "path";
+// src/review/finalize-run.ts
+import * as fs from "fs";
 import * as fsp from "fs/promises";
-import { withCookedTTY } from "../input/tty-guard";
-import { applySessionPatch } from "../cli/apply-patch"; // your robust applier
+import * as path from "path";
+import { execFileSync, spawn } from "child_process";
 import { Logger } from "../logger";
+import { withCookedTTY } from "../input/tty-guard";
+import { sandboxMangers } from "../sandbox/session";
+import type { RoundRobinScheduler } from "../scheduler";
+import { ReviewManager } from "../scheduler/review-manager";
 
-export type FinalizeOpts = {
-  session: { finalize(): Promise<{ manifestPath: string; patchPath?: string }> };
-  projectDir: string;
-  reviewMode: "ask" | "auto" | "never";
-  isTTY: boolean;
-};
-
-/**
- * Finalize the sandbox, then review/apply per reviewMode.
- * - In TTY + 'ask' we open the pager (via withCookedTTY).
- * - In non-TTY or 'auto' we auto-apply if clean & patch exists.
- * - Always prints accepted & rejected file summaries.
- */
-export async function finalizeRun(opts: FinalizeOpts) {
-  const { session, projectDir, reviewMode, isTTY } = opts;
-  const { manifestPath, patchPath } = await session.finalize();
-
-  // summaries
+async function listRecentSessionPatches(projectDir: string, minutes = 120): Promise<string[]> {
+  const root = path.join(projectDir, ".org", "runs");
+  const out: string[] = [];
   try {
-    const runDir = path.dirname(manifestPath);
-    // accepted (status between baseline..HEAD is already inside finalize)
-    const accepted = await fsp.readFile(path.join(runDir, "steps/step-0.status.txt")).catch(() => null);
-    if (accepted && accepted.toString().trim()) {
-      Logger.info("=== Accepted file changes ===");
-      Logger.info(accepted.toString().trim());
-    } else {
-      Logger.info("No accepted file changes.");
-    }
-    // rejected
-    const files = await fsp.readdir(path.join(runDir, "steps")).catch(() => []);
-    const vFiles = files.filter(f => f.endsWith(".violation.txt"));
-    if (vFiles.length) {
-      Logger.info("=== Rejected/violated files ===");
-      for (const vf of vFiles) {
-        const body = await fsp.readFile(path.join(runDir, "steps", vf), "utf8").catch(() => "");
-        if (body.trim()) Logger.info(body.trim());
-      }
+    const entries = await fsp.readdir(root);
+    const cutoff = Date.now() - minutes * 60_000;
+    for (const d of entries) {
+      const patch = path.join(root, d, "session.patch");
+      try {
+        const st = await fsp.stat(patch);
+        if (st.isFile() && st.size > 0 && st.mtimeMs >= cutoff) out.push(patch);
+      } catch {}
     }
   } catch {}
+  // newest last
+  return out.sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
+}
 
-  if (!patchPath) {
-    Logger.info("No patch produced.");
-    return { applied: false, reason: "no-patch" as const };
-  }
-
-  if (reviewMode === "never") {
-    Logger.info(`Patch written: ${patchPath}`);
-    return { applied: false, reason: "review-never" as const };
-  }
-
-  if (reviewMode === "ask" && isTTY) {
-    // open pager in cooked TTY; your pager lives inside ReviewManager/decideReview
-    await withCookedTTY(async () => {
-      // if you already have a ReviewManager, call it here instead:
-      // await reviewManager.askAndMaybeApply(projectDir, patchPath);
-      // Fallback: just show the patch with 'less -R'
-      try {
-        const { spawn } = await import("child_process");
-        await new Promise<void>((resolve) => {
-          const p = spawn("sh", ["-lc", `(${process.env.ORG_PAGER || "less -R"}) ${JSON.stringify(patchPath)}`], { stdio: "inherit" });
-          p.on("exit", () => resolve());
-        });
-      } catch {}
+async function openPager(filePath: string) {
+  await withCookedTTY(async () => {
+    await new Promise<void>((resolve) => {
+      const pager = process.env.ORG_PAGER || "delta -s || less -R || cat";
+      const p = spawn("sh", ["-lc", `${pager} ${JSON.stringify(filePath)}`], { stdio: "inherit" });
+      p.on("exit", () => resolve());
     });
-    return { applied: false, reason: "review-asked" as const };
+  });
+}
+
+async function askYesNo(prompt: string): Promise<boolean> {
+  const rl = await import("node:readline");
+  return await new Promise<boolean>((resolve) => {
+    const rli = rl.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    rli.question(`${prompt} `, (ans) => {
+      rli.close();
+      const a = String(ans || "").trim().toLowerCase();
+      resolve(a === "y" || a === "yes");
+    });
+  });
+}
+
+function applyPatch(projectDir: string, patchPath: string) {
+  execFileSync("git", ["-C", projectDir, "apply", "--index", patchPath], { stdio: "inherit" });
+}
+
+export async function finalizeRun(
+  scheduler: RoundRobinScheduler,
+  reviewManager: ReviewManager,
+  projectDir: string,
+  reviewMode: "ask" | "auto" | "never"
+) {
+  try { await scheduler?.drain?.(); } catch {}
+  try { await reviewManager.finalizeAndReview(); } catch {}
+  try { await (sandboxMangers as any)?.finalizeAll?.(); } catch {}
+  try { scheduler?.stop?.(); } catch {}
+
+  const patches = await listRecentSessionPatches(projectDir, 120);
+  if (patches.length === 0) {
+    Logger.info("No patch produced.");
+    return;
   }
 
-  // non-TTY or auto
-  try {
-    await applySessionPatch(projectDir, patchPath, "org auto-committed changes.");
-    Logger.info("Patch auto-applied.");
-    return { applied: true as const };
-  } catch (e: any) {
-    Logger.error("Auto-apply failed:", e?.message || e);
-    Logger.info(`You can apply manually: git apply --index ${patchPath}`);
-    return { applied: false, reason: "apply-failed" as const };
+  const isTTY = process.stdout.isTTY;
+
+  for (const patch of patches) {
+    Logger.info(`Patch ready: ${patch}`);
+
+    if (reviewMode === "never") continue;
+
+    if (reviewMode === "auto" || !isTTY) {
+      try {
+        applyPatch(projectDir, patch);
+        Logger.info("Patch auto-applied.");
+      } catch (e: any) {
+        Logger.error("Auto-apply failed:", e?.message || e);
+        Logger.info(`Manual apply: git -C ${projectDir} apply --index ${patch}`);
+      }
+      continue;
+    }
+
+    await openPager(patch);
+    const yes = await askYesNo("Apply this patch? [y/N]");
+    if (yes) {
+      try {
+        applyPatch(projectDir, patch);
+        Logger.info("Patch applied.");
+      } catch (e: any) {
+        Logger.error("Apply failed:", e?.message || e);
+        Logger.info(`Manual apply: git -C ${projectDir} apply --index ${patch}`);
+      }
+    } else {
+      Logger.info("Patch NOT applied.");
+    }
   }
 }
