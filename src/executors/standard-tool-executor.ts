@@ -25,8 +25,6 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
     let args: any = {};
     try { args = JSON.parse(toolcall.function?.arguments || "{}"); } catch { args = {}; }
     const cmd = String(args?.cmd ?? "");
-    const rawCmd = cmd;
-    //const cmd = sanitizeContent(rawCmd);
     const name = toolcall.function?.name || "";
 
     let toolsUsed = 1;
@@ -54,7 +52,7 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
             exit_code: 1,
             cmd: "",
         });
-        Logger.warn(`Execution failed: Command required.`, {...toolcall, rawCmd, cmd});
+        Logger.warn(`Execution failed: Command required.`, {...toolcall, cmd});
         await memory.add({ role: "tool", content, tool_call_id: toolcall.id, name, from: "Tool" });
 
         return { toolsUsed, forceEndTurn: false, stdout: "", stderr: "System aborted shell call tue to missing command.", ok: false, exit_code: 2 };
@@ -171,8 +169,7 @@ export class StandardToolExecutor extends ToolExecutor {
             const handler = this.toolHandlers[name];
 
             if (!handler) {
-                const rawCmd = String(args?.cmd ?? "");
-                const cmd = sanitizeContent(normalizeContent(rawCmd));
+                const cmd = String(args?.cmd ?? "");
                 Logger.warn(`\nUnknown tool ${name} requested`, tc);
                 const content = JSON.stringify({ ok: false, stdout: "", stderr: `unknown tool: ${name}`, exit_code: 2, tc, cmd });
                 await memory.add({ role: "tool", content, tool_call_id: tc.id, name, from: "Tool" });
