@@ -54,7 +54,7 @@ export class RandomScheduler {
   }
 
   /** Start the scheduling loop (idempotent). */
-  start = async (): Promise<void> => {
+  private startBody = async (): Promise<void> => {
     if (this.running) return;
     this.running = true;
     this.keepAlive = setInterval(() => { /* keep event loop alive during idle */ }, 30_000);
@@ -148,9 +148,7 @@ export class RandomScheduler {
             }
           }
         } finally {
-          if (totalToolsUsed > 0) {
-            await this.review.afterToolBatch(agent.id);
-          }
+          if (totalToolsUsed > 0) this.review.markDirty(agent.id);
         }
       }
 
@@ -182,7 +180,18 @@ All agents are idle. Provide the next concrete instruction or question.`;
   };
 
   // ------------------------------ Public API ------------------------------
+  async start() {
+    try { this.startBody() }
+    catch (e) { Logger.error("Scheduler start failed.", e) }
+    finally {
+      if (this.keepAlive) { clearInterval(this.keepAlive); this.keepAlive = null; }
 
+      // Finalize any dirty sessions and run review/apply once.
+      // Make ReviewManager.finalizeAndReview() idempotent so double-calls are safe.
+      await this.review.finalizeAndReview();
+      this.running = false;
+    }
+  }
   stop() { this.running = false; Logger.debug("stopped"); }
   pause() { this.paused = true; Logger.debug("paused"); }
   resume() { this.paused = false; Logger.debug("resumed"); }

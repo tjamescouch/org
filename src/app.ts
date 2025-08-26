@@ -183,6 +183,7 @@ async function finalizeOnce(
 ) {
   try {
     await scheduler?.drain?.();
+    await scheduler.finalizeAndReviewAll();
   } catch { /* ignore */ }
   try {
     scheduler?.stop?.();
@@ -341,10 +342,7 @@ async function main() {
   // Run
   const reviewManager = new ReviewManager(projectDir, reviewMode);
   await scheduler.start();
-  await reviewManager.finalizeAndReview({ // or your helper
-    reviewMode: (args["review"] ?? "ask") as string,
-    isTty: process.stdin.isTTY,
-  });
+  await reviewManager.finalizeAndReview();
 
   // Non-interactive (--prompt "…") or explicit scheduler stop comes back here.
   await doFinalize(0);
