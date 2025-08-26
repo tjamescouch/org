@@ -14,6 +14,7 @@ import { withCookedTTY } from "../../input/tty-guard";
 import { buildPATH } from "../../config/path";
 
 const PATH_PREFIX = `export PATH="${buildPATH('', [])}:$PATH"; `;
+console.log("PATH_PREFIX", PATH_PREFIX);
 
 export const HARNESSED_APPLY_PATCH_SCRIPT = `#!/usr/bin/env bash
 set -euo pipefail
