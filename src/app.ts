@@ -19,7 +19,9 @@ import { installTtyGuard, withCookedTTY } from "./input/tty-guard";
 import { ReviewManager } from "./scheduler/review-manager";
 import { sandboxMangers } from "./sandbox/session";
 import { installShutdown } from "./runtime/shutdown";
+import { buildPATH } from "./config/path";
 
+buildPATH('', []);
 installTtyGuard();
 
 /** ---------- CLI parsing ---------- */

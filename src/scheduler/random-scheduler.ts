@@ -282,7 +282,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
       this.inbox.push(a.id, { content: raw, role: "user", from: "User" });
     }
 
-    Logger.info('HERE');
+    Logger.debug('End of interjection');
     Logger.info(`[user → @@group] ${raw}`);
   }
 
