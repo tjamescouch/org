@@ -13,13 +13,6 @@ export function buildPATH(basePATH: string, extra: string[] = []): string {
   const add = (p?: string) => {
     if (!p) return;
     if (p === "." || /\0/.test(p)) return;
-    const dir = expand(p);
-    try {
-      if (fs.statSync(dir).isDirectory() && !seen.has(dir)) {
-        seen.add(dir);
-        out.push(dir);
-      }
-    } catch(e) { Logger.error("Failed to add path", e) }
   };
 
   // 1) Whitelist (authoritative, comes first)
