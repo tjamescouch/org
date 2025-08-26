@@ -206,21 +206,21 @@ Avoid redundant calls; change inputs or pivot strategy.`;
     if (this.consecutiveNoToolCalls >= 2)
       warnings.push("several-turns-without-tools");
 
-    if (/apply_patch\s*<</i.test(content) || /<<<\s*PATCH/i.test(content)) {
-      const nudge = `SYSTEM:
-Do not use "apply_patch <<PATCH". To write files, emit a literal file block:
-
-##file:path/to/file.ext
-<content here>
-
-To run shell commands, call the "sh" tool with: {"cmd":"<command>"} .`;
-      return {
-        nudge,
-        suppressBroadcast: true,
-        muteMs: this.defaultMuteMs,
-        warnings: ["patch-dsl-misuse"],
-      };
-    }
+//    if (/apply_patch\s*<</i.test(content) || /<<<\s*PATCH/i.test(content)) {
+//      const nudge = `SYSTEM:
+//Do not use "apply_patch <<PATCH". To write files, emit a literal file block:
+//
+//##file:path/to/file.ext
+//<content here>
+//
+//To run shell commands, call the "sh" tool with: {"cmd":"<command>"} .`;
+//      return {
+//        nudge,
+//        suppressBroadcast: true,
+//        muteMs: this.defaultMuteMs,
+//        warnings: ["patch-dsl-misuse"],
+//      };
+//    }
 
     if (route === "group") {
       const lowSignal = this.isLowSignal(content);
