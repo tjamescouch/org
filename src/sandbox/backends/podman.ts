@@ -11,8 +11,105 @@ import { ISandboxSession } from "../types";
 import { Logger } from "../../logger";
 import { ensureOk } from "../sh-result";
 import { withCookedTTY } from "../../input/tty-guard";
-import { ExecutionGate } from "../../tools/execution-gate";
-import { promptLine } from "../../utils/prompt-line";
+
+export const HARNESSED_APPLY_PATCH_SCRIPT = `#!/usr/bin/env bash
+set -euo pipefail
+
+: "\${ORG_PATCH_MAX_BYTES:=204800}"      # 200 KiB default
+: "\${ORG_ALLOW_GLOBS:=*:**/*}"          # colon-separated globs
+: "\${ORG_DENY_GLOBS:=.git/**:.org/**}"  # colon-separated globs
+: "\${ORG_ALLOW_RENAMES:=0}"             # 1 to allow renames/mode changes
+: "\${ORG_ALLOW_BINPATCH:=0}"            # 1 to allow "GIT binary patch"
+
+PATCH_DIR="/work/.org/patches"
+PATCH_FILE="\${PATCH_DIR}/incoming.patch"
+
+mkdir -p "$PATCH_DIR"
+
+# Read patch from stdin with a strict size cap
+python3 - "\${ORG_PATCH_MAX_BYTES}" "$PATCH_FILE" <<'PY'
+import sys
+maxb=int(sys.argv[1]); dst=sys.argv[2]
+data=sys.stdin.buffer.read(maxb+1)
+if len(data)==0:
+  sys.stderr.write("empty patch\n"); sys.exit(2)
+if len(data)>maxb:
+  sys.stderr.write("patch too large\n"); sys.exit(3)
+open(dst,'wb').write(data)
+PY
+
+# Optional: disallow git binary patches
+if [[ "\${ORG_ALLOW_BINPATCH}" != "1" ]] && grep -q "GIT binary patch" "$PATCH_FILE"; then
+  echo "binary patches disabled" >&2; exit 4
+fi
+
+# Inspect (dry-run) what the patch would touch
+NUMSTAT_SUMMARY="$(git -C /work apply --numstat --summary "$PATCH_FILE" 2>&1 || true)"
+if [[ -z "$NUMSTAT_SUMMARY" ]]; then
+  echo "git apply --numstat produced no output; invalid or empty patch" >&2; exit 5
+fi
+
+# Hygiene: block unsafe paths & mode/symlink/rename/delete unless allowed
+if echo "$NUMSTAT_SUMMARY" | grep -Eq '(^|[[:space:]])(/|\\.{2}($|/)|\\.git/|\\.org/)' ; then
+  echo "unsafe path in patch (absolute/.. or .git/.org)" >&2; exit 6
+fi
+if [[ "\${ORG_ALLOW_RENAMES}" != "1" ]] && echo "$NUMSTAT_SUMMARY" | grep -Eq '^(rename |.* mode |delete mode )'; then
+  echo "renames/mode changes/deletes disabled" >&2; exit 7
+fi
+if echo "$NUMSTAT_SUMMARY" | grep -Eq 'mode 120000'; then
+  echo "symlinks disabled" >&2; exit 8
+fi
+
+# Collect candidate paths
+PATHS_JSON="$(python3 - <<'PY'
+import sys,re,json
+out=sys.stdin.read().splitlines()
+paths=set()
+for s in out:
+  s=s.strip()
+  m=re.match(r'^\\s*\\d+\\s+\\d+\\s+(.+)$', s)  # numstat path capture
+  if m:
+    paths.add(m.group(1).strip()); continue
+  if s.startswith('rename ') or ' mode ' in s or s.startswith('create mode ') or s.startswith('delete mode '):
+    parts=s.split()
+    if parts:
+      paths.add(parts[-1])
+print(json.dumps(sorted(paths)))
+PY
+<<<"$NUMSTAT_SUMMARY")"
+
+# Enforce policy globs (deny > allow)
+python3 - "$PATHS_JSON" "\${ORG_DENY_GLOBS}" "\${ORG_ALLOW_GLOBS}" <<'PY'
+import sys, json, fnmatch
+paths=json.loads(sys.argv[1])
+deny=[g for g in sys.argv[2].split(':') if g]
+allow=[g for g in sys.argv[3].split(':') if g]
+bad=[]
+for p in paths:
+  if any(fnmatch.fnmatch(p, g) for g in deny):
+    bad.append(p); continue
+  if allow and not any(fnmatch.fnmatch(p, g) for g in allow):
+    bad.append(p)
+if bad:
+  sys.stderr.write("policy violation:\\n")
+  for b in bad: sys.stderr.write(f"  {b}\\n")
+  sys.exit(9)
+PY
+
+# Final check then apply to index (no worktree writes yet)
+git -C /work apply --check "$PATCH_FILE"
+git -C /work apply --index "$PATCH_FILE"
+`;
+
+export const GIT_WRAPPER_SCRIPT = `#!/usr/bin/env bash
+# Block direct 'git apply' to force policy path
+if [[ "\${1:-}" == "apply" ]]; then
+  echo "direct 'git apply' disabled; use apply_patch heredoc" >&2
+  exit 111
+fi
+exec /usr/bin/git "$@"
+`;
+
 
 type ShResult = { code: number; stdout: string; stderr: string };
 
@@ -99,6 +196,23 @@ export class PodmanSession implements ISandboxSession {
         // The runner must already be mounted under /work/.org by the host (ensureOrgStepScript)
         const hasRunner = await this.execInCmd("test -x /work/.org/org-step.sh");
         if (hasRunner.code !== 0) throw new Error("runner missing at /work/.org/org-step.sh");
+
+        const hostOrgBin = path.join(this.spec.workHostDir, ".org", "bin");
+        await fsp.mkdir(hostOrgBin, { recursive: true });
+
+        // write /work/.org/bin/apply_patch
+        await fsp.writeFile(
+            path.join(hostOrgBin, "apply_patch"),
+            HARNESSED_APPLY_PATCH_SCRIPT,               // <-- string from earlier answer
+            { mode: 0o755 }
+        );
+
+        // write /work/.org/bin/git (blocks 'git apply')
+        await fsp.writeFile(
+            path.join(hostOrgBin, "git"),
+            GIT_WRAPPER_SCRIPT,                         // <-- string from earlier answer
+            { mode: 0o755 }
+        );
 
         // Init a repo in /work and configure an identity (baseline/patches are computed here)
         await this.must(this.execInCmd("git -C /work init"), "git init /work");
