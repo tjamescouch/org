@@ -354,9 +354,6 @@ export class PodmanSession implements ISandboxSession {
             );
         });
 
-        // After writing session.patch ...
-        const patchDst = path.join(this.spec.runDir, "session.patch");
-
         // Show accepted file changes
         const summary = await this.execInCmd(
             "git -C /work diff --name-status " + this.shQ(this.baselineCommit!) + " HEAD"
