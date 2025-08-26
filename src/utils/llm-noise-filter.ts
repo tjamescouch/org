@@ -1,79 +1,115 @@
-// Drop-in helper: strip OpenAI-Toolformer-style channel/message sentinels.
-// - Preserves ```fenced``` blocks verbatim
-// - Removes sequences like: <|channel|>commentary to=functions sh<|message|>{"cmd":"..."}.
-// - Robust to chunking (keep a small rolling tail between chunks).
+// src/utils/llm-noise-filter.ts (drop-in)
 
+/**
+ * Strip OpenAI-Toolformer-style sentinels while preserving fenced code blocks.
+ * Streaming-friendly: we keep a small "tail" only if it could be the beginning
+ * of a token that may continue in the next chunk.
+ */
 export class LLMNoiseFilter {
   private tail = "";
 
   feed(chunk: string): { cleaned: string; removed: number } {
     const s = this.tail + (chunk ?? "");
     const { cleaned, carry, removed } = stripSentinelsPreservingFences(s);
-    this.tail = carry;              // keep a small tail for cross-chunk matches
+    this.tail = carry;         // keep only bytes we did NOT emit
     return { cleaned, removed };
   }
 
   flush(): string {
-    const out = this.tail;
+    const out = this.tail;     // final un-emitted tail (e.g., incomplete fence)
     this.tail = "";
     return out;
   }
 }
 
-function stripSentinelsPreservingFences(s: string): { cleaned: string; carry: string; removed: number } {
-  const parts: string[] = [];
-  let i = 0, removed = 0;
+/** Maximum bytes we scan for a possible prefix at the end of a chunk. */
+const TAIL_WINDOW = 128;
+const CH_TOKEN = "<|channel|>";
+const MSG_TOKEN = "<|message|>";
+const FENCE = "```";
 
-  while (i < s.length) {
-    // Preserve fenced blocks as-is
-    if (s.startsWith("```", i)) {
-      const j = s.indexOf("```", i + 3);
-      if (j < 0) break; // keep as carry until we see the closing fence
-      parts.push(s.slice(i, j + 3));
-      i = j + 3;
+function stripSentinelsPreservingFences(
+  s: string
+): { cleaned: string; carry: string; removed: number } {
+  const parts: string[] = [];
+  const n = s.length;
+  let i = 0;
+  let removed = 0;
+
+  while (i < n) {
+    // Preserve fenced code blocks verbatim.
+    if (s.startsWith(FENCE, i)) {
+      const j = s.indexOf(FENCE, i + FENCE.length);
+      if (j < 0) break; // incomplete fence -> keep whole remainder as carry
+      parts.push(s.slice(i, j + FENCE.length));
+      i = j + FENCE.length;
       continue;
     }
 
-    const start = s.indexOf("<|channel|>", i);
-    if (start < 0) { parts.push(s.slice(i)); i = s.length; break; }
-
-    // push prefix then consume the sentinel block
-    parts.push(s.slice(i, start));
-    let k = start + "<|channel|>".length;
-
-    // optional: swallow until <|message|>
-    const msgTag = s.indexOf("<|message|>", k);
-    if (msgTag < 0) { 
-      // Not enough data yet; keep from start as carry
-      return { cleaned: parts.join(""), carry: s.slice(start), removed };
+    // Look for a sentinel start.
+    const start = s.indexOf(CH_TOKEN, i);
+    if (start < 0) {
+      // No sentinel ahead. Emit all except a tiny suffix that *might* be
+      // the beginning of CH_TOKEN or FENCE split across chunks.
+      const carryStart = findPossiblePrefixStart(s, i, n);
+      parts.push(s.slice(i, carryStart));
+      i = carryStart; // everything from i is carry
+      break;
     }
 
-    let p = msgTag + "<|message|>".length;
+    // Emit prefix up to sentinel.
+    if (start > i) parts.push(s.slice(i, start));
 
-    // Try to consume a JSON object that follows (balanced braces, strings aware)
+    // We have "<|channel|>", require "<|message|>" after it.
+    let k = start + CH_TOKEN.length;
+    const msgTag = s.indexOf(MSG_TOKEN, k);
+    if (msgTag < 0) { i = start; break; } // keep from sentinel start as carry
+
+    let p = msgTag + MSG_TOKEN.length;
+
+    // Try to consume a following JSON object (balanced, string-aware).
     const scan = scanJSONObject(s, p);
     if (scan.ok) {
-      i = scan.end; 
+      i = scan.end;    // drop the whole block
       removed++;
       continue;
     }
 
-    // If it's not a JSON object, drop the sentinel line up to newline and keep going
+    // If JSON is incomplete and no newline is present yet, keep for next chunk.
     const nl = s.indexOf("\n", p);
-    i = nl >= 0 ? nl + 1 : s.length;
+    if (nl < 0) { i = start; break; }
+
+    // Otherwise drop up to the newline and continue.
+    i = nl + 1;
     removed++;
   }
 
-  // Keep a bounded carry for partially seen tokens/braces
-  const last = parts.join("");
-  const carry = s.slice(Math.max(s.length - 512, 0)); // small tail
-  return { cleaned: last, carry, removed };
+  const cleaned = parts.join("");
+  const carry = s.slice(i);    // only what we did NOT emit
+  return { cleaned, carry, removed };
+}
+
+/**
+ * Returns the earliest index t in [i, n] such that s.slice(t) is a prefix
+ * of a token we care about (`<|channel|>` or "```"). If none is found, n.
+ * We only search the last TAIL_WINDOW bytes to bound work.
+ */
+function findPossiblePrefixStart(s: string, i: number, n: number): number {
+  const windowStart = Math.max(i, n - TAIL_WINDOW);
+  for (let t = windowStart; t < n; t++) {
+    const suf = s.slice(t);
+    if (CH_TOKEN.startsWith(suf) || FENCE.startsWith(suf)) {
+      return t; // keep from here as carry
+    }
+  }
+  return n; // no possible prefix -> emit all
 }
 
 function scanJSONObject(s: string, i: number): { ok: boolean; end: number } {
   const n = s.length;
   while (i < n && /\s/.test(s[i]!)) i++;
   if (s[i] !== "{") return { ok: false, end: i };
+
   let depth = 0, inStr = false, esc = false;
 
   for (; i < n; i++) {
@@ -84,12 +120,13 @@ function scanJSONObject(s: string, i: number): { ok: boolean; end: number } {
       if (ch === "\"") { inStr = false; continue; }
     } else {
       if (ch === "\"") { inStr = true; continue; }
-      if (ch === "{") depth++;
-      else if (ch === "}") {
+      if (ch === "{") { depth++; continue; }
+      if (ch === "}") {
         depth--;
         if (depth === 0) return { ok: true, end: i + 1 };
       }
     }
   }
+  // Incomplete object.
   return { ok: false, end: n };
 }
