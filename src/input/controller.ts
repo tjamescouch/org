@@ -44,6 +44,57 @@ export class InputController {
   private escFinalizer?: () => void | Promise<void>;
   private testMode = false;
 
+  // ---- Raw-mode / guard helpers -------------------------------------------
+
+  private static guardsInstalled = false;
+
+  /** Return current raw state if available. */
+  private static isRawMode(): boolean {
+    const anyStdin: any = process.stdin as any;
+    return !!(anyStdin && typeof anyStdin.isRaw === "boolean" && anyStdin.isRaw);
+  }
+
+  /** Centralized raw-mode switch with guards for non-TTY environments. */
+  public static setRawMode(enable: boolean) {
+    const stdinAny: any = process.stdin as any;
+    if (process.stdin.isTTY && typeof stdinAny.setRawMode === "function") {
+      try { stdinAny.setRawMode(enable); } catch { /* ignore on CI/non-tty */ }
+    }
+  }
+
+  /** Ensure we always restore TTY on process-level exits/signals. */
+  private static installGlobalTtyGuardsOnce() {
+    if (this.guardsInstalled) return;
+    this.guardsInstalled = true;
+
+    const restore = () => {
+      try { InputController.setRawMode(false); } catch {}
+      try { InputController.enableKeys?.(); } catch {}
+    };
+
+    process.on("exit", restore);
+    process.on("SIGTERM", () => { restore(); process.exit(143); });
+    process.on("uncaughtException", (err) => { restore(); Logger.error?.(err); });
+    process.on("unhandledRejection", (reason: any) => { restore(); Logger.error?.(reason); });
+  }
+
+  /** Run a block in cooked (non-raw) mode and restore previous raw state. */
+  private async withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> {
+    const prevRaw = InputController.isRawMode();
+    try {
+      InputController.disableKeys();
+      if (prevRaw) InputController.setRawMode(false);
+      return await fn();
+    } finally {
+      try { if (prevRaw) InputController.setRawMode(true); } catch {}
+      InputController.enableKeys();
+      // Re-attach idle hotkeys if we are not already listening.
+      this.installRawKeyListener();
+    }
+  }
+
+  // -------------------------------------------------------------------------
+
   constructor(opts: InputControllerOptions = {}) {
     this.interjectKey = (opts.interjectKey ?? "i").toLowerCase();
     this.interjectBanner = opts.interjectBanner ?? "You: ";
@@ -54,7 +105,10 @@ export class InputController {
     this.escFinalizer = opts.finalizer;
     this.testMode = !!opts._testMode;
 
-    // Put stdin into raw/no-echo immediately (if TTY).
+    // Global safety net: always restore cooked mode on termination.
+    InputController.installGlobalTtyGuardsOnce();
+
+    // Put stdin into raw/no-echo immediately (if TTY) and listen for hotkeys.
     InputController.setRawMode(true);
     this.installRawKeyListener();
 
@@ -62,7 +116,7 @@ export class InputController {
     process.on("SIGINT", () => {
       // Fast abort; do NOT finalize (user wanted instant cancel)
       this.detachRawKeyListener();
-      InputController.setRawMode(false);
+      try { InputController.setRawMode(false); } catch {}
       if (!this.testMode) {
         process.stdout.write("\n");
         process.exit(130);
@@ -89,13 +143,18 @@ export class InputController {
   async askInitialAndSend(initial?: string | boolean) {
     if (!this.scheduler) return;
     if (typeof initial === "string" && initial.trim()) {
-      this.scheduler.handleUserInterjection(initial.trim());
+      // Fire-and-forget; scheduler may be async but we don't block startup.
+      (this.scheduler as any).handleUserInterjection?.(initial.trim());
+      (this.scheduler as any).interject?.(initial.trim());
       return;
     }
     // If flag passed without text (true), ask once interactively.
     if (initial === true) {
       const text = await this.runReadlineOnce(this.interjectBanner);
-      if (text && text.trim()) this.scheduler.handleUserInterjection(text.trim());
+      if (text && text.trim()) {
+        (this.scheduler as any).handleUserInterjection?.(text.trim());
+        (this.scheduler as any).interject?.(text.trim());
+      }
     }
   }
 
@@ -121,7 +180,8 @@ export class InputController {
       await this.scheduler?.drain?.();
       const text = await this.runReadlineOnce(this.interjectBanner);
       if (text && this.scheduler) {
-        this.scheduler.handleUserInterjection(text);
+        (this.scheduler as any).handleUserInterjection?.(text);
+        (this.scheduler as any).interject?.(text);
       }
     } finally {
       this.scheduler?.stopDraining?.();
@@ -143,32 +203,35 @@ export class InputController {
       // Detach raw hotkey handling to avoid double processing.
       this.detachRawKeyListener();
 
-      // Switch to canonical mode; kernel will handle echo for readline.
-      InputController.setRawMode(false);
+      // Execute the readline interaction in cooked mode and restore afterwards.
+      void this.withCookedTTY(async () => {
+        // Switch to canonical mode; kernel will handle echo for readline.
+        try { InputController.setRawMode(false); } catch {}
 
-      // Create readline interface with terminal controls enabled.
-      this.rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
-        terminal: true,
-        historySize: 50,
-        removeHistoryDuplicates: true,
-        prompt: "",
-      });
+        // Create readline interface with terminal controls enabled.
+        this.rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+          terminal: true,
+          historySize: 50,
+          removeHistoryDuplicates: true,
+          prompt: "",
+        });
 
-      // Ensure a clean line before our prompt, then ask.
-      if (!promptText.endsWith(" ")) promptText = promptText + " ";
-      this.rl.question(promptText, (answer: string) => {
-        try {
-          resolve((answer ?? "").trim());
-        } finally {
-          // Cleanup + restore raw no-echo mode.
-          try { this.rl?.close(); resumeStdin(); } catch (e) { Logger.error(e); }
-          this.rl = null;
-          this.interjecting = false;
-          InputController.setRawMode(true);
-          this.installRawKeyListener(); // re-attach idle hotkeys
-        }
+        let ask = promptText;
+        if (!ask.endsWith(" ")) ask = ask + " ";
+
+        const answer = await new Promise<string>((res) => {
+          this.rl!.question(ask, (a: string) => res(a ?? ""));
+        });
+
+        resolve((answer ?? "").trim());
+      }).finally(() => {
+        // Cleanup + mark not interjecting, regardless of success/failure.
+        try { this.rl?.close(); resumeStdin(); } catch (e) { Logger.error(e); }
+        this.rl = null;
+        this.interjecting = false;
+        // withCookedTTY will restore raw mode and re-attach hotkeys.
       });
     });
   }
@@ -180,7 +243,7 @@ export class InputController {
   private async gracefulShutdown(): Promise<void> {
     // Stop hotkeys & raw input before any async
     this.detachRawKeyListener();
-    InputController.setRawMode(false);
+    try { InputController.setRawMode(false); } catch {}
 
     try { await this.scheduler?.stop?.(); } catch (e) { Logger.error(e); }
 
@@ -209,7 +272,7 @@ export class InputController {
       // Ctrl+C exits quickly (fast abort, no finalize)
       if (key.ctrl && key.name === "c") {
         this.detachRawKeyListener();
-        InputController.setRawMode(false);
+        try { InputController.setRawMode(false); } catch {}
         if (!this.testMode) {
           process.stdout.write("\n");
           process.exit(130);
@@ -240,14 +303,6 @@ export class InputController {
     if (!this.keypressHandler) return;
     try { process.stdin.removeListener("keypress", this.keypressHandler); } catch {}
     this.keypressHandler = undefined;
-  }
-
-  /** Centralized raw-mode switch with guards for non-TTY environments. */
-  public static setRawMode(enable: boolean) {
-    const stdinAny: any = process.stdin as any;
-    if (process.stdin.isTTY && typeof stdinAny.setRawMode === "function") {
-      try { stdinAny.setRawMode(enable); } catch { /* ignore on CI/non-tty */ }
-    }
   }
 
   // ----------------------------- test helpers ------------------------------

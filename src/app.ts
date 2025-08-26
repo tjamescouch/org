@@ -13,7 +13,10 @@ import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
 import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
 import { getRecipe } from "./recipes";
-import { sandboxMangers } from "./sandbox/session";
+import { installTtyGuard } from "./input/tty-guard";
+
+installTtyGuard();
+
 
 /** ---------- CLI parsing ---------- */
 function parseArgs(argv: string[]) {
