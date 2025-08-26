@@ -148,22 +148,22 @@ async function main() {
   }
 
   // --- ESC graceful finalize (non-blocking hotkey) ---
-  //installHotkeys({
-  //  onEsc: async () => {
-  //    Logger.info("ESC: graceful shutdown requested…");
-  //    try {
-  //      await finalizeRun(scheduler, reviewManager, projectDir, reviewMode);
-  //    } finally {
-  //      disposeHotkeys();
-  //      process.exit(0);
-  //    }
-  //  },
-  //  onCtrlC: () => {
-  //    // Fast abort; your InputController may also trap SIGINT
-  //    disposeHotkeys();
-  //    process.exit(130);
-  //  },
-  //});
+  installHotkeys({
+    onEsc: async () => {
+      Logger.info("ESC: graceful shutdown requested…");
+      try {
+        await finalizeRun(scheduler, reviewManager, projectDir, reviewMode);
+      } finally {
+        disposeHotkeys();
+        process.exit(0);
+      }
+    },
+    onCtrlC: () => {
+      // Fast abort; your InputController may also trap SIGINT
+      disposeHotkeys();
+      process.exit(130);
+    },
+  });
 
   await input.askInitialAndSend(kickoff);
 
