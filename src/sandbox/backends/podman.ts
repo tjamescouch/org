@@ -231,6 +231,7 @@ export class PodmanSession implements ISandboxSession {
         await withCookedTTY(async () => {
 
             if (!(await ExecutionGate.allow("View patch?"))) {
+                Logger.error("Discarding patch");
                 return;
             }
 
