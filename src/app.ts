@@ -38,7 +38,7 @@ function parseAgents(
   llmDefaults: { model: string; baseUrl: string; protocol: "openai"; apiKey?: string },
   recipeSystemPrompt?: string | null
 ): AgentSpec[] {
-  const list = String(spec || "alice:lmstudio").split(",").map(x => x.trim()).filter(Boolean);
+  const list = String(spec || "alice:lmstudio,bob:lmstudio").split(",").map(x => x.trim()).filter(Boolean);
   const out: AgentSpec[] = [];
   for (const item of list) {
     const [id, kindRaw = "mock"] = item.split(":");
