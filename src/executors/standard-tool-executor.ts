@@ -25,6 +25,7 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
     let args: any = {};
     try { args = JSON.parse(toolcall.function?.arguments || "{}"); } catch { args = {}; }
     const cmd = String(args?.cmd ?? "");
+    const rawCmd = cmd;
     //const cmd = sanitizeContent(rawCmd);
     const name = toolcall.function?.name || "";
 
