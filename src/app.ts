@@ -18,6 +18,7 @@ import { getRecipe } from "./recipes";
 import { installTtyGuard, withCookedTTY } from "./input/tty-guard";
 import { ReviewManager } from "./scheduler/review-manager";
 import { sandboxMangers } from "./sandbox/session";
+import { installShutdown } from "./runtime/shutdown";
 
 installTtyGuard();
 
@@ -190,7 +191,6 @@ async function finalizeOnce(
   // Finalize all sandboxes (Podman/no-sandbox). We ignore the return payload to keep this drop‑in.
   try { await (sandboxMangers as any)?.finalizeAll?.(); } catch { /* ignore */ }
 
-  const review = new ReviewManager(projectDir, reviewMode);
   const isTTY = process.stdout.isTTY;
 
   const patches = await listRecentSessionPatches(projectDir, 120);
@@ -282,6 +282,8 @@ async function main() {
   const input = new InputController({
     interjectKey: String(args["interject-key"] || "i"),
     interjectBanner: String(args["banner"] || "You: "),
+    exitOnEsc: false,                       // don’t exit inside the controller
+    finalizer: async () => { /* no-op */ }  // prevent the controller from finalizing,
   });
 
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
@@ -293,6 +295,8 @@ async function main() {
     reviewMode,
     promptEnabled: (typeof args["prompt"] === "boolean" ? args["prompt"] : process.stdin.isTTY),
   });
+
+  installShutdown(scheduler);
 
   input.attachScheduler(scheduler);
 
@@ -335,7 +339,12 @@ async function main() {
   process.on("exit", (code) => { /* last chance if not finalized (non-blocking) */ });
 
   // Run
+  const reviewManager = new ReviewManager(projectDir, reviewMode);
   await scheduler.start();
+  await reviewManager.finalizeAndReview({ // or your helper
+    reviewMode: (args["review"] ?? "ask") as string,
+    isTty: process.stdin.isTTY,
+  });
 
   // Non-interactive (--prompt "…") or explicit scheduler stop comes back here.
   await doFinalize(0);

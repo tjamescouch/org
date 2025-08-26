@@ -206,6 +206,14 @@ All agents are idle. Provide the next concrete instruction or question.`;
     await this.handleUserInterjection(text, { defaultTargetId: this.lastUserDMTarget || undefined });
   }
 
+  async finalizeAndReviewAll(): Promise<void> {
+    try {
+      await this.review.finalizeAndReview(this.agents.map(a => a.id));
+    } catch (e: any) {
+      Logger.error("finalizeAndReviewAll:", e?.message ?? e);
+    }
+  }
+
   /**
    * Enqueue user text.
    * - Explicit agent tags override everything (we reschedule immediately).

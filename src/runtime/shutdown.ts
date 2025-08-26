@@ -1,6 +1,26 @@
 import { Logger } from "../logger";
 import type { RoundRobinScheduler } from "../scheduler";
 
+export function installShutdown(scheduler: RandomScheduler) {
+  const handle = async (exitCode: number) => {
+    try {
+      // stop tool loops, wait for any active agent to finish
+      await scheduler.drain?.();
+      // one last finalize + review/apply across all agent sessions
+      await scheduler.finalizeAndReviewAll?.();
+    } catch (e: any) {
+      Logger.error("shutdown:", e?.message ?? e);
+    } finally {
+      process.stdout.write("\n");
+      process.exit(exitCode);
+    }
+  };
+
+  process.on("SIGINT",  () => void handle(130)); // Ctrl+C
+  process.on("SIGTERM", () => void handle(143)); // kill/terminate
+}
+
+
 /**
  * Graceful shutdown used by the UI (e.g., ESC key).
  * - Stops the scheduler (no new work).
@@ -17,6 +37,7 @@ export async function gracefulExit(
 
     // Stop new work quickly
     try {
+      await review.finalizeAndReview(agents.map(a => a.id));
       opts.scheduler?.stop();
     } catch {
       /* ignore */

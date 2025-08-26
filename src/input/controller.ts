@@ -25,12 +25,14 @@ export type InputControllerOptions = {
   promptTemplate?: (from: string, content: string) => string; // when a model asks the user
   finalizer?: () => void | Promise<void>;   // optional override for tests / DI
   _testMode?: boolean;                        // when true, never process.exit(...)
+  exitOnEsc?: boolean;
 };
 
 export class InputController {
   private interjectKey: string;
   private interjectBanner: string;
   private promptTemplate: (from: string, content: string) => string;
+  private exitOnEsc = true;
 
   private static areKeysEnabled = true;
 
@@ -68,8 +70,8 @@ export class InputController {
     this.guardsInstalled = true;
 
     const restore = () => {
-      try { InputController.setRawMode(false); } catch {}
-      try { InputController.enableKeys?.(); } catch {}
+      try { InputController.setRawMode(false); } catch { }
+      try { InputController.enableKeys?.(); } catch { }
     };
 
     process.on("exit", restore);
@@ -86,7 +88,7 @@ export class InputController {
       if (prevRaw) InputController.setRawMode(false);
       return await fn();
     } finally {
-      try { if (prevRaw) InputController.setRawMode(true); } catch {}
+      try { if (prevRaw) InputController.setRawMode(true); } catch { }
       InputController.enableKeys();
       // Re-attach idle hotkeys if we are not already listening.
       this.installRawKeyListener();
@@ -116,8 +118,8 @@ export class InputController {
     process.on("SIGINT", () => {
       // Fast abort; do NOT finalize (user wanted instant cancel)
       this.detachRawKeyListener();
-      try { InputController.setRawMode(false); } catch {}
-      if (!this.testMode) {
+      try { InputController.setRawMode(false); } catch { }
+      if (!this.testMode && this.exitOnEsc) {
         process.stdout.write("\n");
         process.exit(130);
       }
@@ -206,7 +208,7 @@ export class InputController {
       // Execute the readline interaction in cooked mode and restore afterwards.
       void this.withCookedTTY(async () => {
         // Switch to canonical mode; kernel will handle echo for readline.
-        try { InputController.setRawMode(false); } catch {}
+        try { InputController.setRawMode(false); } catch { }
 
         // Create readline interface with terminal controls enabled.
         this.rl = readline.createInterface({
@@ -241,15 +243,28 @@ export class InputController {
   // --------------------------------------------------------------------------
 
   private async gracefulShutdown(): Promise<void> {
-    // Stop hotkeys & raw input before any async
     this.detachRawKeyListener();
-    try { InputController.setRawMode(false); } catch {}
+    InputController.setRawMode(false);
 
     try { await this.scheduler?.stop?.(); } catch (e) { Logger.error(e); }
 
-    const fin = this.escFinalizer ?? (async () => { await finalizeAllSandboxes(); });
-    try { await fin(); } catch (e) { Logger.error(e); }
+    const willExitHere = !this.testMode && this.exitOnEsc;
+    const hasCustomFinalizer = !!this.escFinalizer;
+
+    // Only run a finalizer if one was injected OR we’re exiting here.
+    if (hasCustomFinalizer) {
+      try { await this.escFinalizer!(); } catch (e) { Logger.error(e); }
+    } else if (willExitHere) {
+      // old behavior remains for exit-on-ESC
+      try { await finalizeAllSandboxes(); } catch (e) { Logger.error(e); }
+    }
+
+    if (willExitHere) {
+      process.stdout.write("\n");
+      process.exit(0);
+    }
   }
+
 
   // --------------------------------------------------------------------------
   // Raw key handling (no echo)
@@ -267,7 +282,7 @@ export class InputController {
       // Ctrl+C exits quickly (fast abort, no finalize)
       if (key.ctrl && key.name === "c") {
         this.detachRawKeyListener();
-        try { InputController.setRawMode(false); } catch {}
+        try { InputController.setRawMode(false); } catch { }
         if (!this.testMode) {
           process.stdout.write("\n");
           process.exit(130);
@@ -296,7 +311,7 @@ export class InputController {
 
   private detachRawKeyListener() {
     if (!this.keypressHandler) return;
-    try { process.stdin.removeListener("keypress", this.keypressHandler); } catch {}
+    try { process.stdin.removeListener("keypress", this.keypressHandler); } catch { }
     this.keypressHandler = undefined;
   }
 
