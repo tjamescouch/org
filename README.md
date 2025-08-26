@@ -304,6 +304,117 @@ ORG_PROJECT_DIR=/path/to/repo org --agents "alice:lmstudio"
 When running **inside** a repo, just call `org` normally.
 
 ---
+## Architecture overview
+
+* **Scheduler** (`src/scheduler/*`): runs agents in ticks, enforces tool budgets, asks the user when an agent requests input, and prioritizes explicitly tagged replies (`@@agent`) in the very next tick.
+* **Router & Inbox**: routes sanitized messages to target agents or `@@group`; the inbox buffers per-agent mail so scheduling is deterministic.
+* **Streaming sanitization** (`src/utils/llm-noise-filter.ts`): strips tool-style sentinels from model streams while preserving `fenced code`. No duplication on `flush()`.
+* **Safe file writes** (`src/tools/file-writer.ts`): all `##file:` effects are applied **once** inside the sandbox (base64→temp→rename), with path normalization, size limits, and deny-first policy.
+* **Sandbox** (`src/sandbox/backends/podman.ts`): `/project:ro`, `/work:rw`, rootless, cap-dropped; each step is committed, violations revert, and a run-scoped patch is emitted.
+* **TTY controls** (`src/input/controller.ts`, `src/input/tty-guard.ts`): raw-mode hotkeys for interjection, cooked-mode prompts, and process-level guards to always restore the terminal.
+
+---
+
+## Interaction protocol & routing rules
+
+**Tags**
+
+* `@@<agent>` — DM to a specific agent (explicit tag **wins** and runs **next**).
+* `@@user` — ask the human.
+* `@@group` — broadcast to all agents.
+* `##file:relative/path.ext` followed by the file contents on subsequent lines.
+
+**Defaults**
+
+* If an agent asked for input, an **untagged** reply is DM’d to **that agent**.
+* Otherwise, untagged user input goes to `@@group`.
+
+**File rules**
+
+* Only the explicit form `##file:PATH` is accepted (no shorthand).
+* Multiple `##file:` blocks for the **same** path in one message → **last-write-wins**.
+* File effects are applied **once** (scheduler pre-process) and removed from the routed text.
+
+**Examples**
+
+```text
+@@alice please scaffold a test
+
+##file:src/utils/slug.test.ts
+import { expect, it } from "bun:test";
+import { slug } from "./slug";
+it("slug", () => expect(slug("A B")).toBe("a-b"));
+```
+
+---
+
+## Streaming sanitization (model output)
+
+* All model tokens pass through `LLMNoiseFilter`, which removes sequences like:
+
+  ```
+  <|channel|>commentary to=functions sh<|message|>{"cmd":"…"}
+  ```
+
+  while preserving `fenced blocks` verbatim.
+* Invariants:
+
+  * For any chunking, `feed().cleaned + flush()` = original **minus** sentinels.
+  * The carry buffer holds **only un-emitted** prefixes (e.g., a split token) → no “double text” on flush.
+
+Files: `src/utils/llm-noise-filter.ts`, tests in `src/utils/llm-noise-filter.test.ts`.
+
+---
+
+## Robust patch apply
+
+Patches generated from the sandbox are applied to the host repo with a two-stage strategy:
+
+1. Try index-aware, 3-way:
+
+   ```bash
+   git apply --index --3way --whitespace=nowarn session.patch && git commit -m "Apply org session patch"
+   ```
+2. Fallback to worktree if the index doesn’t match (e.g., new paths):
+
+   ```bash
+   git apply --reject --whitespace=nowarn session.patch
+   # fail if any *.rej exist, else:
+   git add -A && git commit -m "Apply org session patch"
+   ```
+
+Script: `src/cli/apply-patch.ts`. This avoids “does not exist in index” failures and surfaces true conflicts as `*.rej`.
+
+---
+
+## Interactive mode & TTY safety
+
+* **Hotkeys**: `i` interjects; `Esc` finalizes gracefully; `Ctrl+C` aborts immediately.
+* **Guarantees**:
+
+  * Prompts run under `withCookedTTY(...)` and restore the prior raw state on success/failure.
+  * `installTtyGuard()` restores the TTY on `exit`, `SIGINT`, `SIGTERM`, `uncaughtException`, and `unhandledRejection`.
+
+Files: `src/input/controller.ts`, `src/input/tty-guard.ts`.
+
+---
+
+## Testing guide
+
+**Unit**
+
+* `TagSplitter`: token allowlist (`agentTokens`, `userTokens`, `fileTokens`), whitespace/Unicode, single-`@`/`#` options.
+* `LLMNoiseFilter`: single & cross-chunk sentinels, fenced blocks, **no duplication on flush**.
+* `LockedDownFileWriter`: relative-only paths, traversal rejection, `.org/.git` denial, atomic write, size caps.
+
+**Integration**
+
+* **Routing**: explicit tag preempts and runs next tick; default DM to requester; group fallback.
+* **File handling**: two `##file:PATH` blocks in one message → disk contains only the last block; processed once.
+* **Sandbox policy**: deny overrides allow; violations revert step commit and create `steps/step-N.violation.txt`.
+* **Patch apply**: add/modify/delete/rename + CRLF cases across both apply modes.
+
+---
 
 ## Troubleshooting
 
@@ -332,6 +443,15 @@ When running **inside** a repo, just call `org` normally.
 
   * By design they’re suppressed during review; if you still see them, make sure
     you’re on the current build with heartbeat suppression enabled.
+
+* **“No patch produced”**
+  * The command didn’t change tracked files, the write policy blocked the path (check `steps/*violation.txt`), or the change lives under `.org/`/`.git/` which are intentionally excluded.
+
+* **Root-level file didn’t appear**
+  * Ensure your allow list includes **both** `'*'` (top-level) **and** `'**/*'` (nested). This is the default policy; verify with the `jq` snippet above.
+
+* **Heartbeat dots over the patch view**
+  * Update to the current build — dots are suppressed while the review UI is active.
 
 ---
 
@@ -404,18 +524,6 @@ and ensures the patch viewer behaves the same for root and nested edits.
 
 ---
 
-### Troubleshooting quick hits
-
-* **“No patch produced”**
-  The command didn’t change tracked files, the write policy blocked the path (check `steps/*violation.txt`), or the change lives under `.org/`/`.git/` which are intentionally excluded.
-
-* **Root-level file didn’t appear**
-  Ensure your allow list includes **both** `'*'` (top-level) **and** `'**/*'` (nested). This is the default policy; verify with the `jq` snippet above.
-
-* **Heartbeat dots over the patch view**
-  Update to the current build — dots are suppressed while the review UI is active.
-
----
 
 ### Multi-agent workflows (optional)
 
