@@ -24,6 +24,7 @@ export interface RouteDeps {
     applyGuard: (from: Responder, dec: GuardDecision) => Promise<void>;
     /** Remember last agent that addressed @@user. */
     setLastUserDMTarget: (id: string) => void;
+    sandbox?: ISandboxSession | null;
 }
 
 /**
@@ -82,22 +83,34 @@ export async function routeWithSideEffects(
             deps.setLastUserDMTarget(fromAgent.id);
         },
         onFile: async (_from, name, content) => {
-            const cleaned = filters.cleanFile(content);
-            const confirm = `${content}\n***** Write to file? [y/N] ${name}\n`;
-            const wasRaw = (process.stdin as any)?.isRaw;
-            try {
-                if (wasRaw) (process.stdin as any).setRawMode(false);
-                await ExecutionGate.gate(confirm);
-                const writer = sandbox ? new LockedDownFileWriter(sandbox) : new FileWriter();
-                const res = await writer.write(name, cleaned);
-                Logger.info(C.yellow(`${cleaned}`));
-                Logger.info(C.magenta(`Written to ${name} (${res?.bytes ?? 0} bytes)`));
-            } catch (err: any) {
-                Logger.error(`File write failed: ${err?.message || err}`);
-            } finally {
-                restoreStdin(!!wasRaw);
+            const body = filters.cleanFile(content);           // after fallback fix above
+            const rel = String(name || "").replace(/^\.\/+/, "");
+            const bytes = Buffer.byteLength(body, "utf8");
+
+            // Optional confirmation only when interactive
+            if (process.stdin.isTTY) {
+                const confirm = `${body}\n***** Write to file? [y/N] ${rel}\n`;
+                const wasRaw = (process.stdin as any)?.isRaw;
+                try {
+                    if (wasRaw) (process.stdin as any).setRawMode(false);
+                    await ExecutionGate.gate(confirm);
+                } finally {
+                    // restore only if we changed it
+                    if (wasRaw) (process.stdin as any).setRawMode(true);
+                }
             }
-        },
+
+            if (!deps.sandbox) {
+                Logger.error("##file: no sandbox session; refusing to write.");
+                return;
+            }
+
+            const writer = new LockedDownFileWriter(deps.sandbox, { maxBytes: 1_000_000 });
+            await writer.write(rel, body);
+
+            Logger.info(C.magenta(`Written to /work/${rel} (${bytes} bytes)`));
+        }
+        ,
     },
         deps.agents);
 

@@ -103,6 +103,7 @@ export class RandomScheduler {
               this.activeAgent = undefined;
               Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
 
+              // src/scheduler/random-scheduler.ts (where you call routeWithSideEffects)
               const askedUser = await routeWithSideEffects(
                 {
                   agents: this.agents,
@@ -110,11 +111,11 @@ export class RandomScheduler {
                   setRespondingAgent: (id) => { this.respondingAgent = this.agents.find(x => x.id === id); },
                   applyGuard: (from, dec) => this.applyGuardDecision(from, dec),
                   setLastUserDMTarget: (id) => { this.lastUserDMTarget = id; },
+                  sandbox: await (sandboxMangers.get(a.id))?.getOrCreate(a.id), 
                 },
                 a,
                 message,
-                this.filters,
-                await (sandboxMangers.get(a.id))?.getOrCreate(a.id)
+                this.filters
               );
 
               didWork = true;
@@ -198,7 +199,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
 
   /** External entry for user interjections (e.g., CLI input). */
   async interject(text: string) {                              // <-- async
-          console.log('IIIIIIIIIIIIIIIIIIII');
+    console.log('IIIIIIIIIIIIIIIIIIII');
     await this.handleUserInterjection(text, { defaultTargetId: this.lastUserDMTarget || undefined });
   }
 
@@ -261,7 +262,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
     for (const a of this.agents) {
       this.inbox.push(a.id, { content: raw, role: "user", from: "User" });
     }
-          console.log('wtf');
+    console.log('wtf');
     Logger.info(`[user → @@group] ${raw}`);
   }
 
@@ -289,7 +290,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
     if ((dec as any).askUser && this.promptEnabled) {
       this.lastUserDMTarget = agent.id;
       const userText = ((await this.askUser(agent.id, (dec as any).askUser)) ?? "").trim();
-          console.log('FFFFFFFFFFF');
+      console.log('FFFFFFFFFFF');
       if (userText) await this.handleUserInterjection(userText, { defaultTargetId: agent.id });
     }
   }

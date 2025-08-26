@@ -28,7 +28,7 @@ function unprotectTags(s: string): string {
 export class NoiseFilters {
   readonly agent = new LLMNoiseFilter();
   readonly group = new LLMNoiseFilter();
-  readonly file  = new LLMNoiseFilter();
+  readonly file = new LLMNoiseFilter();
 
   cleanAgent(s: string): string {
     const masked = protectTags(String(s ?? ""));
@@ -40,11 +40,20 @@ export class NoiseFilters {
     const res = this.group.feed(masked);
     return unprotectTags(res.cleaned + this.group.flush());
   }
+  //cleanFile(s: string): string {
+  //  // Extract fenced code content first (drop chatty prose); then run the noise filter.
+  //  const extracted = extractCodeGuards(String(s ?? "")).cleaned;
+  //  const masked = protectTags(extracted);
+  //  const res = this.file.feed(masked);
+  //  return unprotectTags(res.cleaned + this.file.flush());
+  //}
+  // src/scheduler/filters.ts
   cleanFile(s: string): string {
-    // Extract fenced code content first (drop chatty prose); then run the noise filter.
-    const extracted = extractCodeGuards(String(s ?? "")).cleaned;
-    const masked = protectTags(extracted);
-    const res = this.file.feed(masked);
-    return unprotectTags(res.cleaned + this.file.flush());
+    const raw = String(s ?? "");
+    const extracted = extractCodeGuards(raw).cleaned;
+    const body = extracted && extracted.trim().length ? extracted : raw;  // fallback
+    const res = this.file.feed(body);
+    return res.cleaned + this.file.flush();
   }
+
 }
