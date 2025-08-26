@@ -14,16 +14,16 @@ import { LockedDownFileWriter } from "../io/locked-down-file-writer";
 
 /** Side-effects required by routing (DMs, group fanout, files, user prompts). */
 export interface RouteDeps {
-  /** Known agents (for lookup and fan-out). */
-  agents: Responder[];
-  /** Enqueue a message for an agent. */
-  enqueue: (toId: string, msg: ChatMessage) => void;
-  /** Provide the scheduler a hint who is likely to reply next. */
-  setRespondingAgent: (id?: string) => void;
-  /** Called when guardrails return a decision. */
-  applyGuard: (from: Responder, dec: GuardDecision) => Promise<void>;
-  /** Remember last agent that addressed @@user. */
-  setLastUserDMTarget: (id: string) => void;
+    /** Known agents (for lookup and fan-out). */
+    agents: Responder[];
+    /** Enqueue a message for an agent. */
+    enqueue: (toId: string, msg: ChatMessage) => void;
+    /** Provide the scheduler a hint who is likely to reply next. */
+    setRespondingAgent: (id?: string) => void;
+    /** Called when guardrails return a decision. */
+    applyGuard: (from: Responder, dec: GuardDecision) => Promise<void>;
+    /** Remember last agent that addressed @@user. */
+    setLastUserDMTarget: (id: string) => void;
 }
 
 /**
@@ -33,12 +33,12 @@ export interface RouteDeps {
  * to avoid false positives in email addresses etc.
  */
 function looksLikeUserTag(text: string): boolean {
-  if (/@{2}user\b/i.test(text)) return true; // canonical @@user anywhere
-  const lines = String(text ?? "").split(/\r?\n/);
-  for (const line of lines) {
-    if (/^\s*>?\s*@user\b/i.test(line)) return true;
-  }
-  return false;
+    if (/@{2}user\b/i.test(text)) return true; // canonical @@user anywhere
+    const lines = String(text ?? "").split(/\r?\n/);
+    for (const line of lines) {
+        if (/^\s*>?\s*@user\b/i.test(line)) return true;
+    }
+    return false;
 }
 
 /**
@@ -46,74 +46,74 @@ function looksLikeUserTag(text: string): boolean {
  * Returns true if the message contained a request to talk to the user.
  */
 export async function routeWithSideEffects(
-  deps: RouteDeps,
-  fromAgent: Responder,
-  text: string,
-  filters: NoiseFilters,
-  sandbox: ISandboxSession,
+    deps: RouteDeps,
+    fromAgent: Responder,
+    text: string,
+    filters: NoiseFilters,
+    sandbox?: ISandboxSession,
 ): Promise<boolean> {
-  const router = makeRouter({
-    onAgent: async (_from, to, content) => {
-      deps.setRespondingAgent(to);
-      const cleaned = filters.cleanAgent(content);
-      if (cleaned) deps.enqueue(to, { role: "user", from: fromAgent.id, content: cleaned });
+    const router = makeRouter({
+        onAgent: async (_from, to, content) => {
+            deps.setRespondingAgent(to);
+            const cleaned = filters.cleanAgent(content);
+            if (cleaned) deps.enqueue(to, { role: "user", from: fromAgent.id, content: cleaned });
+        },
+        onGroup: async (_from, content) => {
+            const cleaned = filters.cleanGroup(content);
+            const peers = deps.agents.map(a => a.id);
+            const dec = fromAgent.guardCheck?.("group", cleaned, peers) || null;
+            if (dec) await deps.applyGuard(fromAgent, dec);
+            if (dec?.suppressBroadcast) {
+                Logger.debug(`suppress @@group from ${fromAgent.id}`);
+                return;
+            }
+            for (const a of deps.agents) {
+                if (a.id === fromAgent.id) continue;
+                if (cleaned) deps.enqueue(a.id, { role: "user", from: fromAgent.id, content: cleaned });
+            }
+        },
+        onUser: async (_from, _content) => {
+            // In non-interactive mode, an @@user tag should terminate cleanly
+            if (!process.stdin.isTTY) {
+                try { await finalizeAllSandboxes(); } catch { }
+                process.stdout.write("\n");
+                process.exit(0);
+            }
+            deps.setLastUserDMTarget(fromAgent.id);
+        },
+        onFile: async (_from, name, content) => {
+            const cleaned = filters.cleanFile(content);
+            const confirm = `${content}\n***** Write to file? [y/N] ${name}\n`;
+            const wasRaw = (process.stdin as any)?.isRaw;
+            try {
+                if (wasRaw) (process.stdin as any).setRawMode(false);
+                await ExecutionGate.gate(confirm);
+                const writer = sandbox ? new LockedDownFileWriter(sandbox) : new FileWriter();
+                const res = await writer.write(name, cleaned);
+                Logger.info(C.yellow(`${cleaned}`));
+                Logger.info(C.magenta(`Written to ${res.path} (${res.bytes} bytes)`));
+            } catch (err: any) {
+                Logger.error(`File write failed: ${err?.message || err}`);
+            } finally {
+                restoreStdin(!!wasRaw);
+            }
+        },
     },
-    onGroup: async (_from, content) => {
-      const cleaned = filters.cleanGroup(content);
-      const peers = deps.agents.map(a => a.id);
-      const dec = fromAgent.guardCheck?.("group", cleaned, peers) || null;
-      if (dec) await deps.applyGuard(fromAgent, dec);
-      if (dec?.suppressBroadcast) {
-        Logger.debug(`suppress @@group from ${fromAgent.id}`);
-        return;
-      }
-      for (const a of deps.agents) {
-        if (a.id === fromAgent.id) continue;
-        if (cleaned) deps.enqueue(a.id, { role: "user", from: fromAgent.id, content: cleaned });
-      }
-    },
-    onUser: async (_from, _content) => {
-      // In non-interactive mode, an @@user tag should terminate cleanly
-      if (!process.stdin.isTTY) {
-        try { await finalizeAllSandboxes(); } catch {}
-        process.stdout.write("\n");
-        process.exit(0);
-      }
-      deps.setLastUserDMTarget(fromAgent.id);
-    },
-    onFile: async (_from, name, content) => {
-      const cleaned = filters.cleanFile(content);
-      const confirm = `${content}\n***** Write to file? [y/N] ${name}\n`;
-      const wasRaw = (process.stdin as any)?.isRaw;
-      try {
-        if (wasRaw) (process.stdin as any).setRawMode(false);
-        await ExecutionGate.gate(confirm);
-        const writer = new LockedDownFileWriter(sandbox);
-        const res = await writer.write(name, cleaned);
-        Logger.info(C.yellow(`${cleaned}`));
-        Logger.info(C.magenta(`Written to ${res.path} (${res.bytes} bytes)`));
-      } catch (err: any) {
-        Logger.error(`File write failed: ${err?.message || err}`);
-      } finally {
-        restoreStdin(!!wasRaw);
-      }
-    },
-  },
-    deps.agents);
+        deps.agents);
 
-  // Run the canonical router first.
-  const outcome = await router(fromAgent.id, text || "");
+    // Run the canonical router first.
+    const outcome = await router(fromAgent.id, text || "");
 
-  // Fallback: treat leading-line `@user` as `@@user` (case-insensitive).
-  if (!outcome.yieldForUser && looksLikeUserTag(text)) {
-    if (!process.stdin.isTTY) {
-      try { await finalizeAllSandboxes(); } catch {}
-      process.stdout.write("\n");
-      process.exit(0);
+    // Fallback: treat leading-line `@user` as `@@user` (case-insensitive).
+    if (!outcome.yieldForUser && looksLikeUserTag(text)) {
+        if (!process.stdin.isTTY) {
+            try { await finalizeAllSandboxes(); } catch { }
+            process.stdout.write("\n");
+            process.exit(0);
+        }
+        deps.setLastUserDMTarget(fromAgent.id);
+        return true;
     }
-    deps.setLastUserDMTarget(fromAgent.id);
-    return true;
-  }
 
-  return outcome.yieldForUser;
+    return outcome.yieldForUser;
 }

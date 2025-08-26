@@ -9,14 +9,18 @@ import { sanitizeContent } from "../utils/sanitize-content";
  */
 export type WriteResult = { path: string; bytes: number };
 
-export class FileWriter {
+export interface Writer {
+  write(filename: string, content: string): Promise<WriteResult>;
+}
+
+export class FileWriter implements Writer {
   /**
    * Normalize filenames:
    * - Trim whitespace
    * - If not starting with "/" or ".", prefix "./" (relative path)
    * (Your TagParser already tries to do this; this is a final safeguard.)
    */
-  static normalizeFilename(name: string): string {
+  normalizeFilename(name: string): string {
     const trimmed = String(name || "").trim();
     if (!trimmed) return "./unnamed.txt";
     if (trimmed.startsWith("/") || trimmed.startsWith(".")) return trimmed;
@@ -27,7 +31,7 @@ export class FileWriter {
    * Write content to file, ensuring parent directory exists.
    * Appends a trailing newline if one isn't present.
    */
-  static async write(filename: string, content: string): Promise<WriteResult> {
+  async write(filename: string, content: string): Promise<WriteResult> {
     const target = this.normalizeFilename(filename);
     const dir = path.dirname(target);
 

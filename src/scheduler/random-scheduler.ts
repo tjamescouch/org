@@ -10,7 +10,7 @@ import type { GuardDecision } from "../guardrails/guardrail";
 import type { ChatMessage } from "../types";
 import type { Responder, SchedulerOptions, AskUserFn } from "./types";
 import { LockedDownFileWriter } from "../io/locked-down-file-writer";
-import { sandboxMangers } from "../sandbox/session";
+import { SandboxManager, sandboxMangers } from "../sandbox/session";
 
 export class RandomScheduler {
   private readonly agents: Responder[];
@@ -113,11 +113,11 @@ export class RandomScheduler {
                   setLastUserDMTarget: (id) => { this.lastUserDMTarget = id; },
                   // If you've updated router to consume sandbox, pass it here:
                   // sandbox: this.sandbox,
-                  sandbox: sandboxMangers.get(a.id),
                 },
                 a,
                 message,
-                this.filters
+                this.filters,
+                await (sandboxMangers.get(a.id))?.getOrCreate(a.id)
               );
 
               didWork = true;
