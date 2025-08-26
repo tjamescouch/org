@@ -125,17 +125,22 @@ export class PodmanSession implements ISandboxSession {
             "mkdir -p /work/.git/info && printf '.org/\\n' >> /work/.git/info/exclude"
         );
 
-        // Baseline commit.
-        const cmd1 = "git -C /work init";
-        const cmd2 = "git -C /work config user.email noreply@example && git -C /work config user.name org";
-        const cmd3 = "git -C /work add -A && git -C /work commit -m baseline >/dev/null || true";
-        Logger.info(cmd1);
-        await this.must(this.execInCmd(cmd1));
-        Logger.info(cmd2);
-        await this.must(this.execInCmd(cmd2));
-        Logger.info(cmd3);
-        await this.must(this.execInCmd(cmd3));
-        const rev = await this.execInCmd("git -C /work rev-parse HEAD");
+        // Baseline commit (always ensure HEAD exists)
+        await this.must(
+            this.execInCmd(
+                "git -C /work add -A && " +
+                "(git -C /work commit -m baseline >/dev/null 2>&1 || " +
+                " git -C /work commit --allow-empty -m baseline >/dev/null 2>&1)"
+            ),
+            "git baseline commit"
+        );
+
+        // Verify and record HEAD
+        const rev = await this.execInCmd("git -C /work rev-parse --verify HEAD");
+        await this.must(rev, "git rev-parse HEAD");
+        this.baselineCommit = rev.stdout.trim();
+        await this.execInCmd("printf %s " + this.shQ(this.baselineCommit!) + " > /work/.org/baseline.txt");
+
         if (rev.code !== 0) throw new Error(`git baseline failed: ${rev.stderr || rev.stdout}`);
         this.baselineCommit = rev.stdout.trim();
         await this.execInCmd("printf %s " + this.shQ(this.baselineCommit!) + " > /work/.org/baseline.txt");
