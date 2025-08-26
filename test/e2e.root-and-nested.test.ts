@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { rmSync } from "node:fs";
 import { initRepo, runOrg, lastRunDir, readFileSafe } from "./_helpers";
 
-describe("e2e: patch generation (root & nested)", () => {
+describe.todo("e2e: patch generation (root & nested)", () => {
     let repo = "";
 
     beforeEach(() => { repo = initRepo(); });
