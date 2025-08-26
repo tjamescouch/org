@@ -11,10 +11,6 @@ import { ISandboxSession } from "../types";
 import { Logger } from "../../logger";
 import { ensureOk } from "../sh-result";
 import { withCookedTTY } from "../../input/tty-guard";
-import { buildPATH } from "../../config/path";
-
-const PATH_PREFIX = `export PATH="${buildPATH('', [])}:$PATH"; `;
-console.log("PATH_PREFIX", PATH_PREFIX);
 
 export const HARNESSED_APPLY_PATCH_SCRIPT = `#!/usr/bin/env bash
 set -euo pipefail
@@ -440,13 +436,13 @@ export class PodmanSession implements ISandboxSession {
     // Execute a command in the container at /work using bash -lc, capturing output.
     private async execInCmd(cmdline: string) {
         // IMPORTANT: no "-i" here; keep stdin closed to avoid sporadic exit 1s.
-        return sh(this.tool, ["exec", "--workdir", "/work", this.name, "bash", "-lc", PATH_PREFIX + cmdline]);
+        return sh(this.tool, ["exec", "--workdir", "/work", this.name, "bash", "-lc", cmdline]);
     }
 
     // Execute with env vars inside container, capturing output.
     private async execInEnv(env: Record<string, string>, cmdline: string) {
         const envArgs = Object.entries(env).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
-        return sh(this.tool, ["exec", "--workdir", "/work", ...envArgs, this.name, "bash", "-lc", PATH_PREFIX + cmdline]);
+        return sh(this.tool, ["exec", "--workdir", "/work", ...envArgs, this.name, "bash", "-lc", cmdline]);
     }
 
     private shQ(s: string) { return `'${s.replace(/'/g, `'\\''`)}'`; }
