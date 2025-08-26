@@ -14,7 +14,7 @@ function resolveCli(): string {
   if (existsSync(local)) return `"${local}"`;
 
   // fallback to Bun entrypoint
-  return `bun run src/app.ts`;
+  return `~/.bun/bin/bun run src/app.ts`;
 }
 
 export function sh(
