@@ -354,6 +354,37 @@ export class PodmanSession implements ISandboxSession {
             );
         });
 
+        // After writing session.patch ...
+        const patchDst = path.join(this.spec.runDir, "session.patch");
+
+        // Show accepted file changes
+        const summary = await this.execInCmd(
+            "git -C /work diff --name-status " + this.shQ(this.baselineCommit!) + " HEAD"
+        );
+        if (summary.stdout.trim()) {
+            Logger.info("=== Accepted file changes ===");
+            for (const line of summary.stdout.trim().split("\n")) {
+                Logger.info(line);
+            }
+        } else {
+            Logger.info("No accepted file changes.");
+        }
+
+        // Show rejected/violations
+        const stepDir = path.join(this.spec.runDir, "steps");
+        const violations = (await fsp.readdir(stepDir))
+            .filter(f => f.endsWith(".violation.txt"));
+        if (violations.length) {
+            Logger.info("=== Rejected/violated files ===");
+            for (const vf of violations) {
+                const body = await fsp.readFile(path.join(stepDir, vf), "utf8");
+                for (const line of body.trim().split("\n")) {
+                    if (line) Logger.info(line);
+                }
+            }
+        }
+
+
         const patchDst = path.join(this.spec.runDir, "session.patch");
         await this.execHost(["cp", `${this.name}:/work/.org/session.patch`, patchDst]).catch(() => Promise.resolve());
 
