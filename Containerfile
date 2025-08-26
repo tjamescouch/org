@@ -1,5 +1,7 @@
 FROM debian:12-slim
 
+ENV ORG_BIN=/work/.org/bin
+ENV PATH="${ORG_BIN}:${PATH}"
 ENV DEBIAN_FRONTEND=noninteractive
 # Core utilities the agents use
 RUN apt-get update \
