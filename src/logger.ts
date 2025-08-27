@@ -85,7 +85,7 @@ export class Logger {
   static trace(...a: any[]) { this._log("trace", a); }
   static debug(...a: any[]) { this._log("debug", a); }
   static info (...a: any[]) { this._log("info",  a); }
-  static streamInfo (...a: any[]) { /* FIXME */ }
+  static streamInfo (...a: any[]) { this._stream("info", a); }
   static warn (...a: any[]) { this._log("warn",  a); }
   static error(...a: any[]) { this._log("error", a); }
 
@@ -113,8 +113,8 @@ export class Logger {
     } catch { /* ignore */ }
   }
   private static _stream(level: LevelName, chunk: string) {
-    if (level === "error")       R.stderr.write(chunk);
-    else if (level === "warn")   R.stdio.write(chunk);
-    else                         R.stdio.write(chunk);
+    if (level === "error")       this.stream.write(chunk);
+    else if (level === "warn")   this.stream.write(chunk);
+    else                         this.stream.write(chunk);
   }
 }
