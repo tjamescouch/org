@@ -1,6 +1,8 @@
 import { shCapture, shInteractive, currentSandboxSessionKey } from "../../tools/sandboxed-sh";
+
 const shq = (s: string) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
+// Heuristic: first agent id, used as tmux session key if sandbox id not provided
 function firstAgentIdFromArgv(argv: string[]): string {
   const i = argv.indexOf("--agents");
   if (i >= 0 && argv[i + 1]) {
@@ -12,33 +14,30 @@ function firstAgentIdFromArgv(argv: string[]): string {
 }
 
 export async function launchTmuxUI(argv: string[]): Promise<number> {
-  const cwd = process.cwd();
+  const hostCwd = process.cwd();
+
   const sessionKey =
     process.env.ORG_TMUX_SESSION ||
     currentSandboxSessionKey() ||
     firstAgentIdFromArgv(argv);
 
-  await shCapture("true", { projectDir: cwd, agentSessionId: sessionKey });
+  // Ensure the sandbox session exists
+  await shCapture("true", { projectDir: hostCwd, agentSessionId: sessionKey });
 
-  const check = await shCapture("command -v tmux >/dev/null 2>&1 && tmux -V >/dev/null 2>&1", {
-    projectDir: cwd,
-    agentSessionId: sessionKey,
-  });
-  if (check.code !== 0) {
-    process.stderr.write(`[tmux-ui] tmux not found in sandbox session "${sessionKey}".\n`);
-    return 1;
-  }
-
+  // We will run the repo from /work inside the container. That is where the
+  // sandbox mounts the project. Use ./org (not 'org') so PATH is not required.
   const innerArgs = argv.filter((a, i, arr) => !(a === "--ui" || (a === "tmux" && arr[i - 1] === "--ui")));
-  const orgCmd =
-    `LOG_LEVEL=${process.env.LOG_LEVEL ?? "INFO"} DEBUG=${process.env.DEBUG ?? ""} ` +
-    `org ${innerArgs.map(shq).join(" ")}`;
+  const innerCmd =
+    `cd /work || cd "$PWD" || true; ` +
+    `ORG_SESSION_DIR=/work/.org LOG_LEVEL=${process.env.LOG_LEVEL ?? "INFO"} DEBUG=${process.env.DEBUG ?? ""} ` +
+    `./org ${innerArgs.map(shq).join(" ")}`;
 
+  // tmux plumbing in the sandbox
   const TMUX = "tmux -L orgsrv";
   const wrapped = [
     "set -o pipefail",
     "rc=0",
-    orgCmd,
+    innerCmd,
     "rc=$?",
     "printf '\\n[tmux-ui] org exited with code: %s\\n' \"$rc\"",
     "printf '[tmux-ui] You are in a shell inside the container. Detach: Ctrl-b then d.\\n'",
@@ -54,10 +53,10 @@ export async function launchTmuxUI(argv: string[]): Promise<number> {
     `${TMUX} attach -t org`,
   ].join(" ; ");
 
-  process.stderr.write(`[tmux-ui] session=${sessionKey} cwd=${cwd}\n`);
+  process.stderr.write(`[tmux-ui] session=${sessionKey} cwd=${hostCwd}\n`);
 
   const run = await shInteractive(`bash -lc ${shq(script)}`, {
-    projectDir: cwd,
+    projectDir: hostCwd,
     agentSessionId: sessionKey,
     tty: true,
     inheritStdio: true,
