@@ -3,9 +3,9 @@
  * Input controller that guarantees keystrokes are NOT echoed unless
  * we are actively capturing user text (interjection or scheduler prompt).
  *
- * - Idle: raw TTY (no echo) + hotkeys (ESC / interject / Ctrl+C).
- * - Prompting: cooked line mode via readline; hotkeys suspended.
- * - ESC = graceful finalize; Ctrl+C = fast abort (no finalize).
+ * Idle: raw TTY (no echo) + hotkeys (ESC / interject / Ctrl+C).
+ * Prompting: cooked line mode via readline; hotkeys suspended.
+ * ESC = graceful finalize; Ctrl+C = fast abort (no finalize).
  */
 
 import * as readline from "readline";
@@ -14,7 +14,7 @@ import type { RandomScheduler } from "../scheduler";
 import { resumeStdin } from "./utils";
 import { finalizeAllSandboxes } from "../tools/sandboxed-sh";
 
-// Hotkeys glue
+// Hotkeys glue (runtime path)
 import {
   installHotkeys, suspendHotkeys, resumeHotkeys, updateHotkeys,
   __testOnly_emit as _emitForTests
@@ -71,11 +71,6 @@ export class InputController {
   }
 
   attachScheduler(s: RandomScheduler) { this.scheduler = s; }
-
-  /** Keep tests happy when they need to simulate keys without a TTY. */
-  public readonly _private = {
-    emitKey: (k: any) => _emitForTests(k),
-  };
 
   // --------------------------------------------------------------------------
   // Public API used by app/scheduler
@@ -193,6 +188,26 @@ export class InputController {
       try { resumeHotkeys(); } catch {}
     }
   }
+
+  // --------------------------------------------------------------------------
+  // Test helper surface (sync path – no debounce)
+  // --------------------------------------------------------------------------
+  public readonly _private = {
+    /**
+     * Synchronous synthetic key for tests.
+     * - { name: "escape" } → gracefulShutdown()
+     * - { name: "c", ctrl: true } → fastAbort()
+     * - { name: <interjectKey> } → enterInterjection()
+     */
+    emitKey: (k: { name: string; ctrl?: boolean }) => {
+      const name = (k?.name || "").toLowerCase();
+      if (name === "escape" || name === "esc") { void this.gracefulShutdown(); return; }
+      if (k?.ctrl && name === "c") { this.fastAbort(); return; }
+      if (name === this.interjectKey) { void this.enterInterjection(); return; }
+      // also forward to runtime test hook (harmless in tests)
+      try { _emitForTests(k as any); } catch {}
+    },
+  };
 }
 
 // Backward-compat alias and default export
