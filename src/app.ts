@@ -281,143 +281,91 @@ async function finalizeOnce(
   }
 }
 
-/* =========
- * main()
- * ========= */
 
 async function main() {
-  const cfg = loadConfig();
+  const cfg  = loadConfig();
   const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
   const args = parseArgs(argv);
 
-  // Honor --ui (or ORG_FORCE_UI) by delegating to the UI router and exiting.
-  // This keeps tmux/console behavior centralized in src/ui/* and avoids
-  // mixing two entry flows in one module.
-  if (args["ui"] || R.env.ORG_FORCE_UI) {
-    // Optional pre-checks only when the user explicitly asked for tmux
-    if (args["ui"] === "tmux") {
-      const sandbox = R.env.SANDBOX_BACKEND ?? "podman"; // "none" => host
-      const tmuxScope: "host" | "container" =
-        (R.env.ORG_TMUX_SCOPE as any) ?? (sandbox === "none" ? "host" : "container");
-      if (tmuxScope === "host") {
-        const { doctorTmux } = await import("./cli/doctor");
-        if ((await doctorTmux("host")) !== 0) R.exit(1);
-      }
+  // Optional tmux doctoring if explicitly asked for tmux UI
+  if (args["ui"] === "tmux") {
+    const sandbox = R.env.SANDBOX_BACKEND ?? "podman";
+    const tmuxScope: "host" | "container" =
+      (R.env.ORG_TMUX_SCOPE as any) ?? (sandbox === "none" ? "host" : "container");
+    if (tmuxScope === "host") {
+      const { doctorTmux } = await import("./cli/doctor");
+      if ((await doctorTmux("host")) !== 0) R.exit(1);
     }
-    const ui = (args["ui"] as string | undefined) ?? R.env.ORG_FORCE_UI ?? "console";
-    const code = await launchUI(ui, argv);
-    R.exit(code);
-    return; // guard
   }
 
-  // ---- Core interactive flow (no explicit UI requested) ----
+  // Launch UI **but don't await yet**
+  const ui = (args["ui"] as string | undefined) ?? R.env.ORG_FORCE_UI ?? "console";
+  const uiDone = launchUI(ui, argv).catch((e) => { Logger.info(e); return 1; });
 
+  // ---- From here on, your existing setup stays the same ----
   enableDebugIfRequested(args);
   setupProcessGuards();
 
-  // Determine project
-  const seed = getProjectFromArgs(argv) ?? R.cwd();
+  const seed = getProjectFromArgs(R.argv) ?? R.cwd();
   const projectDir = resolveProjectDir(seed);
 
-  // Recipe
   const recipeName =
-    (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
+    (typeof args["recipe"] === "string" && args["recipe"]) ||
+    (R.env.ORG_RECIPE || "");
   const recipe = getRecipe(recipeName || null);
 
-  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
-    Logger.info("[DBG] args:", args);
-    if (recipe) Logger.info("[DBG] recipe:", recipe.name);
-  }
-
-  // Budgets / mode
   let maxTools = Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20)));
   computeMode({ allowTools: recipe?.allowTools });
+  Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
 
-  Logger.info(
-    "Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.",
-  );
-
-  // Agents
-  const agentSpecs = parseAgents(
-    String(args["agents"] || "alice:lmstudio"),
-    cfg.llm,
-    recipe?.system ?? null,
-  );
+  const agentSpecs = parseAgents(String(args["agents"] || "alice:mock"), cfg.llm, recipe?.system ?? null);
   if (agentSpecs.length === 0) {
-    Logger.error('No agents. Use --agents "alice:lmstudio,bob:mock" or "alice:mock,bob:mock"');
+    Logger.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
     R.exit(1);
-    return;
   }
 
-  const agents = agentSpecs.map((a) => ({
+  const agents = agentSpecs.map(a => ({
     id: a.id,
-    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) =>
-      a.model.respond(prompt, budget, peers, cb),
+    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => a.model.respond(prompt, budget, peers, cb),
     guardOnIdle: (state: any) => a.model.guardOnIdle?.(state) ?? null,
-    guardCheck: (route: any, content: string, peers: string[]) =>
-      a.model.guardCheck?.(route, content, peers) ?? null,
+    guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null,
   }));
-
-  // IO + scheduler
-  const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
 
   const input = new InputController({
     interjectKey: String(args["interject-key"] || "i"),
     interjectBanner: String(args["banner"] || "You: "),
-    // Allow ESC to finalize & exit, and run the same finalization path we use at shutdown:
-    finalizer: async () => {
-      await finalizeOnce(scheduler, projectDir, reviewMode);
-    },
-    // (exitOnEsc defaults to true)
+    finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
   });
 
+  const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
   const scheduler = new RoundRobinScheduler({
     agents,
     maxTools,
     onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
     projectDir,
     reviewMode,
-    // promptEnabled: if --prompt is provided as a string we treat it as non-interactive seed
     promptEnabled: (typeof args["prompt"] === "boolean" ? args["prompt"] : R.stdin.isTTY),
   });
 
   input.attachScheduler(scheduler);
 
-  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
-    Logger.info("[DBG] agents:", agents.map((a) => a.id).join(", "));
-    Logger.info("[DBG] maxTools:", maxTools);
-  }
-
-  // Seed initial instruction: CLI --prompt wins; else recipe.kickoff; else ask.
+  // Kickoff
   let kickoff: string | boolean | undefined;
-  if (args["prompt"] === true) kickoff = true; // explicit ask
+  if (args["prompt"] === true) kickoff = true;
   else if (typeof args["prompt"] === "string") kickoff = args["prompt"];
   else if (recipe?.kickoff) kickoff = recipe.kickoff;
 
-  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
-    Logger.info(
-      "[DBG] kickoff:",
-      typeof kickoff === "string" ? kickoff : kickoff === true ? "(ask)" : "(none)",
-    );
-  }
-
   await input.askInitialAndSend(kickoff);
-  await new Promise<void>((r) => setTimeout(r, 0)); // let enqueue land
+  await new Promise<void>((r) => setTimeout(r, 0));
 
   const reviewManager = new ReviewManager(projectDir, reviewMode);
   await scheduler.start();
   await reviewManager.finalizeAndReview();
 
-  // Non-interactive or explicit scheduler stop comes back here.
+  // Wait for UI to finish (ESC/Ctrl-C), then finalize and exit with UI's code
+  const code = await uiDone;
   await finalizeOnce(scheduler, projectDir, reviewMode);
-  R.exit(0);
+  R.exit(code ?? 0);
 }
 
-/* =========
- * Entry
- * ========= */
-
-void main().catch((e) => {
-  Logger.info(e);
-  R.exit(1);
-});
+void main().catch((e) => { Logger.info(e); R.exit(1); });
