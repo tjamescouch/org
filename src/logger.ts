@@ -104,6 +104,7 @@ export class Logger {
     // Console
     if (level === "error") console.error(text);
     else if (level === "warn") console.warn(text);
+    else if (level === "info") console.info(text);
     else console.log(text);
     // File
     try {
@@ -116,10 +117,12 @@ export class Logger {
     // Console
     if (level === "error") R.stderr.write(chunk);
     else if (level === "warn") R.stdout.write(chunk);
+    else if (level === "info") R.stdout.write(chunk);
     else R.stdout.write(chunk);
 
     if (level === "error") this._stream.write(chunk);
     else if (level === "warn") this._stream.write(chunk);
+    else if (level === "info") this._stream.write(chunk);
     else this._stream.write(chunk);
   }
 }
