@@ -6,30 +6,48 @@
  *
  * This avoids touching every fs/spawn call in your codebase.
  */
-
+// ---- DEBUG: prove where we look for last-session.patch ----
+import fs from "node:fs";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
-import * as fs from "node:fs";
+import { R } from './src/runtime/runtime';
+
+if ((R.env.DEBUG === "1" || R.env.ORG_DEBUG === "1")) {
+  const cwd = R.cwd();
+  const sessionDir = R.env.ORG_SESSION_DIR
+    ? path.resolve(R.env.ORG_SESSION_DIR)
+    : path.join(cwd, ".org");
+  const patchPath = path.join(sessionDir, "last-session.patch");
+  const exists = fs.existsSync(patchPath);
+
+  // stderr so tests still capture stdout separately
+  console.error(`[runner] cwd=${cwd}`);
+  console.error(`[runner] sessionDir=${sessionDir}`);
+  console.error(`[runner] patchPath=${patchPath}`);
+  console.error(`[runner] patchExists=${exists}`);
+}
+
 
 // 1) Switch the process working directory *before* loading the app.
-const callerCwd = process.env.ORG_CALLER_CWD || process.env.PWD || process.cwd();
+const callerCwd = R.env.ORG_CALLER_CWD || R.env.PWD || R.cwd();
 try {
-  process.chdir(callerCwd);
+  R.chdir(callerCwd);
 } catch (e) {
   console.error(`org: failed to chdir to ${callerCwd}:`, e);
-  process.exit(1);
+  R.exit(1);
 }
 
 // Optionally keep repo tools in PATH (useful if agents shell out)
-const appdir = process.env.ORG_APPDIR || "";
+const appdir = R.env.ORG_APPDIR || "";
 if (appdir) {
-  process.env.PATH = `${appdir}:${appdir}/scripts:${process.env.PATH ?? ""}`;
+  R.env.PATH = `${appdir}:${appdir}/scripts:${R.env.PATH ?? ""}`;
 }
 
 // 2) Import the real app from the repo by absolute path
-const entry = process.env.ORG_ENTRY || "";
+const entry = R.env.ORG_ENTRY || "";
 if (!entry || !fs.existsSync(entry)) {
   console.error(`org: entrypoint not found at ${entry}`);
-  process.exit(66);
+  R.exit(66);
 }
 
 await import(pathToFileURL(entry).href);
