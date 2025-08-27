@@ -26,6 +26,9 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$CWD" ] && cd "$CWD" 2>/dev/null || { [ -z "$CWD" ] || { echo "org: cwd not found: $CWD" >&2; exit 66; }; }
 
+# org (shell wrapper) — after cd "$CWD"
+export ORG_SESSION_DIR="$PWD/.org"
+
 # Make these available to runner.ts
 export ORG_CALLER_CWD="${ORG_CALLER_CWD:-$PWD}"
 export ORG_APPDIR="$APPDIR"

@@ -26,6 +26,7 @@ function hasRecentPatch(cwd: string): { exists: boolean; patchPath: string } {
   const patchPath = path.join(sessionDir, "last-session.patch");
   const exists = fs.existsSync(patchPath);
   trace(`cwd=${cwd} sessionDir=${sessionDir} patchPath=${patchPath} exists=${exists}`);
+  process.stdout.write("Apply this patch? [y/N] ");
   return { exists, patchPath };
 }
 
