@@ -20,6 +20,7 @@ import { installTtyGuard, withCookedTTY } from "./input/tty-guard";
 import { ReviewManager } from "./scheduler/review-manager";
 import { sandboxMangers } from "./sandbox/session";
 import { launchTmuxUI } from "./ui/tmux/launcher";
+import { launchConsoleUI } from "./ui/console";
 
 installTtyGuard();
 
@@ -241,6 +242,16 @@ async function finalizeOnce(
   }
 }
 
+export async function launchUI(kind: string, argv: string[], scope: any): Promise<number> {
+  switch ((kind || "console").toLowerCase()) {
+    case "tmux":
+      return launchTmuxUI({ argv });
+    case "console":
+    default:
+      return launchConsoleUI(argv);
+  }
+}
+
 async function main() {
   const cfg = loadConfig();
   const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
@@ -259,8 +270,7 @@ async function main() {
         if ((await doctorTmux("host")) !== 0) R.exit(1);
       }
 
-      const { launchTmuxUI } = await import("./ui/tmux");
-      const code = await launchTmuxUI(R.argv, tmuxScope);
+      const code = await launchUI(args['ui'] || 'console', R.argv, tmuxScope);
       R.exit(code);
     }
   }
