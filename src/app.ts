@@ -22,6 +22,21 @@ import { sandboxMangers } from "./sandbox/session";
 import { launchUI } from "./ui";
 
 installTtyGuard();
+(function initLogging() {
+  // Allow override from environment set by the launcher
+  const DIR  = process.env.ORG_LOG_DIR
+            || path.join(process.cwd(), ".org", "logs");
+  fs.mkdirSync(DIR, { recursive: true });
+  const FILE = process.env.ORG_LOG_FILE
+            || path.join(DIR, `run-${new Date().toISOString().replace(/[:.]/g, "-")}.log`);
+  const LVL  = process.env.ORG_LOG_LEVEL
+            || process.env.LOG_LEVEL
+            || "info";
+
+  Logger.configure({ file: FILE, level: LVL });
+  Logger.attachProcessHandlers();
+  Logger.info("log file:", FILE);
+})();
 
 /* =======================
  * CLI parsing / utilities
