@@ -316,7 +316,6 @@ async function main() {
 
   let maxTools = Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20)));
   computeMode({ allowTools: recipe?.allowTools });
-  Logger.streamInfo("...");
   Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
 
   const agentSpecs = parseAgents(String(args["agents"] || "alice:mock"), cfg.llm, recipe?.system ?? null);

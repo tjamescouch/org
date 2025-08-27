@@ -64,14 +64,14 @@ async function promptYesNo(question: string): Promise<boolean> {
 }
 
 async function interjectPrompt(seed?: Buffer): Promise<void> {
-  // Show prompt and live-echo the line we’re building.
+  // visible prompt with live echo
   process.stdout.write("You: ");
   await new Promise((r) => setImmediate(r));
 
   const chunks: Buffer[] = [];
   const restore = enableRaw();
 
-  // If we were seeded (typed before we opened the editor), echo it now.
+  // seed (typed before we opened), echo once
   if (seed?.length) {
     chunks.push(seed);
     process.stdout.write(seed.toString("utf8"));
@@ -87,20 +87,14 @@ async function interjectPrompt(seed?: Buffer): Promise<void> {
       if (s === "\x1b") { // ESC cancels
         off(); restore(); process.stdout.write("\n"); resolve(); return;
       }
-      if (s === "\r" || s === "\n") { // submit
-        off(); restore(); process.stdout.write("\n");
-        const text = Buffer.concat(chunks).toString("utf8");
-        if (text.length) process.stdout.write(text + "\n");
-        resolve(); return;
+      if (s === "\r" || s === "\n") { // submit — just end the line; DO NOT reprint the text
+        off(); restore(); process.stdout.write("\n"); resolve(); return;
       }
-      if (s === "\x7f" || s === "\b") { // backspace: pop and erase one char visually
+      if (s === "\x7f" || s === "\b") { // backspace
         if (chunks.length) {
           const last = chunks.pop()!;
-          // last may be multi-byte; for simplicity, treat byte-by-byte
-          // remove one byte and put back the remainder (rarely needed)
           const kept = last.subarray(0, Math.max(0, last.length - 1));
           if (kept.length) chunks.push(kept);
-          // visually erase one cell
           process.stdout.write("\b \b");
         }
         return;
@@ -140,7 +134,7 @@ export async function launchConsoleUI(_argv: string[]): Promise<number> {
           exitCode = 130; resolved = true; return resolve();
         }
 
-        // ESC -> prompt apply only if a non-empty patch exists; else clean exit
+        // ESC: prompt only if a non-empty patch exists; else clean exit
         if (s === "\x1b") {
           off();
           const patch = hasNonEmptyPatch(process.cwd());
@@ -156,7 +150,7 @@ export async function launchConsoleUI(_argv: string[]): Promise<number> {
           exitCode = 0; resolved = true; return resolve();
         }
 
-        // 'i' opens editor
+        // 'i' explicitly opens interject
         if (s === "i" && !interjecting) {
           interjecting = true; off();
           await interjectPrompt(); interjecting = false;
@@ -164,7 +158,7 @@ export async function launchConsoleUI(_argv: string[]): Promise<number> {
           return;
         }
 
-        // typed text without 'i' -> open editor seeded with first char
+        // typed text without 'i' → open interject seeded
         if (!interjecting && printable(chunk)) {
           interjecting = true; off();
           await interjectPrompt(chunk); interjecting = false;
