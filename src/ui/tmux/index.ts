@@ -21,7 +21,7 @@ export async function launchTmuxUI(argv: string[]): Promise<number> {
   if (check.code !== 0) {
     R.stderr.write(
       `tmux not found in sandbox session "${sessionKey}". ` +
-      `Ensure your sandbox image includes tmux and you are using the same session.\n`
+      `Ensure your sandbox image includes tmux and you are using the same session (${sessionKey}).\n`
     );
     return 1;
   }
