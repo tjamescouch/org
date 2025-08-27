@@ -55,7 +55,7 @@ export class Logger {
 
     if (opts.file && opts.file !== this._filePath) {
       if (this._stream) {
-        try { this._stream.end(); } catch {}
+        try { this._stream.end(); } catch { }
       }
       const dir = path.dirname(opts.file);
       fs.mkdirSync(dir, { recursive: true });
@@ -68,7 +68,7 @@ export class Logger {
   static attachProcessHandlers() {
     process.on("uncaughtException", (err) => {
       this._writeLine("error", `uncaughtException: ${err && (err.stack || err)}`);
-      try { this._stream?.end(); } catch {}
+      try { this._stream?.end(); } catch { }
     });
     process.on("unhandledRejection", (reason) => {
       this._writeLine("error", `unhandledRejection: ${reason}`);
@@ -84,9 +84,9 @@ export class Logger {
   // ---- public logging API
   static trace(...a: any[]) { this._log("trace", a); }
   static debug(...a: any[]) { this._log("debug", a); }
-  static info (...a: any[]) { this._log("info",  a); }
-  static streamInfo (...a: any[]) { this._stream("info", a); }
-  static warn (...a: any[]) { this._log("warn",  a); }
+  static info(...a: any[]) { this._log("info", a); }
+  static streamInfo(...a: any[]) { this._s('info', (a ? (' ' + JSON.stringify(a, null, 2)) : '')); }
+  static warn(...a: any[]) { this._log("warn", a); }
   static error(...a: any[]) { this._log("error", a); }
 
   // ---- internals
@@ -102,9 +102,9 @@ export class Logger {
     const pfx = `${ts()} [${level.toUpperCase()}]`;
     const text = `${pfx} ${line}`;
     // Console
-    if (level === "error")       console.error(text);
-    else if (level === "warn")   console.warn (text);
-    else                         console.log  (text);
+    if (level === "error") console.error(text);
+    else if (level === "warn") console.warn(text);
+    else console.log(text);
     // File
     try {
       if (this._stream) {
@@ -112,16 +112,14 @@ export class Logger {
       }
     } catch { /* ignore */ }
   }
-  private static _stream(level: LevelName, chunk: string) {
-    const pfx = `${ts()} [${level.toUpperCase()}]`;
-    const text = `${pfx} ${chunk}`;
+  private static _s(level: LevelName, chunk: string) {
     // Console
-    if (level === "error")       R.stderr(text);
-    else if (level === "warn")   R.stdio(text);
-    else                         R.stdio(text);
+    if (level === "error") R.stderr(chunk);
+    else if (level === "warn") R.stdio(chunk);
+    else R.stdio(chunk);
 
-    if (level === "error")       this.stream.write(chunk);
-    else if (level === "warn")   this.stream.write(chunk);
-    else                         this.stream.write(chunk);
+    if (level === "error") this.stream.write(chunk);
+    else if (level === "warn") this.stream.write(chunk);
+    else this.stream.write(chunk);
   }
 }
