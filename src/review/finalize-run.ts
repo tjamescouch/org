@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
 import { execFileSync, spawn } from "child_process";
-import { Logger } from "../logger";
+import { C, Logger } from "../logger";
 import { withCookedTTY } from "../input/tty-guard";
 import { sandboxMangers } from "../sandbox/session";
 import type { RoundRobinScheduler } from "../scheduler";
@@ -59,6 +59,7 @@ export async function finalizeRun(
   projectDir: string,
   reviewMode: "ask" | "auto" | "never"
 ) {
+  Logger.info(C.magenta('\nFinalizing run...\n'));
   try { await scheduler?.drain?.(); } catch {}
   try { await reviewManager.finalizeAndReview(); } catch {}
   try { await (sandboxMangers as any)?.finalizeAll?.(); } catch {}

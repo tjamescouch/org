@@ -200,7 +200,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
     if (this.draining) return false;
     this.draining = true;
     while (this.hasActiveAgent()) {
-      Logger.info(C.magenta(`Waiting for agent to complete...`));
+      Logger.info(C.magenta(`\nWaiting for agent to complete...`));
       await this.sleep(1000);
     }
     return true;
