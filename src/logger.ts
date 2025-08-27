@@ -114,8 +114,8 @@ export class Logger {
   }
   private static _s(level: LevelName, chunk: string) {
     // Console
-    if (level === "error") R.stderr(chunk);
-    else if (level === "warn") R.stdio(chunk);
+    if (level === "error") R.stderr.write(chunk);
+    else if (level === "warn") R.stdio.write(chunk);
     else R.stdio(chunk);
 
     if (level === "error") this.stream.write(chunk);
