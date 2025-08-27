@@ -18,6 +18,7 @@ import { getRecipe } from "./recipes";
 import { installTtyGuard, withCookedTTY } from "./input/tty-guard";
 import { ReviewManager } from "./scheduler/review-manager";
 import { sandboxMangers } from "./sandbox/session";
+import { launchTmuxUI } from "./ui/tmux/launcher";
 
 installTtyGuard();
 
@@ -243,6 +244,13 @@ async function main() {
   const cfg = loadConfig();
   const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : process.argv.slice(2));
   const args = parseArgs(argv);
+
+  if (args["ui"] === "tmux" && process.env.ORG_TMUX !== "1") {
+    // handoff to tmux UI; run the same argv inside tmux with ORG_TMUX=1
+    const code = await launchTmuxUI({ argv: process.argv }); // pass full argv; we preserve flags
+    process.exit(code);
+  }
+
   enableDebugIfRequested(args);
   setupProcessGuards();
 
