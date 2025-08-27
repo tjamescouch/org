@@ -6,12 +6,12 @@ set -o pipefail
 DBG="${ORG_DEBUG:-${DEBUG:-0}}"
 log() { [ "$DBG" = "1" ] || return 0; printf '[org.sh] %s\n' "$*" >&2; }
 
-# Prevent infinite recursion if org calls org
+# Re-entry guard
 : "${ORG_LAUNCHER_ONCE:=0}"
 [ "$ORG_LAUNCHER_ONCE" != "0" ] && log "re-entry blocked"
 export ORG_LAUNCHER_ONCE=1
 
-# Resolve real path
+# Resolve script path (follow symlinks)
 SCRIPT="${BASH_SOURCE[0]:-$0}"
 while [ -L "$SCRIPT" ]; do
   L="$(readlink "$SCRIPT")"
@@ -23,7 +23,7 @@ done
 APPDIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
 log "script=$SCRIPT"; log "appdir=$APPDIR"
 
-# Parse -C/--cwd and collect the rest of args
+# Parse -C/--cwd and collect remaining args
 CWD=""; args=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -37,12 +37,12 @@ if [ -n "$CWD" ]; then
   cd "$CWD" 2>/dev/null || { echo "org: cwd not found: $CWD" >&2; exit 66; }
 fi
 
-# Export a few useful env vars
+# Useful env for the app
 export ORG_CALLER_CWD="${ORG_CALLER_CWD:-$PWD}"
 export ORG_APPDIR="$APPDIR"
 export ORG_SESSION_DIR="${ORG_SESSION_DIR:-$PWD/.org}"
 
-# Decide entrypoint (prefer src/app.ts so the router always runs; then runner.*, then dist)
+# Resolve entrypoint (prefer src/app.ts so the UI router runs)
 ENTRY="${ORG_ENTRY:-}"
 if [ -z "$ENTRY" ]; then
   for p in \
@@ -53,7 +53,7 @@ if [ -z "$ENTRY" ]; then
     [ -f "$p" ] && { ENTRY="$p"; break; }
   done
 fi
-# package.json bin fallback (rare)
+# package.json bin fallback
 if [ -z "$ENTRY" ] && command -v jq >/dev/null 2>&1 && [ -f "$APPDIR/package.json" ]; then
   BIN="$(jq -r 'if .bin then if (.bin|type)=="object" then (.bin.org // .bin["org"] // empty) else .bin end else empty end' "$APPDIR/package.json" 2>/dev/null || true)"
   [ -n "$BIN" ] && { case "$BIN" in /*) ENTRY="$BIN" ;; *) ENTRY="$APPDIR/$BIN" ;; esac; }
@@ -64,7 +64,7 @@ export ORG_ENTRY="$ENTRY"
 log "entry=$ENTRY"
 [ "$DBG" = "1" ] && { ls -l "$ENTRY" >&2 || true; head -n1 "$ENTRY" >&2 || true; }
 
-# If caller didn’t supply a UI, default to console
+# Default UI to console unless caller provided --ui
 has_ui=0
 for a in "${args[@]}"; do
   if [ "$a" = "--ui" ]; then has_ui=1; break; fi
@@ -74,10 +74,18 @@ if [ $has_ui -eq 0 ]; then
   log "ui defaulted to console (add --ui tmux to use tmux)"
 fi
 
-# Launch with Bun if available; otherwise Node+tsx
-if command -v bun >/dev/null 2>&1; then
-  log "exec: bun \"$ENTRY\" ${args[*]}"
-  exec bun "$ENTRY" "${args[@]}"
+# Locate Bun (prefer), else Node+tsx
+pick_bun() {
+  if [ -n "${BUN_BIN:-}" ] && [ -x "$BUN_BIN" ]; then echo "$BUN_BIN"; return 0; fi
+  if command -v bun >/dev/null 2>&1; then command -v bun; return 0; fi
+  if [ -x /root/.bun/bin/bun ]; then echo /root/.bun/bin/bun; return 0; fi
+  if [ -n "${HOME:-}" ] && [ -x "$HOME/.bun/bin/bun" ]; then echo "$HOME/.bun/bin/bun"; return 0; fi
+  return 1
+}
+
+if BUN="$(pick_bun)"; then
+  log "exec: $BUN \"$ENTRY\" ${args[*]}"
+  exec "$BUN" "$ENTRY" "${args[@]}"
 fi
 
 if command -v node >/dev/null 2>&1; then
