@@ -3,6 +3,27 @@ import * as path from "path";
 
 type Level = "trace" | "debug" | "info" | "warn" | "error";
 
+
+const Reset = "\u001b[0m";
+const Dim = "\u001b[2m";
+const FgCyan = "\u001b[36m";
+const FgGreen = "\u001b[32m";
+const FgMagenta = "\u001b[35m";
+const FgYellow = "\u001b[33m";
+const FgBlue = "\u001b[34m";
+
+export const C = {
+  reset: "\x1b[0m",
+  bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
+  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
+  green: (s: string) => `\x1b[32m${s}\x1b[0m`,
+  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
+  blue: (s: string) => `\x1b[34m${s}\x1b[0m`,
+  magenta: (s: string) => `\x1b[35m${s}\x1b[0m`,
+  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
+  white: (s: string) => `\x1b[37m${s}\x1b[0m`,
+  gray: (s: string) => `\x1b[90m${s}\x1b[0m`,
+};
 export class Logger {
   // ---- configuration / sinks
   private static _inited = false;
