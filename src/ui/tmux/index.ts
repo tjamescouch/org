@@ -1,44 +1,62 @@
 // src/ui/tmux/index.ts
-import { spawnSync } from "node:child_process";
 import { shCapture, shInteractive, currentSandboxSessionKey } from "../../tools/sandboxed-sh";
-import { R } from "../../runtime/runtime";
 
+/** single-quote shell-escape */
 function shq(s: string) { return `'${String(s).replace(/'/g, `'\\''`)}'`; }
 
+/** Extract first agent id from --agents "<id>:kind,..." */
+function firstAgentIdFromArgv(argv: string[]): string {
+  const i = argv.indexOf("--agents");
+  if (i >= 0 && argv[i + 1]) {
+    const first = argv[i + 1].split(",")[0]?.trim();
+    const id = first?.split(":")[0]?.trim();
+    if (id) return id;
+  }
+  return "alice";
+}
+
+/**
+ * Launch org inside tmux *in the sandbox* (same session as agents).
+ * - Picks session from ORG_TMUX_SESSION, or the first agent id, or last used.
+ * - Requires that your sandbox backend supports interactive exec with a TTY.
+ */
 export async function launchTmuxUI(argv: string[]): Promise<number> {
-  // Don’t re-enter endlessly
-  if (R.env.TMUX || R.env.ORG_TMUX === "1") return 0;
+  if (process.env.TMUX || process.env.ORG_TMUX === "1") return 0; // avoid recursion
 
-  // Use the *same* sandbox session the rest of the app has been using.
-  const sessionKey = currentSandboxSessionKey() ?? "default";
-  const cwd = typeof (R as any)?.cwd === "function" ? (R as any).cwd() : R.cwd();
+  const cwd = process.cwd();
 
-  // 1) ensure the session exists and PATH/env is set the same way as tools
+  // Choose the same session as the agents (or allow override)
+  const fallback = firstAgentIdFromArgv(argv);
+  const sessionKey =
+    process.env.ORG_TMUX_SESSION ||
+    currentSandboxSessionKey() ||
+    fallback;
+
+  // Make sure session exists (no-op if already present)
   await shCapture("true", { projectDir: cwd, agentSessionId: sessionKey });
 
-  // 2) check tmux in that same session
+  // Check tmux availability in THAT session
   const check = await shCapture("command -v tmux >/dev/null 2>&1 && tmux -V >/dev/null 2>&1", {
     projectDir: cwd,
-    agentSessionId: sessionKey
+    agentSessionId: sessionKey,
   });
   if (check.code !== 0) {
-    R.stderr.write(
+    process.stderr.write(
       `tmux not found in sandbox session "${sessionKey}". ` +
-      `Ensure your sandbox image includes tmux and you are using the same session (${sessionKey}).\n`
+      `Ensure your sandbox image includes tmux and the UI uses the same session as agents.\n`
     );
     return 1;
   }
 
-  // Compose the re-exec payload and launch tmux within the sandbox
+  // Re-exec org inside tmux; ORG_TMUX=1 prevents recursion when org starts again
   const reexec = `export ORG_TMUX=1; exec ${argv.map(shq).join(" ")}`;
   const tmuxCmd = `tmux new-session -A -D -s org bash -lc ${shq(reexec)}`;
 
-  const r = await shInteractive(tmuxCmd, {
+  const run = await shInteractive(tmuxCmd, {
     projectDir: cwd,
     agentSessionId: sessionKey,
     tty: true,
     inheritStdio: true,
   });
-
-  return r.code ?? 0;
+  return run.code ?? 0;
 }
