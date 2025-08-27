@@ -1,7 +1,7 @@
 // src/ui/tmux/index.ts
 import { shCapture, shInteractive, currentSandboxSessionKey } from "../../tools/sandboxed-sh";
 
-function shq(s: string) { return `'${String(s).replace(/'/g, `'\\''`)}'`; }
+const shq = (s: string) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 function firstAgentIdFromArgv(argv: string[]): string {
   const i = argv.indexOf("--agents");
@@ -14,16 +14,14 @@ function firstAgentIdFromArgv(argv: string[]): string {
 }
 
 export async function launchTmuxUI(argv: string[]): Promise<number> {
-  if (process.env.TMUX) return 0; // already inside tmux
+  if (process.env.TMUX) return 0;
 
   const cwd = process.cwd();
   const fallback = firstAgentIdFromArgv(argv);
   const sessionKey = process.env.ORG_TMUX_SESSION || currentSandboxSessionKey() || fallback;
 
-  // Ensure sandbox session exists
   await shCapture("true", { projectDir: cwd, agentSessionId: sessionKey });
 
-  // tmux availability inside sandbox
   const check = await shCapture("command -v tmux >/dev/null 2>&1 && tmux -V >/dev/null 2>&1", {
     projectDir: cwd,
     agentSessionId: sessionKey,
@@ -33,27 +31,25 @@ export async function launchTmuxUI(argv: string[]): Promise<number> {
     return 1;
   }
 
-  // Build inner argv: run **org** without the UI flag
-  const innerArgs = argv.filter((a, i, arr) => {
-    if (a === "--ui") return false;
-    if (a === "tmux") {
-      // drop the literal "tmux" that follows --ui
-      // also handle the case user typed "… --ui tmux …"
-      return arr[i - 1] !== "--ui";
-    }
-    return true;
-  });
-
-  // Explicitly invoke the CLI entry: "org <args...>"
+  const innerArgs = argv.filter((a, i, arr) => !(a === "--ui" || (a === "tmux" && arr[i - 1] === "--ui")));
   const reexec =
     `LOG_LEVEL=${process.env.LOG_LEVEL ?? "INFO"} DEBUG=${process.env.DEBUG ?? ""} ` +
     `exec org ${innerArgs.map(shq).join(" ")}`;
 
-  // Two-step: ensure session, respawn pane with org, attach
+  // Wrapper keeps pane open after org exits, showing the exit code and dropping into a shell.
+  const wrapped = [
+    "set -euo pipefail",
+    `${reexec}; rc=$?`,
+    "echo",
+    "echo \"[tmux-ui] org exited with code: $rc\"",
+    "echo \"[tmux-ui] staying in shell; press Ctrl-b d to detach tmux\"",
+    "exec bash -l"
+  ].join(" ; ");
+
   const script = [
     "set -euo pipefail",
     "tmux has-session -t org 2>/dev/null || tmux new-session -s org -d",
-    `tmux respawn-pane -k -t org.0 "bash -lc ${shq(reexec)}"`,
+    `tmux respawn-pane -k -t org.0 "bash -lc ${shq(wrapped)}"`,
     "tmux attach -t org"
   ].join("; ");
 
