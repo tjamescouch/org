@@ -30,6 +30,11 @@ export const C = {
   gray: (s: string) => `\x1b[90m${s}\x1b[0m`,
 };
 
+function writeRaw(s: string) {
+  if (process.stdout?.write) { process.stdout.write(s); return; }
+  Bun.stdout?.write?.(s);
+}
+
 function fromEnvLevel(v: string | undefined, fallback: LevelName): LevelName {
   if (!v) return fallback;
   const s = v.toLowerCase() as LevelName;
@@ -41,6 +46,7 @@ function ts(): string {
   // 2025-08-27T16-12-05.123Z
   return d.toISOString().replace(/[:]/g, "-");
 }
+
 
 export class Logger {
   private static _level: LevelName = "info";
@@ -115,10 +121,10 @@ export class Logger {
   }
   private static _s(level: LevelName, chunk: string) {
     // Console
-    if (level === "error") R.stderr.write(chunk);
-    else if (level === "warn") R.stdout.write(chunk);
-    else if (level === "info") R.stdout.write(chunk);
-    else R.stdout.write(chunk);
+    if (level === "error") writeRaw(chunk);
+    else if (level === "warn") writeRaw(chunk);
+    else if (level === "info") writeRaw(chunk);
+    else writeRaw(chunk);
 
     if (level === "error") this._stream.write(chunk);
     else if (level === "warn") this._stream.write(chunk);
