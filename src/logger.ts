@@ -1,84 +1,128 @@
-// src/logger.ts
 import * as fs from "fs";
 import * as path from "path";
-import * as util from "util";
-import { R } from "./runtime/runtime";
 
-type LevelName = "silent" | "error" | "warn" | "info" | "debug" | "trace";
-const LEVELS: Record<LevelName, number> = {
-  silent: 60, error: 50, warn: 40, info: 30, debug: 20, trace: 10,
-};
-
-const Reset = "\u001b[0m";
-const Dim = "\u001b[2m";
-const FgCyan = "\u001b[36m";
-const FgGreen = "\u001b[32m";
-const FgMagenta = "\u001b[35m";
-const FgYellow = "\u001b[33m";
-const FgBlue = "\u001b[34m";
-
-export const C = {
-  reset: "\x1b[0m",
-  bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
-  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
-  green: (s: string) => `\x1b[32m${s}\x1b[0m`,
-  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
-  blue: (s: string) => `\x1b[34m${s}\x1b[0m`,
-  magenta: (s: string) => `\x1b[35m${s}\x1b[0m`,
-  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
-  white: (s: string) => `\x1b[37m${s}\x1b[0m`,
-  gray: (s: string) => `\x1b[90m${s}\x1b[0m`,
-};
-
-function fromEnvLevel(v: string | undefined, fallback: LevelName): LevelName {
-  if (!v) return fallback;
-  const s = v.toLowerCase() as LevelName;
-  return s in LEVELS ? s : fallback;
-}
-
-function ts(): string {
-  const d = new Date();
-  // 2025-08-27T16-12-05.123Z
-  return d.toISOString().replace(/[:]/g, "-");
-}
-
+type Level = "trace" | "debug" | "info" | "warn" | "error";
 
 export class Logger {
-  private static _level: LevelName = "info";
-  private static _stream: fs.WriteStream | null = null;
-  private static _filePath: string | null = null;
+  // ---- configuration / sinks
+  private static _inited = false;
+  private static _file: fs.WriteStream | null = null;
 
-  static configure(opts: { file?: string; level?: LevelName | string } = {}) {
-    if (opts.level) this._level = fromEnvLevel(
-      typeof opts.level === "string" ? opts.level : (opts.level as LevelName),
-      this._level
-    );
+  private static _levelOrder: Record<Level, number> = {
+    trace: 10,
+    debug: 20,
+    info: 30,
+    warn: 40,
+    error: 50,
+  };
 
-    if (opts.file && opts.file !== this._filePath) {
-      if (this._stream) {
-        try { this._stream.end(); } catch { }
-      }
-      const dir = path.dirname(opts.file);
-      fs.mkdirSync(dir, { recursive: true });
-      this._stream = fs.createWriteStream(opts.file, { flags: "a" });
-      this._filePath = opts.file;
-      this._writeLine("info", `Logger started (pid=${process.pid}) → ${opts.file}`);
+  private static _threshold: Level = (process.env.ORG_LOG_LEVEL as Level) ||
+    (process.env.LOG_LEVEL as Level) ||
+    "info";
+
+  /** Ensure log dir/file exists and open file sink. */
+  private static _ensure() {
+    if (this._inited) return;
+    this._inited = true;
+
+    const appdir =
+      process.env.ORG_APPDIR ||
+      path.resolve(process.cwd(), ".org"); // fallback if not set
+    const logDir =
+      process.env.ORG_LOG_DIR ||
+      path.join(appdir, "logs");
+
+    const defaultName = `run-${new Date()
+      .toISOString()
+      .replace(/[:]/g, "-")
+      .replace(/\.\d+Z$/, "Z")}.log`;
+
+    const logFile =
+      process.env.ORG_LOG_FILE ||
+      path.join(logDir, defaultName);
+
+    try {
+      fs.mkdirSync(logDir, { recursive: true });
+    } catch {
+      // ignore, best-effort
+    }
+
+    try {
+      this._file = fs.createWriteStream(logFile, { flags: "a" });
+      // Small header so we can identify starts in a long file
+      const hdr = `==== LOG START ${new Date().toISOString()} pid=${process.pid} ====\n`;
+      this._file.write(hdr);
+    } catch {
+      // If file fails, we still keep console logging
+      this._file = null;
     }
   }
 
-  static attachProcessHandlers() {
-    process.on("uncaughtException", (err) => {
-      this._writeLine("error", `uncaughtException: ${err && (err.stack || err)}`);
-      try { this._stream?.end(); } catch { }
-    });
-    process.on("unhandledRejection", (reason) => {
-      this._writeLine("error", `unhandledRejection: ${reason}`);
-    });
-    process.on("beforeExit", (code) => {
-      this._writeLine("info", `beforeExit code=${code}`);
-    });
+  /** Compare level against threshold. */
+  private static _should(level: Level): boolean {
+    return (
+      this._levelOrder[level] >= this._levelOrder[this._threshold]
+    );
   }
 
+  /** Best-effort stringify for console/file logs. */
+  private static _formatArgs(args: any[]): string {
+    return args
+      .map((v) => {
+        if (v instanceof Error) {
+          return v.stack || v.message || String(v);
+        }
+        if (typeof v === "string") return v;
+        if (typeof v === "object" && v !== null) {
+          try {
+            return JSON.stringify(v);
+          } catch {
+            return String(v);
+          }
+        }
+        return String(v);
+      })
+      .join(" ");
+  }
+
+  /** Write a line to console + file. */
+  private static _writeLine(level: Level, line: string) {
+    // Console
+    if (level === "warn" || level === "error") {
+      process.stderr.write(line);
+    } else {
+      process.stdout.write(line);
+    }
+    // File
+    try {
+      this._file?.write(line);
+    } catch {
+      // ignore; console is still useful
+    }
+  }
+
+  /** Core line-logging (prefixed, newline-terminated). */
+  private static _log(level: Level, args: any[]) {
+    this._ensure();
+    if (!this._should(level)) return;
+    const ts = new Date().toISOString();
+    const msg = this._formatArgs(args);
+    const line = `[${ts}] ${level.toUpperCase()} ${msg}\n`;
+    this._writeLine(level, line);
+  }
+
+  // ---- public logging API
+  static trace(...a: any[]) { this._log("trace", a); }
+  static debug(...a: any[]) { this._log("debug", a); }
+  static info (...a: any[]) { this._log("info",  a); }
+  static warn (...a: any[]) { this._log("warn",  a); }
+  static error(...a: any[]) { this._log("error", a); }
+
+  /**
+   * streamInfo: write raw chunks (no timestamp/prefix/newline)
+   * to stdout and the log file. Useful for token-by-token streaming.
+   * Call with "\n" at the end to ensure a newline when you’re done.
+   */
   static streamInfo(...a: any[]) {
     this._ensure();
     if (!this._should("info")) return;
@@ -104,56 +148,8 @@ export class Logger {
 
   /** Optional: close the log file on shutdown (usually not needed). */
   static close() {
-    try { this._file?.end(); } catch { }
+    try { this._file?.end(); } catch {}
     this._file = null;
     this._inited = false;
-  }
-
-
-  static level(): LevelName { return this._level; }
-  static file(): string | null { return this._filePath; }
-
-  // ---- public logging API
-  static trace(...a: any[]) { this._log("trace", a); }
-  static debug(...a: any[]) { this._log("debug", a); }
-  static info(...a: any[]) { this._log("info", a); }
-  static warn(...a: any[]) { this._log("warn", a); }
-  static error(...a: any[]) { this._log("error", a); }
-
-  // ---- internals
-  private static _enabled(level: LevelName): boolean {
-    return LEVELS[level] >= LEVELS[this._level];
-  }
-  private static _log(level: LevelName, args: any[]) {
-    if (!this._enabled(level)) return;
-    const line = util.formatWithOptions({ colors: false }, ...args);
-    this._writeLine(level, line);
-  }
-  private static _writeLine(level: LevelName, line: string) {
-    const pfx = `${ts()} [${level.toUpperCase()}]`;
-    const text = `${pfx} ${line}`;
-    // Console
-    if (level === "error") console.error(text);
-    else if (level === "warn") console.warn(text);
-    else if (level === "info") console.info(text);
-    else console.log(text);
-    // File
-    try {
-      if (this._stream) {
-        this._stream.write(text + "\n");
-      }
-    } catch { /* ignore */ }
-  }
-  private static _s(level: LevelName, chunk: string) {
-    // Console
-    if (level === "error") writeRaw(chunk);
-    else if (level === "warn") writeRaw(chunk);
-    else if (level === "info") writeRaw(chunk);
-    else writeRaw(chunk);
-
-    if (level === "error") this._stream.write(chunk);
-    else if (level === "warn") this._stream.write(chunk);
-    else if (level === "info") this._stream.write(chunk);
-    else this._stream.write(chunk);
   }
 }
