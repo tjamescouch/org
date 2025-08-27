@@ -9,7 +9,7 @@ function which(cmd: string): boolean {
 }
 
 /** Return true if `tmux -V` runs successfully (most reliable presence check). */
-function hasTmuxInstalled(): boolean {
+export function hasTmuxInstalled(): boolean {
   const r = spawnSync("tmux", ["-V"], { stdio: "ignore" });
   return r.status === 0;
 }
