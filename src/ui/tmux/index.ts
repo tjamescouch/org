@@ -14,16 +14,17 @@ function firstAgentIdFromArgv(argv: string[]): string {
 }
 
 export async function launchTmuxUI(argv: string[]): Promise<number> {
-  if (process.env.TMUX) return 0; // already inside tmux
+  // If we're already inside tmux, do nothing to avoid recursion.
+  if (process.env.TMUX) return 0;
 
   const cwd = process.cwd();
   const fallback = firstAgentIdFromArgv(argv);
   const sessionKey = process.env.ORG_TMUX_SESSION || currentSandboxSessionKey() || fallback;
 
-  // Ensure sandbox session exists
+  // Ensure sandbox session exists (no-op if already present)
   await shCapture("true", { projectDir: cwd, agentSessionId: sessionKey });
 
-  // tmux availability inside sandbox
+  // Verify tmux is available *inside* the sandbox
   const check = await shCapture("command -v tmux >/dev/null 2>&1 && tmux -V >/dev/null 2>&1", {
     projectDir: cwd,
     agentSessionId: sessionKey,
@@ -33,33 +34,32 @@ export async function launchTmuxUI(argv: string[]): Promise<number> {
     return 1;
   }
 
-  // Build inner argv for org: drop the UI flag so the inner run doesn't recurse
+  // Build inner argv: run org again but without "--ui tmux"
   const innerArgs = argv.filter((a, i, arr) => !(a === "--ui" || (a === "tmux" && arr[i - 1] === "--ui")));
-
-  // NOTE: no 'exec' here — we want to continue the wrapper afterward
   const innerCmd =
     `LOG_LEVEL=${process.env.LOG_LEVEL ?? "INFO"} DEBUG=${process.env.DEBUG ?? ""} ` +
     `org ${innerArgs.map(shq).join(" ")}`;
 
-  // Wrapper keeps pane open, shows exit code, then drops into an interactive shell
+  // Keep the pane alive even if org exits; show exit code; drop into a shell.
+  // NOTE: avoid 'set -u' and 'set -e' to prevent 'rc: unbound variable' on failures.
   const wrapped = [
-    "set -euo pipefail",
+    "set -o pipefail",
     "rc=0",
-    // run the command; always record its exit code even if it fails under -e
-    `{ " + innerCmd + " ; rc=$?; } || rc=$?`,
+    innerCmd,
+    "rc=$?",
     "echo",
     "echo \"[tmux-ui] org exited with code: $rc\"",
     "echo \"[tmux-ui] staying in shell; Ctrl-b d to detach\"",
     "exec bash -l"
   ].join(" ; ");
 
-  // Create/ensure tmux server, respawn pane with wrapper, attach
+  // Create/ensure tmux server, respawn pane with wrapper, then attach (blocks)
   const script = [
-    "set -euo pipefail",
+    "set -o pipefail",
     "tmux has-session -t org 2>/dev/null || tmux new-session -s org -d",
     `tmux respawn-pane -k -t org.0 "bash -lc ${shq(wrapped)}"`,
     "tmux attach -t org"
-  ].join("; ");
+  ].join(" ; ");
 
   process.stderr.write(`[tmux-ui] session=${sessionKey} cwd=${cwd}\n`);
   process.stderr.write(`[tmux-ui] reexec: ${innerCmd}\n`);
