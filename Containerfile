@@ -95,3 +95,14 @@ RUN set -eux; \
 
 # Optional: patch viewer command (for tmux popup or scripts)
 ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (command -v delta >/dev/null && delta -s --paging=never .org/last-session.patch || (echo; echo \"(delta not found; showing raw patch)\"; echo; cat .org/last-session.patch)); else echo \"No session patch found.\"; fi; echo; read -p \"Enter to close...\" _"'
+
+# ---------------------------
+# PROJECT EXPOSURE (surgical)
+# ---------------------------
+# Put the repo under /work/.org (matches your tmux/session code) and expose
+# the existing root ./org launcher on PATH so `org` resolves inside the container.
+WORKDIR /work/.org
+COPY . /work/.org
+RUN chmod +x /work/.org/org \
+ && ln -sf /work/.org/org /usr/local/bin/org \
+ && command -v org
