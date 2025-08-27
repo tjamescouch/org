@@ -1,34 +1,33 @@
 #!/usr/bin/env bash
-# org launcher (macOS/Linux, Bash 3.2+)
-# Exit codes: 66 = not found; 127 = runtime missing
-set -o pipefail
+# Robust 'org' launcher for macOS/Linux (Bash 3.2+)
+# Exit codes: 66 = cwd/entrypoint not found; 127 = runtime missing
+set -euo pipefail
 
 DBG="${ORG_DEBUG:-${DEBUG:-0}}"
-log() { [ "$DBG" = "1" ] || return 0; printf '[org.sh] %s\n' "$*" >&2; }
+log() { [ "$DBG" = "1" ] && printf '[org.sh] %s\n' "$*" >&2 || true; }
 
-# Re-entry guard
-: "${ORG_LAUNCHER_ONCE:=0}"
-[ "$ORG_LAUNCHER_ONCE" != "0" ] && log "re-entry blocked"
-export ORG_LAUNCHER_ONCE=1
-
-# Resolve script path (follow symlinks)
+# --- resolve script/appdir ----------------------------------------------------
 SCRIPT="${BASH_SOURCE[0]:-$0}"
 while [ -L "$SCRIPT" ]; do
-  L="$(readlink "$SCRIPT")"
+  L=$(readlink "$SCRIPT")
   case "$L" in
     /*) SCRIPT="$L" ;;
     *)  SCRIPT="$(cd "$(dirname "$SCRIPT")" && cd "$(dirname "$L")" && pwd)/$(basename "$L")" ;;
   esac
 done
-APPDIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
-log "script=$SCRIPT"; log "appdir=$APPDIR"
+APPDIR="${ORG_APPDIR:-$(cd "$(dirname "$SCRIPT")" && pwd)}"
+log "script=$SCRIPT"
+log "appdir=$APPDIR"
 
-# Parse -C/--cwd and collect remaining args
-CWD=""; args=()
+# --- parse args ---------------------------------------------------------------
+CWD="${ORG_CALLER_CWD:-}"
+ui=""
+args=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    -C|--cwd) shift; CWD="${1:-}"; shift || true ;;
-    *) args+=("$1"); shift ;;
+    -C|--cwd|--project) shift; CWD="${1:-}"; shift || true ;;
+    --ui)               shift; ui="${1:-}"; shift || true ;;
+    *)                  args+=("$1"); shift ;;
   esac
 done
 
@@ -37,65 +36,66 @@ if [ -n "$CWD" ]; then
   cd "$CWD" 2>/dev/null || { echo "org: cwd not found: $CWD" >&2; exit 66; }
 fi
 
-# Useful env for the app
-export ORG_CALLER_CWD="${ORG_CALLER_CWD:-$PWD}"
-export ORG_APPDIR="$APPDIR"
-export ORG_SESSION_DIR="${ORG_SESSION_DIR:-$PWD/.org}"
+# --- inside-container detection & path normalization --------------------------
+INSIDE_CONTAINER=""
+{ [ -f /.dockerenv ] || [ -f /run/.containerenv ]; } && INSIDE_CONTAINER=1
+if [ -n "$INSIDE_CONTAINER" ]; then
+  # dev mount convention: project at /work, or the baked tree at /work/.org
+  if [ -d /work/.org/src ]; then
+    APPDIR="/work/.org"
+  elif [ -d /work/src ]; then
+    APPDIR="/work"
+  fi
+  log "container detected -> appdir rewired to $APPDIR"
+fi
 
-# Resolve entrypoint (prefer src/app.ts so the UI router runs)
+# --- resolve entrypoint (prefer src/app.ts; fallback runner.ts; dist/runner.js)
 ENTRY="${ORG_ENTRY:-}"
+try_entries=("$APPDIR/src/app.ts" "$APPDIR/runner.ts" "$APPDIR/dist/runner.js")
 if [ -z "$ENTRY" ]; then
-  for p in \
-    "$APPDIR/src/app.ts" \
-    "$APPDIR/runner.ts" "$APPDIR/runner.mts" "$APPDIR/runner.js" \
-    "$APPDIR/dist/runner.js"
-  do
+  for p in "${try_entries[@]}"; do
     [ -f "$p" ] && { ENTRY="$p"; break; }
   done
 fi
-# package.json bin fallback
-if [ -z "$ENTRY" ] && command -v jq >/dev/null 2>&1 && [ -f "$APPDIR/package.json" ]; then
-  BIN="$(jq -r 'if .bin then if (.bin|type)=="object" then (.bin.org // .bin["org"] // empty) else .bin end else empty end' "$APPDIR/package.json" 2>/dev/null || true)"
-  [ -n "$BIN" ] && { case "$BIN" in /*) ENTRY="$BIN" ;; *) ENTRY="$APPDIR/$BIN" ;; esac; }
-fi
-[ -n "$ENTRY" ] || { echo "org: entrypoint not found. Tried src/app.ts, runner.ts/mts/js, dist/runner.js next to $APPDIR" >&2; exit 66; }
+[ -n "$ENTRY" ] || { echo "org: entrypoint not found next to $APPDIR" >&2; exit 66; }
+log "entry=$ENTRY"; [ "$DBG" = "1" ] && { ls -l "$ENTRY" >&2 || true; head -n1 "$ENTRY" >&2 || true; }
 
-export ORG_ENTRY="$ENTRY"
-log "entry=$ENTRY"
-[ "$DBG" = "1" ] && { ls -l "$ENTRY" >&2 || true; head -n1 "$ENTRY" >&2 || true; }
-
-# Default UI to console unless caller provided --ui
-has_ui=0
-for a in "${args[@]}"; do
-  if [ "$a" = "--ui" ]; then has_ui=1; break; fi
-done
-if [ $has_ui -eq 0 ]; then
-  args+=(--ui console)
-  log "ui defaulted to console (add --ui tmux to use tmux)"
-fi
-
-# Locate Bun (prefer), else Node+tsx
-pick_bun() {
-  if [ -n "${BUN_BIN:-}" ] && [ -x "$BUN_BIN" ]; then echo "$BUN_BIN"; return 0; fi
-  if command -v bun >/dev/null 2>&1; then command -v bun; return 0; fi
-  if [ -x /root/.bun/bin/bun ]; then echo /root/.bun/bin/bun; return 0; fi
-  if [ -n "${HOME:-}" ] && [ -x "$HOME/.bun/bin/bun" ]; then echo "$HOME/.bun/bin/bun"; return 0; fi
-  return 1
-}
-
-if BUN="$(pick_bun)"; then
-  log "exec: $BUN \"$ENTRY\" ${args[*]}"
-  exec "$BUN" "$ENTRY" "${args[@]}"
-fi
-
-if command -v node >/dev/null 2>&1; then
+# --- runtime selection (bun preferred) ---------------------------------------
+if command -v bun >/dev/null 2>&1; then
+  RUN=(bun "$ENTRY")
+elif command -v node >/dev/null 2>&1; then
   if command -v npx >/dev/null 2>&1; then
-    log "exec: npx --yes tsx \"$ENTRY\" ${args[*]}"
-    exec npx --yes tsx "$ENTRY" "${args[@]}"
+    RUN=(npx --yes tsx "$ENTRY")
+  else
+    echo "org: Node found but tsx missing. Install 'tsx' (npm i -g tsx) or install bun." >&2
+    exit 127
   fi
-  echo "org: Node found but tsx is missing. Install tsx (npm i -g tsx) or install Bun." >&2
+else
+  echo "org: neither bun nor node runtime found in PATH." >&2
   exit 127
 fi
 
-echo "org: neither Bun nor Node runtime found in PATH." >&2
-exit 127
+# --- UI selection -------------------------------------------------------------
+ui="${ui:-${ORG_FORCE_UI:-console}}"
+
+if [ "$ui" = "tmux" ]; then
+  # If already *in* tmux, just run the console UI (tmux is the multiplexer)
+  if [ -n "${TMUX:-}" ]; then
+    log "already in tmux; downgrading to console UI"
+    exec "${RUN[@]}" --ui console "${args[@]}"
+  fi
+
+  # Build the exact command we want tmux to run *inside* its session.
+  # Always force console UI inside tmux; pass normalized cwd/appdir.
+  CMD=$(printf '%q ' env \
+    ORG_TMUX=1 ORG_FORCE_UI=console ORG_APPDIR="$APPDIR" ORG_CALLER_CWD="$PWD" \
+    "${RUN[@]}" --ui console "${args[@]}")
+  log "tmux CMD=$CMD"
+
+  TMUX_NAME="${ORG_TMUX_NAME:-org}"
+  # Start (or attach) the tmux session *first*, then run our command inside.
+  exec tmux new-session -A -s "$TMUX_NAME" "bash -lc $CMD"
+fi
+
+# --- default: console UI ------------------------------------------------------
+exec "${RUN[@]}" --ui console "${args[@]}"
