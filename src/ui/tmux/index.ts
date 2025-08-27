@@ -13,7 +13,10 @@ export async function launchTmuxUI(argv: string[]): Promise<number> {
   const sessionKey = currentSandboxSessionKey() ?? "default";
   const cwd = typeof (R as any)?.cwd === "function" ? (R as any).cwd() : R.cwd();
 
-  // Verify tmux is available *inside that same session*
+  // 1) ensure the session exists and PATH/env is set the same way as tools
+  await shCapture("true", { projectDir: cwd, agentSessionId: sessionKey });
+
+  // 2) check tmux in that same session
   const check = await shCapture("command -v tmux >/dev/null 2>&1 && tmux -V >/dev/null 2>&1", {
     projectDir: cwd,
     agentSessionId: sessionKey
