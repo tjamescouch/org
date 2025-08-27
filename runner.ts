@@ -31,10 +31,10 @@ if ((R.env.DEBUG === "1" || R.env.ORG_DEBUG === "1")) {
 // 1) Switch the process working directory *before* loading the app.
 const callerCwd = R.env.ORG_CALLER_CWD || R.env.PWD || R.cwd();
 try {
-  R.chdir(callerCwd);
+  process.chdir(callerCwd);
 } catch (e) {
   console.error(`org: failed to chdir to ${callerCwd}:`, e);
-  R.exit(1);
+  process.exit(1);
 }
 
 // Optionally keep repo tools in PATH (useful if agents shell out)
