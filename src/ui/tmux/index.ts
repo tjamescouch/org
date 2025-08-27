@@ -1,3 +1,4 @@
+// src/ui/tmux/index.ts
 import { shCapture, shInteractive, currentSandboxSessionKey } from "../../tools/sandboxed-sh";
 
 const shq = (s: string) => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -12,6 +13,21 @@ function firstAgentIdFromArgv(argv: string[]): string {
   return "alice";
 }
 
+// Choose a conservative env-forwarding policy
+function buildForwardEnv(): Record<string, string> {
+  const src = process.env;
+  const out: Record<string, string> = {};
+  const allowPrefixes = ["ORG_", "OPENAI_", "SANDBOX_", "OLLAMA_", "LLM_", "HTTP_", "HTTPS_"];
+  const allowVars = ["DEBUG", "LOG_LEVEL", "TERM", "PATH"];
+  for (const [k, v] of Object.entries(src)) {
+    if (allowVars.includes(k)) out[k] = String(v ?? "");
+    else if (allowPrefixes.some((p) => k.startsWith(p))) out[k] = String(v ?? "");
+  }
+  // Always set the session dir inside the container workspace
+  out["ORG_SESSION_DIR"] = "/work/.org";
+  return out;
+}
+
 export async function launchTmuxUI(argv: string[]): Promise<number> {
   const hostCwd = process.cwd();
   const sessionKey =
@@ -21,11 +37,17 @@ export async function launchTmuxUI(argv: string[]): Promise<number> {
 
   await shCapture("true", { projectDir: hostCwd, agentSessionId: sessionKey });
 
+  // Re-run org WITHOUT --ui tmux to avoid recursion
   const innerArgs = argv.filter((a, i, arr) => !(a === "--ui" || (a === "tmux" && arr[i - 1] === "--ui")));
+  const forwardEnv = buildForwardEnv();
+
+  const envExports = Object.entries(forwardEnv)
+    .map(([k, v]) => `${k}=${shq(v)}`)
+    .join(" ");
+
   const innerCmd =
     `cd /work || cd "$PWD" || true; ` +
-    `ORG_SESSION_DIR=/work/.org DEBUG=${process.env.DEBUG ?? ""} LOG_LEVEL=${process.env.LOG_LEVEL ?? "INFO"} ` +
-    `./org ${innerArgs.map(shq).join(" ")}`;
+    `${envExports} ./org ${innerArgs.map(shq).join(" ")}`;
 
   const TMUX = "tmux -L orgsrv";
   const wrapped = [

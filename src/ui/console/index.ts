@@ -1,3 +1,4 @@
+// src/ui/console/index.ts
 import * as fs from "fs";
 import { findLastSessionPatch } from "../../lib/session-patch";
 
@@ -16,16 +17,12 @@ function enableRaw(): () => void {
 }
 
 function onKey(cb: (chunk: Buffer) => void): () => void {
-  const handler = (chunk: Buffer) => {
-    trace(`key=${JSON.stringify(chunk.toString("binary"))}`);
-    cb(chunk);
-  };
+  const handler = (chunk: Buffer) => { trace(`key=${JSON.stringify(chunk.toString("binary"))}`); cb(chunk); };
   process.stdin.on("data", handler);
   return () => process.stdin.off("data", handler);
 }
 
 async function promptYesNo(question: string): Promise<boolean> {
-  // tests read stdout
   process.stdout.write(`${question} [y/N] `);
   await new Promise((r) => setImmediate(r));
   return await new Promise<boolean>((resolve) => {
@@ -39,24 +36,25 @@ async function promptYesNo(question: string): Promise<boolean> {
 }
 
 async function interjectPrompt(seed?: Buffer): Promise<void> {
-  process.stdout.write("You: ");
+  process.stdout.write("You: ");                // visible prompt (stdout)
   await new Promise((r) => setImmediate(r));
 
   const chunks: Buffer[] = [];
-  if (seed?.length) { chunks.push(seed); process.stdout.write(seed.toString("utf8")); }
+  if (seed?.length) chunks.push(seed);         // do NOT echo seed; avoid double-echo from tty
 
   await new Promise<void>((resolve) => {
     const restore = enableRaw();
     const off = onKey((k) => {
       const s = k.toString("binary");
-      if (s === "\x1b") { off(); restore(); process.stdout.write("\n"); resolve(); }
-      else if (s === "\r" || s === "\n") {
+      if (s === "\x1b") {                       // ESC -> cancel
+        off(); restore(); process.stdout.write("\n"); resolve();
+      } else if (s === "\r" || s === "\n") {    // Enter -> submit; echo once
         off(); restore(); process.stdout.write("\n");
         const text = Buffer.concat(chunks).toString("utf8");
         if (text.length) process.stdout.write(text + "\n");
         resolve();
       } else {
-        chunks.push(k); process.stdout.write(s);
+        chunks.push(k);                         // collect only; no per-char echo
       }
     });
   });
@@ -64,7 +62,7 @@ async function interjectPrompt(seed?: Buffer): Promise<void> {
 
 function printable(b: Buffer): boolean {
   for (const byte of b.values()) {
-    if (byte === 0x1b || byte === 0x0a || byte === 0x0d) return false; // ESC / CR / LF
+    if (byte === 0x1b || byte === 0x0a || byte === 0x0d) return false; // ESC/CR/LF
   }
   return b.length > 0;
 }
@@ -72,10 +70,8 @@ function printable(b: Buffer): boolean {
 function hasNonEmptyPatch(cwd: string): string | null {
   const p = findLastSessionPatch(cwd);
   if (!p) return null;
-  try {
-    const st = fs.statSync(p);
-    return st.isFile() && st.size > 0 ? p : null;
-  } catch { return null; }
+  try { const st = fs.statSync(p); return st.isFile() && st.size > 0 ? p : null; }
+  catch { return null; }
 }
 
 export async function launchConsoleUI(_argv: string[]): Promise<number> {
@@ -88,7 +84,7 @@ export async function launchConsoleUI(_argv: string[]): Promise<number> {
     const off = onKey(async (chunk) => {
       const s = chunk.toString("binary");
 
-      // ESC — exit immediately if no non-empty patch; else prompt
+      // ESC: prompt only if there is a non-empty patch; else exit immediately
       if (s === "\x1b") {
         off(); restore();
         const patch = hasNonEmptyPatch(process.cwd());
@@ -98,12 +94,10 @@ export async function launchConsoleUI(_argv: string[]): Promise<number> {
         exitCode = 0; return resolve();
       }
 
-      // explicit 'i'
+      // Explicit 'i' opens interject
       if (s === "i" && !interjecting) {
-        interjecting = true;
-        off();
-        await interjectPrompt();
-        interjecting = false;
+        interjecting = true; off();
+        await interjectPrompt(); interjecting = false;
 
         process.nextTick(() => {
           const off2 = onKey(async (k2) => {
@@ -113,20 +107,17 @@ export async function launchConsoleUI(_argv: string[]): Promise<number> {
               const patch = hasNonEmptyPatch(process.cwd());
               trace(`esc(after-interject): patch=${patch ?? "<none>"} -> ${patch ? "prompt" : "exit"}`);
               if (!patch) { exitCode = 0; return resolve(); }
-              await promptYesNo("Apply this patch?");
-              exitCode = 0; return resolve();
+              await promptYesNo("Apply this patch?"); exitCode = 0; return resolve();
             }
           });
         });
         return;
       }
 
-      // typed text opens interjection
+      // Typed text w/o 'i' → open interject
       if (!interjecting && printable(chunk)) {
-        interjecting = true;
-        off();
-        await interjectPrompt(chunk);
-        interjecting = false;
+        interjecting = true; off();
+        await interjectPrompt(chunk); interjecting = false;
 
         process.nextTick(() => {
           const off2 = onKey(async (k2) => {
@@ -136,8 +127,7 @@ export async function launchConsoleUI(_argv: string[]): Promise<number> {
               const patch = hasNonEmptyPatch(process.cwd());
               trace(`esc(after-interject): patch=${patch ?? "<none>"} -> ${patch ? "prompt" : "exit"}`);
               if (!patch) { exitCode = 0; return resolve(); }
-              await promptYesNo("Apply this patch?");
-              exitCode = 0; return resolve();
+              await promptYesNo("Apply this patch?"); exitCode = 0; return resolve();
             }
           });
         });
