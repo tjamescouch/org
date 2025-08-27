@@ -113,6 +113,13 @@ export class Logger {
     } catch { /* ignore */ }
   }
   private static _stream(level: LevelName, chunk: string) {
+    const pfx = `${ts()} [${level.toUpperCase()}]`;
+    const text = `${pfx} ${chunk}`;
+    // Console
+    if (level === "error")       R.stderr(text);
+    else if (level === "warn")   R.stdio(text);
+    else                         R.stdio(text);
+
     if (level === "error")       this.stream.write(chunk);
     else if (level === "warn")   this.stream.write(chunk);
     else                         this.stream.write(chunk);
