@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // src/app.ts
 
-import os from "os";
+import * as os from "os";
 import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
@@ -23,69 +23,64 @@ import { sandboxMangers } from "./sandbox/session";
 import { launchUI } from "./ui";
 
 installTtyGuard();
-(function initLogging() {
-  // Allow override from environment set by the launcher
 
-  /** Allowed levels, case-insensitive. */
+/* ======================
+ * Logging initialization
+ * ====================== */
+(function initLogging() {
+  // Allowed levels
   const VALID_LEVELS = new Set(["trace", "debug", "info", "warn", "error"]);
 
-  /** Safe mkdir; returns the dir it created (or verified). Falls back to tmp on error. */
+  // mkdir with fallback to tmp
   function ensureDir(pref: string): string {
     let dir = path.resolve(pref);
     try {
       fs.mkdirSync(dir, { recursive: true });
       return dir;
     } catch {
-      // last-resort fallback
       dir = path.join(os.tmpdir(), "org", "logs");
       fs.mkdirSync(dir, { recursive: true });
       return dir;
     }
   }
 
-  /** Best-effort, ISO-ish timestamp safe for filenames. */
+  // ISO-ish filename (keep Z, replace ':' with '-')
   function isoForFilename(d = new Date()): string {
-    // Keep Z, replace colons with dashes. Remove ms dot to keep it extra shell-friendly.
     return d.toISOString().replace(/[:]/g, "-");
   }
 
-  /** Choose the logs directory. */
-  const BASE = process.env.ORG_APPDIR ? path.resolve(process.env.ORG_APPDIR) : process.cwd();
+  // Determine base app dir for defaults
+  const BASE =
+    process.env.ORG_APPDIR ? path.resolve(process.env.ORG_APPDIR) : process.cwd();
   const DEFAULT_DIR = path.resolve(BASE, ".org", "logs");
 
+  // Resolve directory
   const DIR_INPUT = (process.env.ORG_LOG_DIR ?? "").trim();
   const DIR = ensureDir(DIR_INPUT ? DIR_INPUT : DEFAULT_DIR);
 
-  /** Choose the log file path. */
+  // Resolve file
   const FILE_INPUT = (process.env.ORG_LOG_FILE ?? "").trim();
-
   let FILE: string;
   if (FILE_INPUT) {
-    // If absolute, use as-is; if relative (or contains subfolders), resolve under DIR.
     FILE = path.isAbsolute(FILE_INPUT)
       ? path.normalize(FILE_INPUT)
       : path.resolve(DIR, path.normalize(FILE_INPUT));
   } else {
     FILE = path.join(DIR, `run-${isoForFilename()}.log`);
   }
-
-  // Ensure parent exists in case FILE was outside DIR.
   fs.mkdirSync(path.dirname(FILE), { recursive: true });
 
-  /** Choose the log level, defaulting safely to "info". */
+  // Resolve level
   const LVL_RAW =
     (process.env.ORG_LOG_LEVEL ?? process.env.LOG_LEVEL ?? "info").toLowerCase();
   const LVL = VALID_LEVELS.has(LVL_RAW) ? LVL_RAW : "info";
 
-  // Export normalized env so other modules can rely on a single source of truth.
+  // Publish normalized env
   process.env.ORG_LOG_DIR = DIR;
   process.env.ORG_RUN_LOG = FILE;
   process.env.ORG_LOG_LEVEL = LVL;
 
-  // If you want to re-export for direct imports:
-  export { DIR, FILE, LVL };
-
-
+  // Wire Logger
   Logger.configure({ file: FILE, level: LVL });
   Logger.attachProcessHandlers();
   Logger.info("log file:", FILE);
@@ -118,16 +113,13 @@ function parseArgs(argv: string[]) {
 }
 
 function resolveProjectDir(seed: string): string {
-  // 1) If inside a git repo, use its toplevel
   try {
     const out = execFileSync("git", ["-C", seed, "rev-parse", "--show-toplevel"], {
       encoding: "utf8",
     }).trim();
     if (out) return out;
-  } catch {
-    /* ignore */
-  }
-  // 2) Walk up for a .git folder
+  } catch { /* ignore */ }
+
   let d = path.resolve(seed);
   while (true) {
     if (fs.existsSync(path.join(d, ".git"))) return d;
@@ -135,13 +127,11 @@ function resolveProjectDir(seed: string): string {
     if (up === d) break;
     d = up;
   }
-  // 3) Give up
   throw new Error(
     `Could not locate project root from ${seed}. Pass --project <dir> or run inside the repo.`,
   );
 }
 
-// very small arg parser for -C/--project
 function getProjectFromArgs(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "-C" || argv[i] === "--project") return argv[i + 1];
@@ -161,16 +151,10 @@ function setupProcessGuards() {
   if (dbgOn) {
     R.on("beforeExit", (code) => {
       Logger.info("[DBG] beforeExit", code, "— scheduler stays alive unless Ctrl+C");
-      setTimeout(() => {
-        /* keep loop alive while idle */
-      }, 60_000);
+      setTimeout(() => { /* keep loop alive while idle */ }, 60_000);
     });
-    R.on("uncaughtException", (e) => {
-      Logger.info("[DBG] uncaughtException:", e);
-    });
-    R.on("unhandledRejection", (e) => {
-      Logger.info("[DBG] unhandledRejection:", e);
-    });
+    R.on("uncaughtException", (e) => { Logger.info("[DBG] uncaughtException:", e); });
+    R.on("unhandledRejection", (e) => { Logger.info("[DBG] unhandledRejection:", e); });
     R.stdin.on("end", () => Logger.info("[DBG] stdin end"));
     R.stdin.on("pause", () => Logger.info("[DBG] stdin paused"));
     R.stdin.on("resume", () => Logger.info("[DBG] stdin resumed"));
@@ -197,10 +181,11 @@ function parseAgents(
   llmDefaults: { model: string; baseUrl: string; protocol: "openai"; apiKey?: string },
   recipeSystemPrompt?: string | null,
 ): AgentSpec[] {
-  const list = String(spec || "alice:lmstudio") //FIXME - 2 defaults?
+  const list = String(spec || "alice:lmstudio")
     .split(",")
     .map((x) => x.trim())
     .filter(Boolean);
+
   const out: AgentSpec[] = [];
   for (const item of list) {
     const [id, kindRaw = "mock"] = item.split(":");
@@ -243,14 +228,9 @@ async function listRecentSessionPatches(projectDir: string, minutes = 20): Promi
       try {
         const st = await fsp.stat(patch);
         if (st.isFile() && st.size > 0 && st.mtimeMs >= cutoff) out.push(patch);
-      } catch {
-        /* ignore */
-      }
+      } catch { /* ignore */ }
     }
-  } catch {
-    /* ignore */
-  }
-  // newest last
+  } catch { /* ignore */ }
   return out.sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
 }
 
@@ -258,9 +238,7 @@ async function openPager(filePath: string) {
   await withCookedTTY(async () => {
     await new Promise<void>((resolve) => {
       const pager = R.env.ORG_PAGER || "delta -s || less -R || cat";
-      const p = spawn("sh", ["-lc", `${pager} ${JSON.stringify(filePath)}`], {
-        stdio: "inherit",
-      });
+      const p = spawn("sh", ["-lc", `${pager} ${JSON.stringify(filePath)}`], { stdio: "inherit" });
       p.on("exit", () => resolve());
     });
   });
@@ -282,30 +260,14 @@ function applyPatch(projectDir: string, patchPath: string) {
   execFileSync("git", ["-C", projectDir, "apply", "--index", patchPath], { stdio: "inherit" });
 }
 
-/**
- * Finalize: drain/stop scheduler, finalize sandboxes, and review/apply session patches.
- * Self-contained so ESC can call it via InputController without any external helper.
- */
 async function finalizeOnce(
   scheduler: RoundRobinScheduler | null,
   projectDir: string,
   reviewMode: "ask" | "auto" | "never",
 ) {
-  try {
-    await scheduler?.drain?.();
-  } catch {
-    /* ignore */
-  }
-  try {
-    await (sandboxMangers as any)?.finalizeAll?.();
-  } catch {
-    /* ignore */
-  }
-  try {
-    scheduler?.stop?.();
-  } catch {
-    /* ignore */
-  }
+  try { await scheduler?.drain?.(); } catch { /* ignore */ }
+  try { await (sandboxMangers as any)?.finalizeAll?.(); } catch { /* ignore */ }
+  try { scheduler?.stop?.(); } catch { /* ignore */ }
 
   const isTTY = R.stdout.isTTY;
   const patches = await listRecentSessionPatches(projectDir, 120);
@@ -317,9 +279,7 @@ async function finalizeOnce(
   for (const patch of patches) {
     Logger.info(`Patch ready: ${patch}`);
 
-    if (reviewMode === "never") {
-      continue; // leave artifacts only
-    }
+    if (reviewMode === "never") continue;
 
     if (reviewMode === "auto" || !isTTY) {
       try {
@@ -332,7 +292,6 @@ async function finalizeOnce(
       continue;
     }
 
-    // reviewMode === 'ask' and TTY
     await openPager(patch);
     const yes = await askYesNo("Apply this patch? [y/N]");
     if (yes) {
@@ -349,13 +308,16 @@ async function finalizeOnce(
   }
 }
 
+/* =====
+ * Main
+ * ===== */
 
 async function main() {
   const cfg = loadConfig();
   const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
   const args = parseArgs(argv);
 
-  // Optional tmux doctoring if explicitly asked for tmux UI
+  // Optional tmux checks only when explicitly requested
   if (args["ui"] === "tmux") {
     const sandbox = R.env.SANDBOX_BACKEND ?? "podman";
     const tmuxScope: "host" | "container" =
@@ -366,11 +328,10 @@ async function main() {
     }
   }
 
-  // Launch UI **but don't await yet**
+  // Launch UI now; allow app to keep wiring; we’ll await at the end
   const ui = (args["ui"] as string | undefined) ?? R.env.ORG_FORCE_UI ?? "console";
   const uiDone = launchUI(ui, argv).catch((e) => { Logger.info(e); return 1; });
 
-  // ---- From here on, your existing setup stays the same ----
   enableDebugIfRequested(args);
   setupProcessGuards();
 
@@ -384,6 +345,7 @@ async function main() {
 
   let maxTools = Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20)));
   computeMode({ allowTools: recipe?.allowTools });
+
   Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
 
   const agentsSpec =
@@ -392,32 +354,36 @@ async function main() {
     "alice:lmstudio";
 
   const agentSpecs = parseAgents(agentsSpec, cfg.llm, recipe?.system ?? null);
-
   if (agentSpecs.length === 0) {
-    Logger.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
+    Logger.error('No agents. Use --agents "alice:lmstudio,bob:mock" or "alice:mock,bob:mock"');
     R.exit(1);
   }
 
   const agents = agentSpecs.map(a => ({
     id: a.id,
-    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => a.model.respond(prompt, budget, peers, cb),
+    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) =>
+      a.model.respond(prompt, budget, peers, cb),
     guardOnIdle: (state: any) => a.model.guardOnIdle?.(state) ?? null,
-    guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null,
+    guardCheck: (route: any, content: string, peers: string[]) =>
+      a.model.guardCheck?.(route, content, peers) ?? null,
   }));
+
+  const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
 
   const input = new InputController({
     interjectKey: String(args["interject-key"] || "i"),
     interjectBanner: String(args["banner"] || "You: "),
+    // ESC finalizer path
     finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
   });
 
-  const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
   const scheduler = new RoundRobinScheduler({
     agents,
     maxTools,
     onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
     projectDir,
     reviewMode,
+    // promptEnabled: if --prompt present as a string => non-interactive seed
     promptEnabled: (typeof args["prompt"] === "boolean" ? args["prompt"] : R.stdin.isTTY),
   });
 
@@ -425,7 +391,7 @@ async function main() {
 
   // Kickoff
   let kickoff: string | boolean | undefined;
-  if (args["prompt"] === true) kickoff = true;
+  if (args["prompt"] === true) kickoff = true;                   // explicit ask
   else if (typeof args["prompt"] === "string") kickoff = args["prompt"];
   else if (recipe?.kickoff) kickoff = recipe.kickoff;
 
@@ -436,7 +402,7 @@ async function main() {
   await scheduler.start();
   await reviewManager.finalizeAndReview();
 
-  // Wait for UI to finish (ESC/Ctrl-C), then finalize and exit with UI's code
+  // Wait for UI to finish (ESC/Ctrl+C), then finalize and exit with UI’s code
   const code = await uiDone;
   await finalizeOnce(scheduler, projectDir, reviewMode);
   R.exit(code ?? 0);
