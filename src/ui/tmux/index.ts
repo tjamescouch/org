@@ -46,7 +46,7 @@ export async function launchTmuxUI(argv: string[]): Promise<number> {
     "set -euo pipefail",
     "rc=0",
     // run the command; always record its exit code even if it fails under -e
-    `{ " + innerCmd + " ; rc=$?; } || rc=$?",
+    `{ " + innerCmd + " ; rc=$?; } || rc=$?`,
     "echo",
     "echo \"[tmux-ui] org exited with code: $rc\"",
     "echo \"[tmux-ui] staying in shell; Ctrl-b d to detach\"",
