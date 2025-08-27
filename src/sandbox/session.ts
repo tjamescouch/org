@@ -66,28 +66,46 @@ export class SandboxManager {
     constructor(private projectDir: string, private runRoot?: string, private opts: SessionManagerOptions = { backend: "auto" }) { }
 
 
-    async execInteractive(cmd: string, opts: { tty?: boolean; env?: Record<string, string> } = {}): Promise<number> {
-        const args: string[] = ["exec"];
-        if (opts.tty !== false) args.push("-ti");
+    public async execInteractive(
+        argv: string[],
+        opts: {
+            tty?: boolean;              // default true
+            inheritStdio?: boolean;     // default true (let tmux control the terminal)
+            env?: Record<string, string>;
+            cwd?: string;
+        } = {}
+    ): Promise<{ exit: number; ok: boolean }> {
+        const name =
+            (this as any).containerName ??
+            (this as any).containerId ??
+            (typeof (this as any).ensureContainer === "function"
+                ? await (this as any).ensureContainer()
+                : null);
 
-        // Working dir inside container where your /work is mounted
-        args.push("--workdir", "/work");
+        if (!name) {
+            throw new Error("PodmanSession: container name/id is not set (or ensureContainer failed).");
+        }
 
-        // Pass through common envs so tmux/line-drawing works
-        const env = {
-            TERM: R.env.TERM || "xterm-256color",
-            LANG: R.env.LANG || "en_US.UTF-8",
-            LC_ALL: R.env.LC_ALL || R.env.LANG || "en_US.UTF-8",
-            ...(opts.env || {}),
-        };
-        for (const [k, v] of Object.entries(env)) args.push("-e", `${k}=${v}`);
+        const podmanArgs: string[] = ["exec"];
+        // tmux needs a real TTY. Make it opt-out (tty true by default).
+        if (opts.tty !== false) podmanArgs.push("-it");
+        if (opts.cwd) podmanArgs.push("--workdir", opts.cwd);
 
-        // container name/id — however your class stores it
-        args.push(CONTAINER_NAME, "bash", "-lc", cmd); //FIXME - container name can be overridden this will break
+        for (const [k, v] of Object.entries(opts.env ?? {})) {
+            podmanArgs.push("-e", `${k}=${v}`);
+        }
 
-        const p = spawn("podman", args, { stdio: "inherit" });
-        return await new Promise<number>((resolve) => p.on("exit", (c) => resolve(c ?? 0)));
+        podmanArgs.push(name, ...argv);
+
+        return await new Promise((resolve) => {
+            const child = spawn("podman", podmanArgs, {
+                stdio: opts.inheritStdio === false ? "pipe" : "inherit",
+                env: R.env,
+            });
+            child.on("exit", (code) => resolve({ exit: code ?? 0, ok: (code ?? 0) === 0 }));
+        });
     }
+
 
 
     async getOrCreate(id: string, policyOverrides: Partial<ExecPolicy> = {}) {
@@ -137,7 +155,7 @@ export class SandboxManager {
         await fsp.mkdir(path.dirname(dst), { recursive: true });
 
         // Resolution order:
-        const envPath = process.env.ORG_STEP_SCRIPT;
+        const envPath = R.env.ORG_STEP_SCRIPT;
         const candidates = [
             envPath && path.resolve(envPath),
             path.join(spec.projectDir, "scripts", "org-step.sh"),         // repo root
