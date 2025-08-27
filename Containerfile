@@ -2,7 +2,7 @@ FROM debian:12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Base packages + a good TTY UX (tmux, vim-nox, less, locales)
+# Base packages + a good TTY UX (tmux, vimdiff, vim-nox, less, locales)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
     bash ca-certificates curl git rsync jq file \
@@ -11,14 +11,30 @@ RUN apt-get update \
     nodejs npm \
     unzip zip tar xz-utils \
     tmux ncurses-term less locales \
-    vim-nox \
+    vim-nox vim-diff \
  && rm -rf /var/lib/apt/lists/*
 
-# Locale for better readline/Unicode behavior (optional but recommended)
+# Install Bun system-wide (fail fast if error)
+ARG BUN_VERSION=1.1.29
+RUN set -eux; \
+  arch="$(dpkg --print-architecture)"; \
+  case "$arch" in \
+    amd64) bunarch='x64' ;; \
+    arm64) bunarch='aarch64' ;; \
+    *) echo "Unsupported arch: $arch"; exit 1 ;; \
+  esac; \
+  curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-${bunarch}.zip" -o /tmp/bun.zip; \
+  apt-get update && apt-get install -y --no-install-recommends unzip; \
+  unzip -p /tmp/bun.zip bun-linux-${bunarch}/bun > /usr/local/bin/bun; \
+  chmod +x /usr/local/bin/bun; \
+  rm -rf /var/lib/apt/lists/* /tmp/bun.zip; \
+  /usr/local/bin/bun --version
+
+# Locale for better readline/Unicode behavior
 RUN sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
-# Safe default TERM inside the container; outer terminal can be anything.
+# Safe default TERM inside the container
 ENV TERM=xterm-256color
 
 # Install 'delta' (nice patch viewer) from GitHub releases
@@ -93,7 +109,7 @@ RUN set -eux; \
 > /usr/local/bin/apply_patch \
  && chmod +x /usr/local/bin/apply_patch
 
-# Optional: patch viewer command (for tmux popup or scripts)
+# Optional: patch viewer command
 ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (command -v delta >/dev/null && delta -s --paging=never .org/last-session.patch || (echo; echo \"(delta not found; showing raw patch)\"; echo; cat .org/last-session.patch)); else echo \"No session patch found.\"; fi; echo; read -p \"Enter to close...\" _"'
 
 # ---------------------------
