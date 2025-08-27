@@ -65,7 +65,7 @@ export class SandboxManager {
 
     constructor(private projectDir: string, private runRoot?: string, private opts: SessionManagerOptions = { backend: "auto" }) { }
 
-
+/*
     public async execInteractive(
         argv: string[],
         opts: {
@@ -105,7 +105,7 @@ export class SandboxManager {
             child.on("exit", (code) => resolve({ exit: code ?? 0, ok: (code ?? 0) === 0 }));
         });
     }
-
+*/
 
 
     async getOrCreate(id: string, policyOverrides: Partial<ExecPolicy> = {}) {
