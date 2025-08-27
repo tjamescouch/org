@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // src/app.ts
 
+import os from "os";
 import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
@@ -24,14 +25,66 @@ import { launchUI } from "./ui";
 installTtyGuard();
 (function initLogging() {
   // Allow override from environment set by the launcher
-  const DIR  = process.env.ORG_LOG_DIR
-            || path.join(process.cwd(), ".org", "logs");
-  fs.mkdirSync(DIR, { recursive: true });
-  const FILE = process.env.ORG_LOG_FILE
-            || path.join(DIR, `run-${new Date().toISOString().replace(/[:.]/g, "-")}.log`);
-  const LVL  = process.env.ORG_LOG_LEVEL
-            || process.env.LOG_LEVEL
-            || "info";
+
+  /** Allowed levels, case-insensitive. */
+  const VALID_LEVELS = new Set(["trace", "debug", "info", "warn", "error"]);
+
+  /** Safe mkdir; returns the dir it created (or verified). Falls back to tmp on error. */
+  function ensureDir(pref: string): string {
+    let dir = path.resolve(pref);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    } catch {
+      // last-resort fallback
+      dir = path.join(os.tmpdir(), "org", "logs");
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    }
+  }
+
+  /** Best-effort, ISO-ish timestamp safe for filenames. */
+  function isoForFilename(d = new Date()): string {
+    // Keep Z, replace colons with dashes. Remove ms dot to keep it extra shell-friendly.
+    return d.toISOString().replace(/[:]/g, "-");
+  }
+
+  /** Choose the logs directory. */
+  const BASE = process.env.ORG_APPDIR ? path.resolve(process.env.ORG_APPDIR) : process.cwd();
+  const DEFAULT_DIR = path.resolve(BASE, ".org", "logs");
+
+  const DIR_INPUT = (process.env.ORG_LOG_DIR ?? "").trim();
+  const DIR = ensureDir(DIR_INPUT ? DIR_INPUT : DEFAULT_DIR);
+
+  /** Choose the log file path. */
+  const FILE_INPUT = (process.env.ORG_LOG_FILE ?? "").trim();
+
+  let FILE: string;
+  if (FILE_INPUT) {
+    // If absolute, use as-is; if relative (or contains subfolders), resolve under DIR.
+    FILE = path.isAbsolute(FILE_INPUT)
+      ? path.normalize(FILE_INPUT)
+      : path.resolve(DIR, path.normalize(FILE_INPUT));
+  } else {
+    FILE = path.join(DIR, `run-${isoForFilename()}.log`);
+  }
+
+  // Ensure parent exists in case FILE was outside DIR.
+  fs.mkdirSync(path.dirname(FILE), { recursive: true });
+
+  /** Choose the log level, defaulting safely to "info". */
+  const LVL_RAW =
+    (process.env.ORG_LOG_LEVEL ?? process.env.LOG_LEVEL ?? "info").toLowerCase();
+  const LVL = VALID_LEVELS.has(LVL_RAW) ? LVL_RAW : "info";
+
+  // Export normalized env so other modules can rely on a single source of truth.
+  process.env.ORG_LOG_DIR = DIR;
+  process.env.ORG_RUN_LOG = FILE;
+  process.env.ORG_LOG_LEVEL = LVL;
+
+  // If you want to re-export for direct imports:
+  export { DIR, FILE, LVL };
+
 
   Logger.configure({ file: FILE, level: LVL });
   Logger.attachProcessHandlers();
@@ -298,7 +351,7 @@ async function finalizeOnce(
 
 
 async function main() {
-  const cfg  = loadConfig();
+  const cfg = loadConfig();
   const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
   const args = parseArgs(argv);
 

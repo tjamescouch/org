@@ -92,7 +92,7 @@ export class Logger {
   // --- public API (kept intact)
   static trace(...a: any[]) { this._log("trace", a); }
   static debug(...a: any[]) { this._log("debug", a); }
-  static info (...a: any[]) { this._log("info",  a); }
+  static info(...a: any[]) { this._log("info", a); }
 
   /**
    * Streaming-friendly info: prints **exactly** what you pass (no prefix,
@@ -104,7 +104,7 @@ export class Logger {
     void this._writeFile(s, /*stream*/ true);
   }
 
-  static warn (...a: any[]) { this._log("warn",  a); }
+  static warn(...a: any[]) { this._log("warn", a); }
   static error(...a: any[]) { this._log("error", a); }
 
   /** Non-breaking runtime configuration hook (kept). */
@@ -234,8 +234,8 @@ export class Logger {
     switch (level) {
       case "trace": return `${C.fgGray}${s}${C.reset}`;
       case "debug": return `${C.fgCyan}${s}${C.reset}`;
-      case "info":  return `${C.fgGreen}${s}${C.reset}`;
-      case "warn":  return `${C.fgYellow}${s}${C.reset}`;
+      case "info": return `${C.fgGreen}${s}${C.reset}`;
+      case "warn": return `${C.fgYellow}${s}${C.reset}`;
       case "error": return `${C.fgRed}${s}${C.reset}`;
     }
   }
@@ -262,10 +262,13 @@ export class Logger {
     }
   }
 
+  private static _announced = false;
+
   private static async _ensureFileSink() {
     if (!this._file.enabled) return;
     if (this._fileStream) return;
     if (this._openPromise) return this._openPromise;
+
     this._openPromise = (async () => {
       try {
         const base = path.resolve(this._file.appDir);
@@ -277,26 +280,40 @@ export class Logger {
           const d = new Date();
           const pad = (n: number) => String(n).padStart(2, "0");
           const ymd = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
-          name = `org-${ymd}.log`;
+          name = `run-${d.toISOString().replace(/[:]/g, "-")}.log`; // run-YYYY-MM-DDTHH-MM-SS.mmmZ.log
+          // daily file fallback would be: name = `org-${ymd}.log`;
         }
-        const filePath = path.join(logs, name);
+
+        // If someone passes an absolute file name, use it as-is. If it's relative,
+        // store it in {appDir}/logs/<name>.
+        const filePath = path.isAbsolute(name) ? name :
+          name.includes(path.sep) ? path.join(base, name) :
+            path.join(logs, name);
+
         const stream = fs.createWriteStream(filePath, { flags: "a", encoding: "utf8" });
         stream.write(`\n==== logger attached @ ${ts()} pid=${process.pid} ====\n`);
 
         this._fileStream = stream;
         this._filePath = filePath;
 
+        // Export absolute run-log path for all other modules to consume.
+        process.env.ORG_RUN_LOG = filePath;
+
+        // Keep "latest.log" convenience symlink if enabled.
         if (this._file.symlinkLatest) {
           try {
             const latest = path.join(logs, "latest.log");
             await fsp.rm(latest, { force: true });
             await fsp.symlink(path.basename(filePath), latest);
-          } catch {
-            /* ignore */
-          }
+          } catch { /* ignore */ }
+        }
+
+        // Announce once so you see where the run is writing.
+        if (!this._announced) {
+          this.info(`log file: ${JSON.stringify(filePath)}`);
+          this._announced = true;
         }
       } catch (e) {
-        // degrade gracefully if file sink fails
         this._fileStream = null;
         this._filePath = null;
         this._writeConsole("warn", `logger: could not open file sink: ${asText(e)}`);
@@ -307,9 +324,14 @@ export class Logger {
     return this._openPromise;
   }
 
+  // Public helper so other code never rebuilds the path.
+  static runLogPath(): string | null {
+    return this._filePath || process.env.ORG_RUN_LOG || null;
+  }
+
   private static _reopenFileSink() {
     if (this._fileStream) {
-      try { this._fileStream.end(`\n==== logger detached @ ${ts()} ====\n`); } catch {}
+      try { this._fileStream.end(`\n==== logger detached @ ${ts()} ====\n`); } catch { }
     }
     this._fileStream = null;
     this._filePath = null;
@@ -331,8 +353,8 @@ export class Logger {
   private static _flushFile(context: string) {
     const s = this._fileStream;
     if (!s) return;
-    try { s.write(`\n==== flush @ ${ts()} (${context}) ====\n`); } catch {}
-    try { s.emit("drain"); } catch {}
+    try { s.write(`\n==== flush @ ${ts()} (${context}) ====\n`); } catch { }
+    try { s.emit("drain"); } catch { }
   }
 
   private static _log(level: LogLevel, args: any[]) {
