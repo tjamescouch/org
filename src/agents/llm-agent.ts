@@ -20,6 +20,8 @@ export interface AgentReply {
 function buildSystemPrompt(id: string): string {
   return [
     `You are agent "${id}". Work autonomously in the caller's current directory inside a Debian VM.`,
+    "- DO NOT LIE",
+    "- Do not pretend or hallucinate tool call results. Do not misrepresent the facts.",
     "",
     "TOOLS",
     "- sh(cmd): run a POSIX command. Args: {cmd:string}. Returns {ok, stdout, stderr, exit_code, cmd}.",
@@ -172,7 +174,15 @@ export class LlmAgent extends Agent {
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
       tools: this.tools,
-      onReasoningToken: t => Logger.streamInfo(C.cyan(t)),
+      onReasoningToken: t => {
+        if (process.env.HIDE_COT) {
+          Logger.streamInfo(C.cyan('.'));
+
+          return;
+        }
+
+        Logger.streamInfo(C.cyan(t))
+      },
       onToken: t => {
         if (streamState !== "content") {
           Logger.info("");

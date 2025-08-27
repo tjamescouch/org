@@ -74,6 +74,7 @@ async function showPatch(patchPath: string) {
     // Prefer delta if present; fall back to less -R
     const viewers: Array<{ cmd: string, args: string[] }> = [
         { cmd: "delta", args: [patchPath] },
+        { cmd: "diff", args: ["-color=auto", "-u", patchPath] },
         { cmd: "less", args: ["-R", patchPath] },
     ];
     for (const v of viewers) {
@@ -130,10 +131,14 @@ export async function decideReview(mode: ReviewMode, projectDir: string, patchPa
     let ok = false;
     // ask: show patch, then confirm
     await withMutedShHeartbeat(async () => {
+        const view = await askYesNo("View patch?", true);
+        if (!view) {
+            return;
+        }
         await showPatch(patchPath);
         ok = await askYesNo("Apply this patch?", false);
     });
-    
+
     return ok ? { action: "apply", commitMsg: autoMsg(s) } : { action: "reject" };
 }
 

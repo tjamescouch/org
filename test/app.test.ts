@@ -216,7 +216,7 @@ test('makeRouter dispatches calls to provided callbacks', async () => {
       calls.push({ kind: 'file', from, name, content });
     },
   }, [{ id: 'dave', respond: async (): Promise<AgentReply[]> => [] }])
-  const msg = 'Intro @@dave Hi @@group Everyone ##doc.txt Contents @@user Please review';
+  const msg = 'Intro @@dave Hi @@group Everyone ##file:doc.txt Contents @@user Please review';
   const outcome = await router('alice', msg);
   // Four deliveries: preamble group, agent, group, file, user
   assert.equal(calls.length, 5);

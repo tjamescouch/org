@@ -33,7 +33,7 @@ export type SchedulerOptions = {
   agents: Responder[];
   maxTools: number;
   projectDir: string;
-  reviewMode?: "off" | "light" | "strict";
+  reviewMode?: "ask" | "never" | "auto"
   onAskUser: AskUserFn;
   promptEnabled?: boolean;
   idleSleepMs?: number;

@@ -7,7 +7,7 @@
  *
  * Examples:
  * parse(`@@david here are the documents
- * @@robert did you get that thing I sent you? ##blob.txt This is an awesome
+ * @@robert did you get that thing I sent you? ##file:blob.txt This is an awesome
  * file I made for you.
  * @@group what are we all thinking?`)
  *

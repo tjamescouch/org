@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import { PATHS } from "./paths";
+import { Logger } from "../logger";
 
 /** Expand "~" and ignore nonsense; only keep existing dirs; de-dupe; whitelist first. */
 export function buildPATH(basePATH: string, extra: string[] = []): string {
@@ -13,12 +14,8 @@ export function buildPATH(basePATH: string, extra: string[] = []): string {
     if (!p) return;
     if (p === "." || /\0/.test(p)) return;
     const dir = expand(p);
-    try {
-      if (fs.statSync(dir).isDirectory() && !seen.has(dir)) {
-        seen.add(dir);
-        out.push(dir);
-      }
-    } catch { /* skip */ }
+    seen.add(dir);
+    out.push(dir);
   };
 
   // 1) Whitelist (authoritative, comes first)

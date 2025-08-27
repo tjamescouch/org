@@ -56,8 +56,8 @@ const DEFAULTS: Required<Omit<TagSplitterOptions,
   groupTokens: ["group"],
   fileTokens: ["file"],
   allowSingleAt: true,
-  allowSingleHash: true,
-  allowFileShorthand: true,
+  allowSingleHash: false,
+  allowFileShorthand: false,
   boundaryChars: " \t\n\r,;:()[]{}\"'`<>",
 };
 

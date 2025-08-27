@@ -138,7 +138,7 @@ describe("TagSplitter (token-driven)", () => {
 
   it("parses ##NAME file shorthand and normalizes to relative path", () => {
     const s = "##blob.txt This is an awesome\nfile I made for you.";
-    const parts = TagSplitter.split(s, baseOpts);
+    const parts = TagSplitter.split(s, {...baseOpts, allowFileShorthand: true});
     expect(parts).toHaveLength(1);
     expect(parts[0]).toEqual({
       kind: "file",
@@ -170,7 +170,7 @@ describe("TagSplitter (token-driven)", () => {
       index: 0,
     });
 
-    const p2 = TagSplitter.split("#src/main.ts code", { ...baseOpts, allowSingleHash: true });
+    const p2 = TagSplitter.split("#src/main.ts code", { ...baseOpts, allowSingleHash: true, allowFileShorthand: true });
     expect(p2).toHaveLength(1);
     expect(p2[0]).toEqual({
       kind: "file",

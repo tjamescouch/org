@@ -14,7 +14,7 @@ function resolveCli(): string {
   if (existsSync(local)) return `"${local}"`;
 
   // fallback to Bun entrypoint
-  return `bun run src/app.ts`;
+  return `~/.bun/bin/bun run src/app.ts`;
 }
 
 export function sh(
@@ -89,12 +89,18 @@ export function runOrg(
   };
 
   const cmd = `${CLI} -C "${repo}" --agents "alice:mock" --max-tools 10 --prompt '${prompt}'`;
+  console.log('test running', cmd);
 
   const r = spawnSync("bash", ["-lc", cmd], {
     cwd: process.cwd(),
     stdio: "pipe",
     env: { ...process.env, ...env },
   });
+
+  console.log('stout');
+  console.log(r.stdout.toString('utf8'));
+  console.log('sterr');
+  console.log(r.stderr.toString('utf8'));
 
   return {
     code: r.status ?? 0,
