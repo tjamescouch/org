@@ -180,6 +180,19 @@ async function main() {
   process.exit(0);
 }
 
+function isInteractiveSession(args: Record<string, any>): boolean {
+  // Interactive only when:
+  // - stdin is a TTY
+  // - user didn't pass a *string* for --prompt (string means "seed text and go")
+  // - user didn’t force disable (e.g. --prompt=false)
+  if (!process.stdin.isTTY) return false;
+  if (args["prompt"] === false) return false;
+  if (typeof args["prompt"] === "string") return false;
+  // default: interactive prompt if TTY and no explicit string
+  return true;
+}
+
+
 main().catch((e) => {
   Logger.info(e);
   disposeHotkeys();
