@@ -60,6 +60,20 @@ fi
 [ -n "$ENTRY" ] || { echo "org: entrypoint not found next to $APPDIR" >&2; exit 66; }
 log "entry=$ENTRY"; [ "$DBG" = "1" ] && { ls -l "$ENTRY" >&2 || true; head -n1 "$ENTRY" >&2 || true; }
 
+# --- runtime selection (bun preferred) ---------------------------------------
+if command -v bun >/dev/null 2>&1; then
+  RUN=(bun "$ENTRY")
+elif command -v node >/dev/null 2>&1; then
+  if command -v npx >/dev/null 2>&1; then
+    RUN=(npx --yes tsx "$ENTRY")
+  else
+    echo "org: Node found but tsx missing. Install 'tsx' (npm i -g tsx) or install bun." >&2
+    exit 127
+  fi
+else
+  echo "org: neither bun nor node runtime found in PATH." >&2
+  exit 127
+fi
 
 # --- UI selection -------------------------------------------------------------
 ui="${ui:-${ORG_FORCE_UI:-console}}"
@@ -81,21 +95,6 @@ if [ "$ui" = "tmux" ]; then
   TMUX_NAME="${ORG_TMUX_NAME:-org}"
   # Start (or attach) the tmux session *first*, then run our command inside.
   exec tmux new-session -A -s "$TMUX_NAME" "bash -lc $CMD"
-fi
-
-# --- runtime selection (bun preferred) ---------------------------------------
-if command -v bun >/dev/null 2>&1; then
-  RUN=(bun "$ENTRY")
-elif command -v node >/dev/null 2>&1; then
-  if command -v npx >/dev/null 2>&1; then
-    RUN=(npx --yes tsx "$ENTRY")
-  else
-    echo "org: Node found but tsx missing. Install 'tsx' (npm i -g tsx) or install bun." >&2
-    exit 127
-  fi
-else
-  echo "org: neither bun nor node runtime found in PATH." >&2
-  exit 127
 fi
 
 # --- default: console UI ------------------------------------------------------
