@@ -1,13 +1,12 @@
 // src/runtime/hotkeys.ts
 //
-// Minimal hotkey runtime that works in Node and Bun.
-// - While IDLE: set stdin to RAW and listen on 'data' (no echo).
-// - While prompting: suspend (restore cooked), detach listener.
-// - Distinguish plain ESC (\x1b) from escape sequences (\x1b[... like arrows).
-// - Handle Ctrl+C and configurable interject key ('i' by default).
+// Hotkey runtime for Node/Bun.
+// - IDLE: put TTY in RAW mode, no echo; listen on 'data'.
+// - PROMPTING (readline): suspend (restore cooked), detach listener.
+// - Debounces bare ESC so we don't confuse it with CSI sequences.
+// - Handles Ctrl+C and one configurable interject key.
 //
-// Includes a test helper __testOnly_emit(...) that drives the same handler
-// path used by the real data events, so unit tests work even without a TTY.
+// Testing: __testOnly_emit() feeds the same handler used by runtime.
 
 type Handlers = {
   onEsc?: () => void;
@@ -16,8 +15,8 @@ type Handlers = {
 };
 
 type Options = {
-  interjectKey?: string;       // default: 'i'
-  allowInterject?: boolean;    // default: true
+  interjectKey?: string;       // default 'i'
+  allowInterject?: boolean;    // default true
 };
 
 const state = {
@@ -27,6 +26,10 @@ const state = {
   interjectKey: "i",
   handlers: {} as Handlers,
   onData: null as ((buf: Buffer) => void) | null,
+
+  // ESC debounce
+  escPending: false,
+  escTimer: null as NodeJS.Timeout | null,
 };
 
 function isTTY() {
@@ -37,47 +40,65 @@ function setRawMode(enable: boolean) {
   const anyIn: any = process.stdin as any;
   if (!isTTY()) return;
   try {
-    if (typeof anyIn.setRawMode === "function") {
-      anyIn.setRawMode(!!enable);
-    }
+    if (typeof anyIn.setRawMode === "function") anyIn.setRawMode(!!enable);
     if (enable) {
       process.stdin.resume();
       process.stdin.setEncoding("utf8");
     }
   } catch {
-    /* ignore non-interactive envs */
+    /* non-tty envs */
   }
 }
 
-/** Core handler used by both the real 'data' listener and tests. */
+/** Call this whenever we decide a bare ESC actually happened. */
+function fireEsc() {
+  state.escPending = false;
+  if (state.escTimer) { clearTimeout(state.escTimer); state.escTimer = null; }
+  state.handlers.onEsc?.();
+}
+
+/** Core path used by real 'data' and tests. */
 function handleChunk(chunk: Buffer | string) {
   if (!state.installed || state.suspended) return;
 
-  // Normalize to Buffer
   const buf: Buffer = Buffer.isBuffer(chunk)
     ? chunk
     : Buffer.from(String(chunk), "utf8");
 
   const len = buf.length;
+  if (len === 0) return;
 
   // Ctrl+C (ETX)
-  if (len >= 1 && buf[0] === 0x03) {
+  if (buf[0] === 0x03) {
     state.handlers.onCtrlC?.();
     return;
   }
 
-  // Plain ESC as a single byte
+  // ---- ESC handling with debounce ---------------------------------
+  // If this is *exactly* one ESC byte, don't fire immediately; wait a hair
+  // to see if more bytes arrive (CSI or Alt+key). This avoids mis-fires.
   if (len === 1 && buf[0] === 0x1b) {
-    state.handlers.onEsc?.();
+    // If another bare ESC is already pending, restart the timer.
+    if (state.escTimer) { clearTimeout(state.escTimer); state.escTimer = null; }
+    state.escPending = true;
+    state.escTimer = setTimeout(() => {
+      if (state.escPending) fireEsc();
+    }, 35); // ~25–50ms is typical; 35ms balances latency/safety
     return;
   }
 
-  // Ignore CSI escape sequences like arrows: \x1b[...
+  // If bytes arrive while ESC is pending, it's *not* a lone ESC.
+  if (state.escPending) {
+    state.escPending = false;
+    if (state.escTimer) { clearTimeout(state.escTimer); state.escTimer = null; }
+  }
+
+  // CSI sequences (arrows, Home/End, etc) start with ESC '['.
   if (len >= 2 && buf[0] === 0x1b && buf[1] === 0x5b) {
-    return;
+    return; // ignore navigation keys entirely
   }
 
-  // Interject key (case-insensitive, one printable char)
+  // Allow a single printable char as interject
   if (state.allowInterject && len === 1) {
     const ch = String.fromCharCode(buf[0]).toLowerCase();
     if (ch === state.interjectKey) {
@@ -85,6 +106,8 @@ function handleChunk(chunk: Buffer | string) {
       return;
     }
   }
+
+  // Otherwise: ignore. (We don't treat Alt+<key> as interject.)
 }
 
 function attach() {
@@ -118,7 +141,7 @@ export function installHotkeys(handlers: Handlers, opts?: Options) {
   });
 }
 
-/** Update hotkey settings while running. */
+/** Update hotkey settings (e.g., enable/disable interject). */
 export function updateHotkeys(opts: Partial<Options>) {
   if (typeof opts.interjectKey === "string") {
     state.interjectKey = opts.interjectKey.toLowerCase();
@@ -157,47 +180,21 @@ export function disposeHotkeys() {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* ------------------------ Test utilities --------------------------- */
-/* ------------------------------------------------------------------ */
+/* ---------------------------- Test utilities ---------------------------- */
 
-/**
- * Drive the hotkey pipeline without a TTY.
- * Accepts either a raw string/Buffer or a minimal key object compatible
- * with how your tests emit events, e.g.:
- *   __testOnly_emit({ name: "escape" })
- *   __testOnly_emit({ name: "c", ctrl: true })
- */
+/** Feed the same pipeline as the real 'data' listener. */
 export function __testOnly_emit(
-  k:
-    | string
-    | Buffer
-    | { name: string; ctrl?: boolean }
+  k: string | Buffer | { name: string; ctrl?: boolean }
 ) {
-  if (typeof k === "string" || Buffer.isBuffer(k)) {
-    handleChunk(k as any);
-    return;
-  }
+  if (typeof k === "string" || Buffer.isBuffer(k)) { handleChunk(k as any); return; }
 
-  // Map a few common names to bytes used by handleChunk
   const name = (k.name || "").toLowerCase();
-
-  if (k.ctrl && (name === "c")) {
-    handleChunk(Buffer.from([0x03])); // ^C
-    return;
-  }
-  if (name === "escape" || name === "esc") {
-    handleChunk(Buffer.from([0x1b]));
-    return;
-  }
+  if (k.ctrl && name === "c") { handleChunk(Buffer.from([0x03])); return; }
+  if (name === "escape" || name === "esc") { handleChunk(Buffer.from([0x1b])); return; }
   if (name === "up")   { handleChunk("\x1b[A"); return; }
   if (name === "down") { handleChunk("\x1b[B"); return; }
   if (name === "right"){ handleChunk("\x1b[C"); return; }
   if (name === "left") { handleChunk("\x1b[D"); return; }
-
-  if (name.length === 1) {
-    handleChunk(name);
-    return;
-  }
-  // Unknown -> no-op
+  if (name.length === 1) { handleChunk(name); }
+  // else: no-op
 }

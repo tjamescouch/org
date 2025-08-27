@@ -110,12 +110,15 @@ async function main() {
   }));
 
   // IO + scheduler
-  const input = new InputController({
-    interjectKey: String(args["interject-key"] || "i"),
-    interjectBanner: String(args["banner"] || "You: "),
-    exitOnEsc: false,                       // ESC handled at app level
-    finalizer: async () => { /* no-op here */ },
-  });
+const input = new InputController({
+  interjectKey: String(args["interject-key"] || "i"),
+  interjectBanner: String(args["banner"] || "You: "),
+  exitOnEsc: false,
+  finalizer: async () => { /* app-level finalizer (scheduler handles finalize) */ },
+  allowInterject: !!(typeof args["prompt"] === "boolean"
+                     ? args["prompt"]
+                     : process.stdin.isTTY),
+});
 
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
 
