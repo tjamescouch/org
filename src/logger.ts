@@ -21,7 +21,7 @@ export const C = {
   reset: "\x1b[0m",
   bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
   red: (s: string) => `\x1b[31m${s}\x1b[0m`,
-  green: (s: string) => `\x1b[32m${s}\x1b[0m`,   // <-- fixed here
+  green: (s: string) => `\x1b[32m${s}\x1b[0m`,
   yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
   blue: (s: string) => `\x1b[34m${s}\x1b[0m`,
   magenta: (s: string) => `\x1b[35m${s}\x1b[0m`,
@@ -29,11 +29,6 @@ export const C = {
   white: (s: string) => `\x1b[37m${s}\x1b[0m`,
   gray: (s: string) => `\x1b[90m${s}\x1b[0m`,
 };
-
-function writeRaw(s: string) {
-  if (process.stdout?.write) { process.stdout.write(s); return; }
-  Bun.stdout?.write?.(s);
-}
 
 function fromEnvLevel(v: string | undefined, fallback: LevelName): LevelName {
   if (!v) return fallback;
@@ -84,6 +79,37 @@ export class Logger {
     });
   }
 
+  static streamInfo(...a: any[]) {
+    this._ensure();
+    if (!this._should("info")) return;
+
+    // Preserve raw strings/buffers; stringify everything else
+    const raw = a
+      .map((v) => {
+        if (typeof v === "string" || Buffer.isBuffer(v)) return v as any;
+        return this._formatArgs([v]);
+      })
+      .join("");
+
+    // Console (stdout)
+    process.stdout.write(raw);
+
+    // File
+    try {
+      this._file?.write(raw);
+    } catch {
+      // ignore file errors
+    }
+  }
+
+  /** Optional: close the log file on shutdown (usually not needed). */
+  static close() {
+    try { this._file?.end(); } catch { }
+    this._file = null;
+    this._inited = false;
+  }
+
+
   static level(): LevelName { return this._level; }
   static file(): string | null { return this._filePath; }
 
@@ -91,7 +117,6 @@ export class Logger {
   static trace(...a: any[]) { this._log("trace", a); }
   static debug(...a: any[]) { this._log("debug", a); }
   static info(...a: any[]) { this._log("info", a); }
-  static streamInfo(...a: any[]) { this._s('info', a); }
   static warn(...a: any[]) { this._log("warn", a); }
   static error(...a: any[]) { this._log("error", a); }
 
