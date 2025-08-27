@@ -85,7 +85,7 @@ export class Logger {
   static trace(...a: any[]) { this._log("trace", a); }
   static debug(...a: any[]) { this._log("debug", a); }
   static info(...a: any[]) { this._log("info", a); }
-  static streamInfo(...a: any[]) { this._s('info', a)); }
+  static streamInfo(...a: any[]) { this._s('info', a); }
   static warn(...a: any[]) { this._log("warn", a); }
   static error(...a: any[]) { this._log("error", a); }
 
