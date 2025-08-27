@@ -9,16 +9,11 @@ function trace(msg: string) {
 }
 
 function enableRaw(): () => void {
-  const stdin = process.stdin as any;
-  const canRaw = !!stdin.isTTY && typeof stdin.setRawMode === "function";
-  const wasRaw = canRaw ? !!stdin.isRaw : false;
-
-  if (canRaw && !wasRaw) stdin.setRawMode(true);
-  process.stdin.resume();
-
-  return () => {
-    if (canRaw && !wasRaw) stdin.setRawMode(false);
-  };
+  const stdin = process.stdin;
+  const wasRaw = Boolean(stdin.isTTY && (stdin as any).isRaw);
+  if (stdin.isTTY && !wasRaw) stdin.setRawMode?.(true);
+  stdin.resume();
+  return () => { if (stdin.isTTY && !wasRaw) stdin.setRawMode?.(false); };
 }
 
 function onKey(cb: (chunk: Buffer) => void): () => void {
@@ -30,9 +25,23 @@ function onKey(cb: (chunk: Buffer) => void): () => void {
   return () => process.stdin.off("data", handler);
 }
 
+async function promptYesNo(question: string): Promise<boolean> {
+  process.stdout.write(`${question} [y/N] `);
+  await new Promise((r) => setImmediate(r));
+  return await new Promise<boolean>((resolve) => {
+    const restore = enableRaw();
+    const off = onKey((k) => {
+      const s = k.toString("binary");
+      if (s === "y" || s === "Y") { off(); restore(); process.stdout.write("\n"); resolve(true); }
+      else if (s === "n" || s === "N" || s === "\x1b" || s === "\r" || s === "\n") { off(); restore(); process.stdout.write("\n"); resolve(false); }
+    });
+  });
+}
+
 function printable(b: Buffer): boolean {
   for (const byte of b.values()) {
-    if (byte === 0x1b || byte === 0x0a || byte === 0x0d) return false; // ESC/CR/LF
+    // block ESC / CR / LF; handle Backspace separately
+    if (byte === 0x1b || byte === 0x0a || byte === 0x0d) return false;
   }
   return b.length > 0;
 }
@@ -40,69 +49,59 @@ function printable(b: Buffer): boolean {
 function hasNonEmptyPatch(cwd: string): string | null {
   const p = findLastSessionPatch(cwd);
   if (!p) return null;
-  try {
-    const st = fs.statSync(p);
-    return st.isFile() && st.size > 0 ? p : null;
-  } catch {
-    return null;
-  }
-}
-
-async function promptYesNo(question: string): Promise<boolean> {
-  process.stdout.write(`${question} [y/N] `);
-  await new Promise((r) => setImmediate(r));
-
-  return await new Promise<boolean>((resolve) => {
-    const restore = enableRaw();
-    const off = onKey((k) => {
-      const s = k.toString("binary");
-      if (s === "y" || s === "Y") { off(); restore(); process.stdout.write("\n"); resolve(true); }
-      else if (s === "n" || s === "N" || s === "\x1b" || s === "\r" || s === "\n") { off(); restore(); process.stdout.write("\n"); resolve(false); }
-      else if (s === "\x03") { off(); restore(); process.stdout.write("\n"); resolve(false); } // Ctrl-C
-    });
-  });
+  try { const st = fs.statSync(p); return st.isFile() && st.size > 0 ? p : null; }
+  catch { return null; }
 }
 
 async function interjectPrompt(seed?: Buffer): Promise<void> {
-  // visible prompt with live echo
-  process.stdout.write("You: ");
+  // We do NOT print our own "You:" label; the caller/scheduler already printed it.
+
   await new Promise((r) => setImmediate(r));
-
   const chunks: Buffer[] = [];
-  const restore = enableRaw();
-
-  // seed (typed before we opened), echo once
   if (seed?.length) {
-    chunks.push(seed);
+    // Echo the seeded byte(s) and keep them
     process.stdout.write(seed.toString("utf8"));
+    chunks.push(seed);
   }
 
   await new Promise<void>((resolve) => {
+    const restore = enableRaw();
     const off = onKey((k) => {
       const s = k.toString("binary");
 
-      if (s === "\x03") { // Ctrl-C
-        off(); restore(); process.stdout.write("\n"); resolve(); return;
+      // ESC cancels interjection
+      if (s === "\x1b") {
+        off(); restore();
+        process.stdout.write("\n");
+        return resolve();
       }
-      if (s === "\x1b") { // ESC cancels
-        off(); restore(); process.stdout.write("\n"); resolve(); return;
+
+      // Enter submits (do not re-echo the whole line)
+      if (s === "\r" || s === "\n") {
+        off(); restore();
+        process.stdout.write("\n");
+        return resolve();
       }
-      if (s === "\r" || s === "\n") { // submit — just end the line; DO NOT reprint the text
-        off(); restore(); process.stdout.write("\n"); resolve(); return;
-      }
-      if (s === "\x7f" || s === "\b") { // backspace
+
+      // Backspace (DEL)
+      if (k.length === 1 && k[0] === 0x7f) {
         if (chunks.length) {
-          const last = chunks.pop()!;
-          const kept = last.subarray(0, Math.max(0, last.length - 1));
-          if (kept.length) chunks.push(kept);
-          process.stdout.write("\b \b");
+          const last = chunks[chunks.length - 1];
+          if (last.length > 0) {
+            // Trim one byte (UTF-8: acceptable for simple ASCII prompts)
+            chunks[chunks.length - 1] = last.subarray(0, last.length - 1);
+            // Erase one char visually
+            process.stdout.write("\b \b");
+          }
+          if (chunks[chunks.length - 1].length === 0) chunks.pop();
         }
         return;
       }
-      // default: append + echo
+
+      // Regular printable
       if (printable(k)) {
         chunks.push(k);
-        process.stdout.write(k.toString("utf8"));
+        process.stdout.write(k.toString("utf8")); // live echo
       }
     });
   });
@@ -110,65 +109,65 @@ async function interjectPrompt(seed?: Buffer): Promise<void> {
 
 export async function launchConsoleUI(_argv: string[]): Promise<number> {
   trace("start");
-  const restoreOuter = enableRaw();
+  const restore = enableRaw();
   let exitCode = 0;
   let interjecting = false;
-  let resolved = false;
-
-  const onSigInt = () => {
-    if (resolved) return;
-    resolved = true;
-    exitCode = 130;
-    try { restoreOuter(); } catch {}
-  };
-  process.once("SIGINT", onSigInt);
 
   await new Promise<void>((resolve) => {
-    const resumeMainKeys = () => {
-      const off = onKey(async (chunk) => {
-        const s = chunk.toString("binary");
+    const off = onKey(async (chunk) => {
+      const s = chunk.toString("binary");
 
-        if (s === "\x03") { // Ctrl-C anywhere
-          off(); process.removeListener("SIGINT", onSigInt);
-          try { restoreOuter(); } catch {}
-          exitCode = 130; resolved = true; return resolve();
-        }
+      // ESC top-level: prompt only if a non-empty patch exists; else exit
+      if (s === "\x1b") {
+        off(); restore();
+        const patch = hasNonEmptyPatch(process.cwd());
+        trace(`esc: patch=${patch ?? "<none>"} -> ${patch ? "prompt" : "exit"}`);
+        if (!patch) { exitCode = 0; return resolve(); }
+        await promptYesNo("Apply this patch?");
+        exitCode = 0; return resolve();
+      }
 
-        // ESC: prompt only if a non-empty patch exists; else clean exit
-        if (s === "\x1b") {
-          off();
-          const patch = hasNonEmptyPatch(process.cwd());
-          trace(`esc: patch=${patch ?? "<none>"} -> ${patch ? "prompt" : "exit"}`);
-          if (!patch) {
-            process.removeListener("SIGINT", onSigInt);
-            try { restoreOuter(); } catch {}
-            exitCode = 0; resolved = true; return resolve();
-          }
-          await promptYesNo("Apply this patch?");
-          process.removeListener("SIGINT", onSigInt);
-          try { restoreOuter(); } catch {}
-          exitCode = 0; resolved = true; return resolve();
-        }
+      // Explicit 'i' opens the interject prompt
+      if (s === "i" && !interjecting) {
+        interjecting = true; off();
+        await interjectPrompt(); interjecting = false;
 
-        // 'i' explicitly opens interject
-        if (s === "i" && !interjecting) {
-          interjecting = true; off();
-          await interjectPrompt(); interjecting = false;
-          process.nextTick(resumeMainKeys);
-          return;
-        }
+        // After interject, watch ESC for finalize prompt
+        process.nextTick(() => {
+          const off2 = onKey(async (k2) => {
+            const s2 = k2.toString("binary");
+            if (s2 === "\x1b") {
+              off2(); restore();
+              const patch = hasNonEmptyPatch(process.cwd());
+              trace(`esc(after-interject): patch=${patch ?? "<none>"} -> ${patch ? "prompt" : "exit"}`);
+              if (!patch) { exitCode = 0; return resolve(); }
+              await promptYesNo("Apply this patch?"); exitCode = 0; return resolve();
+            }
+          });
+        });
+        return;
+      }
 
-        // typed text without 'i' → open interject seeded
-        if (!interjecting && printable(chunk)) {
-          interjecting = true; off();
-          await interjectPrompt(chunk); interjecting = false;
-          process.nextTick(resumeMainKeys);
-          return;
-        }
-      });
-    };
+      // Typing text without 'i' => open interject prompt seeded with that first char
+      if (!interjecting && printable(chunk)) {
+        interjecting = true; off();
+        await interjectPrompt(chunk); interjecting = false;
 
-    resumeMainKeys();
+        process.nextTick(() => {
+          const off2 = onKey(async (k2) => {
+            const s2 = k2.toString("binary");
+            if (s2 === "\x1b") {
+              off2(); restore();
+              const patch = hasNonEmptyPatch(process.cwd());
+              trace(`esc(after-interject): patch=${patch ?? "<none>"} -> ${patch ? "prompt" : "exit"}`);
+              if (!patch) { exitCode = 0; return resolve(); }
+              await promptYesNo("Apply this patch?"); exitCode = 0; return resolve();
+            }
+          });
+        });
+        return;
+      }
+    });
   });
 
   trace(`exit code=${exitCode}`);
