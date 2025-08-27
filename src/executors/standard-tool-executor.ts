@@ -4,7 +4,6 @@ import { GuardRail } from "../guardrails/guardrail";
 import { Logger } from "../logger";
 import { AgentMemory } from "../memory";
 import { sandboxedSh } from "../tools/sandboxed-sh";
-import { runVimdiff } from "../tools/vimdiff";
 import { normalizeContent, sanitizeContent } from "../utils/sanitize-content";
 import type { ExecuteToolsParams, ExecuteToolsResult } from "./tool-executor";
 import { ToolExecutor } from "./tool-executor";
@@ -90,7 +89,7 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
     return { toolsUsed, forceEndTurn: false, stdout: result.stdout, stderr: result.stderr, ok: result.exit_code === 0, exit_code: result.exit_code };
 }
 
-
+/*
 const vimdiffHandler = async (agentId: string, toolcall: ChatToolCall, text: string, memory: AgentMemory, guard: GuardRail): Promise<ToolHandlerResult> => {
     const name = toolcall.function?.name || "";
     let args: any = {};
@@ -123,7 +122,7 @@ const vimdiffHandler = async (agentId: string, toolcall: ChatToolCall, text: str
     await memory.add({ role: "tool", content, tool_call_id: toolcall.id, name: "sh", from: "Tool" });
 
     return { toolsUsed: 1, forceEndTurn: false, stdout: "vimdiff completed", stderr: '', ok: true, exit_code: 0 };
-}
+}*/
 
 /**
  * StandardToolExecutor
@@ -136,7 +135,7 @@ export class StandardToolExecutor extends ToolExecutor {
     private readonly toolHandlers: Record<string, ToolHandler> = {
         sh: shHandler,
         exec: shHandler,
-        vimdiff: vimdiffHandler //FIXME
+        //vimdiff: vimdiffHandler //FIXME
     };
 
     async execute(params: ExecuteToolsParams): Promise<ExecuteToolsResult> {

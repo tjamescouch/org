@@ -1,10 +1,10 @@
-// src/tools/vimdiff.ts
+/*
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { type ChildProcess } from "node:child_process";
 import { spawnInCleanEnvironment } from "../utils/spawn-clean";
 import { resumeStdin } from "../input/utils";
-import { Controller } from "../input/controller";
+import { InputController } from "../input/controller";
 import { beginTtyHandoff, endTtyHandoff } from "../input/tty-handoff";
 
 type Args = { left: string; right: string; cwd?: string };
@@ -117,3 +117,4 @@ export const VIMDIFF_TOOL_DEF = {
     },
   },
 } as const;
+*/

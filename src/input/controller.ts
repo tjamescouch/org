@@ -15,6 +15,7 @@
 
 import * as readline from "readline";
 import { Logger } from "../logger";
+import { RandomScheduler } from "../scheduler";
 
 // ---------- tiny TTY helpers (local so we don’t depend on other IO code) ----------
 function setRaw(on: boolean) {
@@ -236,4 +237,15 @@ export class InputController {
     // Return to idle raw/no-echo
     this.enterIdle();
   }
+}
+
+
+// Factory used by tests to build a controller in "test mode" (no process.exit)
+export function makeControllerForTests(args: {
+  scheduler: RandomScheduler;
+  finalizer?: () => void | Promise<void>;
+}) {
+  const c = new InputController({ finalizer: args.finalizer });
+  c.attachScheduler(args.scheduler);
+  return c;
 }
