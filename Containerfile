@@ -1,8 +1,9 @@
-# Containerfile (excerpt)
+# Containerfile
 FROM debian:12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Base tools (no git-delta here)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
     bash ca-certificates curl git rsync jq file \
@@ -14,19 +15,36 @@ RUN apt-get update \
     tmux ncurses-term less locales \
     # vim with terminal features (includes `vimdiff`)
     vim-nox \
-    # nicer patch/diff viewer (binary `delta`)
-    git-delta \
  && rm -rf /var/lib/apt/lists/*
 
-# Locale for better readline/Unicode behavior (optional but nice)
-RUN sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen
+# Locale for better readline/Unicode behavior
+RUN sed -i 's/# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
+ && locale-gen
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
 # Safe default TERM inside the container; outer terminal can be anything.
 ENV TERM=xterm-256color
 
-# --- OPTIONAL: bake an apply_patch fallback directly into the image ---
-# If you prefer not to add a separate file in build context, inline it:
+# ---- Install `delta` (git-delta) from GitHub release for portability ----
+ARG DELTA_VER=0.17.0
+RUN set -eux; \
+  arch="$(dpkg --print-architecture)"; \
+  case "$arch" in \
+    amd64)  rel="x86_64-unknown-linux-gnu" ;; \
+    arm64)  rel="aarch64-unknown-linux-gnu" ;; \
+    armhf)  rel="arm-unknown-linux-gnueabihf" ;; \
+    i386)   rel="i686-unknown-linux-gnu" ;; \
+    *)      echo "delta: unsupported arch: $arch; skipping"; exit 0 ;; \
+  esac; \
+  url="https://github.com/dandavison/delta/releases/download/${DELTA_VER}/delta-${DELTA_VER}-${rel}.tar.gz"; \
+  echo "Fetching $url"; \
+  curl -fsSL "$url" -o /tmp/delta.tgz; \
+  tar -xzf /tmp/delta.tgz -C /tmp; \
+  install -m 0755 "/tmp/delta-${DELTA_VER}-${rel}/delta" /usr/local/bin/delta; \
+  rm -rf /tmp/delta*; \
+  /usr/local/bin/delta --version
+
+# ---- Bake an `apply_patch` helper into the image (safe fallback) ----
 RUN install -d /usr/local/bin && bash -lc 'cat > /usr/local/bin/apply_patch << "EOF"\n\
 #!/usr/bin/env bash\n\
 set -euo pipefail\n\
@@ -60,7 +78,6 @@ fi\n\
 deny_regex=\"^(\\.git/|\\.org/|/|\\.\\.|.*\\\\x00.*)\"\n\
 viol=\"\"\n\
 for p in \"${paths[@]}\"; do\n\
-  # normalize a bit\n\
   p=\"${p#./}\"\n\
   if [[ \"$p\" =~ $deny_regex ]]; then\n\
     viol+=\"$p\\n\"\n\
@@ -77,5 +94,5 @@ echo \"apply_patch: OK\"\n\
 EOF\n\
 chmod +x /usr/local/bin/apply_patch'
 
-# Optional: make it easy to view the last patch in a popup (tmux binding uses this)
+# Optional: helper for viewing the last patch in a tmux popup
 ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (command -v delta >/dev/null && delta -s --paging=never .org/last-session.patch || (echo; echo \"(delta not found; showing raw patch)\"; echo; cat .org/last-session.patch)); else echo \"No session patch found.\"; fi; echo; read -p \"Enter to close...\" _"'
