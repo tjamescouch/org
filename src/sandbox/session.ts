@@ -6,6 +6,9 @@ import { detectBackend, SandboxBackend } from "./detect";
 import { ISandboxSession } from "./types";
 import { PodmanSession } from "./backends/podman";
 import { MockSession } from "./backends/mock";
+import { spawn } from "node:child_process";
+import { R } from "../runtime/runtime";
+import { CONTAINER_NAME } from "../constants";
 
 const DEFAULT_ORG_STEP_SH = `#!/usr/bin/env bash
 set -euo pipefail
@@ -61,6 +64,31 @@ export class SandboxManager {
     private sessions = new Map<string, ISandboxSession>();
 
     constructor(private projectDir: string, private runRoot?: string, private opts: SessionManagerOptions = { backend: "auto" }) { }
+
+
+    async execInteractive(cmd: string, opts: { tty?: boolean; env?: Record<string, string> } = {}): Promise<number> {
+        const args: string[] = ["exec"];
+        if (opts.tty !== false) args.push("-ti");
+
+        // Working dir inside container where your /work is mounted
+        args.push("--workdir", "/work");
+
+        // Pass through common envs so tmux/line-drawing works
+        const env = {
+            TERM: R.env.TERM || "xterm-256color",
+            LANG: R.env.LANG || "en_US.UTF-8",
+            LC_ALL: R.env.LC_ALL || R.env.LANG || "en_US.UTF-8",
+            ...(opts.env || {}),
+        };
+        for (const [k, v] of Object.entries(env)) args.push("-e", `${k}=${v}`);
+
+        // container name/id — however your class stores it
+        args.push(CONTAINER_NAME, "bash", "-lc", cmd);
+
+        const p = spawn("podman", args, { stdio: "inherit" });
+        return await new Promise<number>((resolve) => p.on("exit", (c) => resolve(c ?? 0)));
+    }
+
 
     async getOrCreate(id: string, policyOverrides: Partial<ExecPolicy> = {}) {
         let s = this.sessions.get(id);
