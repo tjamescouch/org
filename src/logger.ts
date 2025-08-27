@@ -118,8 +118,8 @@ export class Logger {
     else if (level === "warn") R.stdout.write(chunk);
     else R.stdout.write(chunk);
 
-    if (level === "error") this.stream.write(chunk);
-    else if (level === "warn") this.stream.write(chunk);
-    else this.stream.write(chunk);
+    if (level === "error") this._stream.write(chunk);
+    else if (level === "warn") this._stream.write(chunk);
+    else this._stream.write(chunk);
   }
 }
