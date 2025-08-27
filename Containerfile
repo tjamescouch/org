@@ -2,7 +2,7 @@ FROM debian:12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Base packages + a good TTY UX (tmux, vimdiff, vim-nox, less, locales)
+# Base packages + a good TTY UX (tmux, vim-nox, less, locales)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
     bash ca-certificates curl git rsync jq file \
@@ -11,7 +11,7 @@ RUN apt-get update \
     nodejs npm \
     unzip zip tar xz-utils \
     tmux ncurses-term less locales \
-    vim-nox vim-diff \
+    vim-nox \
  && rm -rf /var/lib/apt/lists/*
 
 # Install Bun system-wide (fail fast if error)
