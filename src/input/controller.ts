@@ -17,8 +17,8 @@ function setRaw(on: boolean) {
     try { (process.stdin as any).setRawMode?.(on); } catch { /* ignore */ }
   }
 }
-function resumeTTY() { try { process.stdin.resume(); } catch { } }
-function pauseTTY() { try { process.stdin.pause(); } catch { } }
+function resumeTTY() { try { process.stdin.resume(); } catch {} }
+function pauseTTY()  { try { process.stdin.pause(); }  catch {} }
 
 function trace(msg: string) {
   if (process.env.ORG_DEBUG === "1" || process.env.DEBUG === "1") {
@@ -72,21 +72,114 @@ export class InputController {
     this.enterIdle();
   }
 
+  // ---------- wiring ----------
   attachScheduler(scheduler: any) {
-    // Be conservative: prefer an explicit submit method if present,
-    // else allow embedding code to set .onUserInput on us.
-    if (typeof scheduler?.receiveUser === "function") {
-      this.submit = (text: string) => scheduler.receiveUser(text);
-    } else if (typeof scheduler?.onUserInput === "function") {
-      this.submit = (text: string) => scheduler.onUserInput(text);
-    } else if (typeof scheduler?.enqueueUser === "function") {
-      this.submit = (text: string) => scheduler.enqueueUser(text);
-    } else {
-      // Fallback: let callers set submit later via a property
-      // (keeps compatibility if the project expects it).
-      (this as any).submit = (t: string) => { Logger.info(`[user -> @@group] ${t}`); };
-      this.submit = (t: string) => (this as any).submit(t);
+    // 0) explicit override wins (no rewiring, just env)
+    const explicit = process.env.ORG_SCHEDULER_SUBMIT;
+    if (explicit && typeof scheduler?.[explicit] === "function") {
+      this.submit = (text) => this.safeInvokeSubmit(scheduler, explicit, text);
+      trace(`attachScheduler: using explicit scheduler.${explicit}(text)`);
+      return;
     }
+
+    // 1) known names first
+    const known = [
+      "onUserInput",
+      "receiveUser", "receiveUserInput", "receiveInput",
+      "submitUser", "submitUserText",
+      "enqueueUser", "enqueueUserText", "enqueueInput",
+      "acceptUser", "acceptUserInput",
+      "pushUserText", "sendUserText",
+      "handleUserInput", "ingestUserInput",
+      "submit", "enqueue", "receive",
+    ];
+
+    for (const name of known) {
+      if (typeof scheduler?.[name] === "function") {
+        this.submit = (text) => this.safeInvokeSubmit(scheduler, name, text);
+        trace(`attachScheduler: using scheduler.${name}(text)`);
+        return;
+      }
+    }
+
+    // 2) heuristic pass over prototype chain
+    const heuristics = this.findHeuristicSubmitNames(scheduler);
+    trace(`attachScheduler: heuristic candidates: ${heuristics.join(", ") || "(none)"}`);
+    for (const name of heuristics) {
+      this.submit = (text) => this.safeInvokeSubmit(scheduler, name, text);
+      trace(`attachScheduler: using heuristic scheduler.${name}(text)`);
+      return;
+    }
+
+    // 3) event-emitter fallback
+    if (typeof scheduler?.emit === "function") {
+      this.submit = (text) => scheduler.emit("user", text);
+      trace(`attachScheduler: using scheduler.emit("user", text)`);
+      return;
+    }
+
+    // 4) stub w/ warning (won't drop user text silently)
+    this.submit = async (text) => {
+      if (!this.warnedSubmit) {
+        this.warnedSubmit = true;
+        Logger.info(
+          "[warn] InputController could not find a scheduler submit method. User text will not be delivered.\n" +
+          "       Either expose a method (e.g. receiveUserInput) or set ORG_SCHEDULER_SUBMIT=name."
+        );
+      }
+      Logger.info(`[user -> @@group] ${text}`);
+    };
+    trace("attachScheduler: no submit target found (stub)");
+  }
+
+  /**
+   * Try calling scheduler[name] with a string; if that throws, retry with
+   * a message object { role: 'user', content } — this covers schedulers that
+   * expect an envelope instead of a raw line of text.
+   */
+  private async safeInvokeSubmit(scheduler: any, name: string, text: string) {
+    const fn = scheduler?.[name];
+    if (typeof fn !== "function") return;
+    try {
+      const r = fn.call(scheduler, text);
+      if (r && typeof r.then === "function") await r;
+      return;
+    } catch (_err) {
+      try {
+        const r = fn.call(scheduler, { role: "user", content: text });
+        if (r && typeof r.then === "function") await r;
+        return;
+      } catch (e2) {
+        trace(`submit via ${name} failed both (string|object): ${String(e2)}`);
+      }
+    }
+  }
+
+  /**
+   * Enumerate function names on prototype chain whose names look like they
+   * will accept user input. This is intentionally broad but safe.
+   */
+  private findHeuristicSubmitNames(s: any): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    const reUser = /(user|input|text|message)/i;
+    const reVerb = /(submit|enqueue|receive|push|send|add|accept|queue|post|ingest)/i;
+
+    let p: any = s;
+    for (let depth = 0; p && depth < 6; depth += 1, p = Object.getPrototypeOf(p)) {
+      for (const k of Object.getOwnPropertyNames(p)) {
+        if (seen.has(k)) continue;
+        seen.add(k);
+        try {
+          if (typeof s[k] === "function" && reUser.test(k) && reVerb.test(k)) {
+            out.push(k);
+          }
+        } catch { /* ignore */ }
+      }
+    }
+    // stable order
+    out.sort();
+    return out;
   }
 
   async askInitialAndSend(kickoff?: string | boolean) {
@@ -157,7 +250,7 @@ export class InputController {
   }
 
   private async openInterject(ctx: { who?: string; prompt?: string }, seed?: Buffer) {
-    // *** FIX 1: detach IDLE listener always and guard re-entry ***
+    // detach IDLE listener always and guard re-entry
     this.removeIdleHandler();
     if (this.interjectActive) {
       trace("openInterject: already active (ignoring)");
