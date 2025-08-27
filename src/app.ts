@@ -110,26 +110,41 @@ async function main() {
   }));
 
   // IO + scheduler
-const input = new InputController({
-  interjectKey: String(args["interject-key"] || "i"),
-  interjectBanner: String(args["banner"] || "You: "),
-  exitOnEsc: false,
-  finalizer: async () => { /* app-level finalizer (scheduler handles finalize) */ },
-  allowInterject: !!(typeof args["prompt"] === "boolean"
-                     ? args["prompt"]
-                     : process.stdin.isTTY),
-});
+  // --- decide interactivity correctly ---------------------------------
+  const promptArg = args["prompt"];
+  const seededWithString = typeof promptArg === "string";
+  const explicitBooleanPrompt =
+    typeof promptArg === "boolean" ? (promptArg as boolean) : undefined;
+
+  // “interactive” means: TTY AND not seeded with a fixed prompt (unless explicitly forced)
+  const promptEnabled =
+    explicitBooleanPrompt !== undefined
+      ? explicitBooleanPrompt
+      : (process.stdin.isTTY && !seededWithString);
 
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
 
+  // --- IO: InputController ---------------------------------------------
+  const input = new InputController({
+    interjectKey: String(args["interject-key"] || "i"),
+    interjectBanner: String(args["banner"] || "You: "),
+    exitOnEsc: true,
+
+    // ❗ Turn off interjection for seeded (non-interactive) runs
+    allowInterject: promptEnabled, // true only when actually interactive
+  });
+
+  // --- Scheduler --------------------------------------------------------
   const scheduler = new RoundRobinScheduler({
     agents,
     maxTools,
     onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
     projectDir,
     reviewMode,
-    promptEnabled: (typeof args["prompt"] === "boolean" ? args["prompt"] : process.stdin.isTTY),
+    // ❗ If seeded with a string, do not prompt the user in the loop
+    promptEnabled,
   });
+
 
   const reviewManager = new ReviewManager(projectDir, reviewMode);
 
