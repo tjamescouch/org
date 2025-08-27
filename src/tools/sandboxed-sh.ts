@@ -9,6 +9,9 @@ import { detectBackend } from "../sandbox/detect";
 import { Logger } from "../logger";
 import { R } from "../runtime/runtime";
 
+// --- add near top (after imports)
+let LAST_SESSION_KEY: string | null = null;
+
 // Minimal shape we need from a session:
 type ExecInteractiveOpts = {
   tty?: boolean;
@@ -58,6 +61,13 @@ async function getManager(key: string, projectDir: string, runRoot?: string) {
   }
   return m;
 }
+
+
+/** The most-recent sandbox session key used by any sh/shCapture/shInteractive call. */
+export function currentSandboxSessionKey(): string | null {
+  return LAST_SESSION_KEY;
+}
+
 
 /** Determine the next step index by scanning existing step-* files. */
 async function computeNextStepIdx(stepsDir: string): Promise<number> {

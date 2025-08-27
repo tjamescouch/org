@@ -1,40 +1,41 @@
 // src/ui/tmux/index.ts
 import { spawnSync } from "node:child_process";
-import { shInteractive, shCapture } from "../../tools/sandboxed-sh";
+import { shCapture, shInteractive, currentSandboxSessionKey } from "../../tools/sandboxed-sh";
 import { R } from "../../runtime/runtime";
 
-export type TmuxScope = "host" | "container";
+function shq(s: string) { return `'${String(s).replace(/'/g, `'\\''`)}'`; }
 
-const TMUX_SESSION = process.env.ORG_TMUX_SESSION || "org";
+export async function launchTmuxUI(argv: string[]): Promise<number> {
+  // Don’t re-enter endlessly
+  if (R.env.TMUX || R.env.ORG_TMUX === "1") return 0;
 
-export async function launchTmuxUI(argv: string[], scope: TmuxScope = "container"): Promise<number> {
-  if (process.env.TMUX || process.env.ORG_TMUX === "1") return 0;
+  // Use the *same* sandbox session the rest of the app has been using.
+  const sessionKey = currentSandboxSessionKey() ?? "default";
+  const cwd = typeof (R as any)?.cwd === "function" ? (R as any).cwd() : R.cwd();
 
-  const payload = `export ORG_TMUX=1; exec ${argv.map(a => JSON.stringify(a)).join(" ")}`;
-
-  if (scope === "host") {
-    const hostCmd =
-      `tmux new-session -A -D -s ${JSON.stringify(TMUX_SESSION)} ` +
-      `bash -lc ${JSON.stringify(payload)}`;
-    const r = spawnSync("bash", ["-lc", hostCmd], { stdio: "inherit" });
-    return r.status ?? 0;
-  }
-
-  // container / VM path
-  const ctx = { agentSessionId: "tmux-ui", projectDir: R.cwd() };
-
-  // Quiet check: returns 0 if found, non-zero if missing.
-  const check = await shCapture(`bash -lc 'command -v tmux >/dev/null 2>&1'`, ctx);
-  if (check.exit_code !== 0) {
-    process.stderr.write("tmux not found inside the sandbox image. Please install it in the container.\n");
+  // Verify tmux is available *inside that same session*
+  const check = await shCapture("command -v tmux >/dev/null 2>&1 && tmux -V >/dev/null 2>&1", {
+    projectDir: cwd,
+    agentSessionId: sessionKey
+  });
+  if (check.code !== 0) {
+    R.stderr.write(
+      `tmux not found in sandbox session "${sessionKey}". ` +
+      `Ensure your sandbox image includes tmux and you are using the same session.\n`
+    );
     return 1;
   }
 
-  // Run tmux inside the sandbox, interactive
-  const tmuxCmd =
-    `tmux new-session -A -D -s ${JSON.stringify(TMUX_SESSION)} ` +
-    `bash -lc ${JSON.stringify(payload)}`;
+  // Compose the re-exec payload and launch tmux within the sandbox
+  const reexec = `export ORG_TMUX=1; exec ${argv.map(shq).join(" ")}`;
+  const tmuxCmd = `tmux new-session -A -D -s org bash -lc ${shq(reexec)}`;
 
-  const code = await shInteractive(tmuxCmd, ctx);
-  return code;
+  const r = await shInteractive(tmuxCmd, {
+    projectDir: cwd,
+    agentSessionId: sessionKey,
+    tty: true,
+    inheritStdio: true,
+  });
+
+  return r.code ?? 0;
 }

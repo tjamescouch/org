@@ -83,7 +83,7 @@ export class SandboxManager {
         for (const [k, v] of Object.entries(env)) args.push("-e", `${k}=${v}`);
 
         // container name/id — however your class stores it
-        args.push(CONTAINER_NAME, "bash", "-lc", cmd);
+        args.push(CONTAINER_NAME, "bash", "-lc", cmd); //FIXME - container name can be overridden this will break
 
         const p = spawn("podman", args, { stdio: "inherit" });
         return await new Promise<number>((resolve) => p.on("exit", (c) => resolve(c ?? 0)));
