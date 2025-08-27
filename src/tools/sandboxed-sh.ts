@@ -1,4 +1,5 @@
 // src/tools/sandboxed-sh.ts
+import { spawn } from "node:child_process";
 import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
@@ -6,6 +7,16 @@ import { SandboxManager, sandboxMangers } from "../sandbox/session";
 import { ExecPolicy } from "../sandbox/policy";
 import { detectBackend } from "../sandbox/detect";
 import { Logger } from "../logger";
+import { R } from "../runtime/runtime";
+
+// Minimal shape we need from a session:
+type ExecInteractiveOpts = {
+  tty?: boolean;
+  env?: Record<string, string>;
+};
+type SessionWithInteractive = {
+  execInteractive?: (cmd: string, opts?: ExecInteractiveOpts) => Promise<number>;
+};
 
 type ToolArgs   = { cmd: string };
 export type ToolResult = {
@@ -107,7 +118,7 @@ function tailFile(
  */
 export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
   const sessionKey = ctx.agentSessionId ?? "default";
-  const projectDir = ctx.projectDir ?? process.cwd();
+  const projectDir = ctx.projectDir ?? R.cwd();
   const runRoot    = ctx.runRoot ?? path.join(projectDir, ".org");
   const idleHeartbeatMsRaw = ctx?.idleHeartbeatMs ?? 1000;
   const idleHeartbeatMs = HEARTBEAT_MUTED ? 0 : Math.max(0, idleHeartbeatMsRaw);
@@ -128,14 +139,14 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   const liveErr   = path.join(stepsHostDir, `step-${nextIdx}.err`);
 
   // Prefix + heartbeat (stderr), matching the local UX.
-  process.stderr.write(`sh: ${args.cmd} -> `);
+  R.stderr.write(`sh: ${args.cmd} -> `);
   let lastOutputAt = Date.now();
   let printedHeartbeat = false;
   let brokeLineAfterHeartbeat = false;
 
   const breakHeartbeatLineOnce = () => {
     if (printedHeartbeat && !brokeLineAfterHeartbeat) {
-      process.stderr.write("\n");
+      R.stderr.write("\n");
       brokeLineAfterHeartbeat = true;
     }
   };
@@ -143,7 +154,7 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   const hbTimer = idleHeartbeatMs > 0
     ? setInterval(() => {
         if (Date.now() - lastOutputAt >= idleHeartbeatMs) {
-          process.stderr.write(".");
+          R.stderr.write(".");
           printedHeartbeat = true;
         }
       }, Math.max(250, Math.floor(idleHeartbeatMs / 2)))
@@ -152,12 +163,12 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   // Start tailers (they will wait until files appear)
   const outTail = tailFile(
     liveOut,
-    (s) => { process.stdout.write(s); },
+    (s) => { R.stdout.write(s); },
     () => { lastOutputAt = Date.now(); breakHeartbeatLineOnce(); }
   );
   const errTail = tailFile(
     liveErr,
-    (s) => { process.stderr.write(s); },
+    (s) => { R.stderr.write(s); },
     () => { lastOutputAt = Date.now(); breakHeartbeatLineOnce(); }
   );
 
@@ -168,10 +179,10 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   if (hbTimer) clearInterval(hbTimer);
   outTail.stop();
   errTail.stop();
-  if (printedHeartbeat && !brokeLineAfterHeartbeat) process.stderr.write("\n");
+  if (printedHeartbeat && !brokeLineAfterHeartbeat) R.stderr.write("\n");
   if (!printedHeartbeat && step.ok && !fs.existsSync(liveOut) && !fs.existsSync(liveErr)) {
     // nothing at all — still end the line
-    process.stderr.write("\n");
+    R.stderr.write("\n");
   }
 
   // Read the final results from the step artifacts the way the rest of the system expects.
@@ -200,7 +211,7 @@ export async function shInteractive(arg: string | ToolArgs, ctx: ToolCtx): Promi
   const a = typeof arg === "string" ? { cmd: arg } : arg;
 
   const sessionKey = ctx.agentSessionId ?? "default";
-  const projectDir = ctx.projectDir ?? process.cwd();
+  const projectDir = ctx.projectDir ?? R.cwd();
   const runRoot    = ctx.runRoot ?? path.join(projectDir, ".org");
 
   const mgr = await getManager(sessionKey, projectDir, runRoot);
@@ -254,3 +265,32 @@ export const SANDBOXED_SH_TOOL_SCHEMA = {
     },
   },
 } as const;
+
+
+
+export async function shInteractive(
+  cmd: string,
+  ctx: ToolCtx & { env?: Record<string, string> } = { projectDir: R.cwd()}
+): Promise<number> {
+  const sessionKey = ctx.agentSessionId ?? "default";
+  const projectDir = ctx.projectDir ?? R.cwd();
+  const runRoot    = ctx.runRoot ?? path.join(projectDir, ".org");
+
+  const mgr = await getManager(sessionKey, projectDir, runRoot);
+  const session = (await mgr.getOrCreate(sessionKey, ctx.policy)) as unknown as SessionWithInteractive;
+
+  // If the sandbox implements a real interactive exec (preferred)
+  if (typeof session.execInteractive === "function") {
+    // Ensure TERM is present for tmux
+    const env = { TERM: R.env.TERM || "xterm-256color", ...(ctx.env || {}) };
+    return await session.execInteractive(cmd, { tty: true, env });
+  }
+
+  // Fallback: run on host (no sandbox), still interactive
+  const p = spawn("bash", ["-lc", cmd], {
+    stdio: "inherit",
+    env: { ...R.env, ...(ctx.env || {}), TERM: R.env.TERM || "xterm-256color" },
+    cwd: projectDir,
+  });
+  return await new Promise<number>((resolve) => p.on("exit", (c) => resolve(c ?? 0)));
+}
