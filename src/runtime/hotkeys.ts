@@ -1,171 +1,203 @@
-// Robust, low-level hotkey handling for org.
-// - Works directly on stdin 'data' bytes (raw mode)
-// - ESC is only treated as ESC if no follow-up bytes arrive within ESC_DELAY_MS
-//   (so arrow keys like ESC [ A don't trigger).
-// - Provides suspend/resume for readline prompts.
-// - Test surface: __testOnly_emit.
-
-import { Logger } from "../logger";
+// src/runtime/hotkeys.ts
+//
+// Minimal hotkey runtime that works in Node and Bun.
+// - While IDLE: set stdin to RAW and listen on 'data' (no echo).
+// - While prompting: suspend (restore cooked), detach listener.
+// - Distinguish plain ESC (\x1b) from escape sequences (\x1b[... like arrows).
+// - Handle Ctrl+C and configurable interject key ('i' by default).
+//
+// Includes a test helper __testOnly_emit(...) that drives the same handler
+// path used by the real data events, so unit tests work even without a TTY.
 
 type Handlers = {
-  onEsc: () => void;
-  onCtrlC: () => void;
-  onInterject: () => void;
+  onEsc?: () => void;
+  onCtrlC?: () => void;
+  onInterject?: () => void;
 };
 
-type Config = {
-  interjectKey: string;   // single letter like "i"
-  allowInterject: boolean;
+type Options = {
+  interjectKey?: string;       // default: 'i'
+  allowInterject?: boolean;    // default: true
 };
 
-let installed = false;
-let suspended = false;
-
-let handlers: Handlers = {
-  onEsc: () => {},
-  onCtrlC: () => {},
-  onInterject: () => {},
-};
-
-let cfg: Config = {
-  interjectKey: "i",
+const state = {
+  installed: false,
+  suspended: false,
   allowInterject: true,
+  interjectKey: "i",
+  handlers: {} as Handlers,
+  onData: null as ((buf: Buffer) => void) | null,
 };
 
-// esc handling
-const ESC = 0x1b;
-const CTRL_C = 0x03;
-const ESC_DELAY_MS = 35;
-
-let escTimer: NodeJS.Timeout | null = null;
-let escPending = false;
-
-let onDataRef: ((chunk: Buffer) => void) | null = null;
+function isTTY() {
+  return !!(process.stdin && process.stdin.isTTY);
+}
 
 function setRawMode(enable: boolean) {
-  const anyStdin: any = process.stdin as any;
-  if (process.stdin.isTTY && typeof anyStdin.setRawMode === "function") {
-    try { anyStdin.setRawMode(enable); } catch { /* ignore */ }
+  const anyIn: any = process.stdin as any;
+  if (!isTTY()) return;
+  try {
+    if (typeof anyIn.setRawMode === "function") {
+      anyIn.setRawMode(!!enable);
+    }
+    if (enable) {
+      process.stdin.resume();
+      process.stdin.setEncoding("utf8");
+    }
+  } catch {
+    /* ignore non-interactive envs */
+  }
+}
+
+/** Core handler used by both the real 'data' listener and tests. */
+function handleChunk(chunk: Buffer | string) {
+  if (!state.installed || state.suspended) return;
+
+  // Normalize to Buffer
+  const buf: Buffer = Buffer.isBuffer(chunk)
+    ? chunk
+    : Buffer.from(String(chunk), "utf8");
+
+  const len = buf.length;
+
+  // Ctrl+C (ETX)
+  if (len >= 1 && buf[0] === 0x03) {
+    state.handlers.onCtrlC?.();
+    return;
+  }
+
+  // Plain ESC as a single byte
+  if (len === 1 && buf[0] === 0x1b) {
+    state.handlers.onEsc?.();
+    return;
+  }
+
+  // Ignore CSI escape sequences like arrows: \x1b[...
+  if (len >= 2 && buf[0] === 0x1b && buf[1] === 0x5b) {
+    return;
+  }
+
+  // Interject key (case-insensitive, one printable char)
+  if (state.allowInterject && len === 1) {
+    const ch = String.fromCharCode(buf[0]).toLowerCase();
+    if (ch === state.interjectKey) {
+      state.handlers.onInterject?.();
+      return;
+    }
   }
 }
 
 function attach() {
-  if (onDataRef) return;
-
-  onDataRef = (chunk: Buffer) => {
-    // DEBUG: uncomment for byte tracing
-    // if (process.env.DEBUG) console.error(`[hotkeys] bytes:`, chunk);
-
-    for (let i = 0; i < chunk.length; i++) {
-      const b = chunk[i];
-
-      // CTRL-C (ETX)
-      if (b === CTRL_C) {
-        // cancel a pending ESC if any
-        if (escTimer) { clearTimeout(escTimer); escTimer = null; escPending = false; }
-        handlers.onCtrlC();
-        continue;
-      }
-
-      // ESC
-      if (b === ESC) {
-        // If a new ESC arrives, mark pending and arm timer.
-        // If arrow keys or sequences follow, they'll arrive before timer fires.
-        escPending = true;
-        if (escTimer) clearTimeout(escTimer);
-        escTimer = setTimeout(() => {
-          if (escPending) handlers.onEsc();
-          escPending = false;
-          escTimer = null;
-        }, ESC_DELAY_MS);
-        continue;
-      }
-
-      // Any byte arriving while ESC is pending cancels "bare ESC"
-      if (escPending) {
-        escPending = false;
-        if (escTimer) { clearTimeout(escTimer); escTimer = null; }
-        // This was likely part of an escape sequence (e.g., arrow key). Ignore.
-        // We do NOT re-process this byte, because it's part of a sequence and
-        // not meaningful as a hotkey here.
-        continue;
-      }
-
-      // Interject key ('i' or 'I')
-      if (cfg.allowInterject) {
-        const lower = String.fromCharCode(b).toLowerCase();
-        if (lower === cfg.interjectKey) {
-          handlers.onInterject();
-          continue;
-        }
-      }
-
-      // otherwise ignore
-    }
-  };
-
-  process.stdin.on("data", onDataRef);
+  if (!isTTY() || state.onData) return;
+  state.onData = (buf: Buffer | string) => handleChunk(buf);
+  process.stdin.on("data", state.onData!);
 }
 
 function detach() {
-  if (onDataRef) {
-    try { process.stdin.removeListener("data", onDataRef); } catch { /* ignore */ }
-    onDataRef = null;
-  }
+  if (!state.onData) return;
+  try { process.stdin.off("data", state.onData); } catch {}
+  state.onData = null;
 }
 
-export function installHotkeys(h: Handlers, init: Partial<Config> = {}) {
-  if (installed) return;
-  handlers = { ...handlers, ...h };
-  cfg = { ...cfg, ...init };
+/** Install hotkeys and enter raw/no-echo idle mode (if TTY). */
+export function installHotkeys(handlers: Handlers, opts?: Options) {
+  state.handlers = handlers || {};
+  state.interjectKey = (opts?.interjectKey ?? "i").toLowerCase();
+  state.allowInterject = opts?.allowInterject !== false;
+  state.installed = true;
+  state.suspended = false;
 
-  if (!process.stdin.isTTY) {
-    if (process.env.DEBUG) Logger.info("[hotkeys] stdin is not a TTY; hotkeys disabled");
-    installed = true; // considered installed, but no-op
-    return;
+  if (isTTY()) {
+    setRawMode(true);
+    attach();
   }
 
-  setRawMode(true);
-  attach();
-  installed = true;
-  suspended = false;
-
-  process.on("exit", () => {
-    try { detach(); setRawMode(false); } catch {}
+  process.once("exit", () => {
+    try { detach(); } catch {}
+    try { setRawMode(false); } catch {}
   });
 }
 
-export function updateHotkeys(next: Partial<Config>) {
-  cfg = { ...cfg, ...next };
+/** Update hotkey settings while running. */
+export function updateHotkeys(opts: Partial<Options>) {
+  if (typeof opts.interjectKey === "string") {
+    state.interjectKey = opts.interjectKey.toLowerCase();
+  }
+  if (typeof opts.allowInterject === "boolean") {
+    state.allowInterject = opts.allowInterject;
+  }
 }
 
+/** Temporarily disable hotkeys and restore cooked TTY (for readline). */
 export function suspendHotkeys() {
-  if (!installed || suspended) return;
-  suspended = true;
+  if (!state.installed || state.suspended) return;
+  state.suspended = true;
+  if (!isTTY()) return;
   detach();
   setRawMode(false);
 }
 
+/** Re-enable hotkeys and restore raw/no-echo idle mode. */
 export function resumeHotkeys() {
-  if (!installed || !suspended) return;
+  if (!state.installed || !state.suspended) return;
+  state.suspended = false;
+  if (!isTTY()) return;
   setRawMode(true);
   attach();
-  suspended = false;
 }
 
+/** Remove listeners and restore cooked mode. */
 export function disposeHotkeys() {
-  if (!installed) return;
-  detach();
-  setRawMode(false);
-  installed = false;
-  suspended = false;
-  if (escTimer) { clearTimeout(escTimer); escTimer = null; }
-  escPending = false;
+  if (!state.installed) return;
+  state.installed = false;
+  state.suspended = false;
+  if (isTTY()) {
+    detach();
+    setRawMode(false);
+  }
 }
 
-export function __testOnly_emit(k: { name?: string; ctrl?: boolean }) {
+/* ------------------------------------------------------------------ */
+/* ------------------------ Test utilities --------------------------- */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Drive the hotkey pipeline without a TTY.
+ * Accepts either a raw string/Buffer or a minimal key object compatible
+ * with how your tests emit events, e.g.:
+ *   __testOnly_emit({ name: "escape" })
+ *   __testOnly_emit({ name: "c", ctrl: true })
+ */
+export function __testOnly_emit(
+  k:
+    | string
+    | Buffer
+    | { name: string; ctrl?: boolean }
+) {
+  if (typeof k === "string" || Buffer.isBuffer(k)) {
+    handleChunk(k as any);
+    return;
+  }
+
+  // Map a few common names to bytes used by handleChunk
   const name = (k.name || "").toLowerCase();
-  if (k.ctrl && name === "c") { handlers.onCtrlC(); return; }
-  if (name === "escape" || name === "esc") { handlers.onEsc(); return; }
-  if (name === cfg.interjectKey && cfg.allowInterject) { handlers.onInterject(); return; }
+
+  if (k.ctrl && (name === "c")) {
+    handleChunk(Buffer.from([0x03])); // ^C
+    return;
+  }
+  if (name === "escape" || name === "esc") {
+    handleChunk(Buffer.from([0x1b]));
+    return;
+  }
+  if (name === "up")   { handleChunk("\x1b[A"); return; }
+  if (name === "down") { handleChunk("\x1b[B"); return; }
+  if (name === "right"){ handleChunk("\x1b[C"); return; }
+  if (name === "left") { handleChunk("\x1b[D"); return; }
+
+  if (name.length === 1) {
+    handleChunk(name);
+    return;
+  }
+  // Unknown -> no-op
 }
