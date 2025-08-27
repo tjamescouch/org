@@ -1,3 +1,4 @@
+// src/tools/sandboxed-sh.ts
 import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
@@ -7,7 +8,13 @@ import { detectBackend } from "../sandbox/detect";
 import { Logger } from "../logger";
 
 type ToolArgs   = { cmd: string };
-type ToolResult = { ok: boolean; stdout: string; stderr: string; exit_code: number; cmd: string };
+export type ToolResult = {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  cmd: string;
+};
 
 export interface ToolCtx {
   projectDir: string;
@@ -15,7 +22,8 @@ export interface ToolCtx {
   agentSessionId?: string;
   policy?: Partial<ExecPolicy>;
   logger?: { info: (...a: any[]) => void; error: (...a: any[]) => void };
-  idleHeartbeatMs?: number; // default 1000ms
+  /** Heartbeat when a command is idle (ms). Default: 1000ms. Set to 0 to disable. */
+  idleHeartbeatMs?: number;
 }
 
 let HEARTBEAT_MUTED = false;
@@ -30,8 +38,6 @@ export async function withMutedShHeartbeat<T>(fn: () => Promise<T>): Promise<T> 
   HEARTBEAT_MUTED = true;
   try { return await fn(); } finally { HEARTBEAT_MUTED = prev; }
 }
-
-
 
 async function getManager(key: string, projectDir: string, runRoot?: string) {
   let m = sandboxMangers.get(key);
@@ -95,13 +101,16 @@ function tailFile(
   return { stop: () => { stopped = true; } };
 }
 
+/**
+ * Core sandboxed shell execution with streaming output and idle heartbeat.
+ * This mirrors the UX you've already built and returns the canonical ToolResult.
+ */
 export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
   const sessionKey = ctx.agentSessionId ?? "default";
   const projectDir = ctx.projectDir ?? process.cwd();
   const runRoot    = ctx.runRoot ?? path.join(projectDir, ".org");
   const idleHeartbeatMsRaw = ctx?.idleHeartbeatMs ?? 1000;
-  const idleHeartbeatMs = HEARTBEAT_MUTED ? 0 : Math.max(250, idleHeartbeatMsRaw);
-
+  const idleHeartbeatMs = HEARTBEAT_MUTED ? 0 : Math.max(0, idleHeartbeatMsRaw);
 
   const mgr = await getManager(sessionKey, projectDir, runRoot);
   const session = await mgr.getOrCreate(sessionKey, ctx.policy);
@@ -131,12 +140,14 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
     }
   };
 
-  const hbTimer = setInterval(() => {
-    if (Date.now() - lastOutputAt >= idleHeartbeatMs) {
-      process.stderr.write(".");
-      printedHeartbeat = true;
-    }
-  }, Math.max(250, Math.floor(idleHeartbeatMs / 2)));
+  const hbTimer = idleHeartbeatMs > 0
+    ? setInterval(() => {
+        if (Date.now() - lastOutputAt >= idleHeartbeatMs) {
+          process.stderr.write(".");
+          printedHeartbeat = true;
+        }
+      }, Math.max(250, Math.floor(idleHeartbeatMs / 2)))
+    : undefined;
 
   // Start tailers (they will wait until files appear)
   const outTail = tailFile(
@@ -154,7 +165,7 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   const step = await session.exec(args.cmd);
 
   // Stop heartbeat + tailers and clean up the line nicely.
-  clearInterval(hbTimer);
+  if (hbTimer) clearInterval(hbTimer);
   outTail.stop();
   errTail.stop();
   if (printedHeartbeat && !brokeLineAfterHeartbeat) process.stderr.write("\n");
@@ -168,6 +179,49 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   const err = fs.existsSync(step.stderrFile) ? fs.readFileSync(step.stderrFile, "utf8") : "";
 
   return { ok: step.ok, stdout: out, stderr: err, exit_code: step.exit, cmd: args.cmd };
+}
+
+/**
+ * Convenience: capture-only wrapper (no extra streaming logic beyond sandboxedSh).
+ * Call signature mirrors tools in the codebase.
+ */
+export async function shCapture(arg: string | ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
+  const a = typeof arg === "string" ? { cmd: arg } : arg;
+  return sandboxedSh(a, ctx);
+}
+
+/**
+ * Interactive TTY execution.
+ * If the active sandbox implements `execInteractive(cmd, {stdio:"inherit"})`,
+ * we use it to attach the caller's TTY. Otherwise we fall back to the
+ * streaming/capture path and return its exit code.
+ */
+export async function shInteractive(arg: string | ToolArgs, ctx: ToolCtx): Promise<number> {
+  const a = typeof arg === "string" ? { cmd: arg } : arg;
+
+  const sessionKey = ctx.agentSessionId ?? "default";
+  const projectDir = ctx.projectDir ?? process.cwd();
+  const runRoot    = ctx.runRoot ?? path.join(projectDir, ".org");
+
+  const mgr = await getManager(sessionKey, projectDir, runRoot);
+  const session = await mgr.getOrCreate(sessionKey, ctx.policy);
+
+  // Prefer a real interactive attach if the backend supports it
+  if (typeof (session as any).execInteractive === "function") {
+    try {
+      const res = await (session as any).execInteractive(a.cmd, { stdio: "inherit" });
+      // Normalize possible shapes { exit } | number
+      if (typeof res === "number") return res;
+      if (res && typeof res.exit === "number") return res.exit;
+      return 0;
+    } catch {
+      // Fall through to non-interactive on failure
+    }
+  }
+
+  // Fallback: run with normal streaming and return the exit code.
+  const r = await sandboxedSh(a, ctx);
+  return r.exit_code;
 }
 
 export async function finalizeSandbox(ctx: ToolCtx) {
