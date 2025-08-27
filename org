@@ -5,57 +5,52 @@ set -o pipefail
 DBG="${ORG_DEBUG:-${DEBUG:-0}}"
 log() { [ "$DBG" = "1" ] || return 0; printf '[org.sh] %s\n' "$*" >&2; }
 
-# Guard against recursive re-entry
 : "${ORG_LAUNCHER_ONCE:=0}"
-if [ "$ORG_LAUNCHER_ONCE" != "0" ]; then log "re-entry blocked"; fi
 export ORG_LAUNCHER_ONCE=1
 
-# Resolve this script's directory (repo root), following symlinks
+# Resolve repo root
 SCRIPT="${BASH_SOURCE[0]:-$0}"
 while [ -L "$SCRIPT" ]; do
   L="$(readlink "$SCRIPT")"
-  case "$L" in
-    /*) SCRIPT="$L" ;;
-    *)  SCRIPT="$(cd "$(dirname "$SCRIPT")" && cd "$(dirname "$L")" && pwd)/$(basename "$L")" ;;
-  esac
+  case "$L" in /*) SCRIPT="$L" ;; *) SCRIPT="$(cd "$(dirname "$SCRIPT")" && cd "$(dirname "$L")" && pwd)/$(basename "$L")" ;; esac
 done
 APPDIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
-log "script=$SCRIPT"; log "appdir=$APPDIR"
 
-# Parse -C / --cwd (Jest uses -C)
+# Parse -C/--cwd and collect remaining args
 CWD=""; args=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    -C|--cwd) shift; CWD="${1:-}"; shift || true ;;
-    *) args+=("$1"); shift ;;
+    -C|--cwd) shift; CWD="${1:-}"; shift || true;;
+    *) args+=("$1"); shift;;
   esac
 done
-if [ -n "$CWD" ]; then
-  log "cd -> $CWD"
-  cd "$CWD" 2>/dev/null || { echo "org: cwd not found: $CWD" >&2; exit 66; }
-fi
+[ -n "$CWD" ] && cd "$CWD" 2>/dev/null || { [ -z "$CWD" ] || { echo "org: cwd not found: $CWD" >&2; exit 66; }; }
 
 # Make these available to runner.ts
 export ORG_CALLER_CWD="${ORG_CALLER_CWD:-$PWD}"
 export ORG_APPDIR="$APPDIR"
 
-# Resolve entrypoint: $ORG_ENTRY (if preset), else probe common paths
-[ -n "${ORG_ENTRY:-}" ] && ENTRY="$ORG_ENTRY" || ENTRY=""
-CAND=()
-[ -n "$ENTRY" ] || CAND+=("$APPDIR/runner.ts" "$APPDIR/runner.mts" "$APPDIR/runner.js" "$APPDIR/dist/runner.js" "$APPDIR/src/app.ts")
+# Resolve entrypoint
+ENTRY="${ORG_ENTRY:-}"
 if [ -z "$ENTRY" ]; then
-  for p in "${CAND[@]}"; do [ -f "$p" ] && { ENTRY="$p"; break; }; done
+  for p in "$APPDIR/runner.ts" "$APPDIR/runner.mts" "$APPDIR/runner.js" "$APPDIR/dist/runner.js" "$APPDIR/src/app.ts"; do
+    [ -f "$p" ] && { ENTRY="$p"; break; }
+  done
 fi
-if [ -z "$ENTRY" ]; then
-  echo "org: entrypoint not found. Tried:" >&2
-  for p in "${CAND[@]}"; do echo "  - $p" >&2; done
-  exit 66
-fi
-export ORG_ENTRY="$ENTRY"   # <-- critical for runner.ts
-log "entry=$ENTRY"
-[ "$DBG" = "1" ] && { ls -l "$ENTRY" >&2 || true; head -n1 "$ENTRY" >&2 || true; }
+[ -n "$ENTRY" ] || { echo "org: entrypoint not found. Tried runner.ts/mts/js, dist/runner.js, src/app.ts next to $APPDIR" >&2; exit 66; }
+export ORG_ENTRY="$ENTRY"
 
-# Exec: if entry has a shebang, run `bun ENTRY`; else `bun run ENTRY`
+# ---- NEW: default to console UI unless explicitly overridden ----
+has_ui=0
+for a in "${args[@]}"; do
+  [ "$a" = "--ui" ] && { has_ui=1; break; }
+done
+if [ $has_ui -eq 0 ]; then
+  args+=(--ui console)
+  log "ui defaulted to console (add --ui tmux to use tmux)"
+fi
+
+# Exec: shebang-aware Bun; fall back to node+tsx
 first="$(head -n1 "$ENTRY" 2>/dev/null || true)"
 if command -v bun >/dev/null 2>&1; then
   if printf '%s' "$first" | grep -q '^#!'; then
@@ -66,7 +61,6 @@ if command -v bun >/dev/null 2>&1; then
     exec bun run "$ENTRY" "${args[@]}"
   fi
 fi
-
 if command -v node >/dev/null 2>&1; then
   if command -v npx >/dev/null 2>&1; then
     log "exec: npx --yes tsx \"$ENTRY\" ${args[*]}"
@@ -75,6 +69,5 @@ if command -v node >/dev/null 2>&1; then
   echo "org: Node found but tsx is missing. Install tsx (npm i -g tsx) or install Bun." >&2
   exit 127
 fi
-
 echo "org: neither Bun nor Node runtime found in PATH." >&2
 exit 127
