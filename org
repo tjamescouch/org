@@ -1,15 +1,39 @@
 #!/usr/bin/env bash
-# org launcher (macOS/Linux, Bash 3.2+)
-# Exit codes: 66 = not found; 127 = runtime missing
+# org — robust CLI launcher (macOS/Linux, Bash 3.2+)
+# Exit codes:
+#   66 = entrypoint not found
+#   127 = runtime missing (bun/node not found)
+# Debug: export ORG_DEBUG=1
+
 set -euo pipefail
 
-export ORG_DEV_IMAGE=localhost/org-build:debian-12
+DBG="${ORG_DEBUG:-0}"
+log() { [ "$DBG" = "1" ] || return 0; printf '[org.sh] %s\n' "$*" >&2; }
 
-DBG="${ORG_DEBUG:-${DEBUG:-0}}"
-log() { [ "$DBG" = "1" ] && printf '[org.sh] %s\n' "$*" >&2 || true; }
-have() { command -v "$1" >/dev/null 2>&1; }
+# ------------------------------------------------------------------------------
+# Config
+# ------------------------------------------------------------------------------
 
-# --- resolve script/appdir ----------------------------------------------------
+# Container engine preference (can override)
+ORG_ENGINE="${ORG_CONTAINER_ENGINE:-podman}"
+# Dev image to use (can override)
+ORG_IMAGE="${ORG_DEV_IMAGE:-localhost/org-build:debian-12}"
+
+# Paths inside container
+CTR_WORK="/work"
+CTR_APPDIR="$CTR_WORK/.org"
+CTR_ENTRY="$CTR_APPDIR/src/app.ts"
+
+# Detect if we are already inside a container (podman/docker)
+in_container=0
+if [ -f /run/.containerenv ] || [ -n "${container:-}" ]; then
+  in_container=1
+fi
+
+# ------------------------------------------------------------------------------
+# Resolve script/app directory and entry
+# ------------------------------------------------------------------------------
+
 SCRIPT="${BASH_SOURCE[0]:-$0}"
 while [ -L "$SCRIPT" ]; do
   L="$(readlink "$SCRIPT")"
@@ -18,191 +42,194 @@ while [ -L "$SCRIPT" ]; do
     *)  SCRIPT="$(cd "$(dirname "$SCRIPT")" && cd "$(dirname "$L")" && pwd)/$(basename "$L")" ;;
   esac
 done
-APPDIR_DEFAULT="$(cd "$(dirname "$SCRIPT")" && pwd)"
-APPDIR="${ORG_APPDIR:-$APPDIR_DEFAULT}"
+APPDIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
 log "script=$SCRIPT"
 log "appdir=$APPDIR"
 
-# --- parse args ---------------------------------------------------------------
-CWD="${ORG_CALLER_CWD:-}"
-ui=""
-args=()
+# Find entry on host (used in host mode)
+find_entry() {
+  local e=""
+  for p in \
+    "$APPDIR/src/app.ts" \
+    "$APPDIR/runner.ts" "$APPDIR/runner.mts" "$APPDIR/runner.js" \
+    "$APPDIR/dist/runner.js"
+  do
+    if [ -f "$p" ]; then e="$p"; break; fi
+  done
+  printf '%s' "$e"
+}
+
+# ------------------------------------------------------------------------------
+# Parse -C/--cwd and --ui (strip them from $@)
+# ------------------------------------------------------------------------------
+
+CWD=""
+UI=""
+pass_args=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    -C|--cwd|--project) shift; CWD="${1:-}"; shift || true ;;
-    --ui)               shift; ui="${1:-}"; shift || true ;;
-    *)                  args+=("$1"); shift ;;
+    -C|--cwd)
+      shift; CWD="${1:-}"; shift || true ;;
+    --ui)
+      shift; UI="${1:-}"; shift || true ;;
+    *)
+      pass_args+=("$1"); shift ;;
   esac
 done
 
+# cd if requested
 if [ -n "$CWD" ]; then
   log "cd -> $CWD"
   cd "$CWD" 2>/dev/null || { echo "org: cwd not found: $CWD" >&2; exit 66; }
 fi
 
-# --- inside-container detection & path normalization --------------------------
-INSIDE_CONTAINER=""
-{ [ -f /.dockerenv ] || [ -f /run/.containerenv ]; } && INSIDE_CONTAINER=1
-if [ -n "$INSIDE_CONTAINER" ]; then
-  if   [ -d /work/.org/src ]; then APPDIR="/work/.org"
-  elif [ -d /work/src     ]; then APPDIR="/work"
-  fi
-  log "container detected -> appdir rewired to $APPDIR"
-fi
+# ------------------------------------------------------------------------------
+# Small helpers
+# ------------------------------------------------------------------------------
 
-# --- resolve entrypoint -------------------------------------------------------
-ENTRY="${ORG_ENTRY:-}"
-candidates=("$APPDIR/src/app.ts" "$APPDIR/runner.ts" "$APPDIR/dist/runner.js")
-if [ -z "$ENTRY" ]; then
-  for p in "${candidates[@]}"; do
-    [ -f "$p" ] && { ENTRY="$p"; break; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# quote a vector for safe embedding into bash -lc
+qjoin() {
+  local a=("$@") out=() s
+  for s in "${a[@]}"; do
+    # shellcheck disable=SC1003
+    out+=("$(printf "%q" "$s")")
   done
-fi
-[ -n "$ENTRY" ] || { echo "org: entrypoint not found next to $APPDIR" >&2; exit 66; }
-log "entry=$ENTRY"
-
-# --- runtime selection for HOST (console / host tmux only) -------------------
-HOST_RUN=()
-if have bun; then
-  HOST_RUN=(bun "$ENTRY")
-elif have node && have npx; then
-  HOST_RUN=(npx --yes tsx "$ENTRY")
-elif have node; then
-  echo "org: Node found but 'tsx' missing. Install 'tsx' (npm i -g tsx) or install bun." >&2
-  exit 127
-fi
-
-# --- forward env (ORG_* + DEBUG/LOG_LEVEL) -----------------------------------
-collect_env_for_container() {
-  local out=()
-  for n in DEBUG LOG_LEVEL; do
-    if env | grep -q "^${n}="; then out+=(-e "$n"); fi
-  done
-  # Forward all ORG_* vars
-  while IFS='=' read -r name _; do
-    out+=(-e "$name")
-  done < <(env | awk -F= '/^ORG_/ {print $1"="}')
-  printf '%s\n' "${out[@]}"
+  printf '%s ' "${out[@]}"
 }
 
-# --- engine detection ---------------------------------------------------------
-detect_engine() {
-  if have podman; then echo podman; return; fi
-  if have docker; then echo docker; return; fi
-  echo ""
-}
+# ------------------------------------------------------------------------------
+# Inside-container execution
+# ------------------------------------------------------------------------------
 
-image_exists() {
-  local engine="$1" img="$2"
-  if [ "$engine" = "podman" ]; then
-    podman image exists "$img"
-  else
-    docker image inspect "$img" >/dev/null 2>&1
-  fi
-}
+run_inside_container() {
+  # We are already inside the image. Run with bun; if UI=tmux, run tmux->bash->bun.
+  local ui="${UI:-console}"
 
-# --- container tmux runner (robust) ------------------------------------------
-run_tmux_in_container() {
-  local engine="$1"; shift
-  local image="${ORG_DEV_IMAGE:-localhost/org-dev:latest}"
-
-  if ! image_exists "$engine" "$image"; then
-    echo "org: dev image '$image' not found locally." >&2
-    echo "     Build it first, e.g.:" >&2
-    if [ "$engine" = "podman" ]; then
-      echo "       podman build -t localhost/org-dev:latest -f Containerfile ." >&2
-    else
-      echo "       docker build -t org-dev:latest -f Containerfile ." >&2
-      echo "     then: export ORG_DEV_IMAGE=org-dev:latest" >&2
-    fi
+  # Entry resolution must be done *inside the container* using CTR_ENTRY, not host paths.
+  if [ ! -f "$CTR_ENTRY" ]; then
+    echo "org: entrypoint not found at $CTR_ENTRY" >&2
     exit 66
   fi
 
-  local repo="$(cd "$APPDIR_DEFAULT" && pwd)"
-  local c_app="/work/.org"
-  local c_cwd="/work"
-
-  # The entry path inside the container:
-  local inner_entry
-  if   [ -f "$repo/src/app.ts" ];   then inner_entry="$c_app/src/app.ts"
-  elif [ -f "$repo/runner.ts" ];   then inner_entry="$c_app/runner.ts"
-  elif [ -f "$repo/dist/runner.js" ]; then inner_entry="$c_app/dist/runner.js"
-  else
-    inner_entry="$c_app/src/app.ts"
-  fi
-
-  # Build argument string for the inner process
-  # --ui console is enforced; user args are forwarded.
-  local inner_args=("--ui" "console")
-  for a in "${args[@]}"; do inner_args+=("$a"); done
-
-  # Inner script resolves runtime INSIDE the container:
-  # 1) bun if present; 2) npx tsx if present; else readable error.
-  local inner_cmd='
-    set -e
-    if command -v bun >/dev/null 2>&1; then
-      exec bun '"$(printf '%q ' "$inner_entry" "${inner_args[@]}")"'
-    elif command -v node >/dev/null 2>&1 && command -v npx >/dev/null 2>&1; then
-      exec npx --yes tsx '"$(printf '%q ' "$inner_entry" "${inner_args[@]}")"'
-    else
-      echo "ERROR: No runtime in container (bun or node+npx required)." >&2
-      echo "       Install bun or add tsx to the image and rebuild." >&2
-      sleep 3
+  # Always force the app’s UI explicitly (so tmux outer uses console inner)
+  if [ "$ui" = "tmux" ]; then
+    # Outer tmux requested, but if we’re already *in* the container this
+    # script must *directly* start tmux here and run bun inside it.
+    if ! have tmux; then
+      echo "org: tmux not found in container." >&2
       exit 127
     fi
-  '
-
-  # We create the session detached, set remain-on-exit, then attach.
-  # This prevents the “flash then disappear” symptom when the command exits.
-  local tmux_script='
-    tmux new-session -d -s "${ORG_TMUX_NAME:-org}" "bash -lc '"$(printf '%q' "$inner_cmd")"'"
-    tmux set-option -t "${ORG_TMUX_NAME:-org}" remain-on-exit on
-    tmux attach -t "${ORG_TMUX_NAME:-org}"
-  '
-
-  mapfile -t env_fwd < <(collect_env_for_container)
-  local common=(run --rm -it --network host -v "$repo":"$c_app":Z -w "$c_cwd")
-
-  if [ "$engine" = "podman" ]; then
-    common+=(--userns keep-id --pull=never)
-    log "engine=podman image=$image"
-    exec podman "${common[@]}" "${env_fwd[@]}" "$image" bash -lc "$tmux_script"
+    local cmd=("bun" "$CTR_ENTRY" "--ui" "console")
+    cmd+=("${pass_args[@]}")
+    log "tmux new-session ..."
+    exec tmux new -A -s org bash -lc "$(qjoin "${cmd[@]}")"
   else
-    # docker: omit :Z
-    common=(-it --rm --network host -v "$repo":"$c_app" -w "$c_cwd")
-    log "engine=docker image=$image"
-    exec docker run "${common[@]}" "${env_fwd[@]}" "$image" bash -lc "$tmux_script"
+    # console (direct bun)
+    if have bun; then
+      local cmd=("bun" "$CTR_ENTRY" "--ui" "console")
+      cmd+=("${pass_args[@]}")
+      log "exec: ${cmd[*]}"
+      exec "${cmd[@]}"
+    fi
+    echo "org: bun runtime not found." >&2
+    exit 127
   fi
 }
 
-# --- UI selection -------------------------------------------------------------
-ui="${ui:-${ORG_FORCE_UI:-console}}"
+# ------------------------------------------------------------------------------
+# Host-side container wrapper for tmux
+# ------------------------------------------------------------------------------
 
-if [ "$ui" = "tmux" ]; then
-  if [ -n "${TMUX:-}" ]; then
-    # already in tmux -> run on HOST with console UI
-    exec "${HOST_RUN[@]}" --ui console "${args[@]}"
+run_tmux_in_container() {
+  # Require container engine
+  if ! have "$ORG_ENGINE"; then
+    echo "org: container engine not found: $ORG_ENGINE" >&2
+    exit 127
   fi
 
-  if have tmux; then
-    # host tmux: start detached, then attach (remain-on-exit so you can read errors)
-    CMD=$(printf '%q ' env ORG_TMUX=1 ORG_FORCE_UI=console ORG_APPDIR="$APPDIR" ORG_CALLER_CWD="$PWD" \
-      "${HOST_RUN[@]}" --ui console "${args[@]}")
-    tmux new-session -d -s "${ORG_TMUX_NAME:-org}" "bash -lc $CMD"
-    tmux set-option -t "${ORG_TMUX_NAME:-org}" remain-on-exit on
-    exec tmux attach -t "${ORG_TMUX_NAME:-org}"
-  fi
+  local mount_src="$PWD"
+  local ui_inner="console"   # always console inside, tmux outer
+  local inner=()
+  inner=("env" "ORG_TMUX=1" "ORG_FORCE_UI=$ui_inner" "ORG_APPDIR=$CTR_APPDIR" "ORG_CALLER_CWD=$CTR_WORK"
+         "tmux" "new" "-A" "-s" "org" "bash" "-lc")
 
-  # containerized tmux
-  engine="$(detect_engine)"
-  if [ -n "$engine" ]; then
-    run_tmux_in_container "$engine"
-  fi
+  # Command we want bash -lc to run *inside tmux*
+  local app=()
+  app=("bun" "$CTR_ENTRY" "--ui" "$ui_inner")
+  app+=("${pass_args[@]}")
 
-  echo "org: tmux not found on host and no container engine (podman/docker) available." >&2
-  echo "     Install tmux or run with '--ui console'." >&2
+  local inner_cmd
+  inner_cmd="$(qjoin "${app[@]}")"
+  inner+=("$inner_cmd")
+
+  local run=( "$ORG_ENGINE" run --rm -it --network host
+              -v "$mount_src:$CTR_APPDIR:Z"
+              -w "$CTR_WORK"
+              "$ORG_IMAGE"
+              bash -lc )
+
+  # the big one-liner we want bash -lc to evaluate in the container:
+  local final
+  final="$(qjoin "${inner[@]}")"
+
+  log "engine=$ORG_ENGINE image=$ORG_IMAGE"
+  log "mount: $mount_src -> $CTR_APPDIR"
+  log "tmux inner: $final"
+
+  exec "${run[@]}" "$final"
+}
+
+# ------------------------------------------------------------------------------
+# Host-side direct execution (console ui)
+# ------------------------------------------------------------------------------
+
+run_console_on_host() {
+  local entry
+  entry="$(find_entry)"
+  if [ -z "$entry" ]; then
+    echo "org: entrypoint not found. Tried src/app.ts, runner.ts/mts/js, dist/runner.js under $APPDIR" >&2
+    exit 66
+  fi
+  if have bun; then
+    local cmd=("bun" "$entry" "--ui" "console")
+    cmd+=("${pass_args[@]}")
+    log "exec: ${cmd[*]}"
+    exec "${cmd[@]}"
+  fi
+  echo "org: bun runtime not found." >&2
   exit 127
+}
+
+# ------------------------------------------------------------------------------
+# Main dispatch
+# ------------------------------------------------------------------------------
+
+# default UI if not supplied
+if [ -z "${UI:-}" ]; then
+  UI="${ORG_FORCE_UI:-console}"
 fi
 
-# --- default: console UI on HOST ---------------------------------------------
-exec "${HOST_RUN[@]}" --ui console "${args[@]}"
+log "ui=$UI"
+log "engine=$ORG_ENGINE image=$ORG_IMAGE"
+
+if [ "$in_container" = "1" ]; then
+  # We are already inside the container (e.g., image has /usr/local/bin/org)
+  run_inside_container
+  exit 0
+fi
+
+# Host side
+case "$UI" in
+  tmux)
+    run_tmux_in_container
+    ;;
+  ""|console)
+    run_console_on_host
+    ;;
+  *)
+    echo "org: unknown UI: $UI (use 'console' or 'tmux')" >&2
+    exit 2
+    ;;
+esac
