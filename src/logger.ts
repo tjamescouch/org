@@ -116,7 +116,7 @@ export class Logger {
     // Console
     if (level === "error") R.stderr.write(chunk);
     else if (level === "warn") R.stdio.write(chunk);
-    else R.stdio.wite(chunk);
+    else R.stdio.write(chunk);
 
     if (level === "error") this.stream.write(chunk);
     else if (level === "warn") this.stream.write(chunk);
