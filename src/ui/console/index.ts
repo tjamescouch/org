@@ -3,9 +3,9 @@ import { spawnSync } from "child_process";
 import { findLastSessionPatch } from "../../lib/session-patch";
 
 function trace(msg: string) {
-  if (process.env.ORG_DEBUG === "1" || process.env.DEBUG === "1") {
-    process.stderr.write(`[console-ui] ${msg}\n`);
-  }
+  //if (process.env.ORG_DEBUG === "1" || process.env.DEBUG === "1") {
+  //  process.stderr.write(`[console-ui] ${msg}\n`);
+  //}
 }
 
 /**
@@ -57,7 +57,7 @@ function enableRaw(): { restore: () => void; liveEcho: boolean } {
   };
 
   // If we disabled terminal echo, the UI should perform live echo.
-  const liveEcho = turnedEchoOff || usedSetRaw;
+  const liveEcho = false;//turnedEchoOff || usedSetRaw;
   return { restore, liveEcho };
 }
 
