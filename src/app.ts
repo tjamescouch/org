@@ -129,7 +129,7 @@ function parseAgents(
   llmDefaults: { model: string; baseUrl: string; protocol: "openai"; apiKey?: string },
   recipeSystemPrompt?: string | null,
 ): AgentSpec[] {
-  const list = String(spec || "alice:lmstudio")
+  const list = String(spec || "alice:lmstudio") //FIXME - 2 defaults?
     .split(",")
     .map((x) => x.trim())
     .filter(Boolean);
@@ -318,7 +318,13 @@ async function main() {
   computeMode({ allowTools: recipe?.allowTools });
   Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
 
-  const agentSpecs = parseAgents(String(args["agents"] || "alice:mock"), cfg.llm, recipe?.system ?? null);
+  const agentsSpec =
+    (typeof args["agents"] === "string" && args["agents"]) ||
+    (R.env.ORG_AGENTS as string) ||
+    "alice:lmstudio";
+
+  const agentSpecs = parseAgents(agentsSpec, cfg.llm, recipe?.system ?? null);
+
   if (agentSpecs.length === 0) {
     Logger.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
     R.exit(1);
