@@ -1,167 +1,111 @@
 // src/runtime/hotkeys.ts
-/**
- * Lightweight hotkey manager for raw TTY sessions.
- *
- * - Installs a single `keypress` listener (via readline.emitKeypressEvents)
- * - Puts stdin in raw mode while active; restores previous raw state on dispose
- * - ESC: triggers onEsc only when pressed *alone* (not as part of arrow/meta seq)
- * - Ctrl+C: triggers onCtrlC (default: exit 130)
- * - Interject key: single printable key (default "i")
- *
- * No-ops entirely when !process.stdin.isTTY (CI, pipes, --prompt "text", etc).
- */
-
 import * as readline from "readline";
-import { Logger } from "../logger";
 
-type Handlers = {
-  onEsc?: () => void;
-  onInterject?: () => void;
-  onCtrlC?: () => void;
+export type KeyLike = {
+  name?: string;
+  ctrl?: boolean;
+  meta?: boolean;
+  shift?: boolean;
+  sequence?: string;
 };
 
-type Options = {
-  /** Which single key triggers interjection; case-insensitive. Default: "i". */
-  interjectKey?: string;
-  /** Debounce for lone ESC detection (ms). Default: 120. */
-  escDelayMs?: number;
+type HotkeyOpts = {
+  interjectKey: string;         // e.g. "i"
+  onInterject: () => void;      // called when interject key is pressed
+  onEsc: () => void;            // called on ESC
+  onCtrlC: () => void;          // called on Ctrl+C
 };
 
-let installed = false;
-let listener: ((str: string, key: readline.Key) => void) | null = null;
-let prevRaw = false;
-let active = true;
-let pendingEsc: NodeJS.Timeout | null = null;
+let currentOpts: HotkeyOpts | null = null;
+let keyListener: ((str: string, key: readline.Key) => void) | null = null;
+let enabled = false;
 
-const noopDispose = () => ({ dispose() {} });
-
-function isTTY() {
-  return !!process.stdin.isTTY;
-}
-
-function setRawMode(enable: boolean) {
-  const s: any = process.stdin as any;
-  if (!isTTY()) return;
-  if (typeof s.setRawMode === "function") {
-    try {
-      s.setRawMode(enable);
-      (s as any).isRaw = !!enable; // keep a flag we can read back
-    } catch { /* ignore */ }
-  }
-}
-
-function clearPendingEsc() {
-  if (pendingEsc) {
-    clearTimeout(pendingEsc);
-    pendingEsc = null;
-  }
-}
-
-/**
- * Install hotkeys. Returns an object with a `dispose()` you *can* call,
- * but you can also call the exported `disposeHotkeys()` globally.
- */
-export function installHotkeys(
-  handlers: Handlers,
-  opts: Options = {}
-) {
-  if (!isTTY()) {
-    // Non-interactive environments: everything is a no-op.
-    installed = false;
-    listener = null;
-    return noopDispose();
-  }
-
-  // If already installed, clean up first to be idempotent.
-  if (installed) disposeHotkeys();
-
-  const interjectKey = String(opts.interjectKey || "i").toLowerCase();
-  const escDelayMs = Math.max(0, opts.escDelayMs ?? 120);
+/** Install raw-mode key handling and route keys to the provided callbacks. */
+export function registerHotkeys(opts: HotkeyOpts) {
+  disposeHotkeys();
+  currentOpts = opts;
 
   readline.emitKeypressEvents(process.stdin);
+  if (process.stdin.isTTY) {
+    try { (process.stdin as any).setRawMode?.(true); } catch { /* ignore */ }
+  }
 
-  // Remember previous raw state and turn on raw while installed.
-  const anyStdin: any = process.stdin as any;
-  prevRaw = !!anyStdin?.isRaw;
-  setRawMode(true);
-
-  installed = true;
-
-  listener = (str: string, key: readline.Key) => {
-    if (!active) return;
-    if (!key) return;
-
-    // Ctrl+C — fast exit (default)
-    if (key.ctrl && key.name === "c") {
-      clearPendingEsc();
-      if (handlers.onCtrlC) handlers.onCtrlC();
-      else {
-        try { setRawMode(false); } catch {}
-        process.stdout.write("\n");
-        process.exit(130);
-      }
-      return;
-    }
+  keyListener = (_str: string, key: readline.Key) => {
+    if (!enabled || !key) return;
 
     const name = (key.name || "").toLowerCase();
 
-    // Arrow keys (and most special keys) should NEVER trigger ESC.
-    // Node's keypress usually maps them to 'up','down','left','right', etc.
-    // If we *do* see 'escape', make sure it's the lone '\u001b' sequence.
-    const seq = (key as any).sequence as string | undefined;
-
-    // Lone ESC handling: set a short timer; if anything else arrives,
-    // we cancel. This avoids swallowing Meta/Alt combos and odd terms.
-    if (name === "escape" && (!seq || seq === "\u001b")) {
-      clearPendingEsc();
-      pendingEsc = setTimeout(() => {
-        pendingEsc = null;
-        try { handlers.onEsc?.(); } catch (e) { Logger.error(e); }
-      }, escDelayMs);
+    if (key.ctrl && name === "c") {
+      currentOpts?.onCtrlC();
       return;
     }
 
-    // Any other keypress cancels a pending ESC
-    clearPendingEsc();
-
-    // Interjection hotkey (single printable; ignore when ctrl/meta/shift used)
-    if (!key.ctrl && !key.meta && name === interjectKey) {
-      try { handlers.onInterject?.(); } catch (e) { Logger.error(e); }
+    if (name === "escape" || name === "esc") {
+      currentOpts?.onEsc();
       return;
     }
 
-    // Everything else is ignored here — arrow keys included.
+    if (name === currentOpts?.interjectKey) {
+      currentOpts?.onInterject();
+      return;
+    }
   };
 
-  process.stdin.on("keypress", listener);
-
-  // Best-effort raw restore on process death
-  const restore = () => {
-    try { disposeHotkeys(); } catch {}
-  };
-  process.once("exit", restore);
-  process.once("SIGTERM", () => { restore(); process.exit(143); });
-  process.once("uncaughtException", (err) => { try { disposeHotkeys(); } catch {}; Logger.error(err); });
-  process.once("unhandledRejection", (reason: any) => { try { disposeHotkeys(); } catch {}; Logger.error(reason); });
-
-  return { dispose: disposeHotkeys };
+  enabled = true;
+  process.stdin.on("keypress", keyListener);
 }
 
-/** Remove key listener and restore original raw state. */
+/** Remove listeners (leaves raw/cooked state as-is). */
 export function disposeHotkeys() {
-  clearPendingEsc();
-  if (!installed) return;
-  if (listener) {
-    try { process.stdin.removeListener("keypress", listener); } catch {}
+  enabled = false;
+  if (keyListener) {
+    try { process.stdin.removeListener("keypress", keyListener); } catch { /* ignore */ }
+    keyListener = null;
   }
-  listener = null;
-  installed = false;
-
-  // Restore raw state to what it was before installation.
-  try { setRawMode(prevRaw); } catch {}
+  currentOpts = null;
 }
 
-/** Temporarily stop dispatching hotkeys without uninstalling. */
-export function disable() { active = false; }
-/** Resume dispatching hotkeys. */
-export function enable() { active = true; }
+/** Temporarily gate hotkey processing (use during readline). */
+export function setHotkeysEnabled(v: boolean) {
+  enabled = !!v;
+}
+export function areHotkeysEnabled() { return enabled; }
+
+/** Switch terminal between canonical editing (true) and raw (false). */
+export function setCanonicalMode(enable: boolean) {
+  if (!process.stdin.isTTY) return;
+  try { (process.stdin as any).setRawMode?.(!enable); } catch { /* ignore */ }
+}
+
+/** Test helper: pretend the user pressed a key. */
+export function injectKeyForTests(k: KeyLike) {
+  if (!currentOpts) return;
+  const name = (k.name || "").toLowerCase();
+
+  if (k.ctrl && name === "c") { currentOpts.onCtrlC(); return; }
+  if (name === "escape" || name === "esc") { currentOpts.onEsc(); return; }
+  if (name === currentOpts.interjectKey) { currentOpts.onInterject(); return; }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Back-compat aliases (older code/tests may import these names)             */
+/* ------------------------------------------------------------------------- */
+export const installHotkeys = registerHotkeys;
+export const uninstallHotkeys = disposeHotkeys;
+export function enableHotkeys() { setHotkeysEnabled(true); }
+export function disableHotkeys() { setHotkeysEnabled(false); }
+
+/** Optional convenience default export (not required) */
+export default {
+  registerHotkeys,
+  disposeHotkeys,
+  setHotkeysEnabled,
+  areHotkeysEnabled,
+  setCanonicalMode,
+  injectKeyForTests,
+  // aliases
+  installHotkeys,
+  uninstallHotkeys,
+  enableHotkeys,
+  disableHotkeys,
+};
