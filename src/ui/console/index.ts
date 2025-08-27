@@ -1,4 +1,4 @@
-import { findLastSessionPatch } from "../../lib/sessionPatch";
+import { findLastSessionPatch } from "../../lib/session-patch";
 
 function trace(msg: string) {
   if (process.env.DEBUG === "1" || process.env.ORG_DEBUG === "1") {
