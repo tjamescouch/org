@@ -242,13 +242,13 @@ async function finalizeOnce(
 }
 
 async function main() {
-  const cfg = loadConfig();
+  const cfg  = loadConfig();
   const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
   const args = parseArgs(argv);
 
-  // Optional pre-checks when the user explicitly asked for tmux
+  // Optional pre-checks only when the user explicitly asked for tmux
   if (args["ui"] === "tmux") {
-    const sandbox = R.env.SANDBOX_BACKEND ?? "podman";   // "none" => host
+    const sandbox   = R.env.SANDBOX_BACKEND ?? "podman";   // "none" => host
     const tmuxScope: "host" | "container" =
       (R.env.ORG_TMUX_SCOPE as any) ?? (sandbox === "none" ? "host" : "container");
 
@@ -258,9 +258,9 @@ async function main() {
     }
   }
 
-  // Route to the requested UI
-  const ui = (args["ui"] as string | undefined) ?? process.env.ORG_FORCE_UI ?? "console";
-  const code = await launchUI(ui, argv);   // use argv you built above
+  // Always route to a UI; default to console when not specified
+  const ui   = (args["ui"] as string | undefined) ?? R.env.ORG_FORCE_UI ?? "console";
+  const code = await launchUI(ui, argv);     // <-- use the argv you just built
   R.exit(code);
 }
 
