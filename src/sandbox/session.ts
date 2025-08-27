@@ -91,6 +91,8 @@ export class SandboxManager {
 
 
     async getOrCreate(id: string, policyOverrides: Partial<ExecPolicy> = {}) {
+        console.log('getOrCreate', id, policyOverrides);
+
         let s = this.sessions.get(id);
         if (s) return s;
 
