@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
-# Robust 'org' launcher for macOS/Linux (Bash 3.2+)
-# Exit codes: 66 = cwd/entrypoint not found; 127 = runtime missing
+# Robust 'org' launcher (Bash 3.2+)
+# Exit codes: 66 = not found; 127 = runtime missing
 set -euo pipefail
 
 DBG="${ORG_DEBUG:-${DEBUG:-0}}"
 log() { [ "$DBG" = "1" ] && printf '[org.sh] %s\n' "$*" >&2 || true; }
+have() { command -v "$1" >/dev/null 2>&1; }
 
 # --- resolve script/appdir ----------------------------------------------------
 SCRIPT="${BASH_SOURCE[0]:-$0}"
 while [ -L "$SCRIPT" ]; do
-  L=$(readlink "$SCRIPT")
+  L="$(readlink "$SCRIPT")"
   case "$L" in
     /*) SCRIPT="$L" ;;
     *)  SCRIPT="$(cd "$(dirname "$SCRIPT")" && cd "$(dirname "$L")" && pwd)/$(basename "$L")" ;;
   esac
 done
-APPDIR="${ORG_APPDIR:-$(cd "$(dirname "$SCRIPT")" && pwd)}"
+APPDIR_DEFAULT="$(cd "$(dirname "$SCRIPT")" && pwd)"
+APPDIR="${ORG_APPDIR:-$APPDIR_DEFAULT}"
 log "script=$SCRIPT"
 log "appdir=$APPDIR"
 
@@ -40,7 +42,7 @@ fi
 INSIDE_CONTAINER=""
 { [ -f /.dockerenv ] || [ -f /run/.containerenv ]; } && INSIDE_CONTAINER=1
 if [ -n "$INSIDE_CONTAINER" ]; then
-  # dev mount convention: project at /work, or the baked tree at /work/.org
+  # dev convention: project at /work (live) or /work/.org (baked)
   if [ -d /work/.org/src ]; then
     APPDIR="/work/.org"
   elif [ -d /work/src ]; then
@@ -49,7 +51,7 @@ if [ -n "$INSIDE_CONTAINER" ]; then
   log "container detected -> appdir rewired to $APPDIR"
 fi
 
-# --- resolve entrypoint (prefer src/app.ts; fallback runner.ts; dist/runner.js)
+# --- resolve entrypoint -------------------------------------------------------
 ENTRY="${ORG_ENTRY:-}"
 try_entries=("$APPDIR/src/app.ts" "$APPDIR/runner.ts" "$APPDIR/dist/runner.js")
 if [ -z "$ENTRY" ]; then
@@ -61,10 +63,10 @@ fi
 log "entry=$ENTRY"; [ "$DBG" = "1" ] && { ls -l "$ENTRY" >&2 || true; head -n1 "$ENTRY" >&2 || true; }
 
 # --- runtime selection (bun preferred) ---------------------------------------
-if command -v bun >/dev/null 2>&1; then
+if have bun; then
   RUN=(bun "$ENTRY")
-elif command -v node >/dev/null 2>&1; then
-  if command -v npx >/dev/null 2>&1; then
+elif have node; then
+  if have npx; then
     RUN=(npx --yes tsx "$ENTRY")
   else
     echo "org: Node found but tsx missing. Install 'tsx' (npm i -g tsx) or install bun." >&2
@@ -75,26 +77,87 @@ else
   exit 127
 fi
 
+# --- tiny helper: collect ORG_* + DEBUG + LOG_LEVEL to forward into container -
+collect_env_for_container() {
+  local out=()
+  # forward DEBUG / LOG_LEVEL if set
+  for n in DEBUG LOG_LEVEL; do
+    if env | grep -q "^${n}="; then out+=(-e "$n"); fi
+  done
+  # forward every ORG_* that is set
+  while IFS='=' read -r name _; do
+    out+=(-e "$name")
+  done < <(env | awk -F= '/^ORG_/ {print $1"="}')
+  printf '%s\n' "${out[@]}"
+}
+
+# --- container engine detection ----------------------------------------------
+detect_engine() {
+  if have podman; then echo podman; return; fi
+  if have docker; then echo docker; return; fi
+  echo ""
+}
+
+# --- run inside container with tmux ------------------------------------------
+run_tmux_in_container() {
+  local engine="$1"; shift
+  local image="${ORG_DEV_IMAGE:-org-dev:latest}"     # override with your built image tag
+  local repo="$(cd "$APPDIR_DEFAULT" && pwd)"
+
+  # container paths we standardize on
+  local c_app="/work/.org"                           # mount the repo here
+  local c_cwd="/work"
+
+  # build the app command run *inside* tmux in the container
+  local inner_cmd
+  inner_cmd=$(printf '%q ' env ORG_TMUX=1 ORG_FORCE_UI=console ORG_APPDIR="$c_app" ORG_CALLER_CWD="$c_cwd" \
+    "${RUN[@]/$APPDIR/$c_app}" --ui console "${args[@]}")
+
+  # env forwards
+  mapfile -t env_fwd < <(collect_env_for_container)
+
+  local common=(run --rm -it --network host -v "$repo":"$c_app":Z -w "$c_cwd")
+  # podman supports --userns keep-id; docker on Linux: --user $(id -u):$(id -g)
+  if [ "$engine" = "podman" ]; then
+    common+=(--userns keep-id)
+  else
+    common+=(--user "$(id -u):$(id -g)")
+  fi
+
+  log "container engine=$engine image=$image"
+  log "mount: $repo -> $c_app"
+  log "tmux inner: $inner_cmd"
+
+  exec "$engine" "${common[@]}" "${env_fwd[@]}" "$image" bash -lc "tmux new-session -A -s org \"$inner_cmd\""
+}
+
 # --- UI selection -------------------------------------------------------------
 ui="${ui:-${ORG_FORCE_UI:-console}}"
 
 if [ "$ui" = "tmux" ]; then
-  # If already *in* tmux, just run the console UI (tmux is the multiplexer)
+  # already inside a tmux client? just run console UI
   if [ -n "${TMUX:-}" ]; then
     log "already in tmux; downgrading to console UI"
     exec "${RUN[@]}" --ui console "${args[@]}"
   fi
 
-  # Build the exact command we want tmux to run *inside* its session.
-  # Always force console UI inside tmux; pass normalized cwd/appdir.
-  CMD=$(printf '%q ' env \
-    ORG_TMUX=1 ORG_FORCE_UI=console ORG_APPDIR="$APPDIR" ORG_CALLER_CWD="$PWD" \
-    "${RUN[@]}" --ui console "${args[@]}")
-  log "tmux CMD=$CMD"
+  # if host has tmux, run it here (simplest)
+  if have tmux; then
+    CMD=$(printf '%q ' env ORG_TMUX=1 ORG_FORCE_UI=console ORG_APPDIR="$APPDIR" ORG_CALLER_CWD="$PWD" \
+      "${RUN[@]}" --ui console "${args[@]}")
+    log "tmux CMD=$CMD"
+    exec tmux new-session -A -s "${ORG_TMUX_NAME:-org}" "bash -lc $CMD"
+  fi
 
-  TMUX_NAME="${ORG_TMUX_NAME:-org}"
-  # Start (or attach) the tmux session *first*, then run our command inside.
-  exec tmux new-session -A -s "$TMUX_NAME" "bash -lc $CMD"
+  # if no tmux on host, but we have a container engine: run tmux inside container
+  engine="$(detect_engine)"
+  if [ -n "$engine" ]; then
+    run_tmux_in_container "$engine"
+  fi
+
+  echo "org: tmux not found on host and no container engine (podman/docker) available." >&2
+  echo "     Install tmux or run with '--ui console'." >&2
+  exit 127
 fi
 
 # --- default: console UI ------------------------------------------------------
