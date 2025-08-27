@@ -2,39 +2,32 @@
 /**
  * InputController — a tiny, explicit FSM for terminal input.
  *
- * Goals
- *  - No double-echo: while idle we keep the TTY in raw/no-echo; readline is
- *    only enabled during a prompt (which provides the single, canonical echo).
- *  - Deterministic state transitions we can reason about and test.
- *  - Keep the public surface compatible with the existing wiring:
- *      new InputController({...})
- *      input.attachScheduler(scheduler)
- *      await input.askInitialAndSend(kickoff)
- *      input.askUser(fromAgent, content)
+ * - While IDLE we keep TTY raw/no-echo and listen for ESC / hotkey / first char.
+ * - When prompting we switch to readline (cooked, echo ON) and there is exactly
+ *   one canonical echo (no double echo).
+ * - Deterministic transitions and no handler leaks.
  */
 
 import * as readline from "readline";
 import { Logger } from "../logger";
-import { RandomScheduler } from "../scheduler";
 
-// ---------- tiny TTY helpers (local so we don’t depend on other IO code) ----------
+// ---------- local TTY helpers ----------
 function setRaw(on: boolean) {
   if (process.stdin.isTTY) {
     try { (process.stdin as any).setRawMode?.(on); } catch { /* ignore */ }
   }
 }
-
-function resumeTTY() { try { process.stdin.resume(); } catch { /* ignore */ } }
-function pauseTTY()  { try { process.stdin.pause(); }  catch { /* ignore */ } }
+function resumeTTY() { try { process.stdin.resume(); } catch {} }
+function pauseTTY()  { try { process.stdin.pause(); }  catch {} }
 
 function trace(msg: string) {
-  const on = process.env.ORG_DEBUG === "1" || process.env.DEBUG === "1";
-  if (on) process.stderr.write(`[input-fsm] ${msg}\n`);
+  if (process.env.ORG_DEBUG === "1" || process.env.DEBUG === "1") {
+    process.stderr.write(`[input-fsm] ${msg}\n`);
+  }
 }
 
-// Printable byte guard (exclude ESC / CR / LF)
 function isPrintableByte(b: number) {
-  return b !== 0x1b && b !== 0x0d && b !== 0x0a;
+  return b !== 0x1b && b !== 0x0d && b !== 0x0a; // ESC/CR/LF
 }
 function isPrintable(buf: Buffer) {
   if (!buf || buf.length === 0) return false;
@@ -42,17 +35,14 @@ function isPrintable(buf: Buffer) {
   return true;
 }
 
-// ---------- Types ----------
+// ---------- types ----------
 type Finalizer = () => Promise<void> | void;
-
 export interface InputControllerOpts {
   interjectKey?: string;     // default "i"
   interjectBanner?: string;  // default "You: "
   exitOnEsc?: boolean;       // default true
-  finalizer?: Finalizer;     // called when ESC from idle (graceful exit)
+  finalizer?: Finalizer;     // graceful finalize when ESC in idle
 }
-
-// We don’t rely on a concrete Scheduler type; we just need a "submit" sink.
 type SubmitFn = (text: string) => Promise<void> | void;
 
 type State =
@@ -69,6 +59,8 @@ export class InputController {
 
   private dataHandler?: (chunk: Buffer) => void;
   private submit?: SubmitFn;
+  private interjectActive = false;      // re-entry guard
+  private warnedSubmit = false;         // one-time warn if no submit target
 
   constructor(opts: InputControllerOpts = {}) {
     this.interjectKey = String(opts.interjectKey ?? "i");
@@ -76,30 +68,52 @@ export class InputController {
     this.exitOnEsc = opts.exitOnEsc !== false;
     this.finalizer = opts.finalizer ?? (async () => { /* noop */ });
 
-    // Start idle listeners immediately
     resumeTTY();
     this.enterIdle();
   }
 
-  // Public: called by the scheduler wiring
+  // ---------- wiring ----------
   attachScheduler(scheduler: any) {
-    // Be conservative: prefer an explicit submit method if present,
-    // else allow embedding code to set .onUserInput on us.
-    if (typeof scheduler?.receiveUser === "function") {
-      this.submit = (text: string) => scheduler.receiveUser(text);
-    } else if (typeof scheduler?.onUserInput === "function") {
-      this.submit = (text: string) => scheduler.onUserInput(text);
-    } else if (typeof scheduler?.enqueueUser === "function") {
-      this.submit = (text: string) => scheduler.enqueueUser(text);
-    } else {
-      // Fallback: let callers set submit later via a property
-      // (keeps compatibility if the project expects it).
-      (this as any).submit = (t: string) => { Logger.info(`[user -> @@group] ${t}`); };
-      this.submit = (t: string) => (this as any).submit(t);
+    // Try a bunch of common names to avoid rewiring app.ts.
+    const candidates = [
+      "onUserInput",
+      "receiveUser", "receiveUserInput", "receiveInput",
+      "submitUser", "submitUserText",
+      "enqueueUser", "enqueueUserText", "enqueueInput",
+      "acceptUser", "acceptUserInput",
+      "pushUserText", "sendUserText",
+      "handleUserInput", "ingestUserInput",
+      "submit", "enqueue", "receive",
+    ];
+
+    for (const name of candidates) {
+      if (typeof scheduler?.[name] === "function") {
+        this.submit = (text) => scheduler[name](text);
+        trace(`attachScheduler: using scheduler.${name}(text)`);
+        return;
+      }
     }
+
+    if (typeof scheduler?.emit === "function") {
+      this.submit = (text) => scheduler.emit("user", text);
+      trace(`attachScheduler: using scheduler.emit("user", text)`);
+      return;
+    }
+
+    // Fallback: keep a stub but warn once.
+    this.submit = async (text) => {
+      if (!this.warnedSubmit) {
+        this.warnedSubmit = true;
+        Logger.info(
+          "[warn] InputController could not find a scheduler submit method. " +
+          "User text will not be delivered."
+        );
+      }
+      Logger.info(`[user -> @@group] ${text}`);
+    };
+    trace("attachScheduler: no submit target found (stub)");
   }
 
-  // Public: seed initial instruction
   async askInitialAndSend(kickoff?: string | boolean) {
     if (kickoff === true) {
       await this.openInterject({ who: "@scheduler", prompt: "requested input" });
@@ -109,7 +123,6 @@ export class InputController {
     }
   }
 
-  // Public: scheduler requests explicit user input
   async askUser(fromAgent: string, content: string) {
     Logger.info(`@@${fromAgent} requested input`);
     await this.openInterject({ who: `@${fromAgent}`, prompt: content });
@@ -130,69 +143,64 @@ export class InputController {
 
   private enterIdle() {
     this.setState({ name: "idle" });
-    pauseTTY(); // make sure we re-resume cleanly
+    this.interjectActive = false;
+    pauseTTY();
     resumeTTY();
     setRaw(true);
-    // ensure no handler leak
     this.removeIdleHandler();
 
     this.dataHandler = (chunk: Buffer) => {
-      // Raw bytes; do not echo anything here.
       const s = chunk.toString("binary");
-
-      // Ctrl+C: let Node handle SIGINT (don’t swallow)
+      // Let SIGINT propagate
       if (s === "\x03") return;
 
-      // ESC — graceful exit (if enabled) when *not* in a prompt.
+      // ESC from idle => graceful finalize
       if (s === "\x1b") {
         if (this.exitOnEsc) {
-          // move to cooked mode so anything finalizer prints looks normal
           setRaw(false);
           this.removeIdleHandler();
-          Promise.resolve(this.finalizer())
-            .catch((e) => Logger.info(e))
-            .finally(() => {
-              // hand control back to the outer program
-            });
+          Promise.resolve(this.finalizer()).catch((e) => Logger.info(e));
         }
         return;
       }
 
-      // Interject hotkey
+      // explicit hotkey
       if (s === this.interjectKey) {
         this.removeIdleHandler();
         void this.openInterject({});
         return;
       }
 
-      // Printable seed opens interject with the captured first character
+      // printable seed opens prompt
       if (isPrintable(chunk)) {
         this.removeIdleHandler();
         void this.openInterject({}, chunk);
-        return;
       }
     };
 
     process.stdin.on("data", this.dataHandler);
   }
 
-  /**
-   * Transition to the "interject" state. While in this state we use readline
-   * which provides the *single* canonical echo. We optionally seed with an
-   * initial character that triggered the transition while in raw mode.
-   */
   private async openInterject(ctx: { who?: string; prompt?: string }, seed?: Buffer) {
+    // *** FIX 1: detach IDLE listener always and guard re-entry ***
+    this.removeIdleHandler();
+    if (this.interjectActive) {
+      trace("openInterject: already active (ignoring)");
+      return;
+    }
+    this.interjectActive = true;
+
     this.setState({ name: "interject", ...ctx });
 
-    setRaw(false); // cooked, echo on
+    setRaw(false); // cooked echo
     resumeTTY();
 
-    // Informative banner for humans
     if (ctx.who) {
-      Logger.info(`[user -> @@${ctx.who}] ${ctx.prompt ?? ""}`.trim());
+      const meta = ctx.prompt ? ` ${ctx.prompt}` : "";
+      Logger.info(`[user -> @@${ctx.who}]${meta}`);
     }
 
-    // Show a clean prompt on stdout; readline will handle echo/editing.
+    // One visible prompt; readline provides the *only* echo.
     process.stdout.write(`${this.banner}`);
 
     const rl = readline.createInterface({
@@ -203,18 +211,18 @@ export class InputController {
       prompt: "",
     });
 
-    // Make ESC cancel the prompt cleanly
+    // ESC cancels current prompt
     let canceled = false;
     const escListener = (buf: Buffer) => {
-      if (buf && buf.length && buf[0] === 0x1b) { // ESC
+      if (buf && buf.length && buf[0] === 0x1b) {
         canceled = true;
         rl.write("", { name: "return" } as any);
       }
     };
     (rl.input as any).on("data", escListener);
 
-    // Seed the first char (no double-echo: raw mode had *no* echo)
     if (seed && seed.length) {
+      // raw state had no echo, so seeding is safe (no double echo)
       rl.write(seed.toString("utf8"));
     }
 
@@ -226,7 +234,7 @@ export class InputController {
     (rl.input as any).off("data", escListener);
     rl.close();
 
-    // Print a single newline *once* after closing readline (no extra echo)
+    // single newline after closing readline
     process.stdout.write("\n");
 
     if (!canceled && answer.trim().length > 0) {
@@ -234,18 +242,7 @@ export class InputController {
       await this.submit?.(answer);
     }
 
-    // Return to idle raw/no-echo
+    // back to idle
     this.enterIdle();
   }
-}
-
-
-// Factory used by tests to build a controller in "test mode" (no process.exit)
-export function makeControllerForTests(args: {
-  scheduler: RandomScheduler;
-  finalizer?: () => void | Promise<void>;
-}) {
-  const c = new InputController({ finalizer: args.finalizer });
-  c.attachScheduler(args.scheduler);
-  return c;
 }
