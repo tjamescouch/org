@@ -59,6 +59,7 @@ async function getManager(key: string, projectDir: string, runRoot?: string) {
     m = new SandboxManager(projectDir, runRoot, { backend: "auto" });
     sandboxMangers.set(key, m);
   }
+  LAST_SESSION_KEY = key;   // <-- record most-recent session key
   return m;
 }
 
