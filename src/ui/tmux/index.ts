@@ -1,5 +1,4 @@
 import { shCapture, shInteractive, currentSandboxSessionKey } from "../../tools/sandboxed-sh";
-
 const shq = (s: string) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 function firstAgentIdFromArgv(argv: string[]): string {
@@ -43,7 +42,7 @@ export async function launchTmuxUI(argv: string[]): Promise<number> {
     "rc=$?",
     "printf '\\n[tmux-ui] org exited with code: %s\\n' \"$rc\"",
     "printf '[tmux-ui] You are in a shell inside the container. Detach: Ctrl-b then d.\\n'",
-    "exec bash -l"
+    "exec bash -l",
   ].join(" ; ");
 
   const script = [

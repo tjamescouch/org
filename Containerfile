@@ -99,8 +99,6 @@ ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (com
 # ---------------------------
 # PROJECT EXPOSURE (surgical)
 # ---------------------------
-# Put the repo under /work/.org (matches your tmux/session code) and expose
-# the existing root ./org launcher on PATH so `org` resolves inside the container.
 WORKDIR /work/.org
 COPY . /work/.org
 RUN chmod +x /work/.org/org \

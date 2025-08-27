@@ -246,23 +246,23 @@ async function main() {
   const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
   const args = parseArgs(argv);
 
-  if (args["ui"] === "tmux" && R.env.ORG_TMUX !== "1") {
-    // handoff to tmux UI; run the same argv inside tmux with ORG_TMUX=1
-    const sandbox = R.env.SANDBOX_BACKEND ?? "podman"; // "none" = host
+  // Optional: pre-checks before launching tmux UI
+  if (args["ui"] === "tmux") {
+    const sandbox = R.env.SANDBOX_BACKEND ?? "podman";   // "none" => host
     const tmuxScope: "host" | "container" =
       (R.env.ORG_TMUX_SCOPE as any) ?? (sandbox === "none" ? "host" : "container");
 
-    // Only doctor the host when using host tmux
-    if (args["ui"] === "tmux") {
+    if (tmuxScope === "host") {
       const { doctorTmux } = await import("./cli/doctor");
-      if (tmuxScope === "host") {
-        if ((await doctorTmux("host")) !== 0) R.exit(1);
-      }
-
-      const code = await launchUI(args['ui'] || 'console', R.argv);
-      R.exit(code);
+      if ((await doctorTmux("host")) !== 0) R.exit(1);
     }
   }
+
+  // Route to the selected UI
+  const ui = (args["ui"] as string | undefined) ?? process.env.ORG_FORCE_UI ?? "console";
+  const code = await launchUI(ui, argv);   // <- use argv, not process.argv.slice(2)
+  R.exit(code);
+}
 
   enableDebugIfRequested(args);
   setupProcessGuards();

@@ -1,59 +1,62 @@
 #!/usr/bin/env bash
-# org launcher (macOS/Linux, Bash 3.2+). Exit 66=not found; 127=runtime missing.
+# org launcher (macOS/Linux, Bash 3.2+)
+# Exit codes: 66 = not found; 127 = runtime missing
 set -o pipefail
 
 DBG="${ORG_DEBUG:-${DEBUG:-0}}"
 log() { [ "$DBG" = "1" ] || return 0; printf '[org.sh] %s\n' "$*" >&2; }
 
 : "${ORG_LAUNCHER_ONCE:=0}"
+[ "$ORG_LAUNCHER_ONCE" != "0" ] && log "re-entry blocked"
 export ORG_LAUNCHER_ONCE=1
 
-# Resolve repo root
 SCRIPT="${BASH_SOURCE[0]:-$0}"
 while [ -L "$SCRIPT" ]; do
   L="$(readlink "$SCRIPT")"
   case "$L" in /*) SCRIPT="$L" ;; *) SCRIPT="$(cd "$(dirname "$SCRIPT")" && cd "$(dirname "$L")" && pwd)/$(basename "$L")" ;; esac
 done
 APPDIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
+log "script=$SCRIPT"; log "appdir=$APPDIR"
 
-# Parse -C/--cwd and collect remaining args
 CWD=""; args=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    -C|--cwd) shift; CWD="${1:-}"; shift || true;;
-    *) args+=("$1"); shift;;
+    -C|--cwd) shift; CWD="${1:-}"; shift || true ;;
+    *) args+=("$1"); shift ;;
   esac
 done
-[ -n "$CWD" ] && cd "$CWD" 2>/dev/null || { [ -z "$CWD" ] || { echo "org: cwd not found: $CWD" >&2; exit 66; }; }
 
-# org (shell wrapper) — after cd "$CWD"
-export ORG_SESSION_DIR="$PWD/.org"
+if [ -n "$CWD" ]; then
+  log "cd -> $CWD"
+  cd "$CWD" 2>/dev/null || { echo "org: cwd not found: $CWD" >&2; exit 66; }
+fi
 
-# Make these available to runner.ts
 export ORG_CALLER_CWD="${ORG_CALLER_CWD:-$PWD}"
 export ORG_APPDIR="$APPDIR"
+export ORG_SESSION_DIR="${ORG_SESSION_DIR:-$PWD/.org}"
 
-# Resolve entrypoint
 ENTRY="${ORG_ENTRY:-}"
 if [ -z "$ENTRY" ]; then
   for p in "$APPDIR/runner.ts" "$APPDIR/runner.mts" "$APPDIR/runner.js" "$APPDIR/dist/runner.js" "$APPDIR/src/app.ts"; do
     [ -f "$p" ] && { ENTRY="$p"; break; }
   done
 fi
+if [ -z "$ENTRY" ] && command -v jq >/dev/null 2>&1 && [ -f "$APPDIR/package.json" ]; then
+  BIN="$(jq -r 'if .bin then if (.bin|type)=="object" then (.bin.org // .bin["org"] // empty) else .bin end else empty end' "$APPDIR/package.json" 2>/dev/null || true)"
+  [ -n "$BIN" ] && { case "$BIN" in /*) ENTRY="$BIN" ;; *) ENTRY="$APPDIR/$BIN" ;; esac; }
+fi
 [ -n "$ENTRY" ] || { echo "org: entrypoint not found. Tried runner.ts/mts/js, dist/runner.js, src/app.ts next to $APPDIR" >&2; exit 66; }
 export ORG_ENTRY="$ENTRY"
+log "entry=$ENTRY"
+[ "$DBG" = "1" ] && { ls -l "$ENTRY" >&2 || true; head -n1 "$ENTRY" >&2 || true; }
 
-# ---- NEW: default to console UI unless explicitly overridden ----
 has_ui=0
-for a in "${args[@]}"; do
-  [ "$a" = "--ui" ] && { has_ui=1; break; }
-done
+for a in "${args[@]}"; do [ "$a" = "--ui" ] && { has_ui=1; break; }; done
 if [ $has_ui -eq 0 ]; then
   args+=(--ui console)
   log "ui defaulted to console (add --ui tmux to use tmux)"
 fi
 
-# Exec: shebang-aware Bun; fall back to node+tsx
 first="$(head -n1 "$ENTRY" 2>/dev/null || true)"
 if command -v bun >/dev/null 2>&1; then
   if printf '%s' "$first" | grep -q '^#!'; then
