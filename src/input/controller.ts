@@ -111,40 +111,6 @@ export class InputController {
 
     this.submit = (text) => Logger.info(text);
 
-    // 2) heuristic scan over own props + prototype chain
-    const heuristics = this.findHeuristicSubmitNames(scheduler);
-    if (DUMP) {
-      process.stderr.write(
-        `[input-fsm] dump: function candidates on scheduler => ${heuristics.join(", ") || "(none)"}\n`
-      );
-    } else {
-      dbg(`attachScheduler: heuristic candidates: ${heuristics.join(", ") || "(none)"}`);
-    }
-    for (const name of heuristics) {
-      this.submit = (text) => this.safeInvokeSubmit(scheduler, name, text);
-      dbg(`attachScheduler: using heuristic scheduler.${name}(text)`);
-      return;
-    }
-
-    // 3) event-emitter fallback
-    if (typeof scheduler?.emit === "function") {
-      this.submit = (text) => scheduler.emit("user", text);
-      dbg(`attachScheduler: using scheduler.emit("user", text)`);
-      return;
-    }
-
-    // 4) stub with one-time warning; do not drop text silently
-    this.submit = async (text) => {
-      if (!this.warnedSubmit) {
-        this.warnedSubmit = true;
-        Logger.info(
-          "[warn] InputController could not find a scheduler submit method. User text will not be delivered.\n" +
-          "       Either expose a method (e.g. receiveUserInput) or set ORG_SCHEDULER_SUBMIT=name.\n" +
-          "       Tip: run with ORG_SCHEDULER_DUMP=1 to print all callable candidates."
-        );
-      }
-      Logger.info(`[user -> @@group] ${text}`);
-    };
     dbg("attachScheduler: no submit target found (stub)");
   }
 
