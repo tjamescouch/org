@@ -246,7 +246,7 @@ async function main() {
   const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
   const args = parseArgs(argv);
 
-  // Optional: pre-checks before launching tmux UI
+  // Optional pre-checks when the user explicitly asked for tmux
   if (args["ui"] === "tmux") {
     const sandbox = R.env.SANDBOX_BACKEND ?? "podman";   // "none" => host
     const tmuxScope: "host" | "container" =
@@ -258,102 +258,103 @@ async function main() {
     }
   }
 
-  // Route to the selected UI
+  // Route to the requested UI
   const ui = (args["ui"] as string | undefined) ?? process.env.ORG_FORCE_UI ?? "console";
-  const code = await launchUI(ui, argv);   // <- use argv, not process.argv.slice(2)
+  const code = await launchUI(ui, argv);   // use argv you built above
   R.exit(code);
 }
 
-  enableDebugIfRequested(args);
-  setupProcessGuards();
 
-  // ---- main entry ----
-  const seed = getProjectFromArgs(R.argv) ?? R.cwd();
-  const projectDir = resolveProjectDir(seed);
+enableDebugIfRequested(args);
+setupProcessGuards();
 
-  // ---- Recipe wiring ----
-  const recipeName =
-    (typeof args["recipe"] === "string" && args["recipe"]) ||
-    (R.env.ORG_RECIPE || "");
-  const recipe = getRecipe(recipeName || null);
+// ---- main entry ----
+const seed = getProjectFromArgs(R.argv) ?? R.cwd();
+const projectDir = resolveProjectDir(seed);
 
-  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
-    Logger.info("[DBG] args:", args);
-    if (recipe) Logger.info("[DBG] recipe:", recipe.name);
-  }
+// ---- Recipe wiring ----
+const recipeName =
+  (typeof args["recipe"] === "string" && args["recipe"]) ||
+  (R.env.ORG_RECIPE || "");
+const recipe = getRecipe(recipeName || null);
 
-  // Budgets
-  let maxTools = Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20)));
+if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
+  Logger.info("[DBG] args:", args);
+  if (recipe) Logger.info("[DBG] recipe:", recipe.name);
+}
 
-  // Mode + (optional) tool allowlist
-  computeMode({ allowTools: recipe?.allowTools });
+// Budgets
+let maxTools = Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20)));
 
-  Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
+// Mode + (optional) tool allowlist
+computeMode({ allowTools: recipe?.allowTools });
 
-  // Build agents, set recipe system prompt if supported
-  const agentSpecs = parseAgents(String(args["agents"] || "alice:lmstudio"), cfg.llm, recipe?.system ?? null);
-  if (agentSpecs.length === 0) {
-    Logger.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
-    R.exit(1);
-  }
+Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
 
-  const agents = agentSpecs.map(a => ({
-    id: a.id,
-    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => a.model.respond(prompt, budget, peers, cb),
-    guardOnIdle: (state: any) => a.model.guardOnIdle?.(state) ?? null,
-    guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null,
-  }));
+// Build agents, set recipe system prompt if supported
+const agentSpecs = parseAgents(String(args["agents"] || "alice:lmstudio"), cfg.llm, recipe?.system ?? null);
+if (agentSpecs.length === 0) {
+  Logger.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
+  R.exit(1);
+}
 
-  // IO + scheduler
-  const input = new InputController({
-    interjectKey: String(args["interject-key"] || "i"),
-    interjectBanner: String(args["banner"] || "You: "),
-    // Allow ESC to finalize & exit, and run the same finalization path we use at shutdown:
-    finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
-    // (exitOnEsc defaults to true)
-  });
+const agents = agentSpecs.map(a => ({
+  id: a.id,
+  respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => a.model.respond(prompt, budget, peers, cb),
+  guardOnIdle: (state: any) => a.model.guardOnIdle?.(state) ?? null,
+  guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null,
+}));
 
-  const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
-  const scheduler = new RoundRobinScheduler({
-    agents,
-    maxTools,
-    onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
-    projectDir,
-    reviewMode,
-    // promptEnabled: if --prompt is provided as a string we treat it as non-interactive seed
-    promptEnabled: (typeof args["prompt"] === "boolean" ? args["prompt"] : R.stdin.isTTY),
-  });
+// IO + scheduler
+const input = new InputController({
+  interjectKey: String(args["interject-key"] || "i"),
+  interjectBanner: String(args["banner"] || "You: "),
+  // Allow ESC to finalize & exit, and run the same finalization path we use at shutdown:
+  finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
+  // (exitOnEsc defaults to true)
+});
 
-  input.attachScheduler(scheduler);
+const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
+const scheduler = new RoundRobinScheduler({
+  agents,
+  maxTools,
+  onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
+  projectDir,
+  reviewMode,
+  // promptEnabled: if --prompt is provided as a string we treat it as non-interactive seed
+  promptEnabled: (typeof args["prompt"] === "boolean" ? args["prompt"] : R.stdin.isTTY),
+});
 
-  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
-    Logger.info("[DBG] agents:", agents.map(a => a.id).join(", "));
-    Logger.info("[DBG] maxTools:", maxTools);
-  }
+input.attachScheduler(scheduler);
 
-  // Seed initial instruction: CLI --prompt wins; else recipe.kickoff; else ask.
-  let kickoff: string | boolean | undefined;
-  if (args["prompt"] === true) kickoff = true;                   // explicit ask
-  else if (typeof args["prompt"] === "string") kickoff = args["prompt"];
-  else if (recipe?.kickoff) kickoff = recipe.kickoff;
+if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
+  Logger.info("[DBG] agents:", agents.map(a => a.id).join(", "));
+  Logger.info("[DBG] maxTools:", maxTools);
+}
 
-  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
-    Logger.info("[DBG] kickoff:", typeof kickoff === "string" ? kickoff : kickoff === true ? "(ask)" : "(none)");
-  }
+// Seed initial instruction: CLI --prompt wins; else recipe.kickoff; else ask.
+let kickoff: string | boolean | undefined;
+if (args["prompt"] === true) kickoff = true;                   // explicit ask
+else if (typeof args["prompt"] === "string") kickoff = args["prompt"];
+else if (recipe?.kickoff) kickoff = recipe.kickoff;
 
-  await input.askInitialAndSend(kickoff);
+if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
+  Logger.info("[DBG] kickoff:", typeof kickoff === "string" ? kickoff : kickoff === true ? "(ask)" : "(none)");
+}
 
-  // Give the enqueue a tick to land before starting the loop
-  await new Promise<void>((r) => setTimeout(r, 0));
+await input.askInitialAndSend(kickoff);
 
-  // Run
-  const reviewManager = new ReviewManager(projectDir, reviewMode);
-  await scheduler.start();
-  await reviewManager.finalizeAndReview();
+// Give the enqueue a tick to land before starting the loop
+await new Promise<void>((r) => setTimeout(r, 0));
 
-  // Non-interactive or explicit scheduler stop comes back here.
-  await finalizeOnce(scheduler, projectDir, reviewMode);
-  R.exit(0);
+// Run
+const reviewManager = new ReviewManager(projectDir, reviewMode);
+await scheduler.start();
+await reviewManager.finalizeAndReview();
+
+// Non-interactive or explicit scheduler stop comes back here.
+await finalizeOnce(scheduler, projectDir, reviewMode);
+R.exit(0);
 }
 
 main().catch((e) => {
