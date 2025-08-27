@@ -1,6 +1,7 @@
 // src/cli/doctor.ts
 import { spawnSync } from "child_process";
 import { Logger } from "../logger";
+import { sandboxedSh } from "../tools/sandboxed-sh";
 
 /** Run `command -v <cmd>`; returns true if found in PATH. */
 function which(cmd: string): boolean {
@@ -10,7 +11,7 @@ function which(cmd: string): boolean {
 
 /** Return true if `tmux -V` runs successfully (most reliable presence check). */
 export function hasTmuxInstalled(): boolean {
-  const r = spawnSync("tmux", ["-V"], { stdio: "ignore" });
+  const r = sandboxedSh({ cmd: "tmux -V" }, { projectDir: process.cwd() });
   return r.status === 0;
 }
 
