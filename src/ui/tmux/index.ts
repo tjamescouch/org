@@ -1,23 +1,39 @@
 // src/ui/tmux/index.ts
 import { spawnSync } from "node:child_process";
-import { hasTmuxInstalled } from "../../cli/doctor";
+import type { TmuxScope } from "../../cli/doctor";
 
-export async function launchTmuxUI(argv: string[]): Promise<number> {
-  // If we’re already inside tmux (or already re-exec’d), just continue.
+// From your sandbox layer; adapt names if needed.
+import { shInteractive, shCapture } from "../../tools/sandboxed-sh";
+
+/**
+ * Launch org inside a tmux session.
+ * - scope 'host': run the host's tmux
+ * - scope 'container': run tmux inside the sandbox (container/VM)
+ */
+export async function launchTmuxUI(argv: string[], scope: TmuxScope): Promise<number> {
+  // Avoid recursion if we're already inside tmux or after re-exec.
   if (process.env.TMUX || process.env.ORG_TMUX === "1") return 0;
 
-  if (!hasTmuxInstalled()) {
-    // This is the only time we should show the banner
-    console.error("tmux is not installed. Install with `apt-get install tmux` (Debian/Ubuntu) or `brew install tmux` (macOS).");
+  const payload = `export ORG_TMUX=1; exec ${argv.map(a => JSON.stringify(a)).join(" ")}`;
+  const tmuxArgs = ["new-session", "-A", "-D", "-s", "org", "bash", "-lc", payload];
+
+  if (scope === "host") {
+    const r = spawnSync("tmux", tmuxArgs, { stdio: "inherit" });
+    return r.status ?? 0;
+  }
+
+  // container/VM path: use sandbox shell with a TTY and inherited stdio
+  // (so tmux can control the terminal)
+  const check = await shCapture("bash -lc 'command -v tmux'");
+  if (check.code !== 0) {
+    // bubble up a readable error — your caller can decide what to show
+    process.stderr.write("tmux not found inside the sandbox. Install it in the image.\n");
     return 1;
   }
 
-  // Re-exec inside tmux. We export ORG_TMUX=1 to avoid recursion on re-entry.
-  const cmd = [
-    "tmux", "new-session", "-A", "-D", "-s", "org",
-    "bash", "-lc",
-    `export ORG_TMUX=1; exec ${argv.map(a => JSON.stringify(a)).join(" ")}`
-  ];
-  const r = spawnSync(cmd[0], cmd.slice(1), { stdio: "inherit" });
-  return r.status ?? 0;
+  const r = await shInteractive(["tmux", ...tmuxArgs], {
+    tty: true,          // allocate TTY inside sandbox
+    inheritStdio: true, // hook container stdio to the user's terminal
+  });
+  return r.code ?? 0;
 }

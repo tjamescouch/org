@@ -1,66 +1,72 @@
 // src/cli/doctor.ts
-import { spawnSync } from "child_process";
+import { spawnSync } from "node:child_process";
 import { Logger } from "../logger";
-import { sandboxedSh } from "../tools/sandboxed-sh";
 
-/** Run `command -v <cmd>`; returns true if found in PATH. */
-function which(cmd: string): boolean {
+// These come from your sandbox layer. If your names differ,
+// re-export them in sandboxed-sh or change the imports here.
+import { shCapture } from "../tools/sandboxed-sh";
+
+export type TmuxScope = "host" | "container";
+
+/** Host-side `command -v` */
+function whichHost(cmd: string): boolean {
   const r = spawnSync("bash", ["-lc", `command -v ${cmd}`], { encoding: "utf8" });
   return r.status === 0 && !!r.stdout.trim();
 }
 
-/** Return true if `tmux -V` runs successfully (most reliable presence check). */
-export function hasTmuxInstalled(): boolean {
-  const r = sandboxedSh({ cmd: "tmux -V" }, { projectDir: process.cwd() });
-  return r.status === 0;
+/** Sandbox-side `command -v` (no TTY) */
+async function whichSandbox(cmd: string): Promise<boolean> {
+  try {
+    const r = await shCapture(`bash -lc 'command -v ${cmd}'`);
+    return r.code === 0 && !!(r.out || "").trim();
+  } catch {
+    return false;
+  }
 }
 
-/** Best-effort: get `tmux -V` text for logging (non-fatal if it fails). */
-function tmuxVersionString(): string | null {
-  const r = spawnSync("tmux", ["-V"], { encoding: "utf8" });
-  if (r.status === 0) return (r.stdout || r.stderr || "").trim() || "tmux (version unknown)";
-  return null;
+/** Probe for tmux in the requested scope */
+export async function hasTmuxInstalled(scope: TmuxScope = "host"): Promise<boolean> {
+  if (scope === "host") return whichHost("tmux");
+  return await whichSandbox("tmux");
 }
 
-export async function doctorTmux(): Promise<number> {
+/** Doctor for tmux. Only checks host when scope is 'host'. */
+export async function doctorTmux(scope: TmuxScope = "host"): Promise<number> {
   let ok = true;
 
-  // --- tmux presence --------------------------------------------------------
-  //if (!hasTmuxInstalled()) {
-  //  ok = false;
-  //  Logger.info("tmux not found in this environment.");
-  //  if (which("brew")) {
-  //    Logger.info("Install with:  brew install tmux");
-  //  } else if (which("apt-get")) {
-  //    Logger.info("Install with:  sudo apt-get update && sudo apt-get install -y tmux");
-  //  } else if (which("dnf")) {
-  //    Logger.info("Install with:  sudo dnf install -y tmux");
-  //  } else if (which("apk")) {
-  //    Logger.info("Install with:  apk add tmux");
-  //  } else if (which("pacman")) {
-  //    Logger.info("Install with:  sudo pacman -S tmux");
-  //  } else {
-  //    Logger.info("Please install tmux using your OS package manager.");
-  //  }
-  //} else {
-  //  const ver = tmuxVersionString();
-  //  Logger.info(`tmux OK${ver ? ` — ${ver}` : ""}`);
-  //  // Note: not being *inside* tmux is fine; the app can launch it (e.g. --ui tmux).
-  //  if (!process.env.TMUX) {
-  //    Logger.info("Not currently inside a tmux session (that's OK; the app can start one when needed).");
-  //  }
-  //}
+  if (!(await hasTmuxInstalled(scope))) {
+    ok = false;
+    const where = scope === "host" ? "host" : "container";
+    Logger.info(`tmux not found in ${where}.`);
 
-  // --- Clipboard helper (optional but nice) ---------------------------------
-  //if (!which("pbcopy") && !which("xclip") && !which("wl-copy")) {
-  //  Logger.info("No clipboard helper found (pbcopy/xclip/wl-copy).");
-  //  Logger.info("OSC52 likely still works, but for robust copy/paste you can install one:");
-  //  if (which("brew")) Logger.info("  brew install xclip            # macOS via XQuartz, or Linux");
-  //  if (which("apt-get")) Logger.info("  sudo apt-get install -y xclip # X11; or 'sudo apt-get install -y wl-clipboard' for Wayland");
-  //  if (which("dnf")) Logger.info("  sudo dnf install -y xclip     # or: sudo dnf install -y wl-clipboard");
-  //} else {
-  //  Logger.info("Clipboard helper present.");
-  //}
+    if (scope === "host") {
+      if (whichHost("brew")) {
+        Logger.info("Install with: brew install tmux");
+      } else if (whichHost("apt-get")) {
+        Logger.info("Install with: sudo apt-get update && sudo apt-get install -y tmux");
+      } else if (whichHost("dnf")) {
+        Logger.info("Install with: sudo dnf install -y tmux");
+      } else {
+        Logger.info("Please install tmux using your OS package manager.");
+      }
+    } else {
+      Logger.info("Ensure your container/VM image includes tmux (apt-get install -y tmux).");
+    }
+  } else {
+    Logger.info("tmux OK");
+  }
+
+  // Clipboard helpers are only meaningful on host.
+  if (scope === "host") {
+    if (!whichHost("pbcopy") && !whichHost("xclip") && !whichHost("wl-copy")) {
+      Logger.info("No clipboard helper found (pbcopy/xclip/wl-copy).");
+      Logger.info("OSC52 likely still works, but for robust copy use:");
+      if (whichHost("brew")) Logger.info("  brew install xclip   # mac via XQuartz or Linux: xclip/wl-clipboard");
+      if (whichHost("apt-get")) Logger.info("  sudo apt-get install -y xclip  # for X11");
+    } else {
+      Logger.info("Clipboard helper present.");
+    }
+  }
 
   return ok ? 0 : 1;
 }

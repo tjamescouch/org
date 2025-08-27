@@ -6,6 +6,7 @@ import * as fsp from "fs/promises";
 import * as path from "path";
 import { execFileSync, spawn } from "child_process";
 
+import { R } from './runtime/runtime'
 import { ExecutionGate } from "./tools/execution-gate";
 import { loadConfig } from "./config/config";
 import { Logger } from "./logger";
@@ -64,28 +65,28 @@ function getProjectFromArgs(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "-C" || argv[i] === "--project") return argv[i + 1];
   }
-  return process.env.ORG_PROJECT_DIR;
+  return R.env.ORG_PROJECT_DIR;
 }
 
 function enableDebugIfRequested(args: Record<string, string | boolean>) {
-  if (args["debug"] || process.env.DEBUG) {
-    process.env.DEBUG = String(args["debug"] ?? process.env.DEBUG ?? "1");
+  if (args["debug"] || R.env.DEBUG) {
+    R.env.DEBUG = String(args["debug"] ?? R.env.DEBUG ?? "1");
     Logger.info("[DBG] debug logging enabled");
   }
 }
 
 function setupProcessGuards() {
-  const dbgOn = !!process.env.DEBUG && process.env.DEBUG !== "0" && process.env.DEBUG !== "false";
+  const dbgOn = !!R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false";
   if (dbgOn) {
-    process.on("beforeExit", (code) => {
+    R.on("beforeExit", (code) => {
       Logger.info("[DBG] beforeExit", code, "— scheduler stays alive unless Ctrl+C");
       setTimeout(() => { /* keep loop alive while idle */ }, 60_000);
     });
-    process.on("uncaughtException", (e) => { Logger.info("[DBG] uncaughtException:", e); });
-    process.on("unhandledRejection", (e) => { Logger.info("[DBG] unhandledRejection:", e); });
-    process.stdin.on("end", () => Logger.info("[DBG] stdin end"));
-    process.stdin.on("pause", () => Logger.info("[DBG] stdin paused"));
-    process.stdin.on("resume", () => Logger.info("[DBG] stdin resumed"));
+    R.on("uncaughtException", (e) => { Logger.info("[DBG] uncaughtException:", e); });
+    R.on("unhandledRejection", (e) => { Logger.info("[DBG] unhandledRejection:", e); });
+    R.stdin.on("end", () => Logger.info("[DBG] stdin end"));
+    R.stdin.on("pause", () => Logger.info("[DBG] stdin paused"));
+    R.stdin.on("resume", () => Logger.info("[DBG] stdin resumed"));
   }
 }
 
@@ -156,7 +157,7 @@ async function listRecentSessionPatches(projectDir: string, minutes = 20): Promi
 async function openPager(filePath: string) {
   await withCookedTTY(async () => {
     await new Promise<void>((resolve) => {
-      const pager = process.env.ORG_PAGER || "delta -s || less -R || cat";
+      const pager = R.env.ORG_PAGER || "delta -s || less -R || cat";
       const p = spawn("sh", ["-lc", `${pager} ${JSON.stringify(filePath)}`], { stdio: "inherit" });
       p.on("exit", () => resolve());
     });
@@ -166,7 +167,7 @@ async function openPager(filePath: string) {
 async function askYesNo(prompt: string): Promise<boolean> {
   const rl = await import("readline");
   return await new Promise<boolean>((resolve) => {
-    const rli = rl.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    const rli = rl.createInterface({ input: R.stdin, output: R.stdout, terminal: true });
     rli.question(`${prompt} `, (ans) => {
       rli.close();
       const a = String(ans || "").trim().toLowerCase();
@@ -198,7 +199,7 @@ async function finalizeOnce(
     scheduler?.stop?.();
   } catch { /* ignore */ }
 
-  const isTTY = process.stdout.isTTY;
+  const isTTY = R.stdout.isTTY;
   const patches = await listRecentSessionPatches(projectDir, 120);
   if (patches.length === 0) {
     Logger.info("No patch produced.");
@@ -242,29 +243,42 @@ async function finalizeOnce(
 
 async function main() {
   const cfg = loadConfig();
-  const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : process.argv.slice(2));
+  const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
   const args = parseArgs(argv);
 
-  if (args["ui"] === "tmux" && process.env.ORG_TMUX !== "1") {
+  if (args["ui"] === "tmux" && R.env.ORG_TMUX !== "1") {
     // handoff to tmux UI; run the same argv inside tmux with ORG_TMUX=1
-    const code = await launchTmuxUI({ argv: process.argv }); // pass full argv; we preserve flags
-    process.exit(code);
+    const sandbox = R.env.SANDBOX_BACKEND ?? "podman"; // "none" = host
+    const tmuxScope: "host" | "container" =
+      (R.env.ORG_TMUX_SCOPE as any) ?? (sandbox === "none" ? "host" : "container");
+
+    // Only doctor the host when using host tmux
+    if (args["ui"] === "tmux") {
+      const { doctorTmux } = await import("./cli/doctor");
+      if (tmuxScope === "host") {
+        if ((await doctorTmux("host")) !== 0) R.exit(1);
+      }
+
+      const { launchTmuxUI } = await import("./ui/tmux");
+      const code = await launchTmuxUI(R.argv, tmuxScope);
+      R.exit(code);
+    }
   }
 
   enableDebugIfRequested(args);
   setupProcessGuards();
 
   // ---- main entry ----
-  const seed = getProjectFromArgs(process.argv) ?? process.cwd();
+  const seed = getProjectFromArgs(R.argv) ?? R.cwd();
   const projectDir = resolveProjectDir(seed);
 
   // ---- Recipe wiring ----
   const recipeName =
     (typeof args["recipe"] === "string" && args["recipe"]) ||
-    (process.env.ORG_RECIPE || "");
+    (R.env.ORG_RECIPE || "");
   const recipe = getRecipe(recipeName || null);
 
-  if (process.env.DEBUG && process.env.DEBUG !== "0" && process.env.DEBUG !== "false") {
+  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
     Logger.info("[DBG] args:", args);
     if (recipe) Logger.info("[DBG] recipe:", recipe.name);
   }
@@ -281,7 +295,7 @@ async function main() {
   const agentSpecs = parseAgents(String(args["agents"] || "alice:lmstudio"), cfg.llm, recipe?.system ?? null);
   if (agentSpecs.length === 0) {
     Logger.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
-    process.exit(1);
+    R.exit(1);
   }
 
   const agents = agentSpecs.map(a => ({
@@ -308,12 +322,12 @@ async function main() {
     projectDir,
     reviewMode,
     // promptEnabled: if --prompt is provided as a string we treat it as non-interactive seed
-    promptEnabled: (typeof args["prompt"] === "boolean" ? args["prompt"] : process.stdin.isTTY),
+    promptEnabled: (typeof args["prompt"] === "boolean" ? args["prompt"] : R.stdin.isTTY),
   });
 
   input.attachScheduler(scheduler);
 
-  if (process.env.DEBUG && process.env.DEBUG !== "0" && process.env.DEBUG !== "false") {
+  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
     Logger.info("[DBG] agents:", agents.map(a => a.id).join(", "));
     Logger.info("[DBG] maxTools:", maxTools);
   }
@@ -324,7 +338,7 @@ async function main() {
   else if (typeof args["prompt"] === "string") kickoff = args["prompt"];
   else if (recipe?.kickoff) kickoff = recipe.kickoff;
 
-  if (process.env.DEBUG && process.env.DEBUG !== "0" && process.env.DEBUG !== "false") {
+  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
     Logger.info("[DBG] kickoff:", typeof kickoff === "string" ? kickoff : kickoff === true ? "(ask)" : "(none)");
   }
 
@@ -340,10 +354,10 @@ async function main() {
 
   // Non-interactive or explicit scheduler stop comes back here.
   await finalizeOnce(scheduler, projectDir, reviewMode);
-  process.exit(0);
+  R.exit(0);
 }
 
 main().catch((e) => {
   Logger.info(e);
-  process.exit(1);
+  R.exit(1);
 });
