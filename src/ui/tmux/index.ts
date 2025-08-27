@@ -17,48 +17,59 @@ function firstAgentIdFromArgv(argv: string[]): string {
 
 /**
  * Start (or attach to) a tmux session and run `org` inside it.
- * - Runs tmux **inside** the sandbox so agents and UI share the same FS/TTY.
- * - Requires that your sandbox backend supports interactive exec with a TTY.
+ * Uses a two-step (belt-and-suspenders) flow:
+ *  1) create/ensure session detached
+ *  2) respawn pane with the org command
+ *  3) attach to the session (foreground, stays until user exits)
  */
 export async function launchTmuxUI(argv: string[]): Promise<number> {
-  if (process.env.TMUX || process.env.ORG_TMUX === "1") return 0; // avoid recursion
+  // Avoid infinite recursion if we are already inside tmux
+  if (process.env.TMUX) return 0;
 
   const cwd = process.cwd();
-
-  // Choose the same session as the agents (or allow override)
   const fallback = firstAgentIdFromArgv(argv);
-  const sessionKey =
-    process.env.ORG_TMUX_SESSION ||
-    currentSandboxSessionKey() ||
-    fallback;
+  const sessionKey = process.env.ORG_TMUX_SESSION || currentSandboxSessionKey() || fallback;
 
-  // Make sure session exists (no-op if already present)
+  // Make sure the sandbox session exists (no-op if it does)
   await shCapture("true", { projectDir: cwd, agentSessionId: sessionKey });
 
-  // Check tmux availability in THAT session
+  // Check tmux inside THAT sandbox
   const check = await shCapture("command -v tmux >/dev/null 2>&1 && tmux -V >/dev/null 2>&1", {
     projectDir: cwd,
     agentSessionId: sessionKey,
   });
   if (check.code !== 0) {
     process.stderr.write(
-      `tmux not found in sandbox session "${sessionKey}". ` +
-      `Ensure your sandbox image includes tmux and the UI uses the same session as agents.\n`
+      `tmux not found in sandbox session "${sessionKey}". Ensure the image installs tmux.\n`
     );
     return 1;
   }
 
-  // Re-exec org inside tmux; ORG_TMUX=1 prevents recursion when org starts again
-  const reexec = `export ORG_TMUX=1; exec ${argv.map(shq).join(" ")}`;
+  // Command to re-exec org (without recursively launching tmux)
+  const reexec = `LOG_LEVEL=${process.env.LOG_LEVEL ?? "INFO"} DEBUG=${process.env.DEBUG ?? ""} ` +
+                 `exec ${argv.filter(a => a !== "--ui" && a !== "tmux").map(shq).join(" ")}`;
 
-  // IMPORTANT: attach; do NOT pass -D or -d here
-  const tmuxCmd = `tmux new-session -A -s org bash -lc ${shq(reexec)}`;
+  // Two-step attach flow:
+  //  - create session if missing (-d keeps it up even if client drops briefly)
+  //  - respawn the first pane with our command (so we always run fresh)
+  //  - attach; this call should BLOCK until the user detaches/exits
+  const script = [
+    "set -euo pipefail",
+    "tmux has-session -t org 2>/dev/null || tmux new-session -s org -d",
+    `tmux respawn-pane -k -t org.0 "bash -lc ${shq(reexec)}"`,
+    "tmux attach -t org"
+  ].join("; ");
 
-  const run = await shInteractive(tmuxCmd, {
+  // Helpful trace
+  process.stderr.write(`[tmux-ui] session=${sessionKey} cwd=${cwd}\n`);
+  process.stderr.write(`[tmux-ui] reexec: ${reexec}\n`);
+
+  const run = await shInteractive(`bash -lc ${shq(script)}`, {
     projectDir: cwd,
     agentSessionId: sessionKey,
     tty: true,
     inheritStdio: true,
   });
+
   return run.code ?? 0;
 }
