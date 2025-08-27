@@ -1,7 +1,8 @@
-import { findLastSessionPatch } from "../../lib/session-patch";
+import * as fs from "fs";
+import { findLastSessionPatch } from "../../lib/sessionPatch";
 
 function trace(msg: string) {
-  if (process.env.DEBUG === "1" || process.env.ORG_DEBUG === "1") {
+  if (process.env.ORG_DEBUG === "1" || process.env.DEBUG === "1") {
     process.stderr.write(`[console-ui] ${msg}\n`);
   }
 }
@@ -14,14 +15,18 @@ function enableRaw(): () => void {
   return () => { if (stdin.isTTY && !wasRaw) stdin.setRawMode?.(false); };
 }
 
-function onKey(cb: (key: Buffer) => void): () => void {
-  const h = (chunk: Buffer) => { trace(`key=${JSON.stringify(chunk.toString("binary"))}`); cb(chunk); };
-  process.stdin.on("data", h);
-  return () => process.stdin.off("data", h);
+function onKey(cb: (chunk: Buffer) => void): () => void {
+  const handler = (chunk: Buffer) => {
+    trace(`key=${JSON.stringify(chunk.toString("binary"))}`);
+    cb(chunk);
+  };
+  process.stdin.on("data", handler);
+  return () => process.stdin.off("data", handler);
 }
 
 async function promptYesNo(question: string): Promise<boolean> {
-  process.stdout.write(`${question} [y/N] `); // tests read stdout
+  // tests read stdout
+  process.stdout.write(`${question} [y/N] `);
   await new Promise((r) => setImmediate(r));
   return await new Promise<boolean>((resolve) => {
     const restore = enableRaw();
@@ -34,7 +39,7 @@ async function promptYesNo(question: string): Promise<boolean> {
 }
 
 async function interjectPrompt(seed?: Buffer): Promise<void> {
-  process.stdout.write("You: "); // tests assert this
+  process.stdout.write("You: ");
   await new Promise((r) => setImmediate(r));
 
   const chunks: Buffer[] = [];
@@ -50,19 +55,31 @@ async function interjectPrompt(seed?: Buffer): Promise<void> {
         const text = Buffer.concat(chunks).toString("utf8");
         if (text.length) process.stdout.write(text + "\n");
         resolve();
-      } else { chunks.push(k); process.stdout.write(s); }
+      } else {
+        chunks.push(k); process.stdout.write(s);
+      }
     });
   });
 }
 
-function isPrintableChunk(b: Buffer): boolean {
+function printable(b: Buffer): boolean {
   for (const byte of b.values()) {
-    if (byte === 0x1b || byte === 0x0a || byte === 0x0d) return false; // ESC or newline
+    if (byte === 0x1b || byte === 0x0a || byte === 0x0d) return false; // ESC / CR / LF
   }
   return b.length > 0;
 }
 
+function hasNonEmptyPatch(cwd: string): string | null {
+  const p = findLastSessionPatch(cwd);
+  if (!p) return null;
+  try {
+    const st = fs.statSync(p);
+    return st.isFile() && st.size > 0 ? p : null;
+  } catch { return null; }
+}
+
 export async function launchConsoleUI(_argv: string[]): Promise<number> {
+  trace("start");
   const restore = enableRaw();
   let exitCode = 0;
   let interjecting = false;
@@ -71,61 +88,56 @@ export async function launchConsoleUI(_argv: string[]): Promise<number> {
     const off = onKey(async (chunk) => {
       const s = chunk.toString("binary");
 
-      // ESC — prompt ONLY if a recent patch exists; otherwise exit immediately.
+      // ESC — exit immediately if no non-empty patch; else prompt
       if (s === "\x1b") {
         off(); restore();
-        const patch = findLastSessionPatch(process.cwd());
-        trace(`finalize: patch=${patch ?? "<none>"}`);
+        const patch = hasNonEmptyPatch(process.cwd());
+        trace(`esc: patch=${patch ?? "<none>"} -> ${patch ? "prompt" : "exit"}`);
         if (!patch) { exitCode = 0; return resolve(); }
         await promptYesNo("Apply this patch?");
-        exitCode = 0;
-        return resolve();
+        exitCode = 0; return resolve();
       }
 
-      // Explicit 'i' opens interjection
+      // explicit 'i'
       if (s === "i" && !interjecting) {
         interjecting = true;
         off();
         await interjectPrompt();
         interjecting = false;
 
-        // allow ESC to finalize afterwards
         process.nextTick(() => {
           const off2 = onKey(async (k2) => {
             const s2 = k2.toString("binary");
             if (s2 === "\x1b") {
               off2(); restore();
-              const patch = findLastSessionPatch(process.cwd());
-              trace(`finalize(after-interject): patch=${patch ?? "<none>"}`);
+              const patch = hasNonEmptyPatch(process.cwd());
+              trace(`esc(after-interject): patch=${patch ?? "<none>"} -> ${patch ? "prompt" : "exit"}`);
               if (!patch) { exitCode = 0; return resolve(); }
               await promptYesNo("Apply this patch?");
-              exitCode = 0;
-              return resolve();
+              exitCode = 0; return resolve();
             }
           });
         });
         return;
       }
 
-      // If user starts typing without 'i', auto-open "You:"
-      if (!interjecting && isPrintableChunk(chunk)) {
+      // typed text opens interjection
+      if (!interjecting && printable(chunk)) {
         interjecting = true;
         off();
         await interjectPrompt(chunk);
         interjecting = false;
 
-        // allow ESC to finalize afterwards
         process.nextTick(() => {
           const off2 = onKey(async (k2) => {
             const s2 = k2.toString("binary");
             if (s2 === "\x1b") {
               off2(); restore();
-              const patch = findLastSessionPatch(process.cwd());
-              trace(`finalize(after-interject): patch=${patch ?? "<none>"}`);
+              const patch = hasNonEmptyPatch(process.cwd());
+              trace(`esc(after-interject): patch=${patch ?? "<none>"} -> ${patch ? "prompt" : "exit"}`);
               if (!patch) { exitCode = 0; return resolve(); }
               await promptYesNo("Apply this patch?");
-              exitCode = 0;
-              return resolve();
+              exitCode = 0; return resolve();
             }
           });
         });
@@ -134,5 +146,6 @@ export async function launchConsoleUI(_argv: string[]): Promise<number> {
     });
   });
 
+  trace(`exit code=${exitCode}`);
   return exitCode;
 }
