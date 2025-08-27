@@ -89,25 +89,27 @@ export class InputController {
       dbg(`attachScheduler: explicit ORG_SCHEDULER_SUBMIT=${explicit} not a function on target`);
     }
 
-    const known = [
-      "onUserInput",
-      "receiveUser", "receiveUserInput", "receiveInput",
-      "submitUser", "submitUserText",
-      "enqueueUser", "enqueueUserText", "enqueueInput",
-      "acceptUser", "acceptUserInput",
-      "pushUserText", "sendUserText",
-      "handleUserInput", "ingestUserInput",
-      "submit", "enqueue", "receive",
-    ];
+    //const known = [
+    //  "onUserInput",
+    //  "receiveUser", "receiveUserInput", "receiveInput",
+    //  "submitUser", "submitUserText",
+    //  "enqueueUser", "enqueueUserText", "enqueueInput",
+    //  "acceptUser", "acceptUserInput",
+    //  "pushUserText", "sendUserText",
+    //  "handleUserInput", "ingestUserInput",
+    //  "submit", "enqueue", "receive",
+    //];
 
-    // 1) direct known names
-    for (const name of known) {
-      if (typeof scheduler?.[name] === "function") {
-        this.submit = (text) => this.safeInvokeSubmit(scheduler, name, text);
-        dbg(`attachScheduler: using scheduler.${name}(text)`);
-        return;
-      }
-    }
+    //// 1) direct known names
+    //for (const name of known) {
+    //  if (typeof scheduler?.[name] === "function") {
+    //    this.submit = (text) => this.safeInvokeSubmit(scheduler, name, text);
+    //    dbg(`attachScheduler: using scheduler.${name}(text)`);
+    //    return;
+    //  }
+    //}
+
+    this.submit = (text) => Logger.info(text);
 
     // 2) heuristic scan over own props + prototype chain
     const heuristics = this.findHeuristicSubmitNames(scheduler);
