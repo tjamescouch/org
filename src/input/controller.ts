@@ -1,30 +1,26 @@
 /* eslint-disable no-console */
 /**
- * InputController — a tiny, explicit FSM for terminal input.
- *
- * - While IDLE we keep TTY raw/no-echo and listen for ESC / hotkey / first char.
- * - When prompting we switch to readline (cooked, echo ON) and there is exactly
- *   one canonical echo (no double echo).
- * - Deterministic transitions and no handler leaks.
+ * InputController — explicit FSM for terminal input with robust scheduler binding.
  */
 
 import * as readline from "readline";
 import { Logger } from "../logger";
 
-// ---------- local TTY helpers ----------
+// ---------- TTY helpers ----------
 function setRaw(on: boolean) {
   if (process.stdin.isTTY) {
-    try { (process.stdin as any).setRawMode?.(on); } catch { /* ignore */ }
+    try { (process.stdin as any).setRawMode?.(on); } catch {}
   }
 }
 function resumeTTY() { try { process.stdin.resume(); } catch {} }
 function pauseTTY()  { try { process.stdin.pause(); }  catch {} }
 
-function trace(msg: string) {
+function dbg(msg: string) {
   if (process.env.ORG_DEBUG === "1" || process.env.DEBUG === "1") {
     process.stderr.write(`[input-fsm] ${msg}\n`);
   }
 }
+const DUMP = process.env.ORG_SCHEDULER_DUMP === "1";
 
 function isPrintableByte(b: number) {
   return b !== 0x1b && b !== 0x0d && b !== 0x0a; // ESC/CR/LF
@@ -59,30 +55,40 @@ export class InputController {
 
   private dataHandler?: (chunk: Buffer) => void;
   private submit?: SubmitFn;
-  private interjectActive = false;      // re-entry guard
-  private warnedSubmit = false;         // one-time warn if no submit target
+  private interjectActive = false;
+  private warnedSubmit = false;
 
   constructor(opts: InputControllerOpts = {}) {
     this.interjectKey = String(opts.interjectKey ?? "i");
     this.banner = String(opts.interjectBanner ?? "You: ");
     this.exitOnEsc = opts.exitOnEsc !== false;
-    this.finalizer = opts.finalizer ?? (async () => { /* noop */ });
+    this.finalizer = opts.finalizer ?? (async () => {});
 
     resumeTTY();
     this.enterIdle();
   }
 
+  /** Optional: let app set a submit function directly (escape hatch). */
+  public setSubmit(fn: SubmitFn) { this.submit = fn; }
+
   // ---------- wiring ----------
-  attachScheduler(scheduler: any) {
-    // 0) explicit override wins (no rewiring, just env)
+  attachScheduler(schedulerLike: any) {
+    const scheduler =
+      schedulerLike?.default ??
+      schedulerLike?.scheduler ??
+      schedulerLike?.impl ??
+      schedulerLike;
+
     const explicit = process.env.ORG_SCHEDULER_SUBMIT;
-    if (explicit && typeof scheduler?.[explicit] === "function") {
-      this.submit = (text) => this.safeInvokeSubmit(scheduler, explicit, text);
-      trace(`attachScheduler: using explicit scheduler.${explicit}(text)`);
-      return;
+    if (explicit) {
+      if (typeof scheduler?.[explicit] === "function") {
+        this.submit = (text) => this.safeInvokeSubmit(scheduler, explicit, text);
+        dbg(`attachScheduler: using explicit scheduler.${explicit}(text)`);
+        return;
+      }
+      dbg(`attachScheduler: explicit ORG_SCHEDULER_SUBMIT=${explicit} not a function on target`);
     }
 
-    // 1) known names first
     const known = [
       "onUserInput",
       "receiveUser", "receiveUserInput", "receiveInput",
@@ -94,49 +100,52 @@ export class InputController {
       "submit", "enqueue", "receive",
     ];
 
+    // 1) direct known names
     for (const name of known) {
       if (typeof scheduler?.[name] === "function") {
         this.submit = (text) => this.safeInvokeSubmit(scheduler, name, text);
-        trace(`attachScheduler: using scheduler.${name}(text)`);
+        dbg(`attachScheduler: using scheduler.${name}(text)`);
         return;
       }
     }
 
-    // 2) heuristic pass over prototype chain
+    // 2) heuristic scan over own props + prototype chain
     const heuristics = this.findHeuristicSubmitNames(scheduler);
-    trace(`attachScheduler: heuristic candidates: ${heuristics.join(", ") || "(none)"}`);
+    if (DUMP) {
+      process.stderr.write(
+        `[input-fsm] dump: function candidates on scheduler => ${heuristics.join(", ") || "(none)"}\n`
+      );
+    } else {
+      dbg(`attachScheduler: heuristic candidates: ${heuristics.join(", ") || "(none)"}`);
+    }
     for (const name of heuristics) {
       this.submit = (text) => this.safeInvokeSubmit(scheduler, name, text);
-      trace(`attachScheduler: using heuristic scheduler.${name}(text)`);
+      dbg(`attachScheduler: using heuristic scheduler.${name}(text)`);
       return;
     }
 
     // 3) event-emitter fallback
     if (typeof scheduler?.emit === "function") {
       this.submit = (text) => scheduler.emit("user", text);
-      trace(`attachScheduler: using scheduler.emit("user", text)`);
+      dbg(`attachScheduler: using scheduler.emit("user", text)`);
       return;
     }
 
-    // 4) stub w/ warning (won't drop user text silently)
+    // 4) stub with one-time warning; do not drop text silently
     this.submit = async (text) => {
       if (!this.warnedSubmit) {
         this.warnedSubmit = true;
         Logger.info(
           "[warn] InputController could not find a scheduler submit method. User text will not be delivered.\n" +
-          "       Either expose a method (e.g. receiveUserInput) or set ORG_SCHEDULER_SUBMIT=name."
+          "       Either expose a method (e.g. receiveUserInput) or set ORG_SCHEDULER_SUBMIT=name.\n" +
+          "       Tip: run with ORG_SCHEDULER_DUMP=1 to print all callable candidates."
         );
       }
       Logger.info(`[user -> @@group] ${text}`);
     };
-    trace("attachScheduler: no submit target found (stub)");
+    dbg("attachScheduler: no submit target found (stub)");
   }
 
-  /**
-   * Try calling scheduler[name] with a string; if that throws, retry with
-   * a message object { role: 'user', content } — this covers schedulers that
-   * expect an envelope instead of a raw line of text.
-   */
   private async safeInvokeSubmit(scheduler: any, name: string, text: string) {
     const fn = scheduler?.[name];
     if (typeof fn !== "function") return;
@@ -150,34 +159,32 @@ export class InputController {
         if (r && typeof r.then === "function") await r;
         return;
       } catch (e2) {
-        trace(`submit via ${name} failed both (string|object): ${String(e2)}`);
+        dbg(`submit via ${name} failed (string & object): ${String(e2)}`);
       }
     }
   }
 
-  /**
-   * Enumerate function names on prototype chain whose names look like they
-   * will accept user input. This is intentionally broad but safe.
-   */
   private findHeuristicSubmitNames(s: any): string[] {
     const seen = new Set<string>();
     const out: string[] = [];
     const reUser = /(user|input|text|message)/i;
-    const reVerb = /(submit|enqueue|receive|push|send|add|accept|queue|post|ingest)/i;
+    const reVerb = /(submit|enqueue|receive|push|send|add|accept|queue|post|ingest|dispatch|route)/i;
 
     let p: any = s;
-    for (let depth = 0; p && depth < 6; depth += 1, p = Object.getPrototypeOf(p)) {
-      for (const k of Object.getOwnPropertyNames(p)) {
-        if (seen.has(k)) continue;
-        seen.add(k);
-        try {
-          if (typeof s[k] === "function" && reUser.test(k) && reVerb.test(k)) {
-            out.push(k);
-          }
-        } catch { /* ignore */ }
+    for (let depth = 0; p && depth < 8; depth += 1, p = Object.getPrototypeOf(p)) {
+      for (const key of Reflect.ownKeys(p)) {
+        if (typeof key !== "string") continue;
+        if (key === "constructor") continue;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        let v: any;
+        try { v = (s as any)[key]; } catch { v = undefined; }
+        if (typeof v === "function" && reUser.test(key) && reVerb.test(key)) {
+          out.push(key);
+        }
       }
     }
-    // stable order
     out.sort();
     return out;
   }
@@ -197,10 +204,7 @@ export class InputController {
   }
 
   // ---------- FSM ----------
-  private setState(s: State) {
-    trace(`state -> ${s.name}`);
-    this.state = s;
-  }
+  private setState(s: State) { dbg(`state -> ${s.name}`); this.state = s; }
 
   private removeIdleHandler() {
     if (this.dataHandler) {
@@ -212,35 +216,28 @@ export class InputController {
   private enterIdle() {
     this.setState({ name: "idle" });
     this.interjectActive = false;
-    pauseTTY();
-    resumeTTY();
-    setRaw(true);
+    pauseTTY(); resumeTTY(); setRaw(true);
     this.removeIdleHandler();
 
     this.dataHandler = (chunk: Buffer) => {
       const s = chunk.toString("binary");
-      // Let SIGINT propagate
-      if (s === "\x03") return;
+      if (s === "\x03") return;            // Ctrl+C -> let process handle SIGINT
 
-      // ESC from idle => graceful finalize
-      if (s === "\x1b") {
+      if (s === "\x1b") {                  // ESC from idle => finalize
         if (this.exitOnEsc) {
-          setRaw(false);
-          this.removeIdleHandler();
+          setRaw(false); this.removeIdleHandler();
           Promise.resolve(this.finalizer()).catch((e) => Logger.info(e));
         }
         return;
       }
 
-      // explicit hotkey
-      if (s === this.interjectKey) {
+      if (s === this.interjectKey) {       // explicit hotkey
         this.removeIdleHandler();
         void this.openInterject({});
         return;
       }
 
-      // printable seed opens prompt
-      if (isPrintable(chunk)) {
+      if (isPrintable(chunk)) {            // printable seed opens prompt
         this.removeIdleHandler();
         void this.openInterject({}, chunk);
       }
@@ -250,25 +247,18 @@ export class InputController {
   }
 
   private async openInterject(ctx: { who?: string; prompt?: string }, seed?: Buffer) {
-    // detach IDLE listener always and guard re-entry
     this.removeIdleHandler();
-    if (this.interjectActive) {
-      trace("openInterject: already active (ignoring)");
-      return;
-    }
+    if (this.interjectActive) return;
     this.interjectActive = true;
 
     this.setState({ name: "interject", ...ctx });
-
-    setRaw(false); // cooked echo
-    resumeTTY();
+    setRaw(false); resumeTTY();
 
     if (ctx.who) {
       const meta = ctx.prompt ? ` ${ctx.prompt}` : "";
       Logger.info(`[user -> @@${ctx.who}]${meta}`);
     }
 
-    // One visible prompt; readline provides the *only* echo.
     process.stdout.write(`${this.banner}`);
 
     const rl = readline.createInterface({
@@ -279,7 +269,6 @@ export class InputController {
       prompt: "",
     });
 
-    // ESC cancels current prompt
     let canceled = false;
     const escListener = (buf: Buffer) => {
       if (buf && buf.length && buf[0] === 0x1b) {
@@ -289,10 +278,7 @@ export class InputController {
     };
     (rl.input as any).on("data", escListener);
 
-    if (seed && seed.length) {
-      // raw state had no echo, so seeding is safe (no double echo)
-      rl.write(seed.toString("utf8"));
-    }
+    if (seed && seed.length) rl.write(seed.toString("utf8"));
 
     const answer: string = await new Promise((resolve) => {
       rl.once("line", (line) => resolve(String(line ?? "")));
@@ -301,8 +287,6 @@ export class InputController {
 
     (rl.input as any).off("data", escListener);
     rl.close();
-
-    // single newline after closing readline
     process.stdout.write("\n");
 
     if (!canceled && answer.trim().length > 0) {
@@ -310,7 +294,6 @@ export class InputController {
       await this.submit?.(answer);
     }
 
-    // back to idle
     this.enterIdle();
   }
 }
