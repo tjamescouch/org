@@ -2,6 +2,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as util from "util";
+import { R } from "./runtime/runtime";
 
 type LevelName = "silent" | "error" | "warn" | "info" | "debug" | "trace";
 const LEVELS: Record<LevelName, number> = {
@@ -84,6 +85,7 @@ export class Logger {
   static trace(...a: any[]) { this._log("trace", a); }
   static debug(...a: any[]) { this._log("debug", a); }
   static info (...a: any[]) { this._log("info",  a); }
+  static streamInfo (...a: any[]) { /* FIXME */ }
   static warn (...a: any[]) { this._log("warn",  a); }
   static error(...a: any[]) { this._log("error", a); }
 
@@ -109,5 +111,10 @@ export class Logger {
         this._stream.write(text + "\n");
       }
     } catch { /* ignore */ }
+  }
+  private static _stream(level: LevelName, chunk: string) {
+    if (level === "error")       R.stderr.write(chunk);
+    else if (level === "warn")   R.stdio.write(chunk);
+    else                         R.stdio.write(chunk);
   }
 }
