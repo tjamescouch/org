@@ -3,7 +3,7 @@
 # Exit codes: 66 = not found; 127 = runtime missing
 set -euo pipefail
 
-export ORG_DEV_IMAGE=localhost/org-dev:latest
+export ORG_DEV_IMAGE=localhost/org-build:debian-12
 
 DBG="${ORG_DEBUG:-${DEBUG:-0}}"
 log() { [ "$DBG" = "1" ] && printf '[org.sh] %s\n' "$*" >&2 || true; }
