@@ -16,8 +16,8 @@ function firstAgentIdFromArgv(argv: string[]): string {
 }
 
 /**
- * Launch org inside tmux *in the sandbox* (same session as agents).
- * - Picks session from ORG_TMUX_SESSION, or the first agent id, or last used.
+ * Start (or attach to) a tmux session and run `org` inside it.
+ * - Runs tmux **inside** the sandbox so agents and UI share the same FS/TTY.
  * - Requires that your sandbox backend supports interactive exec with a TTY.
  */
 export async function launchTmuxUI(argv: string[]): Promise<number> {
@@ -50,7 +50,9 @@ export async function launchTmuxUI(argv: string[]): Promise<number> {
 
   // Re-exec org inside tmux; ORG_TMUX=1 prevents recursion when org starts again
   const reexec = `export ORG_TMUX=1; exec ${argv.map(shq).join(" ")}`;
-  const tmuxCmd = `tmux new-session -A -D -s org bash -lc ${shq(reexec)}`;
+
+  // IMPORTANT: attach; do NOT pass -D or -d here
+  const tmuxCmd = `tmux new-session -A -s org bash -lc ${shq(reexec)}`;
 
   const run = await shInteractive(tmuxCmd, {
     projectDir: cwd,
