@@ -1,230 +1,247 @@
+
 # INSTALLATION.md
 
-This document explains how to install **org** so you can run it from anywhere on your machine.
-It covers macOS (Apple Silicon/Intel) and Debian/Ubuntu‑like Linux.
+This guide shows how to install **org** so you can run it from anywhere on your machine.
+Covers macOS (Apple Silicon & Intel) and Debian/Ubuntu-like Linux.
+
+---
+
+## Quick Start (recommended)
+
+1. **Install prerequisites**
+
+* **macOS**
+
+  ```bash
+  brew install podman git
+  podman machine init    # first time only
+  podman machine start
+  ```
+
+* **Debian/Ubuntu**
+
+  ```bash
+  sudo apt-get update
+  sudo apt-get install -y podman git
+  ```
+
+2. **Clone & install**
+
+```bash
+git clone https://github.com/tjamescouch/org.git
+cd org
+./install.sh
+```
+
+> `install.sh` will **build the container image if it’s missing** and install the `org` and `apply_patch` shims.
+> If `/usr/local/bin` isn’t writable, it automatically installs into `~/.local/bin` and tells you what it did.
+
+3. **Run it**
+
+* Easiest (no host runtime needed): **tmux mode** runs everything inside the container:
+
+  ```bash
+  org --ui tmux --prompt "hello"
+  ```
+
+* Or, if you have Bun or Node+tsx on your host:
+
+  ```bash
+  org --prompt "hello"
+  ```
+
+Logs will appear under the **project you run from** at `.org/logs/`.
 
 ---
 
 ## What you’ll end up with
 
-* A container image named **`localhost/org-build:debian-12`** that contains all the runtime bits (Bun, tmux, etc.).
-* A command named **`org`** on your `$PATH` that launches the app (and will always point back to your local repo).
-* A utility named **`apply_patch`** on your `$PATH` that safely applies AI‑generated patches.
+* A container image **`localhost/org-build:debian-12`** (Bun, tmux, etc.).
+* A command **`org`** on your `$PATH` (symlink back to this repo).
+* A utility **`apply_patch`** on your `$PATH` (safe patch applier).
 
-The installation is *non-destructive*: no system libraries are modified, and everything can be uninstalled cleanly.
+The install is **non-destructive** and easy to remove.
 
 ---
 
-## Prerequisites
+## Prerequisites (details)
 
-### macOS
-
-* **Podman** (preferred)
-
-  ```bash
-  brew install podman
-  podman machine init    # first time only
-  podman machine start
-  ```
-
-  > Docker can work too, but the scripts assume `podman` by default.
-
-* **git** (via Xcode Command Line Tools or Homebrew).
-
-### Debian/Ubuntu
-
-* **Podman**
-
-  ```bash
-  sudo apt-get update
-  sudo apt-get install -y podman
-  ```
+* **Podman** (preferred). Docker can work, but scripts assume `podman`.
 * **git**
+* (Optional) **Bun** or **Node+tsx** — only needed if you want to run the **console UI on the host**.
+  If you don’t want host runtimes, just use `--ui tmux` and everything runs inside the container.
 
-> If your Podman is inside a VM (macOS), make sure `podman machine start` completes without errors before continuing.
-
----
-
-## 1) Clone the repository
-
-```bash
-git clone https://github.com/tjamescouch/org.git org
-cd org
-```
-
-> Throughout this guide, we assume you’re running commands from the repository root.
+> macOS users: make sure `podman machine start` completes without errors before continuing.
 
 ---
 
-## 2) Build (or rebuild) the runtime container
+## Building the container (optional)
 
-You can use the helper script exactly as written:
+`install.sh` will **build the image if it’s not present**. If you want to (re)build explicitly:
 
 ```bash
 ./create-container.sh
 ```
 
-The script does a clean, no‑cache Podman build for the **`localhost/org-build:debian-12`** image and then sanity‑checks that the container exposes the expected path setup (it echoes `"$PATH"` from inside the image).&#x20;
-
-If you prefer the raw command:
+Raw Podman example:
 
 ```bash
+# Apple Silicon
 podman build --no-cache --platform linux/arm64 \
+  -t localhost/org-build:debian-12 -f Containerfile .
+
+# Intel
+podman build --no-cache --platform linux/amd64 \
   -t localhost/org-build:debian-12 -f Containerfile .
 ```
 
-> On Intel hosts, use `--platform linux/amd64`. If you omit `--platform`, Podman will pick a sensible default for your machine.
-
 ---
 
-## 3) Install the CLI shims
+## Installing the CLI shims (what `install.sh` does)
 
-Run the installer from the repo root:
+From the repo root:
 
 ```bash
 ./install.sh
 ```
 
-What it does:
+It will:
 
-* **Copies** `apply_patch` to `/usr/local/bin/apply_patch` (so it’s always available even outside the repo).
-* **Symlinks** `/usr/local/bin/org` → `<your-repo>/org`, so `org` always runs the file inside your working tree.
-* Sets your repo’s git hooks path to `.githooks` and makes the pre‑commit hook executable.
+* **Install** `apply_patch` to `/usr/local/bin/apply_patch` (or `~/.local/bin/apply_patch` if `/usr/local/bin` isn’t writable).
+* **Symlink** `org` to the repo script:
 
-You’ll see messages like:
+  * `/usr/local/bin/org` → `<repo>/org` (or `~/.local/bin/org` → `<repo>/org`)
+* Build the image if it’s missing.
+* Print exactly where it installed things and how to run `org` next.
 
+If it had to fall back to `~/.local/bin`, ensure that directory is on your `$PATH`:
+
+```bash
+# bash / zsh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # or ~/.zshrc
+exec $SHELL -l
 ```
-[install.sh] Installed apply_patch -> /usr/local/bin/apply_patch
-[install.sh] Symlinked org -> /usr/local/bin/org -> <repo>/org
-...
-[install.sh] Done. Run 'org' from ANY directory; agents operate in that directory.
-```
-
-All of the above is exactly what `install.sh` encodes.&#x20;
-
-> If `/usr/local/bin` is not writable, you’ll be prompted for `sudo`.
-> If your shell uses a custom `$PATH`, ensure `/usr/local/bin` precedes system locations.
 
 ---
 
-## 4) Quick verification
+## Verifying your install
 
-From **any** directory:
+From **any** project directory:
 
 ```bash
+# Runs the console UI on host if you have Bun or Node+tsx
 org --prompt "say hi"
+
+# Or: run inside the container in a tmux pane (no host runtime needed)
+org --ui tmux --prompt "say hi"
 ```
 
-You should see a short interactive run. Logs live under the current project’s `.org/logs/` directory. For example:
+Tail logs from the project:
 
 ```bash
-tail -f ./.org/logs/last.log
-```
-
-To try the tmux integration (runs the console UI *inside* a tmux pane in the container):
-
-```bash
-org --ui tmux --prompt "hi there"
+ls -lt .org/logs/
+tail -f .org/logs/last.log
 ```
 
 ---
 
-## 5) Day‑to‑day usage (basics)
+## Day-to-day usage
 
-* Run `org` **inside the repo you want to work on**; the tool assumes your *current directory* is the project root.
-* Start a session with an initial instruction:
+* Run `org` **inside the repo you want to work on** — it treats your current directory as the project root.
+
+* Start with a prompt:
 
   ```bash
   org --prompt "fix tests"
   ```
-* Force a particular UI:
 
-  * Console (default): `org --ui console`
-  * tmux: `org --ui tmux`
-* Handy envs:
+* Choose UI:
 
-  * `ORG_DEBUG=1` or `LOG_LEVEL=debug` for extra logs
-  * `ORG_FORCE_UI=console|tmux` to set a default
-  * `ORG_ENGINE=podman` and `ORG_IMAGE=localhost/org-build:debian-12` to override engine/image
+  * Console (host): `org --ui console`
+  * tmux (container): `org --ui tmux`
 
----
+* Useful env vars:
 
-## 6) Upgrading & maintenance
+  * `ORG_DEBUG=1` or `LOG_LEVEL=debug` — extra logs
+  * `ORG_FORCE_UI=console|tmux` — default UI preference
+  * `ORG_ENGINE=podman` — override engine
+  * `ORG_IMAGE=localhost/org-build:debian-12` — override image
 
-* **Update the code**:
-
-  ```bash
-  git pull
-  ```
-* **Run the installer**:
-
-  ````bash
-  ./install.sh
-  ``` :contentReference[oaicite:3]{index=3}
-  ````
+> In tmux mode we run the console UI **inside** the container; no Bun/Node required on the host.
 
 ---
 
-## 7) Uninstall
+## Upgrading
 
-* Remove the shims:
+```bash
+git pull
+./install.sh
+```
 
-  ```bash
-  sudo rm -f /usr/local/bin/org /usr/local/bin/apply_patch
-  ```
-* Remove the container image (optional):
+If you changed `Containerfile` and want a fresh image:
 
-  ```bash
-  podman rmi localhost/org-build:debian-12
-  ```
-* Remove any project artifacts `.org/` in your repos (logs, session data) as desired.
+```bash
+./create-container.sh
+```
+
+---
+
+## Uninstall
+
+Remove the shims (whichever location you used):
+
+```bash
+sudo rm -f /usr/local/bin/org /usr/local/bin/apply_patch
+rm -f "$HOME/.local/bin/org" "$HOME/.local/bin/apply_patch"
+```
+
+Remove the container image (optional):
+
+```bash
+podman rmi localhost/org-build:debian-12
+```
+
+Delete project artifacts (`.org/`) as desired.
 
 ---
 
 ## Troubleshooting
 
 **“Cannot connect to Podman socket” (macOS)**
-`podman machine start` (or `init` first time) and retry. If you switched shells/terminals, ensure `$PATH` includes Homebrew’s Podman.
+Run `podman machine init` (once) then `podman machine start`. Confirm `podman info` works.
 
-**`org: entrypoint not found: .../src/app.ts`**
-The launcher couldn’t locate the project’s entry. Make sure you are on the correct branch and that the repository contains `src/app.ts`. If you’re testing from an ephemeral temp folder, ensure the repo tree is present (the launcher runs inside the *current project*, not the tool’s repo).
+**`org: entrypoint not found: …/src/app.ts`**
+The launcher couldn’t find the app entry in the project you’re in. Make sure the repo you’re **working on** contains `src/app.ts`, or run `org` from the correct project root.
 
-**tmux “flashes” and exits**
-Open the newest log under `.org/logs/tmux-*.log` in the project you launched from:
+**tmux starts and exits immediately**
+Open the newest `.org/logs/tmux-*.log` in the project you launched from:
 
 ```bash
 ls -lt .org/logs/tmux-*.log | head
 tail -n +1 -f .org/logs/tmux-*.log
 ```
 
-Look for an app error just before exit.
+Check for an error just before exit.
 
-**Shell completion / not found**
-If your shell says `org: command not found` right after installing, you likely need to refresh your PATH or start a new terminal session.
-
----
-
-## Notes on files created
-
-* **`/usr/local/bin/org`** — symlink to `<repo>/org` (installed by `install.sh`).&#x20;
-* **`/usr/local/bin/apply_patch`** — a copy of the repo’s `apply_patch` script (installed by `install.sh`).&#x20;
-* **`.org/logs/`** under *your project* — rotating run/tmux logs.
-* **Container image** — `localhost/org-build:debian-12` in your Podman local image store (built by `create-container.sh`).&#x20;
+**`org: command not found`**
+Open a new terminal or put `~/.local/bin` on your `$PATH` (see “Installing the CLI shims”).
 
 ---
 
-## Appendix: One‑liner (first‑time macOS setup)
+## Files created
+
+* **`/usr/local/bin/org`** or **`~/.local/bin/org`** — symlink to `<repo>/org`
+* **`/usr/local/bin/apply_patch`** or **`~/.local/bin/apply_patch`** — copy of the repo script
+* **`<project>/.org/logs/`** — run & tmux logs for that project
+* **Podman image** — `localhost/org-build:debian-12`
+
+---
+
+## One-liner (first-time macOS setup)
 
 ```bash
-brew install podman && podman machine init && podman machine start
-git clone https://github.com/tjamescouch/org.git org && cd org
-./create-container.sh
-./install.sh
-org --prompt "hello"
+brew install podman git && podman machine init && podman machine start \
+&& git clone https://github.com/tjamescouch/org.git && cd org \
+&& ./install.sh && org --ui tmux --prompt "hello"
 ```
 
-If anything fails, revisit the sections above for detail.
-
----
-
-Happy hacking! If you run into trouble not covered here, capture `.org/logs/*` from the project you’re working in and open an issue with the log snippet.
