@@ -1,12 +1,8 @@
 // src/input/controller.ts
 // Sole owner of TTY input in raw mode, driven by a small FSM.
-//
-// Goals of this revision:
-//  - Make interjection ('i') reliable and immediate.
-//  - Ensure the 'You: ' banner is printed on a clean line (no "…INFO" collisions).
-//  - Mark UI as busy during the prompt so console output (heartbeats / fills) won't
-//    trample the input line (best-effort via R.setUIBusy | R.uiBusy | R.UIBusy).
-//  - Keep graceful ESC, fast Ctrl+C (real runs), Ctrl+Z suspend, and the test helper API.
+// This revision makes 'i' interjection deterministic and shields the prompt
+// from console line-fills (".... INFO"). It also keeps ESC/Ctrl+C/Ctrl+Z
+// behavior and preserves the test helper API.
 
 import { R } from "../runtime/runtime";
 import { Logger } from "../logger";
@@ -20,9 +16,9 @@ export interface InputControllerOptions {
   interjectKey?: string;          // default: 'i'
   interjectBanner?: string;       // default: 'You: '
   finalizer?: () => Promise<void> | void;
-  exitOnEsc?: boolean;            // print trailing newline after finalize. default: true
-  fastExitOnCtrlC?: boolean;      // default: true (real runs), false in tests
-  suspendOnCtrlZ?: boolean;       // default: true (real runs), false in tests
+  exitOnEsc?: boolean;            // default: true
+  fastExitOnCtrlC?: boolean;      // default: true outside tests
+  suspendOnCtrlZ?: boolean;       // default: true outside tests
 }
 
 export class InputController {
@@ -39,8 +35,9 @@ export class InputController {
   // when an agent asks @@user a question
   private pendingResolve: ((s: string) => void) | null = null;
 
-  // simple "are we at BOL?" tracking for newline hygiene
+  // newline hygiene + output guard
   private lastWriteEndedWithNewline = true;
+  private originalStdoutWrite: ((chunk: any, ...rest: any[]) => any) | null = null;
 
   // ---- static hooks (used by tty-guard etc.) ----
   private static _active: InputController | null = null;
@@ -74,14 +71,24 @@ export class InputController {
 
     this.keyDebug = (R.env.ORG_KEY_DEBUG === "1" || R.env.DEBUG === "1");
 
-    // Track newline hygiene by wrapping stdout.write lightly.
+    // Wrap stdout.write to track newline state *and* suppress line-fills while prompting.
     try {
       const out: any = R.stdout as any;
-      const orig = out.write.bind(out);
+      this.originalStdoutWrite = out.write.bind(out);
       out.write = (chunk: any, ...rest: any[]) => {
-        const s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+        let s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+
+        // When prompt is active, drop pure "line-fill" writes (mostly dots + ANSI + 'INFO')
+        if (this.isPromptActive() && looksLikeFill(s)) {
+          // Keep a breadcrumb once per second to aid debugging
+          if (this.keyDebug) {
+            try { (R.stderr as any).write?.("[input] suppressed fill while prompting\n"); } catch {}
+          }
+          return true;
+        }
+
         if (s.length) this.lastWriteEndedWithNewline = /\n$/.test(s);
-        return orig(chunk, ...rest);
+        return this.originalStdoutWrite!(chunk, ...rest);
       };
     } catch { /* ignore */ }
 
@@ -122,7 +129,7 @@ export class InputController {
   }
 
   // Used by scheduler when an agent explicitly asks @@user.
-  // IMPORTANT: do NOT echo 'content' here — the UI already prints it.
+  // Do NOT echo the agent text here — UI prints it elsewhere.
   async askUser(_fromAgent: string, _content: string): Promise<string> {
     return await this.promptOnce();
   }
@@ -166,13 +173,12 @@ export class InputController {
       return;
     }
 
-    // Decode normally
     const ev = decodeKey(chunk);
     if (this.keyDebug) {
       try { R.stderr.write(`[key] ${JSON.stringify(ev)}\n`); } catch {}
     }
 
-    // Interjection hotkey: open immediately, not mid-stream messy
+    // Interjection hotkey: open immediately (no deferral)
     if (ev && ev.type === "char" && ev.data === this.opts.interjectKey && !this.pendingResolve) {
       this.openInterjectNow();
       return;
@@ -249,7 +255,6 @@ export class InputController {
         this.setUIBusy(false); // leaving prompt
         resolve(out);
       };
-      // Open prompt immediately here (explicit ask by agent).
       this.openInterjectNow();
     });
   }
@@ -278,38 +283,45 @@ export class InputController {
 
   // --- helpers ---------------------------------------------------------------
 
+  private isPromptActive(): boolean {
+    return !!this.pendingResolve;
+  }
+
   private setUIBusy(b: boolean) {
     try {
       const anyR = R as any;
       if (typeof anyR.setUIBusy === "function") { anyR.setUIBusy(b); return; }
       if ("uiBusy" in anyR) { anyR.uiBusy = b; return; }
-      (anyR as any).UIBusy = b; // best-effort
+      (anyR as any).UIBusy = b; // best-effort; some code checks this name
     } catch { /* ignore */ }
   }
 
   private openInterjectNow() {
-    // Mark UI busy so heartbeat/fills won't clobber the prompt.
     this.setUIBusy(true);
 
-    // Make sure the banner starts on a fresh line (avoid trailing '...INFO')
-    if (!this.lastWriteEndedWithNewline) {
-      try { R.stdout.write("\n"); } catch {}
+    // Ensure clean line: CR + clear-to-EOL + (optional) newline if previous write didn't end with one.
+    // Use CSI K to clear any right-edge adornments.
+    try {
+      if (!this.lastWriteEndedWithNewline) {
+        R.stdout.write("\r\x1b[K\n");
+      } else {
+        R.stdout.write("\r\x1b[K");
+      }
       this.lastWriteEndedWithNewline = true;
-    }
+    } catch {}
 
     // Drive FSM as if user hit the configured hotkey.
     this.fsm.handle({ type: "char", data: this.opts.interjectKey });
   }
 
   private writeFromFSM(s: string) {
-    // If the FSM is printing the banner, force a newline first.
+    // If the FSM is printing the banner, force a clean line first (again),
+    // then print the banner without trailing adornments.
     const isBanner = s === this.opts.interjectBanner || s.endsWith(this.opts.interjectBanner);
-    if (isBanner && !this.lastWriteEndedWithNewline) {
-      try { R.stdout.write("\n"); } catch {}
-      this.lastWriteEndedWithNewline = true;
+    if (isBanner) {
+      try { R.stdout.write("\r\x1b[K"); } catch {}
     }
     try { R.stdout.write(s); } catch {}
-    // Maintain newline hygiene for subsequent writes
     if (s.length) this.lastWriteEndedWithNewline = /\n$/.test(s);
   }
 
@@ -332,6 +344,17 @@ export class InputController {
     }
     return { fn: null, name: null };
   }
+}
+
+// Heuristic: “fill” lines are mostly dots/spaces/ANSI and end with INFO token.
+function looksLikeFill(s: string): boolean {
+  if (!s) return false;
+  // fast paths
+  if (s.indexOf("INFO") === -1 && s.indexOf("INFO".toLowerCase()) === -1) return false;
+  // strip ANSI
+  const stripped = s.replace(/\x1B\[[0-9;]*m/g, "");
+  // allow dotted leaders + the word INFO near the end
+  return /^[\s.\-•]*INFO\s*$/.test(stripped) || /\sINFO\s*$/.test(stripped);
 }
 
 /* -------------------------------------------------------------------------- */
