@@ -272,29 +272,23 @@ export async function shCapture(
   return { code: r.status ?? 0, stdout: r.stdout || "", stderr: r.stderr || "" };
 }
 
-/** Interactive execution: attach TTY and inherit stdio.  (tolerates undefined opts) */
+/** Interactive execution: attach TTY and inherit stdio. */
 export async function shInteractive(
   cmdOrArgv: string | string[],
-  opts?: { projectDir?: string; agentSessionId?: string; }
+  opts: { projectDir: string; agentSessionId: string }
 ): Promise<{ code: number }> {
-  const cmd = Array.isArray(cmdOrArgv)
-    ? cmdOrArgv.map(a => JSON.stringify(a)).join(" ")
-    : cmdOrArgv;
+  // Normalize input and quote it as one argument to the shell.
+  const raw = Array.isArray(cmdOrArgv) ? cmdOrArgv.join(" ") : cmdOrArgv;
+  const quoted = JSON.stringify(raw); // safe single argument for `sh -lc`
 
-  const projectDir = opts?.projectDir ?? defaultProjectDir();
-  const sessionId  = opts?.agentSessionId ?? defaultAgentSessionId();
+  const pod = getPodman(opts.projectDir, opts.agentSessionId);
 
-  const pod = getPodman(projectDir, sessionId);
-  const child: any = (pod as any).execInteractive
-    ? (pod as any).execInteractive(cmd)
-    : (pod as any).interactive
-      ? (pod as any).interactive(cmd)
-      : null;
-
-  if (!child) return { code: 127 };
+  // Always use a shell so things like `>`, `2>&1`, pipes, &&, etc. work.
+  const child = (pod as any).execInteractive(`sh -lc ${quoted}`);
 
   return await new Promise<{ code: number }>((resolve) => {
-    child.on("close", (code: number) => resolve({ code: code ?? 0 }));
-    child.on("exit",  (code: number) => resolve({ code: code ?? 0 }));
+    const done = (code?: number) => resolve({ code: code ?? 0 });
+    child.once("close", done);
+    child.once("exit", done);
   });
 }
