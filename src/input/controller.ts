@@ -1,6 +1,10 @@
 // src/input/controller.ts
-// Single owner of stdin in raw mode driven by a small FSM.
-// Minimal, surgical changes aimed at restoring IO determinism and tests.
+// Sole owner of TTY input in raw mode, driven by a tiny FSM.
+// Surgical changes:
+//  - Robust handling for ESC, Ctrl+C, Ctrl+Z via raw-byte fallback.
+//  - Fast exit on Ctrl+C in real runs (no finalize); tests stay safe.
+//  - Proper suspend/resume on Ctrl+Z with raw-mode re-arm on SIGCONT.
+//  - Minimal debug logs; keeps prior test helper API (_private.emitKey).
 
 import { R } from "../runtime/runtime";
 import { Logger } from "../logger";
@@ -11,10 +15,12 @@ import { PassThrough } from "stream";
 type SubmitFn = (text: string) => any;
 
 export interface InputControllerOptions {
-  interjectKey?: string;          // Hotkey to open the prompt. Default: 'i'
-  interjectBanner?: string;       // Prompt banner. Default: 'You: '
-  finalizer?: () => Promise<void> | void; // Called on graceful exit (ESC)
-  exitOnEsc?: boolean;            // Print trailing newline after finalize. Default: true
+  interjectKey?: string;          // default: 'i'
+  interjectBanner?: string;       // default: 'You: '
+  finalizer?: () => Promise<void> | void;
+  exitOnEsc?: boolean;            // default: true
+  fastExitOnCtrlC?: boolean;      // default: true in real runs; tests override to false
+  suspendOnCtrlZ?: boolean;       // default: true (real runs); tests override to false
 }
 
 export class InputController {
@@ -25,19 +31,16 @@ export class InputController {
 
   private fsm: InputFSM;
   private rawWasOn = false;
-
   private keyDebug = false;
-
-  // pending resolver when an agent asks @@user a question
   private pendingResolve: ((s: string) => void) | null = null;
 
-  // ---- static hooks used by tty-guard.ts ----
+  // ---- static hooks (used by tty-guard etc.) ----
   private static _active: InputController | null = null;
   static setRawMode(v: boolean) {
     const stdin: any = R.stdin as any;
     if (stdin?.isTTY && typeof stdin.setRawMode === "function") {
-      try { stdin.setRawMode(v); } catch { /* ignore */ }
-      try { (stdin as any).isRaw = !!v; } catch { /* ignore */ }
+      try { stdin.setRawMode(v); } catch {}
+      try { (stdin as any).isRaw = !!v; } catch {}
     }
   }
   static isRawMode(): boolean {
@@ -47,11 +50,15 @@ export class InputController {
   static enableKeys() { this._active?._attachKeys(); }
 
   constructor(opts: InputControllerOptions = {}) {
+    const isTest = R.env.BUN_TESTING === "1" || R.env.JEST_WORKER_ID != null || R.env.ORG_TEST === "1";
+
     this.opts = {
       interjectKey: opts.interjectKey ?? "i",
       interjectBanner: opts.interjectBanner ?? "You: ",
       finalizer: opts.finalizer ?? (() => {}),
       exitOnEsc: opts.exitOnEsc ?? true,
+      fastExitOnCtrlC: opts.fastExitOnCtrlC ?? !isTest, // fast-exit in real runs
+      suspendOnCtrlZ: opts.suspendOnCtrlZ ?? !isTest,
     };
 
     this.keyDebug = (R.env.ORG_KEY_DEBUG === "1" || R.env.DEBUG === "1");
@@ -74,9 +81,16 @@ export class InputController {
     // Become sole stdin owner
     InputController._active = this;
     this._attachKeys();
+
+    // Re-arm raw mode after a foreground resume.
+    try {
+      R.on?.("SIGCONT", () => {
+        Logger.debug("[input] SIGCONT -> re-enabling raw mode");
+        this.enableRaw();
+      });
+    } catch { /* ignore */ }
   }
 
-  // Bind the scheduler; discover which submit method it exposes.
   attachScheduler(s: any) {
     this.scheduler = s;
     const pick = this.pickSubmitFn(s);
@@ -86,7 +100,7 @@ export class InputController {
     else Logger.warn("[input] no scheduler submit function found");
   }
 
-  // Scheduler calls this when an agent asks @@user a question.
+  // Used by scheduler when an agent explicitly asks @@user
   async askUser(_fromAgent: string, content: string): Promise<string> {
     if (content && content.length) {
       try { R.stdout.write(content.endsWith("\n") ? content : content + "\n"); } catch {}
@@ -94,7 +108,7 @@ export class InputController {
     return await this.promptOnce();
   }
 
-  // Kickoff flow: boolean true => prompt immediately; string => send in background.
+  // Kickoff helper: true => prompt; string => background submit
   async askInitialAndSend(kickoff?: string | boolean) {
     if (kickoff === true) {
       await this.promptOnce();
@@ -106,28 +120,42 @@ export class InputController {
   // ---------------- internal wiring ----------------
 
   private onData = (chunk: Buffer) => {
+    // Raw-byte fallback for control keys (robust across decode variations)
+    const s = chunk.toString("utf8");
+
+    // Ctrl+C
+    if (s === "\x03") {
+      Logger.debug("[input] Ctrl+C");
+      if (this.opts.fastExitOnCtrlC) {
+        // Fast exit: do NOT finalize. Ensure raw is disabled so terminal state is sane.
+        try { this.disableRaw(); } catch {}
+        try { (R as any).exit?.(130); } catch { try { (globalThis as any).process?.exit?.(130); } catch {} }
+      }
+      return; // In tests (fastExitOnCtrlC=false), do nothing.
+    }
+
+    // Ctrl+Z
+    if (s === "\x1A" && this.opts.suspendOnCtrlZ) {
+      Logger.debug("[input] Ctrl+Z -> suspend");
+      try { this.disableRaw(); } catch {}
+      try { (globalThis as any).process?.kill?.((globalThis as any).process?.pid, "SIGTSTP"); } catch {}
+      return;
+    }
+
+    // ESC (single byte only, not arrow keys that start with ESC+[)
+    if (s === "\x1B" && !this.pendingResolve) {
+      Logger.debug("[input] ESC (idle) -> graceful stop");
+      void this.handleEscapeIdle();
+      return;
+    }
+
+    // Otherwise, decode normally
     const ev = decodeKey(chunk);
     if (this.keyDebug) {
       try { R.stderr.write(`[key] ${JSON.stringify(ev)}\n`); } catch {}
     }
-    this.routeEvent(ev);
-  };
-
-  private routeEvent(ev: any) {
-    // Tests inject `{ name: "escape" }` and `{ name: "c", ctrl: true }` directly.
-    if (ev && ev.name === "escape" && !this.pendingResolve) {
-      // Directly trigger idle-escape path (bypasses any FSM ambiguity).
-      void this.handleEscapeIdle();
-      return;
-    }
-    // Ctrl+C — do NOT call finalizer (tests assert no finalize on SIGINT).
-    if (ev && ev.name === "c" && ev.ctrl) {
-      // let the outer app handle actual process exit; we just ignore here
-      Logger.debug("[input] Ctrl+C received (ignored by controller; app handles fast-exit)");
-      return;
-    }
     this.fsm.handle(ev);
-  }
+  };
 
   private _attachKeys() {
     this.enableRaw();
@@ -160,9 +188,7 @@ export class InputController {
     }
   }
 
-  // ESC when idle ⇒ stop scheduler (graceful), then run finalizer (review/apply).
   private async handleEscapeIdle() {
-    Logger.debug("[input] ESC received (idle) — initiating graceful stop");
     try {
       const s = this.scheduler;
       if (s && typeof s.stop === "function") {
@@ -184,7 +210,7 @@ export class InputController {
 
   private async promptOnce(): Promise<string> {
     if (this.pendingResolve) {
-      // Already prompting; chain to existing resolver.
+      // Already prompting; chain to avoid re-entrancy.
       return new Promise<string>((resolve) => {
         const prev = this.pendingResolve!;
         this.pendingResolve = (s: string) => { try { prev(s); } catch {}; resolve(s); };
@@ -197,7 +223,7 @@ export class InputController {
         Logger.debug(`[input] prompt resolved (${out.length} chars)`);
         resolve(out);
       };
-      // Open the prompt by virtually pressing the interject key.
+      // Open prompt by virtually pressing the interject key.
       this.fsm.handle({ type: "char", data: this.opts.interjectKey });
     });
   }
@@ -209,8 +235,7 @@ export class InputController {
     if (hadPrompt) {
       const resolve = this.pendingResolve; this.pendingResolve = null;
       try { resolve!(text); } catch {}
-      // Do NOT also forward to scheduler here: the scheduler awaits the promise.
-      return;
+      return; // do NOT also forward to scheduler
     }
 
     // Background interjection / kickoff
@@ -225,15 +250,12 @@ export class InputController {
   }
 
   private pickSubmitFn(s: any): { fn: SubmitFn | null; name: string | null } {
-    // Allow override via env for experiments.
     const preferred = (R.env.ORG_SCHEDULER_SUBMIT || "").trim();
     if (preferred && typeof s?.[preferred] === "function") {
       return { fn: (t: string) => s[preferred](t), name: preferred };
     }
-
-    // Known entry points across schedulers in this repo.
     const candidates = [
-      "handleUserInterjection", // <- test doubles expect this
+      "handleUserInterjection",
       "receiveUser",
       "interject",
       "submitUser",
@@ -242,20 +264,15 @@ export class InputController {
       "onUserInput",
     ];
     for (const name of candidates) {
-      if (typeof s?.[name] === "function") {
-        return { fn: (t: string) => s[name](t), name };
-      }
+      if (typeof s?.[name] === "function") return { fn: (t: string) => s[name](t), name };
     }
     return { fn: null, name: null };
   }
 }
 
 /* -------------------------------------------------------------------------- */
-/* Test helper: makeControllerForTests (keeps backward-compat API)
- * --------------------------------------------------------------------------
- * Returns an object exposing `_private.emitKey(...)` (as older tests expect)
- * and convenience helpers for feeding input and capturing output.
- */
+/* Test helper: makeControllerForTests (back-compat)                          */
+/* -------------------------------------------------------------------------- */
 export function makeControllerForTests(
   opts: InputControllerOptions & { scheduler?: any } = {},
 ): {
@@ -270,10 +287,8 @@ export function makeControllerForTests(
   restore: () => void;
   _private: { emitKey: (ev: any) => void };
 } {
-  // Save originals to restore later
   const orig = { stdin: R.stdin, stdout: R.stdout, stderr: R.stderr };
 
-  // Fake TTY streams
   const stdin = new PassThrough();
   const stdout = new PassThrough();
   const stderr = new PassThrough();
@@ -287,13 +302,16 @@ export function makeControllerForTests(
   stdout.on("data", (c) => { outBuf += c.toString("utf8"); });
   stderr.on("data", (c) => { errBuf += c.toString("utf8"); });
 
-  // Patch runtime IO
   (R as any).stdin = stdin as any;
   (R as any).stdout = stdout as any;
   (R as any).stderr = stderr as any;
 
   const { scheduler, ...rest } = opts as any;
-  const ctrl = new InputController(rest);
+  const ctrl = new InputController({
+    ...rest,
+    fastExitOnCtrlC: false, // keep tests safe
+    suspendOnCtrlZ: false,
+  });
   if (scheduler) ctrl.attachScheduler(scheduler);
 
   const feed = (s: string | Buffer) => {
@@ -311,12 +329,21 @@ export function makeControllerForTests(
     (R as any).stderr = orig.stderr;
   };
 
-  // Back-compat path used by tests: allow direct key injection.
   const _private = {
     emitKey: (ev: any) => {
       try {
-        // Route directly so tests get deterministic behavior.
-        (ctrl as any).routeEvent(ev);
+        // Re-use controller's routing so tests match real behavior.
+        (ctrl as any).onData?.(
+          typeof ev === "string" ? Buffer.from(ev, "utf8")
+          : ev?.name === "escape" ? Buffer.from([0x1b])
+          : (ev?.name === "c" && ev?.ctrl) ? Buffer.from([0x03])
+          : (ev?.name === "z" && ev?.ctrl) ? Buffer.from([0x1a])
+          : Buffer.from([])
+        );
+        // If tests pass structured events, let FSM handle them too.
+        if (ev && typeof ev === "object" && !ev.length) {
+          (ctrl as any).fsm?.handle(ev);
+        }
       } catch (e: any) {
         Logger.warn(`[input.test] emitKey failed: ${e?.message || e}`);
       }
