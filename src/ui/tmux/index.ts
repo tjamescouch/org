@@ -14,12 +14,13 @@ export interface TmuxLaunchOpts {
 
 /**
  * Launch UI under tmux that runs **inside the sandbox**.
- * Preflight tmux availability using an interactive zero-output test,
- * so we don't rely on capture being implemented.
+ * - Preflight tmux using a single-shell interactive check (no nested sh -lc),
+ *   so we avoid quoting pitfalls and RC=127 false negatives.
+ * - Return a plain number (exit code) so callers can `process.exit(...)`.
  */
-export async function launchTmuxUI(
+export default async function launchTmuxUI(
   opts: TmuxLaunchOpts = {}
-): Promise<{ code: number }> {
+): Promise<number> {
   // Robust defaults so we never pass undefined to shInteractive():
   const projectDir = opts.projectDir ?? process.env.ORG_CALLER_CWD ?? process.cwd();
   const agentSessionId = opts.agentSessionId ?? "default";
@@ -27,18 +28,16 @@ export async function launchTmuxUI(
 
   Logger.info("[org/tmux] launcher start", { projectDir, agentSessionId, entry });
 
-  // --- Preflight: check tmux INSIDE the sandbox (return-code only; no capture) ---
-  // Using interactive avoids PodmanSession.execCapture which may be unimplemented.
+  // --- Preflight: check tmux INSIDE the sandbox (return-code only) ---
+  // IMPORTANT: pass only the test command; shInteractive already wraps with a shell.
   const check = await shInteractive(
-    `sh -lc 'command -v tmux >/dev/null 2>&1'`,
+    `command -v tmux >/dev/null 2>&1`,
     { projectDir, agentSessionId }
   );
-
   Logger.info("[org/tmux] tmux check (interactive rc)", { code: check.code });
 
   if (check.code !== 0) {
-    // If you prefer silent fallback to console UI, we can add that later;
-    // for now a clear error is better signal during bring-up.
+    // If you want silent fallback to console later, we can add it; for now be explicit.
     throw new Error(
       "tmux not found in the sandbox image. Please add tmux to the image used for the sandbox."
     );
@@ -50,13 +49,16 @@ export async function launchTmuxUI(
 
   // Launch tmux inside the sandbox and run our app in console mode within the session.
   // TMUX_TMPDIR is set under /work so the sandbox can write logs.
-  const cmd = `bash -lc "TMUX_TMPDIR=/work/.org/logs/tmux-logs tmux -vv new-session -A -s org 'bun ${entry} --ui console'"`;
-  Logger.info("[org/tmux] exec", { cmd });
+  // NOTE: Only one shell wrapping — shInteractive adds the shell; we pass the literal tmux command here.
+  const tmuxCmd =
+    `TMUX_TMPDIR=/work/.org/logs/tmux-logs ` +
+    `tmux -vv new-session -A -s org 'bun ${entry} --ui console'`;
 
-  const result = await shInteractive(cmd, { projectDir, agentSessionId });
+  Logger.info("[org/tmux] exec", { cmd: tmuxCmd });
+
+  const result = await shInteractive(tmuxCmd, { projectDir, agentSessionId });
   Logger.info("[org/tmux] tmux exited", { code: result.code });
 
-  return result;
+  // Return a PLAIN NUMBER so app.ts can `process.exit(code ?? 0)` safely.
+  return result.code ?? 0;
 }
-
-export default launchTmuxUI;
