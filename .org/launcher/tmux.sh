@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Robust tmux launcher for org. Works even if invoked by /bin/sh caller.
-# Fixes: "bad substitution" by avoiding ${#arr[@]:-0} and forcing bash.
+# Robust tmux launcher that respects --ui and falls back to console when tmux
+# is not present. Works even if invoked by /bin/sh callers.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -12,30 +12,65 @@ PANE_TITLE="${ORG_TMUX_PANE_TITLE:-org}"
 LOG_DIR="${ROOT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 
-# Forward all CLI args the user passed after '--' into org.
-# Accept both array-style and string-style envs from upstream sh callers.
+# ----- collect forwarded args (from env and/or argv) -------------------------
 FWD="${ORG_FWD_ARGS-}"
-if [[ -n "$FWD" ]]; then
-  # shellwords-safe: expect upstream to quote; otherwise, just pass as-is
-  read -r -a ORG_ARGS <<<"$FWD"
-else
-  ORG_ARGS=()
+declare -a ORG_ARGS=()
+# include arguments passed directly to this script (if any)
+if [[ $# -gt 0 ]]; then ORG_ARGS+=("$@"); fi
+# include arguments forwarded via env string
+if [[ -n "${FWD}" ]]; then
+  # shellwords-ish split (caller should quote; this is best-effort)
+  read -r -a _arr <<<"$FWD"
+  ORG_ARGS+=("${_arr[@]}")
 fi
 
-# Entry: prefer bun if available, else node on built dist, else ts-node/tsx.
-ENTRY="${ROOT_DIR}/src/app.ts"
+# ----- determine requested UI ------------------------------------------------
+UI="${ORG_UI-}"   # explicit env overrides CLI
 
+if [[ -z "${UI}" ]]; then
+  # parse --ui console|tmux or --ui=console|tmux
+  for ((i=0; i<${#ORG_ARGS[@]}; i++)); do
+    a="${ORG_ARGS[$i]}"
+    if [[ "$a" == "--ui" ]]; then
+      UI="${ORG_ARGS[$((i+1))]:-}"
+      break
+    elif [[ "$a" == --ui=* ]]; then
+      UI="${a#--ui=}"
+      break
+    fi
+  done
+fi
+UI="${UI:-tmux}"
+
+# If the user asked for console, delegate immediately.
+if [[ "${UI}" != "tmux" ]]; then
+  exec "${SCRIPT_DIR}/console.sh" "${ORG_ARGS[@]}"
+fi
+
+# No tmux? degrade gracefully to console (do NOT error).
 if ! command -v tmux >/dev/null 2>&1; then
-  echo "tmux not found. Install tmux or run with '--ui console'." >&2
-  exit 1
+  echo "tmux not found. Falling back to console UI." >&2
+  exec "${SCRIPT_DIR}/console.sh" "${ORG_ARGS[@]}"
 fi
 
-# Create session if it doesn't exist
+# ----- choose runtime for the app -------------------------------------------
+ENTRY="${ROOT_DIR}/src/app.ts"
+declare -a RUN
+if command -v bun >/dev/null 2>&1; then
+  RUN=(bun "${ENTRY}")
+elif [[ -f "${ROOT_DIR}/dist/app.js" ]] && command -v node >/dev/null 2>&1; then
+  RUN=(node "${ROOT_DIR}/dist/app.js")
+elif command -v tsx >/dev/null 2>&1; then
+  RUN=(tsx "${ENTRY}")
+else
+  RUN=(node --loader ts-node/esm "${ENTRY}")
+fi
+
+# ----- start tmux session (create if missing) -------------------------------
 if ! tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
   tmux new-session -d -s "${SESSION_NAME}" -n "${PANE_TITLE}" \
-    "cd ${ROOT_DIR} && LOG_FILE=${LOG_DIR}/run-\$(date -u +%Y-%m-%dT%H-%M-%SZ).log \
-      ${BUN:-bun} ${ENTRY} ${ORG_ARGS[*]}"
+    "cd ${ROOT_DIR} && LOG_FILE=${LOG_DIR}/run-\$(date -u +%Y-%m-%dT%H-%M-%SZ).log ${RUN[*]} ${ORG_ARGS[*]}"
 fi
 
 tmux select-window -t "${SESSION_NAME}:0"
-tmux attach-session -t "${SESSION_NAME}"
+exec tmux attach-session -t "${SESSION_NAME}"
