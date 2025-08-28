@@ -57,4 +57,4 @@ chmod +x "$INNER"
 export ORG_TMUX_ENTRY="$ENTRY"
 
 # ----- Fire up tmux (session name: 'org') -----
-exec /usr/bin/tmux -vv new-session -A -s org "$INNER"
+exec /work/bin/.bin/tmux -vv new-session -A -s org "$INNER"

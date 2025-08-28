@@ -7,7 +7,7 @@ import { ExecPolicy } from "../sandbox/policy";
 import { detectBackend } from "../sandbox/detect";
 import { Logger } from "../logger";
 
-export type ToolArgs = { cmd: string };
+export type ToolArgs   = { cmd: string };
 export type ToolResult = { ok: boolean; stdout: string; stderr: string; exit_code: number; cmd: string };
 
 export interface ToolCtx {
@@ -101,14 +101,83 @@ function tailFile(
   return { stop: () => { stopped = true; } };
 }
 
+/** Tail any new step files created after `startMs` (handles stamp-based filenames). */
+function tailStepsDir(
+  stepsDir: string,
+  startMs: number,
+  onOut: (s: string) => void,
+  onErr: (s: string) => void,
+  onSeenOutput: () => void,
+  opts?: { pollMs?: number }
+) {
+  const pollMs = Math.max(100, opts?.pollMs ?? 150);
+  let stopped = false;
+
+  const tracked = new Map<string, { stop: () => void; kind: "out" | "err" }>();
+  const pattern = /^step-.*\.(out|err)$/;
+
+  const attachTailer = async (fullPath: string, kind: "out" | "err") => {
+    if (tracked.has(fullPath)) return;
+    // Start tailing from the beginning so we capture early bytes too.
+    const t = tailFile(
+      fullPath,
+      (s) => (kind === "out" ? onOut(s) : onErr(s)),
+      onSeenOutput,
+      { pollMs }
+    );
+    tracked.set(fullPath, { stop: t.stop, kind });
+  };
+
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      // Scan directory for new step files created/modified after startMs.
+      const names = await fsp.readdir(stepsDir).catch(() => []);
+      for (const name of names) {
+        if (!pattern.test(name)) continue;
+        const full = path.join(stepsDir, name);
+        if (tracked.has(full)) continue;
+        try {
+          const st = await fsp.stat(full);
+          // Use mtime/ctime heuristics; birthtime can be unreliable on overlayfs.
+          const recentEnough =
+            st.mtimeMs >= startMs - 10 ||
+            st.ctimeMs >= startMs - 10;
+          if (recentEnough) {
+            const kind: "out" | "err" = name.endsWith(".out") ? "out" : "err";
+            await attachTailer(full, kind);
+          }
+        } catch {
+          // ignore races
+        }
+      }
+    } catch {
+      // stepsDir may not exist yet
+    }
+    setTimeout(tick, pollMs);
+  };
+
+  tick();
+
+  return {
+    stop: () => {
+      stopped = true;
+      for (const [, v] of tracked) {
+        try { v.stop(); } catch {}
+      }
+      tracked.clear();
+    }
+  };
+}
+
 /* -----------------------------------------------------------------------------
- * Public API — non-interactive with heartbeat
+ * Public API — non-interactive with heartbeat + live streaming
  * ---------------------------------------------------------------------------*/
 
 export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
   const sessionKey = ctx.agentSessionId ?? "default";
   const projectDir = ctx.projectDir ?? process.cwd();
-  const runRoot = ctx.runRoot ?? path.join(projectDir, ".org");
+  const runRoot    = ctx.runRoot ?? path.join(projectDir, ".org");
   const idleHeartbeatMsRaw = ctx?.idleHeartbeatMs ?? 1000;
   const idleHeartbeatMs = HEARTBEAT_MUTED ? 0 : Math.max(250, idleHeartbeatMsRaw);
 
@@ -118,12 +187,12 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   const stepsHostDir: string =
     (typeof (session as any).getStepsHostDir === "function")
       ? (session as any).getStepsHostDir()
-      : path.join(runRoot, "tmp", "unknown-steps"); // fallback
+      : path.join(runRoot, "tmp", "unknown-steps"); // fallback (should exist or be creatable)
 
-  const nextIdx = await computeNextStepIdx(stepsHostDir);
-  const liveOut = path.join(stepsHostDir, `step-${nextIdx}.out`);
-  const liveErr = path.join(stepsHostDir, `step-${nextIdx}.err`);
+  // Baseline: make sure the directory exists; streaming handler tolerates absence.
+  try { await fsp.mkdir(stepsHostDir, { recursive: true }); } catch {}
 
+  // Streaming banner + heartbeat
   process.stderr.write(`sh: ${args.cmd} -> `);
   let lastOutputAt = Date.now();
   let printedHeartbeat = false;
@@ -143,31 +212,43 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
     }
   }, Math.max(250, Math.floor(Math.max(1, idleHeartbeatMs) / 2)));
 
-  const outTail = tailFile(
-    liveOut,
+  // Start a directory-wide streamer that will tail any new step-*.out/.err files
+  // created by this exec. This handles both index-based and stamp-based filenames.
+  const startMs = Date.now();
+  const dirTail = tailStepsDir(
+    stepsHostDir,
+    startMs,
     (s) => { process.stdout.write(s); },
-    () => { lastOutputAt = Date.now(); breakHeartbeatLineOnce(); }
-  );
-  const errTail = tailFile(
-    liveErr,
     (s) => { process.stderr.write(s); },
-    () => { lastOutputAt = Date.now(); breakHeartbeatLineOnce(); }
+    () => { lastOutputAt = Date.now(); breakHeartbeatLineOnce(); },
+    { pollMs: 150 }
   );
 
+  // Run the step inside the sandbox (this writes those files)
   const step = await (session as any).exec(args.cmd);
 
+  // Stop heartbeat + streamers and clean up the line nicely.
   clearInterval(hbTimer);
-  outTail.stop();
-  errTail.stop();
+  dirTail.stop();
   if (printedHeartbeat && !brokeLineAfterHeartbeat) process.stderr.write("\n");
-  if (!printedHeartbeat && step.ok && !fs.existsSync(liveOut) && !fs.existsSync(liveErr)) {
-    process.stderr.write("\n");
+
+  // If absolutely nothing appeared and the step succeeded with no files,
+  // end the line to avoid a dangling prompt.
+  try {
+    const hasOut = step?.stdoutFile && fs.existsSync(step.stdoutFile);
+    const hasErr = step?.stderrFile && fs.existsSync(step.stderrFile);
+    if (!printedHeartbeat && step?.ok && !hasOut && !hasErr) {
+      process.stderr.write("\n");
+    }
+  } catch {
+    // ignore
   }
 
-  const out = fs.existsSync(step.stdoutFile) ? fs.readFileSync(step.stdoutFile, "utf8") : "";
-  const err = fs.existsSync(step.stderrFile) ? fs.readFileSync(step.stderrFile, "utf8") : "";
+  // Read the final results from the step artifacts the way the rest of the system expects.
+  const out = (step?.stdoutFile && fs.existsSync(step.stdoutFile)) ? fs.readFileSync(step.stdoutFile, "utf8") : (step?.stdout ?? "");
+  const err = (step?.stderrFile && fs.existsSync(step.stderrFile)) ? fs.readFileSync(step.stderrFile, "utf8") : (step?.stderr ?? "");
 
-  return { ok: step.ok, stdout: out, stderr: err, exit_code: step.exit, cmd: args.cmd };
+  return { ok: !!step?.ok, stdout: out, stderr: err, exit_code: step?.exit ?? 0, cmd: args.cmd };
 }
 
 export async function finalizeSandbox(ctx: ToolCtx) {
@@ -219,7 +300,7 @@ export async function shCapture(
 
 function findEngine(): "podman" | "docker" | null {
   for (const e of ["podman", "docker"] as const) {
-    try { const r = spawnSync(e, ["--version"], { stdio: "ignore" }); if (r.status === 0) return e; } catch { }
+    try { const r = spawnSync(e, ["--version"], { stdio: "ignore" }); if (r.status === 0) return e; } catch {}
   }
   return null;
 }
@@ -273,13 +354,13 @@ export async function shInteractive(
     const child = runInteractive(script);
     return await new Promise<{ code: number }>((resolve) => {
       child.on("close", (code: number | null) => resolve({ code: code ?? 0 }));
-      child.on("exit", (code: number | null) => resolve({ code: code ?? 0 }));
+      child.on("exit",  (code: number | null) => resolve({ code: code ?? 0 }));
     });
   }
 
   // Fallback to container engine.
   const engine = findEngine();
-  const cname = getContainerName(session);
+  const cname  = getContainerName(session);
   if (!engine || !cname) {
     const keys = Object.keys(session ?? {}).sort();
     throw new Error(
@@ -295,9 +376,8 @@ export async function shInteractive(
 
   const child = spawn(engine, argv, { stdio: "inherit" });
   return await new Promise<{ code: number }>((resolve) => {
-    child.on("data", (chunk) => { return Logger.streamInfo(chunk) });
     child.on("close", (code) => resolve({ code: code ?? 0 }));
-    child.on("exit", (code) => resolve({ code: code ?? 0 }));
+    child.on("exit",  (code) => resolve({ code: code ?? 0 }));
   });
 }
 
