@@ -1,48 +1,45 @@
 #!/usr/bin/env bash
 # Unified installer for org
-# - Builds/pulls the container image if needed (or always with --rebuild)
+# - Builds/pulls the container image if needed
 # - Installs a host-side launcher symlink
 # - Prints clear guidance when /usr/local/bin isn't writable
 set -Eeuo pipefail
 
-usage() {
-  cat <<'USAGE'
-Usage: ./installer.sh [--rebuild] [--image IMG] [--file Containerfile]
+show_help() {
+  cat <<'EOF'
+usage: ./org/launcher/install.sh [--engine podman|docker] [--image NAME[:TAG]] [--file Containerfile] [--rebuild]
 
 Options:
-  -r, --rebuild        Force a fresh image build (no cache; always pull base)
-      --image IMG      Override image tag/name (default: localhost/org-build:debian-12)
-      --file FILE      Override Containerfile path     (default: Containerfile)
-  -h, --help           Show this help and exit
-USAGE
+  --engine   Override container engine detection (podman|docker).
+  --image    Image name to build/use. Default: localhost/org-build:debian-12
+  --file     Containerfile/Dockerfile to build. Default: Containerfile
+  --rebuild  Force a rebuild of the image even if it already exists.
+EOF
 }
 
-# ---------------------------
-# Defaults
-# ---------------------------
-IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
-FILE="${ORG_CONTAINERFILE:-Containerfile}"
+ENGINE=""
+IMAGE=""
+FILE=""
 REBUILD=0
 
-# ---------------------------
-# Parse args
-# ---------------------------
-while [[ $# -gt 0 ]]; do
+while [ $# -gt 0 ]; do
   case "$1" in
-    -r|--rebuild) REBUILD=1; shift ;;
-    --image)      IMAGE="${2:?}"; shift 2 ;;
-    --image=*)    IMAGE="${1#*=}"; shift ;;
-    --file)       FILE="${2:?}"; shift 2 ;;
-    --file=*)     FILE="${1#*=}"; shift ;;
-    -h|--help)    usage; exit 0 ;;
-    *) echo "[install][warn] ignoring unknown arg: $1" >&2; shift ;;
+    --engine) ENGINE="$2"; shift 2;;
+    --image)  IMAGE="$2"; shift 2;;
+    --file)   FILE="$2"; shift 2;;
+    --rebuild) REBUILD=1; shift;;
+    -h|--help) show_help; exit 0;;
+    --) shift; break;;
+    *) echo "[install][warn] ignoring unknown arg: $1" >&2; shift;;
   esac
 done
 
 # ---------------------------
 # Detect container engine
 # ---------------------------
-if command -v podman >/dev/null 2>&1; then
+if [ -n "$ENGINE" ]; then
+  true
+elif command -v podman >/dev/null 2>&1; then
   ENGINE="${ORG_ENGINE:-podman}"
 elif command -v docker >/dev/null 2>&1; then
   ENGINE="${ORG_ENGINE:-docker}"
@@ -51,37 +48,34 @@ else
   exit 127
 fi
 
+# ---------------------------
+# Image + build file
+# ---------------------------
+IMAGE="${IMAGE:-${ORG_IMAGE:-localhost/org-build:debian-12}}"
+FILE="${FILE:-${ORG_CONTAINERFILE:-Containerfile}}"
+
 echo "[install] engine = $ENGINE"
 echo "[install] image  = $IMAGE"
 echo "[install] file   = $FILE"
-if [[ "$REBUILD" -eq 1 ]]; then
-  echo "[install] flag   = --rebuild (force fresh build)"
+
+# ---------------------------
+# Build image (respects --rebuild)
+# ---------------------------
+need_build=1
+if "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
+  if [ "$REBUILD" -eq 1 ]; then
+    echo "[install] --rebuild given -> rebuilding image"
+  else
+    need_build=0
+  fi
 fi
 
-# ---------------------------
-# Build image
-# ---------------------------
-do_build() {
-  local flags=()
-  if [[ "$ENGINE" == "podman" ]]; then
-    flags+=(--pull-always --no-cache)
-  else
-    # docker
-    flags+=(--pull --no-cache)
-  fi
+if [ "$need_build" -eq 1 ]; then
   echo "[install] building image (this can take a while)..."
-  "$ENGINE" build -t "$IMAGE" -f "$FILE" "${flags[@]}" .
+  "$ENGINE" build -t "$IMAGE" -f "$FILE" .
   echo "[install] done. image built"
-}
-
-if [[ "$REBUILD" -eq 1 ]]; then
-  do_build
 else
-  if "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
-    echo "[install] image already present; skipping build"
-  else
-    do_build
-  fi
+  echo "[install] image already present; skipping build"
 fi
 
 # ---------------------------
