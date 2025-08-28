@@ -1,3 +1,4 @@
+// src/ui/tmux/index.ts
 // Tmux UI launcher – runs tmux *inside the sandbox* and attaches your app.
 import * as path from "path";
 import { Logger } from "../../logger";
@@ -46,26 +47,23 @@ export async function launchTmuxUI(argv: string[], tmuxScope: Scope = "sandbox")
     entry: entryCtr,
   });
 
-  // Make sure tmux exists in the sandbox image.
+  // Ensure tmux exists in the sandbox image
   const rc = await doctorTmux(tmuxScope, projectDir, agentSessionId);
   if (rc !== 0) {
     throw new Error("tmux not found in the sandbox image. Please add tmux to the image used for the sandbox.");
   }
 
-  // Build one clean interactive command string. We:
-  //  - ensure the tmux log dir exists
-  //  - set TMUX_TMPDIR there (tmux writes sockets/logs)
-  //  - launch/attach named session "org" that runs our console UI
+  // Inside tmux, PATH is often trimmed. Make sure bun is discoverable:
+  //   export PATH="$HOME/.bun/bin:$PATH"; exec bun …
   //
-  // We run tmux under bash, and inside tmux we run another bash to exec bun.
-  // This keeps PATH/env consistent and avoids quoting/exec pitfalls.
+  // We also configure a tmux tmpdir for logs/sockets under /work/.org.
   const tmuxCmd =
     `bash -lc ` +
     `"mkdir -p /work/.org/logs/tmux-logs; ` +
     `export TMUX_TMPDIR=/work/.org/logs/tmux-logs; ` +
     `exec /usr/bin/tmux -vv new-session -A -s org ` +
-    `'bash -lc \\\"exec bun ${entryCtr} --ui console\\\"'` +
-    `"`;
+    `'bash -lc \\\"export PATH=\\$HOME/.bun/bin:\\$PATH; exec bun ${entryCtr} --ui console\\\"'` +
+    `"`; // close outer bash -lc
 
   Logger.info("[org/tmux] exec", { cmd: tmuxCmd });
 
