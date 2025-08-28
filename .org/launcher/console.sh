@@ -1,32 +1,43 @@
-# shellcheck shell=bash
+#!/usr/bin/env bash
+# vim: set ts=2 sw=2 et:
+set -Eeuo pipefail
 
-run_console() {
-  log "ui=console"
-  export ORG_APPDIR="$APPDIR"
-  export ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}"
+# Console UI path with targeted logging. Safe to keep enabled permanently.
 
-  local BUN;  BUN="$(command -v bun  || true)"
-  local NPX;  NPX="$(command -v npx  || true)"
-  local NODE; NODE="$(command -v node || true)"
+APPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+LOG_DIR="${ORG_LOG_DIR:-${APPDIR}/.org/logs}"
+mkdir -p "${LOG_DIR}" || true
+LAUNCH_LOG="${LOG_DIR}/console-launcher-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
 
-  if [ -n "$BUN" ]; then
-    log "exec: $BUN \"$ORG_ENTRY\" ${ORG_FWD_ARGS[*]:-}"
-    set +e
-    "$BUN" "$ORG_ENTRY" "${ORG_FWD_ARGS[@]}" 2>&1 | tee -a "$ORG_LOG_FILE"
-    local ec=${PIPESTATUS[0]}
-    set -e
-    exit "$ec"
-  fi
+# Tee stdout+stderr to terminal and file so we always see something.
+exec > >(awk '{ print; fflush() }' | tee -a "${LAUNCH_LOG}") 2>&1
 
-  if [ -n "$NODE" ] && [ -n "$NPX" ]; then
-    log "exec: $NPX --yes tsx \"$ORG_ENTRY\" ${ORG_FWD_ARGS[*]:-}"
-    set +e
-    "$NPX" --yes tsx "$ORG_ENTRY" "${ORG_FWD_ARGS[@]}" 2>&1 | tee -a "$ORG_LOG_FILE"
-    local ec=${PIPESTATUS[0]}
-    set -e
-    exit "$ec"
-  fi
+ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+log(){ printf '[%s] [org/console] %s\n' "$(ts)" "$*"; }
 
-  err "neither Bun nor Node+tsx found in PATH."
-  exit 127
-}
+trap 'log "ERROR line ${BASH_LINENO[0]}: ${BASH_COMMAND:-?} (rc=$?)"' ERR
+trap 'log "console-launcher exit code: $?"' EXIT
+
+log "console launcher start"
+log "pwd: $(pwd)"
+log "APPDIR: ${APPDIR}"
+log "TERM: ${TERM:-unset}  TTY: ${([ -t 0 ] && echo tty) || echo ntty}  isatty=$(python3 -c "import sys,os; print(os.isatty(0))" 2>/dev/null || true)"
+
+ENTRY="${ORG_APPDIR:-${APPDIR}}/src/app.ts"
+if [[ ! -f "${ENTRY}" ]]; then
+  log "ENTRY missing: ${ENTRY}  (ORG_APPDIR='${ORG_APPDIR-}')"
+  exit 1
+fi
+
+# Make sure bun is visible, and print its version for traceability.
+if ! command -v bun >/dev/null 2>&1; then
+  log "bun not found on PATH"
+  exit 1
+fi
+log "bun: $(command -v bun)  version: $(bun --version 2>/dev/null || echo '?')"
+
+# Force console UI on the app so we’re aligned with this launcher.
+export ORG_FORCE_UI="${ORG_FORCE_UI:-console}"
+
+log "exec: bun '${ENTRY}' $*"
+exec bun "${ENTRY}" "$@"
