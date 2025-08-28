@@ -7,7 +7,7 @@ import { ExecPolicy } from "../sandbox/policy";
 import { detectBackend } from "../sandbox/detect";
 import { Logger } from "../logger";
 
-export type ToolArgs   = { cmd: string };
+export type ToolArgs = { cmd: string };
 export type ToolResult = { ok: boolean; stdout: string; stderr: string; exit_code: number; cmd: string };
 
 export interface ToolCtx {
@@ -108,7 +108,7 @@ function tailFile(
 export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
   const sessionKey = ctx.agentSessionId ?? "default";
   const projectDir = ctx.projectDir ?? process.cwd();
-  const runRoot    = ctx.runRoot ?? path.join(projectDir, ".org");
+  const runRoot = ctx.runRoot ?? path.join(projectDir, ".org");
   const idleHeartbeatMsRaw = ctx?.idleHeartbeatMs ?? 1000;
   const idleHeartbeatMs = HEARTBEAT_MUTED ? 0 : Math.max(250, idleHeartbeatMsRaw);
 
@@ -120,9 +120,9 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
       ? (session as any).getStepsHostDir()
       : path.join(runRoot, "tmp", "unknown-steps"); // fallback
 
-  const nextIdx   = await computeNextStepIdx(stepsHostDir);
-  const liveOut   = path.join(stepsHostDir, `step-${nextIdx}.out`);
-  const liveErr   = path.join(stepsHostDir, `step-${nextIdx}.err`);
+  const nextIdx = await computeNextStepIdx(stepsHostDir);
+  const liveOut = path.join(stepsHostDir, `step-${nextIdx}.out`);
+  const liveErr = path.join(stepsHostDir, `step-${nextIdx}.err`);
 
   process.stderr.write(`sh: ${args.cmd} -> `);
   let lastOutputAt = Date.now();
@@ -219,7 +219,7 @@ export async function shCapture(
 
 function findEngine(): "podman" | "docker" | null {
   for (const e of ["podman", "docker"] as const) {
-    try { const r = spawnSync(e, ["--version"], { stdio: "ignore" }); if (r.status === 0) return e; } catch {}
+    try { const r = spawnSync(e, ["--version"], { stdio: "ignore" }); if (r.status === 0) return e; } catch { }
   }
   return null;
 }
@@ -273,13 +273,13 @@ export async function shInteractive(
     const child = runInteractive(script);
     return await new Promise<{ code: number }>((resolve) => {
       child.on("close", (code: number | null) => resolve({ code: code ?? 0 }));
-      child.on("exit",  (code: number | null) => resolve({ code: code ?? 0 }));
+      child.on("exit", (code: number | null) => resolve({ code: code ?? 0 }));
     });
   }
 
   // Fallback to container engine.
   const engine = findEngine();
-  const cname  = getContainerName(session);
+  const cname = getContainerName(session);
   if (!engine || !cname) {
     const keys = Object.keys(session ?? {}).sort();
     throw new Error(
@@ -295,9 +295,9 @@ export async function shInteractive(
 
   const child = spawn(engine, argv, { stdio: "inherit" });
   return await new Promise<{ code: number }>((resolve) => {
-    child.on("data", (chunk) => resolve({ Logger.streamInfo(chunk); }));
+    child.on("data", (chunk) => { return Logger.streamInfo(chunk) });
     child.on("close", (code) => resolve({ code: code ?? 0 }));
-    child.on("exit",  (code) => resolve({ code: code ?? 0 }));
+    child.on("exit", (code) => resolve({ code: code ?? 0 }));
   });
 }
 
