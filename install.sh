@@ -1,173 +1,87 @@
 #!/usr/bin/env bash
 # Unified installer for org
-# - Detects engine (podman|docker)
-# - Builds image only if missing (or --rebuild)
-# - Installs a runnable `org` on your PATH via symlink
-# - Works on Debian/Ubuntu and macOS
+# - Builds/pulls the container image if needed
+# - Installs a host-side launcher symlink
+# - Prints clear guidance when /usr/local/bin isn't writable
+set -Eeuo pipefail
 
-set -euo pipefail
-
-# -----------------------
-# Pretty logging helpers
-# -----------------------
-note() { printf '[install] %s\n' "$*"; }
-ok()   { printf '[install] done. %s\n' "$*" ; }
-warn() { printf '[install][warn] %s\n' "$*" >&2; }
-err()  { printf '[install][error] %s\n' "$*" >&2; }
-
-# -----------------------
-# Parse flags
-# -----------------------
-REBUILD=0
-ENGINE_OVERRIDE=""
-IMAGE_OVERRIDE=""
-while (($#)); do
-  case "$1" in
-    --rebuild) REBUILD=1; shift;;
-    --engine=*) ENGINE_OVERRIDE="${1#*=}"; shift;;
-    --image=*)  IMAGE_OVERRIDE="${1#*=}"; shift;;
-    -h|--help)
-      cat <<'USAGE'
-Usage: ./install.sh [--rebuild] [--engine=podman|docker] [--image=<tag>]
-
-  --rebuild       Force container image rebuild.
-  --engine=...    Override engine detection (podman|docker).
-  --image=...     Override image tag (default: localhost/org-build:debian-12).
-
-Examples:
-  ./install.sh
-  ./install.sh --rebuild
-  ./install.sh --engine=podman --image=localhost/org-build:debian-12
-USAGE
-      exit 0;;
-    *)
-      warn "unknown flag $1 (ignored)"; shift;;
-  esac
-done
-
-# -----------------------
-# Paths & repo root
-# -----------------------
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ORG_BIN="$REPO/org"
-CONTEXT="$REPO"
-FILE="$REPO/Containerfile"
-
-if [[ ! -f "$ORG_BIN" ]]; then
-  err "cannot find launcher at $ORG_BIN"
-  exit 66
-fi
-if [[ ! -f "$FILE" ]]; then
-  err "cannot find Containerfile at $FILE"
-  exit 66
-fi
-
-# Optional: project patch helper (not required to install)
-if [[ ! -x "$REPO/.org/bin/apply_patch" ]]; then
-  note "optional: no project patch helper at .org/bin/apply_patch (using image fallback)"
-fi
-
-# -----------------------
-# Engine detection
-# -----------------------
-detect_engine() {
-  if [[ -n "$ENGINE_OVERRIDE" ]]; then
-    echo "$ENGINE_OVERRIDE"
-    return
-  fi
-  if command -v podman >/dev/null 2>&1; then
-    echo "podman"; return
-  fi
-  if command -v docker >/dev/null 2>&1; then
-    echo "docker"; return
-  fi
-  err "neither podman nor docker found in PATH"
+# ---------------------------
+# Detect container engine
+# ---------------------------
+if command -v podman >/dev/null 2>&1; then
+  ENGINE="${ORG_ENGINE:-podman}"
+elif command -v docker >/dev/null 2>&1; then
+  ENGINE="${ORG_ENGINE:-docker}"
+else
+  echo "[install][error] neither podman nor docker found in PATH." >&2
   exit 127
-}
+fi
 
-ENGINE="$(detect_engine)"
-IMAGE="${IMAGE_OVERRIDE:-localhost/org-build:debian-12}"
+# ---------------------------
+# Image + build file
+# ---------------------------
+IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
+FILE="${ORG_CONTAINERFILE:-Containerfile}"
 
-note "engine = $ENGINE"
-note "image  = $IMAGE"
-note "file   = $(basename "$FILE")"
+echo "[install] engine = $ENGINE"
+echo "[install] image  = $IMAGE"
+echo "[install] file   = $FILE"
 
-# -----------------------
-# Image presence check
-# -----------------------
-image_exists() {
-  case "$ENGINE" in
-    podman) podman images -q "$IMAGE" 2>/dev/null | grep -q . ;;
-    docker) docker images -q "$IMAGE" 2>/dev/null | grep -q . ;;
-    *) return 1 ;;
-  esac
-}
-
-# -----------------------
-# Build image if needed
-# -----------------------
-if (( REBUILD )) || ! image_exists; then
-  note "building image (this can take a few minutes)…"
-  case "$ENGINE" in
-    podman) podman build -t "$IMAGE" -f "$FILE" "$CONTEXT" ;;
-    docker) docker build -t "$IMAGE" -f "$FILE" "$CONTEXT" ;;
-  esac
-  ok "image built"
+# ---------------------------
+# Build image if missing
+# ---------------------------
+if "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "[install] image already present; skipping build"
 else
-  note "image already present; skipping build (use --rebuild to force)"
+  echo "[install] building image (this can take a while)..."
+  "$ENGINE" build -t "$IMAGE" -f "$FILE" .
+  echo "[install] done. image built"
 fi
 
-# -----------------------
-# Choose install dir for the `org` shim (symlink)
-# -----------------------
-UNAME="$(uname -s || echo unknown)"
-DEFAULT_DIR="/usr/local/bin"
+# ---------------------------
+# Host launcher symlink
+# ---------------------------
+REPO_DIR="$(pwd)"
+SRC="$REPO_DIR/org"
 
-if [[ "$UNAME" == "Darwin" ]]; then
-  # Prefer Homebrew bin if present (Apple Silicon often uses /opt/homebrew/bin)
-  if [[ -d "/opt/homebrew/bin" ]]; then
-    DEFAULT_DIR="/opt/homebrew/bin"
-  fi
+if [ ! -x "$SRC" ]; then
+  echo "[install][error] launcher not found or not executable at: $SRC" >&2
+  echo "  Make sure you're running this from the repo root where 'org' lives." >&2
+  exit 66
 fi
 
-link_into_dir() {
-  local dir="$1"
-  mkdir -p "$dir"
-  ln -sf "$ORG_BIN" "$dir/org"
-}
-
-# Try system-wide first, else fallback to ~/.local/bin
-if link_into_dir "$DEFAULT_DIR" 2>/dev/null; then
-  ok "installed: $DEFAULT_DIR/org -> $ORG_BIN"
+# Prefer a system-wide link, then gracefully fall back to user bin on permission error.
+if ln -sf "$SRC" /usr/local/bin/org 2>/dev/null; then
+  echo "[install] installed: /usr/local/bin/org -> $SRC"
 else
-  warn "cannot write $DEFAULT_DIR (no sudo?): attempting user bin (~/.local/bin)"
-  USER_BIN="$HOME/.local/bin"
-  mkdir -p "$USER_BIN"
-  if link_into_dir "$USER_BIN" 2>/dev/null; then
-    ok "installed: $USER_BIN/org -> $ORG_BIN"
-    # Ensure PATH info is obvious
-    case ":$PATH:" in
-      *":$USER_BIN:"*) ;;
-      *)
-        warn "Your PATH does not include $USER_BIN"
-        printf '%s\n' \
-          "[install] Add this to your shell rc (e.g., ~/.bashrc):" \
-          "  export PATH=\"\$HOME/.local/bin:\$PATH\"" \
-          "Then open a new shell or run:  source ~/.bashrc"
-        ;;
-    esac
-    printf '%s\n' \
-      "[install] If you prefer a system-wide link, run:" \
-      "  sudo ln -sf \"$ORG_BIN\" \"$DEFAULT_DIR/org\""
+  echo "[install][warn] cannot write /usr/local/bin (no sudo?)."
+  echo "[install] installing to user bin: ~/.local/bin"
+
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$SRC" "$HOME/.local/bin/org"
+  echo "[install] installed: $HOME/.local/bin/org -> $SRC"
+
+  # Reassure user + how to use immediately
+  if ! command -v org >/dev/null 2>&1; then
+    echo
+    echo "[install][hint] Your shell may not have \$HOME/.local/bin on PATH yet."
+    echo "  For this shell session, run:"
+    echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+    echo
+    echo "  To make it persistent, add that line to your shell RC (e.g. ~/.bashrc or ~/.zshrc)."
   fi
+
+  echo
+  echo "[install] If you prefer a system-wide link later, run:"
+  echo "  sudo ln -sf \"$SRC\" \"/usr/local/bin/org\""
 fi
 
-# -----------------------
-# Final hint
-# -----------------------
-printf '\n'
-note "Try:"
-printf '  %s\n' "org --ui console --prompt 'say hi'"
-printf '  %s\n' "org --ui tmux    --prompt 'say hi'"
-printf '\n'
-ok "installation complete"
+# ---------------------------
+# Final friendly nudge
+# ---------------------------
+echo
+echo "[install] Try:"
+echo "  org --ui console --prompt 'say hi'"
+echo "  org --ui tmux   --prompt 'say hi'"
+echo
+echo "[install] done. installation complete"
