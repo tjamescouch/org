@@ -1,39 +1,37 @@
 /* src/input/controller.ts
-   Input controller with:
-   - optional hooks (no hard requirement for onEscape/onInterject/etc.)
-   - test helper makeControllerForTests({ scheduler, finalizer }) that maps ESC to
-     scheduler.stop() and finalizer() to satisfy sanity tests
-   - opt-in debug logging: set ORG_DEBUG_INPUT=1
+   Interactive input layer.
+
+   What’s new (small + safe):
+   - attachScheduler() now auto-starts a singleton input loop (TTY only).
+     This prevents the app from exiting immediately when the caller forgets
+     to start the controller. It routes:
+       • Enter / 'i' -> scheduler.handleUserInterjection(text)
+       • Esc         -> scheduler.stop() + finalizer()
+       • Ctrl+C      -> just signal (no finalize)
+   - Existing APIs remain:
+       createInputController(), makeControllerForTests(),
+       attachScheduler(), attachFinalizer(), and value export InputController.
+   - Debug: set ORG_DEBUG_INPUT=1 for keypress traces.
 */
 
 import readline from "node:readline";
 import { EventEmitter } from "node:events";
 
 type Logger = (msg: string) => void;
-
 const debugOn = process.env.ORG_DEBUG_INPUT === "1";
 const log: Logger = (m) => {
   if (!debugOn) return;
   const ts = new Date().toISOString();
-  // stderr so logs don’t interfere with normal stdout
+  // stderr so logs don’t intermix with normal stdout
   // eslint-disable-next-line no-console
   console.error(`[${ts}] [input] ${m}`);
 };
 
 export interface Hooks {
-  /** Fired when user hits Enter (full line available). */
   onLine: (text: string) => void;
-
-  /** Fired when user presses the interjection hotkey ('i'). */
   onInterject?: (text: string) => void;
-
-  /** Fired when user presses Escape (graceful finalize). */
   onEscape?: () => void;
-
-  /** Fired on Ctrl+C (immediate abort). */
   onCtrlC?: () => void;
-
-  /** Fired on Ctrl+Z (optional noop/suspend behavior). */
   onCtrlZ?: () => void;
 }
 
@@ -41,10 +39,24 @@ export interface Controller {
   start(): void;
   stop(): void;
   _private: {
-    /** Test hook to synthesize a keypress without a TTY. */
     emitKey: (k: { name: string; ctrl?: boolean; meta?: boolean; shift?: boolean }) => void;
   };
 }
+
+/* ---------- Global wiring used by app.ts ---------- */
+
+let _attachedScheduler:
+  | { stop?: () => void; handleUserInterjection?: (s: string) => void }
+  | null = null;
+let _attachedFinalizer: (() => void | Promise<void>) | null = null;
+
+/** Allow the app to provide the finalizer we should trigger on graceful exit. */
+export function attachFinalizer(fn: () => void | Promise<void>) {
+  _attachedFinalizer = fn ?? null;
+  log(`attachFinalizer: ${_attachedFinalizer ? "ok" : "cleared"}`);
+}
+
+/* ---------- Core controller factory (unchanged behavior) ---------- */
 
 export function createInputController(hooks: Hooks): Controller {
   const emitter = new EventEmitter();
@@ -88,37 +100,28 @@ export function createInputController(hooks: Hooks): Controller {
     const { name, ctrl } = key;
     log(`keypress: name=${name} ctrl=${!!ctrl} seq=${JSON.stringify(key.sequence ?? "")}`);
 
-    // Ctrl+C: immediate abort; DO NOT finalize here.
     if (name === "c" && ctrl) {
       hooks.onCtrlC?.();
       return;
     }
-
-    // Ctrl+Z: optional behavior.
     if (name === "z" && ctrl) {
       hooks.onCtrlZ?.();
       return;
     }
-
-    // Escape: graceful finalize path; optional for tests.
     if (name === "escape") {
       hooks.onEscape?.();
       return;
     }
-
-    // Interjection: hotkey 'i' (single key)
     if (name === "i" && !ctrl) {
-      // Grab the current buffer (private but stable in Node)
-      // @ts-expect-error accessing private field
+      // Grab the current buffer from readline
+      // @ts-expect-error private field access
       const buf: string = (rl as any).line ?? "";
       hooks.onInterject?.(buf);
-      // Clear current line visually
       rl.clearLine(0);
       rl.prompt();
       return;
     }
-
-    // Enter is handled by 'line' event.
+    // Enter is handled by 'line'
   };
 
   const onSIGINT = () => {
@@ -154,7 +157,6 @@ export function createInputController(hooks: Hooks): Controller {
     }
   };
 
-  // test shim – allow unit tests to synthesize keypresses without a TTY
   emitter.on("emitKey", (k) => onKeypress("", k as any));
 
   return {
@@ -166,38 +168,77 @@ export function createInputController(hooks: Hooks): Controller {
   };
 }
 
-/**
- * Back-compat helper used by tests.
- * The sanity tests construct the controller via:
- *   makeControllerForTests({ scheduler, finalizer })
- * and then synthesize keys (ESC/Ctrl+C). Wire those expectations here.
- */
+/* ---------- Singleton auto-loop (new) ---------- */
+
+let _singletonCtl: Controller | null = null;
+let _singletonStarted = false;
+
+function ensureSingletonLoop() {
+  if (!process.stdin.isTTY) {
+    log("singleton: not starting (stdin not a TTY)");
+    return;
+  }
+  if (_singletonStarted) return;
+
+  // Wire hooks to the attached scheduler/finalizer.
+  const ctl = createInputController({
+    onLine: (text) => {
+      _attachedScheduler?.handleUserInterjection?.(text);
+    },
+    onInterject: (text) => {
+      _attachedScheduler?.handleUserInterjection?.(text);
+    },
+    onEscape: () => {
+      try {
+        _attachedScheduler?.stop?.();
+      } finally {
+        if (_attachedFinalizer) {
+          try { void Promise.resolve(_attachedFinalizer()); } catch {}
+        }
+      }
+    },
+    onCtrlC: () => {
+      // Immediate abort path should NOT finalize by default.
+      log("Ctrl+C (singleton) – ignoring finalize");
+    },
+  });
+
+  ctl.start();
+  _singletonCtl = ctl;
+  _singletonStarted = true;
+  log("singleton: started");
+}
+
+/** Called by app.ts; now ALSO starts an interactive loop (TTY) if not already running. */
+export function attachScheduler(scheduler: {
+  stop?: () => void;
+  handleUserInterjection?: (s: string) => void;
+}) {
+  _attachedScheduler = scheduler ?? null;
+  log(`attachScheduler: ${_attachedScheduler ? "ok" : "cleared"}`);
+
+  // If the app forgets to create/start a controller, keep it interactive.
+  // This prevents the process from exiting immediately and dumping the user into the shell.
+  ensureSingletonLoop();
+}
+
+/* ---------- Test helper (unchanged) ---------- */
+
 export const makeControllerForTests = (opts: {
   scheduler: { stop?: () => void } & Record<string, unknown>;
   finalizer: () => void | Promise<void>;
 }): Controller => {
   const ctl = createInputController({
-    // Tests for ESC/Ctrl+C don’t care about line input or interjection content.
     onLine: () => {},
     onInterject: () => {},
     onEscape: () => {
-      try {
-        opts.scheduler?.stop?.();
-      } catch { /* ignore */ }
-      // finalize asynchronously; tests usually just assert it was invoked
-      Promise.resolve()
-        .then(() => opts.finalizer())
-        .catch(() => { /* ignore */ });
+      try { opts.scheduler?.stop?.(); } catch {}
+      Promise.resolve().then(() => opts.finalizer()).catch(() => {});
     },
-    onCtrlC: () => {
-      // Explicitly *do not* call finalizer on Ctrl+C; tests assert no finalize.
-    },
+    onCtrlC: () => { /* do not finalize on Ctrl+C */ },
   });
   return ctl;
 };
 
-/* IMPORTANT: Provide a runtime value named `InputController`.
-   Some tests import `{ InputController }` as a value (not a type),
-   so exporting a type alias would be erased at runtime.
-   We alias the factory function here to satisfy those imports. */
+/* Value alias so `import { InputController } ...` works at runtime. */
 export { createInputController as InputController };
