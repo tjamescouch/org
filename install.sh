@@ -1,32 +1,87 @@
 #!/usr/bin/env bash
-# install.sh: install org + apply_patch using symlinks so org always points to repo.
+# Unified installer for org
+# - Builds/pulls the container image if needed
+# - Installs a host-side launcher symlink
+# - Prints clear guidance when /usr/local/bin isn't writable
+set -Eeuo pipefail
 
-set -euo pipefail
-ROOTDIR="$(cd "$(dirname "$0")" && pwd)"
+# ---------------------------
+# Detect container engine
+# ---------------------------
+if command -v podman >/dev/null 2>&1; then
+  ENGINE="${ORG_ENGINE:-podman}"
+elif command -v docker >/dev/null 2>&1; then
+  ENGINE="${ORG_ENGINE:-docker}"
+else
+  echo "[install][error] neither podman nor docker found in PATH." >&2
+  exit 127
+fi
 
-# Sanity checks
-[[ -f "$ROOTDIR/org" ]]         || { echo "install.sh: missing ./org" >&2; exit 1; }
-[[ -f "$ROOTDIR/runner.ts" ]]   || { echo "install.sh: missing ./runner.ts" >&2; exit 1; }
-[[ -f "$ROOTDIR/apply_patch" ]] || { echo "install.sh: missing ./apply_patch" >&2; exit 1; }
+# ---------------------------
+# Image + build file
+# ---------------------------
+IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
+FILE="${ORG_CONTAINERFILE:-Containerfile}"
 
-# Make sure scripts are executable
-chmod 0755 "$ROOTDIR/org" || true
-chmod 0755 "$ROOTDIR/apply_patch" || true
+echo "[install] engine = $ENGINE"
+echo "[install] image  = $IMAGE"
+echo "[install] file   = $FILE"
 
-# Install apply_patch (copy)
-sudo install -m 0755 "$ROOTDIR/apply_patch" /usr/local/bin/apply_patch
-echo "[install.sh] Installed apply_patch -> /usr/local/bin/apply_patch"
+# ---------------------------
+# Build image if missing
+# ---------------------------
+if "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "[install] image already present; skipping build"
+else
+  echo "[install] building image (this can take a while)..."
+  "$ENGINE" build -t "$IMAGE" -f "$FILE" .
+  echo "[install] done. image built"
+fi
 
-# Remove any stale org wrapper
-sudo rm -f /usr/local/bin/org
+# ---------------------------
+# Host launcher symlink
+# ---------------------------
+REPO_DIR="$(pwd)"
+SRC="$REPO_DIR/org"
 
-# Install org as a symlink pointing back into the repo
-sudo ln -s "$ROOTDIR/org" /usr/local/bin/org
-echo "[install.sh] Symlinked org -> /usr/local/bin/org -> $ROOTDIR/org"
+if [ ! -x "$SRC" ]; then
+  echo "[install][error] launcher not found or not executable at: $SRC" >&2
+  echo "  Make sure you're running this from the repo root where 'org' lives." >&2
+  exit 66
+fi
 
-git config core.hooksPath .githooks
-echo "git pre commit hook path added"
-chmod +x .githooks/pre-commit
-echo "git pre commit hook made executable"
+# Prefer a system-wide link, then gracefully fall back to user bin on permission error.
+if ln -sf "$SRC" /usr/local/bin/org 2>/dev/null; then
+  echo "[install] installed: /usr/local/bin/org -> $SRC"
+else
+  echo "[install][warn] cannot write /usr/local/bin (no sudo?)."
+  echo "[install] installing to user bin: ~/.local/bin"
 
-echo "[install.sh] Done. Run 'org' from ANY directory; agents operate in that directory."
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$SRC" "$HOME/.local/bin/org"
+  echo "[install] installed: $HOME/.local/bin/org -> $SRC"
+
+  # Reassure user + how to use immediately
+  if ! command -v org >/dev/null 2>&1; then
+    echo
+    echo "[install][hint] Your shell may not have \$HOME/.local/bin on PATH yet."
+    echo "  For this shell session, run:"
+    echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+    echo
+    echo "  To make it persistent, add that line to your shell RC (e.g. ~/.bashrc or ~/.zshrc)."
+  fi
+
+  echo
+  echo "[install] If you prefer a system-wide link later, run:"
+  echo "  sudo ln -sf \"$SRC\" \"/usr/local/bin/org\""
+fi
+
+# ---------------------------
+# Final friendly nudge
+# ---------------------------
+echo
+echo "[install] Try:"
+echo "  org --ui console --prompt 'say hi'"
+echo "  org --ui tmux   --prompt 'say hi'"
+echo
+echo "[install] done. installation complete"
