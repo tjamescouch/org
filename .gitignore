@@ -82,3 +82,13 @@ logs/
 /.org/**/tmux-logs/
 /.org/last.log
 /.org/last-session.patch
+
+# --- org runtime artifacts ---
+.org/logs/
+.org/logs/**           # rotating run logs (and last.log symlink)
+.org/runs/             # per-run artifacts / patches (if you keep them here)
+.org/sandboxes/        # sandbox/cache, if used
+.org/.tmux-inner.sh    # generated inner script used by tmux
+
+# tmux debug logs (in case they ever land in repo root)
+tmux-*.log
