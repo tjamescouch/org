@@ -26,11 +26,11 @@ async function doLaunch(opts: Required<TmuxLaunchOpts>): Promise<number> {
   });
   Logger.info("[org/tmux] tmux check (interactive rc)", { code: check.code });
 
-  if (check.code !== 0) {
-    throw new Error(
-      "tmux not found in the sandbox image. Please add tmux to the image used for the sandbox."
-    );
-  }
+  //if (check.code !== 0) {
+  //  throw new Error(
+  //    "tmux not found in the sandbox image. Please add tmux to the image used for the sandbox."
+  //  );
+  //}
 
   // Make a writable logs dir for tmux under /work
   const tmuxLogsDirHost = path.join(projectDir, ".org", "logs", "tmux-logs");
@@ -39,7 +39,7 @@ async function doLaunch(opts: Required<TmuxLaunchOpts>): Promise<number> {
   // tmux runs inside the sandbox; app runs in console mode within the session
   const tmuxCmd =
     `TMUX_TMPDIR=/work/.org/logs/tmux-logs ` +
-    `tmux -vv new-session -A -s org 'bun ${entry} --ui console'`;
+    `/usr/bin/tmux -vv new-session -A -s org 'bun ${entry} --ui console'`;
 
   Logger.info("[org/tmux] exec", { cmd: tmuxCmd });
 
