@@ -1,168 +1,131 @@
 #!/usr/bin/env bash
-# Robust org launcher (macOS/Linux, Bash 3.2+)
-# Exit codes: 66 = entrypoint not found; 127 = runtime missing.
+# org launcher (macOS/Linux, Bash 3.2+)
+# Exit codes: 66 = not found; 127 = runtime missing
 set -euo pipefail
 
-# -------------------
-# Debug logging
-# -------------------
 DBG="${ORG_DEBUG:-${DEBUG:-0}}"
-log() { [ "$DBG" = "1" ] && printf '[org.sh] %s\n' "$*" >&2 || true; }
-err() { printf 'org: %s\n' "$*" >&2; }
+log() { [ "$DBG" = "1" ] && printf '[org.sh] %s\n' "$*" >&2; }
 
-# -------------------
-# Resolve script/app path
-# -------------------
+# -----------------------------------------------------------------------------
+# Resolve script/appdir
+# -----------------------------------------------------------------------------
 SCRIPT="${BASH_SOURCE[0]:-$0}"
 while [ -L "$SCRIPT" ]; do
   L="$(readlink "$SCRIPT")"
-  case "$L" in
-    /*) SCRIPT="$L" ;;
-    *)  SCRIPT="$(cd "$(dirname "$SCRIPT")" && cd "$(dirname "$L")" && pwd)/$(basename "$L")" ;;
-  esac
+  case "$L" in /*) SCRIPT="$L" ;; *) SCRIPT="$(cd "$(dirname "$SCRIPT")" && cd "$(dirname "$L")" && pwd)/$(basename "$L")" ;; esac
 done
-APPDIR="$(cd "$(dirname "$SCRIPT")" && pwd)"   # repo/.org (where this script lives)
+APPDIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
 log "script=$SCRIPT"
 log "appdir=$APPDIR"
 
-# -------------------
-# Parse a few flags
-#   -C/--cwd <dir>  (cd there before run)
-#   --ui console|tmux
-#   everything else is forwarded to the app
-# -------------------
-UI="console"
-CWD=""
+# -----------------------------------------------------------------------------
+# Parse args (only care about --ui, pass everything else through)
+# -----------------------------------------------------------------------------
+UI=""
 args=()
-while [ $# -gt 0 ]; do
+while (($#)); do
   case "$1" in
-    -C|--cwd) shift; CWD="${1:-}"; shift || true ;;
-    --ui) shift; UI="${1:-console}"; shift || true ;;
-    --ui=*) UI="${1#*=}"; shift ;;
-    *) args+=("$1"); shift ;;
+    --ui)      UI="${2:-}"; shift 2;;
+    --ui=*)    UI="${1#*=}"; shift;;
+    -C|--cwd)  # legacy compatibility; change cwd before anything else
+               shift; cd "${1:-.}" 2>/dev/null || { echo "org: cwd not found: $1" >&2; exit 66; }
+               shift;;
+    *)         args+=("$1"); shift;;
   esac
 done
+set -- "${args[@]}"
 
-if [ -n "$CWD" ]; then
-  log "cd -> $CWD"
-  cd "$CWD" 2>/dev/null || { err "cwd not found: $CWD"; exit 66; }
+# Default UI if not set
+UI="${UI:-${ORG_FORCE_UI:-console}}"
+log "ui=$UI"
+
+# -----------------------------------------------------------------------------
+# Detect project root (repo toplevel), default to current dir
+# -----------------------------------------------------------------------------
+if git -C "$PWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  PROJ="$(git -C "$PWD" rev-parse --show-toplevel)"
+else
+  PROJ="$PWD"
 fi
+export ORG_CALLER_CWD="$PROJ"
+log "project=$ORG_CALLER_CWD"
 
-# -------------------
-# Find entrypoint
-# -------------------
-ENTRY="$APPDIR/src/app.ts"
-if [ ! -f "$ENTRY" ]; then
-  err "entrypoint not found: $ENTRY"
-  exit 66
+# -----------------------------------------------------------------------------
+# Prepare logs BEFORE launching anything else
+# -----------------------------------------------------------------------------
+LOG_DIR="${ORG_LOG_DIR:-"$ORG_CALLER_CWD/.org/logs"}"
+mkdir -p "$LOG_DIR"
+LOG_FILE="${ORG_LOG_FILE:-"$LOG_DIR/run-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"}"
+export ORG_LOG_DIR="$LOG_DIR" ORG_LOG_FILE="$LOG_FILE"
+ln -sf "$(basename "$LOG_FILE")" "$LOG_DIR/last.log" 2>/dev/null || true
+
+# Write a preflight line so you always have *something* in the log even if Bun crashes immediately
+printf '[org.sh] preflight %s\n' "$(date -u +%FT%TZ)" | tee -a "$LOG_FILE" >/dev/null
+log "log_dir=$LOG_DIR"
+log "log_file=$LOG_FILE"
+
+# -----------------------------------------------------------------------------
+# Find entrypoint (keep your existing search order)
+# -----------------------------------------------------------------------------
+ENTRY="${ORG_ENTRY:-}"
+if [ -z "$ENTRY" ]; then
+  for p in \
+    "$APPDIR/src/app.ts" \
+    "$APPDIR/runner.ts" \
+    "$APPDIR/runner.mts" \
+    "$APPDIR/runner.js" \
+    "$APPDIR/dist/runner.js"
+  do
+    [ -f "$p" ] && { ENTRY="$p"; break; }
+  done
 fi
-if [ "$DBG" = "1" ]; then
-  ls -l "$ENTRY" >&2 || true
-  head -n 1 "$ENTRY" >&2 || true
-fi
+[ -n "$ENTRY" ] || { echo "org: entrypoint not found near $APPDIR" | tee -a "$LOG_FILE" >&2; exit 66; }
+log "entry=$ENTRY"
 
-# -------------------
-# Container settings (override via env if needed)
-# -------------------
-ORG_ENGINE="${ORG_ENGINE:-podman}"
-ORG_IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
-log "engine=$ORG_ENGINE image=$ORG_IMAGE"
+# -----------------------------------------------------------------------------
+# Runtimes / image defaults
+# -----------------------------------------------------------------------------
+ENGINE="${ORG_ENGINE:-podman}"
+IMAGE="${ORG_DEV_IMAGE:-localhost/org-build:debian-12}"
 
-# -------------------
-# Host console runner
-# -------------------
+# -----------------------------------------------------------------------------
+# Console path: run Bun and tee everything into the log (captures early runtime errors)
+# -----------------------------------------------------------------------------
 run_console() {
-  log "ui=console"
-  # Set logging env so the app writes files
-  mkdir -p "$APPDIR/logs" || true
-  export ORG_APPDIR="$APPDIR"
-  export ORG_CALLER_CWD="$PWD"
-  export ORG_LOG_DIR="${ORG_LOG_DIR:-$APPDIR/logs}"
-  export ORG_LOG_FILE="${ORG_LOG_FILE:-$ORG_LOG_DIR/run-$(date -u +%Y-%m-%dT%H-%M-%S.%3NZ).log}"
-  export ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}"
-
-  if command -v bun >/dev/null 2>&1; then
-    log "exec: bun \"$ENTRY\" ${args[*]}"
-    exec bun "$ENTRY" "${args[@]}"
-  fi
-  if command -v node >/dev/null 2>&1; then
-    if command -v npx >/dev/null 2>&1; then
-      log "exec: npx --yes tsx \"$ENTRY\" ${args[*]}"
-      exec npx --yes tsx "$ENTRY" "${args[@]}"
-    fi
-    err "Node found but tsx is missing. Install tsx (npm i -g tsx) or install Bun."
-    exit 127
-  fi
-  err "neither Bun nor Node runtime found in PATH."
-  exit 127
+  log "exec (console): bun \"$ENTRY\" $*"
+  # Use bash -lc so $PATH/etc is normal; tee early to capture Bun startup failures too.
+  exec bash -lc 'bun "'"$ENTRY"'" '"$*" 2>&1' | tee -a "'"$LOG_FILE"'"'
 }
 
-# -------------------
-# Container tmux runner
-# -------------------
-run_tmux_in_container() {
-  log "ui=tmux"
-  local CTR_APPDIR="/work/.org"         # where your repo/.org is mounted in the container
-  local CTR_WORK="/work"                # container working directory for the app
-  local CTR_ENTRY="$CTR_APPDIR/src/app.ts"
-  local SRC="$APPDIR"
-  local MNT="$SRC:$CTR_APPDIR:Z"
+# -----------------------------------------------------------------------------
+# Tmux path: run in a container; inside we still tee to the same file
+# -----------------------------------------------------------------------------
+run_tmux() {
+  log "engine=$ENGINE image=$IMAGE"
+  # Mount project root into /work/.org so logs/patches are project-scoped
+  # We keep ORG_FORCE_UI=console inside tmux so the app uses the console UI inside the pane.
+  # We mkdir/log inside the container too (belt-and-braces).
+  TMUX_CMD=$'tmux new -A -s org bash -lc '\
+$'\'mkdir -p "$ORG_LOG_DIR"; '\
+$'echo "[tmux] starting $(date -u +%FT%TZ)" | tee -a "$ORG_LOG_FILE"; '\
+$'bun "$ENTRY" '"$*" 2>&1 $'| tee -a "$ORG_LOG_FILE"\' 
 
-  # Host-side log path (mirrors inside)
-  mkdir -p "$APPDIR/logs" || true
-  local LOG_DIR_HOST="$APPDIR/logs"
-  local LOG_FILE_HOST="$LOG_DIR_HOST/tmux-$(date -u +%Y-%m-%dT%H-%M-%S.%3NZ).log"
-
-  # Env passed into the app inside the container
-  local ENV_BLOCK=""
-  ENV_BLOCK+="ORG_TMUX=1 "
-  ENV_BLOCK+="ORG_FORCE_UI=console "     # run console UI *inside* tmux
-  ENV_BLOCK+="ORG_APPDIR=$CTR_APPDIR "
-  ENV_BLOCK+="ORG_CALLER_CWD=$CTR_WORK "
-  ENV_BLOCK+="ORG_LOG_DIR=$CTR_APPDIR/logs "
-  ENV_BLOCK+="ORG_LOG_FILE=$CTR_APPDIR/logs/$(basename "$LOG_FILE_HOST") "
-  ENV_BLOCK+="ORG_LOG_LEVEL=${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}} "
-
-  # The actual app command the tmux session will run.
-  # - make sure the log dir exists
-  # - print where logs go
-  # - pipe all output through tee so you get logs even if the app fails before logger starts
-  local INSIDE_CMD
-  INSIDE_CMD="mkdir -p \"$CTR_APPDIR/logs\"; \
-echo \"[tmux] log -> \$ORG_LOG_FILE\"; \
-set -o pipefail; \
-bun \"$CTR_ENTRY\" --ui console $(printf ' %q' "${args[@]}") |& tee -a \"\$ORG_LOG_FILE\""
-
-  # Build final inner invocation (run under bash -lc)
-  local FINAL_INNER
-  FINAL_INNER="env $ENV_BLOCK tmux new -A -s org bash -lc $(printf '%q' "$INSIDE_CMD")"
-  log "tmux inner: $FINAL_INNER"
-
-  # Optional: preflight to catch missing tools early
-  local PROBE=( "$ORG_ENGINE" run --rm --network host -v "$MNT" -w "$CTR_WORK" "$ORG_IMAGE" \
-                bash -lc 'command -v tmux >/dev/null && command -v bun >/dev/null && test -f /work/.org/src/app.ts && echo probe_ok || exit 101' )
-  if ! "${PROBE[@]}" >/dev/null 2>&1; then
-    err "container preflight failed: tmux/bun/entry not OK"
-    "$ORG_ENGINE" run --rm --network host -v "$MNT" -w "$CTR_WORK" "$ORG_IMAGE" bash -lc '\
-echo \"tmux:\" $(command -v tmux || echo missing); tmux -V || true; \
-echo \"bun:\"  $(command -v bun  || echo missing); bun --version || true; \
-echo \"entry exists?\"; ls -l /work/.org/src/app.ts || true' >&2
-    exit 1
-  fi
-
-  # Final run
-  exec "$ORG_ENGINE" run --rm -it --network host \
-      -v "$MNT" \
-      -w "$CTR_WORK" \
-      "$ORG_IMAGE" \
-      bash -lc "$FINAL_INNER"
+  exec "$ENGINE" run --rm --network host \
+    -v "$ORG_CALLER_CWD":/work/.org:Z \
+    -e ORG_TMUX=1 \
+    -e ORG_FORCE_UI=console \
+    -e ORG_APPDIR=/work/.org \
+    -e ORG_CALLER_CWD=/work/.org \
+    -e ORG_LOG_DIR \
+    -e ORG_LOG_FILE \
+    -e ORG_LOG_LEVEL \
+    "$IMAGE" bash -lc "$TMUX_CMD"
 }
 
-# -------------------
+# -----------------------------------------------------------------------------
 # Dispatch
-# -------------------
+# -----------------------------------------------------------------------------
 case "$UI" in
-  tmux)    run_tmux_in_container ;;
-  ""|console) run_console ;;
-  *)       err "unknown --ui value: $UI"; exit 2 ;;
+  tmux)    run_tmux "$@" ;;
+  console|*) run_console "$@" ;;
 esac
