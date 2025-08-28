@@ -1,11 +1,12 @@
 // src/input/controller.ts
 // Sole owner of TTY input in raw mode, driven by a small FSM.
-// This revision adds:
-//  - Stream-aware interject: defer 'You:' until output is quiet (prevents mid-stream overlay)
-//  - No echo of agent content in askUser() (UI already prints it) -> removes duplication
-//  - Fresh-line banner before 'You:' to avoid right-edge INFO collision
-//  - Robust handling for ESC / Ctrl+C / Ctrl+Z
-//  - Test helper API preserved
+//
+// Goals of this revision:
+//  - Make interjection ('i') reliable and immediate.
+//  - Ensure the 'You: ' banner is printed on a clean line (no "…INFO" collisions).
+//  - Mark UI as busy during the prompt so console output (heartbeats / fills) won't
+//    trample the input line (best-effort via R.setUIBusy | R.uiBusy | R.UIBusy).
+//  - Keep graceful ESC, fast Ctrl+C (real runs), Ctrl+Z suspend, and the test helper API.
 
 import { R } from "../runtime/runtime";
 import { Logger } from "../logger";
@@ -19,10 +20,9 @@ export interface InputControllerOptions {
   interjectKey?: string;          // default: 'i'
   interjectBanner?: string;       // default: 'You: '
   finalizer?: () => Promise<void> | void;
-  exitOnEsc?: boolean;            // default: true
+  exitOnEsc?: boolean;            // print trailing newline after finalize. default: true
   fastExitOnCtrlC?: boolean;      // default: true (real runs), false in tests
   suspendOnCtrlZ?: boolean;       // default: true (real runs), false in tests
-  quietInterjectMs?: number;      // default: 260ms (real runs), 0 in tests
 }
 
 export class InputController {
@@ -35,14 +35,12 @@ export class InputController {
   private fsm: InputFSM;
   private rawWasOn = false;
   private keyDebug = false;
+
+  // when an agent asks @@user a question
   private pendingResolve: ((s: string) => void) | null = null;
 
-  // Output quiet detection
-  private lastStdoutWriteMs = Date.now();
+  // simple "are we at BOL?" tracking for newline hygiene
   private lastWriteEndedWithNewline = true;
-  private originalStdoutWrite: ((chunk: any, ...rest: any[]) => any) | null = null;
-  private deferInterject = false;
-  private deferTimer: NodeJS.Timeout | null = null;
 
   // ---- static hooks (used by tty-guard etc.) ----
   private static _active: InputController | null = null;
@@ -60,7 +58,10 @@ export class InputController {
   static enableKeys() { this._active?._attachKeys(); }
 
   constructor(opts: InputControllerOptions = {}) {
-    const isTest = R.env.BUN_TESTING === "1" || R.env.JEST_WORKER_ID != null || R.env.ORG_TEST === "1";
+    const isTest =
+      R.env.BUN_TESTING === "1" ||
+      R.env.JEST_WORKER_ID != null ||
+      R.env.ORG_TEST === "1";
 
     this.opts = {
       interjectKey: opts.interjectKey ?? "i",
@@ -69,39 +70,36 @@ export class InputController {
       exitOnEsc: opts.exitOnEsc ?? true,
       fastExitOnCtrlC: opts.fastExitOnCtrlC ?? !isTest,
       suspendOnCtrlZ: opts.suspendOnCtrlZ ?? !isTest,
-      quietInterjectMs: opts.quietInterjectMs ?? (isTest ? 0 : (Number(R.env.ORG_QUIET_INTERJECT_MS) || 260)),
     };
 
     this.keyDebug = (R.env.ORG_KEY_DEBUG === "1" || R.env.DEBUG === "1");
 
-    // Wrap stdout.write to track "quiet" intervals and newline state.
+    // Track newline hygiene by wrapping stdout.write lightly.
     try {
       const out: any = R.stdout as any;
-      this.originalStdoutWrite = out.write.bind(out);
+      const orig = out.write.bind(out);
       out.write = (chunk: any, ...rest: any[]) => {
         const s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
-        this.lastStdoutWriteMs = Date.now();
         if (s.length) this.lastWriteEndedWithNewline = /\n$/.test(s);
-        return this.originalStdoutWrite!(chunk, ...rest);
+        return orig(chunk, ...rest);
       };
     } catch { /* ignore */ }
 
     // Wire FSM to IO + hooks
     this.fsm = new InputFSM(
       {
-        write: (s: string) => { this.writeFromFSM(s); },
+        write: (s: string) => this.writeFromFSM(s),
         bell:  () => { try { R.stdout.write("\x07"); } catch {} },
       },
       {
         banner: this.opts.interjectBanner,
         interjectKey: this.opts.interjectKey,
         onSubmit: (text) => this.submitText(text),
-        onCancel:  () => { /* no-op */ },
+        onCancel:  () => this.setUIBusy(false),     // leaving prompt
         onEscapeIdle: () => this.handleEscapeIdle(),
       }
     );
 
-    // Become sole stdin owner
     InputController._active = this;
     this._attachKeys();
 
@@ -124,7 +122,7 @@ export class InputController {
   }
 
   // Used by scheduler when an agent explicitly asks @@user.
-  // NOTE: do NOT echo 'content' here; the UI prints it already.
+  // IMPORTANT: do NOT echo 'content' here — the UI already prints it.
   async askUser(_fromAgent: string, _content: string): Promise<string> {
     return await this.promptOnce();
   }
@@ -174,45 +172,14 @@ export class InputController {
       try { R.stderr.write(`[key] ${JSON.stringify(ev)}\n`); } catch {}
     }
 
-    // Stream-aware interject: defer showing the prompt while output is "hot"
+    // Interjection hotkey: open immediately, not mid-stream messy
     if (ev && ev.type === "char" && ev.data === this.opts.interjectKey && !this.pendingResolve) {
-      const quiet = Date.now() - this.lastStdoutWriteMs >= this.opts.quietInterjectMs;
-      if (!quiet) {
-        Logger.debug("[input] interject queued until stream is quiet");
-        this.deferInterject = true;
-        this.armDeferTimer();
-        return; // don't open prompt yet
-      }
-      // else fall-through to open immediately
+      this.openInterjectNow();
+      return;
     }
 
     this.fsm.handle(ev);
   };
-
-  private armDeferTimer() {
-    if (this.deferTimer) return;
-    this.deferTimer = setInterval(() => {
-      if (!this.deferInterject) { this.clearDeferTimer(); return; }
-      const quiet = Date.now() - this.lastStdoutWriteMs >= this.opts.quietInterjectMs;
-      if (quiet && !this.pendingResolve) {
-        this.deferInterject = false;
-        this.clearDeferTimer();
-        this.openInterjectNow();
-      }
-    }, 50);
-  }
-  private clearDeferTimer() {
-    if (this.deferTimer) { clearInterval(this.deferTimer); this.deferTimer = null; }
-  }
-
-  private openInterjectNow() {
-    // Ensure the banner starts on a fresh line to avoid "...INFO" collisions.
-    if (!this.lastWriteEndedWithNewline) {
-      try { R.stdout.write("\n"); } catch {}
-      this.lastWriteEndedWithNewline = true;
-    }
-    this.fsm.handle({ type: "char", data: this.opts.interjectKey });
-  }
 
   private _attachKeys() {
     this.enableRaw();
@@ -261,6 +228,7 @@ export class InputController {
       }
       if (this.opts.exitOnEsc) {
         try { R.stdout.write("\n"); } catch {}
+        this.lastWriteEndedWithNewline = true;
       }
     }
   }
@@ -278,6 +246,7 @@ export class InputController {
         this.pendingResolve = null;
         const out = (s ?? "");
         Logger.debug(`[input] prompt resolved (${out.length} chars)`);
+        this.setUIBusy(false); // leaving prompt
         resolve(out);
       };
       // Open prompt immediately here (explicit ask by agent).
@@ -292,7 +261,8 @@ export class InputController {
     if (hadPrompt) {
       const resolve = this.pendingResolve; this.pendingResolve = null;
       try { resolve!(text); } catch {}
-      return; // do NOT also forward to scheduler
+      // do NOT also forward to scheduler
+      return;
     }
 
     // Background interjection / kickoff
@@ -306,14 +276,41 @@ export class InputController {
     }
   }
 
+  // --- helpers ---------------------------------------------------------------
+
+  private setUIBusy(b: boolean) {
+    try {
+      const anyR = R as any;
+      if (typeof anyR.setUIBusy === "function") { anyR.setUIBusy(b); return; }
+      if ("uiBusy" in anyR) { anyR.uiBusy = b; return; }
+      (anyR as any).UIBusy = b; // best-effort
+    } catch { /* ignore */ }
+  }
+
+  private openInterjectNow() {
+    // Mark UI busy so heartbeat/fills won't clobber the prompt.
+    this.setUIBusy(true);
+
+    // Make sure the banner starts on a fresh line (avoid trailing '...INFO')
+    if (!this.lastWriteEndedWithNewline) {
+      try { R.stdout.write("\n"); } catch {}
+      this.lastWriteEndedWithNewline = true;
+    }
+
+    // Drive FSM as if user hit the configured hotkey.
+    this.fsm.handle({ type: "char", data: this.opts.interjectKey });
+  }
+
   private writeFromFSM(s: string) {
-    // If the FSM is printing the banner and we're mid-line, force a newline first.
+    // If the FSM is printing the banner, force a newline first.
     const isBanner = s === this.opts.interjectBanner || s.endsWith(this.opts.interjectBanner);
     if (isBanner && !this.lastWriteEndedWithNewline) {
       try { R.stdout.write("\n"); } catch {}
       this.lastWriteEndedWithNewline = true;
     }
     try { R.stdout.write(s); } catch {}
+    // Maintain newline hygiene for subsequent writes
+    if (s.length) this.lastWriteEndedWithNewline = /\n$/.test(s);
   }
 
   private pickSubmitFn(s: any): { fn: SubmitFn | null; name: string | null } {
@@ -376,9 +373,8 @@ export function makeControllerForTests(
   const { scheduler, ...rest } = opts as any;
   const ctrl = new InputController({
     ...rest,
-    fastExitOnCtrlC: false,   // tests: don't terminate process
+    fastExitOnCtrlC: false, // tests must not exit
     suspendOnCtrlZ: false,
-    quietInterjectMs: 0,      // tests: show banner immediately
   });
   if (scheduler) ctrl.attachScheduler(scheduler);
 
