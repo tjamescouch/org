@@ -1,29 +1,84 @@
+# -----------------------------
+# Editors & OS junk
+# -----------------------------
+*~
 *.swp
 *.swo
-*.pem
-build
-workspace
-node_modules
-typecheck.txt
 .DS_Store
-bin
-build
+Thumbs.db
+
+# -----------------------------
+# Node/Bun / JS tool caches
+# -----------------------------
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+coverage/
+.nyc_output/
+.eslintcache
+*.tsbuildinfo
+
+# -----------------------------
+# Build artifacts
+# -----------------------------
+build/
+dist/
+workspace/
+bin/
+
+# -----------------------------
+# Misc data/backup artifacts
+# -----------------------------
 *.dat
 *.bin
 *.bak
 *.bak2
 *.bak3
 *.bak.*
-*.o
+
+# -----------------------------
+# Project-specific one-offs
+# -----------------------------
+typecheck.txt
 openai-patch.sh
 patch-debug.sh
-logs
 patch.sh
 patch.py
-
-
 cchat_client
 cchat_server
-
 transcript.txt
-.org
+
+# If you still generate top-level logs/, ignore it
+logs/
+
+# =============================
+# .org folder policy
+# =============================
+# Track the directory itself
+!/.org/
+
+# Ignore everything inside by default
+/.org/*
+
+# Keep launcher code and any static assets you want to ship
+!/.org/launcher/
+!/.org/launcher/**
+
+# Optionally keep docs/config in .org
+!/.org/*.md
+!/.org/*.json
+!/.org/*.example
+!/.org/*.sample
+
+# If you keep helper scripts in .org, allow them:
+!/.org/*.sh
+
+# Ignore runtime artifacts under .org
+/.org/logs/
+/.org/runs/
+/.org/tmp/
+/.org/sandboxes/
+/.org/**/tmux-logs/
+/.org/last.log
+/.org/last-session.patch
