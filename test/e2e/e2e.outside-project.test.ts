@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initRepo, sh, lastRunDir, readFileSafe } from "./_helpers";
+import { initRepo, sh, lastRunDir, readFileSafe } from "../_helpers";
 
 describe.skip("e2e: running from outside the repo with -C", () => {
   let repo = "";

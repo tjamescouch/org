@@ -4,7 +4,7 @@ import { writeFileSync } from "fs";
 import { execFileSync } from "child_process";
 import { join } from "path";
 import { tmpdir } from "os";
-import { runOrgWithKeys } from "./helpers/run-org-with-keys";
+import { runOrgWithKeys } from "../helpers/run-org-with-keys";
 
 function mkRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "org-interject-"));

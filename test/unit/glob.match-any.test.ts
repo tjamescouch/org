@@ -2,7 +2,7 @@
 import { describe, it, expect } from "bun:test";
 
 // Adjust import path to wherever your helpers live:
-import { globToRegExp, matchAny } from "../src/sandbox/glob";
+import { globToRegExp, matchAny } from "../../src/sandbox/glob";
 
 describe("globToRegExp + matchAny", () => {
   it("`**/*` matches nested but NOT top-level; `*` matches top-level", () => {

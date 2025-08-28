@@ -4,7 +4,7 @@ import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { execFileSync } from "child_process";
-import { runOrgWithKeys } from "./helpers/run-org-with-keys";
+import { runOrgWithKeys } from "../helpers/run-org-with-keys";
 
 // Create a tiny git repo that `org` can work inside
 function mkRepo(): string {
