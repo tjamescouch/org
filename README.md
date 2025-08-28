@@ -57,3 +57,8 @@ See [INSTALLATION.md](docs/INSTALLATION.md) for complete setup instructions.
 ## License
 
 MIT
+
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/1bb9a0ec-bd45-45eb-864e-10340d2c9286" />
+
+
+
