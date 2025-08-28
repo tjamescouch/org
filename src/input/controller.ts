@@ -1,16 +1,12 @@
 // src/input/controller.ts
 // Sole owner of TTY input in raw mode, driven by a small FSM.
 //
-// Fixes (tight):
-//  - ESC is handled once (no double-press).
-//  - Interject ('i') works regardless of decodeKey's event shape.
-//  - While prompting, set UIBusy=true and draw on a clean line (no '... INFO' tail).
-//  - Never show 'You: .........' — we clear-to-EOL before banner.
+// Focused change: remove the ugly right-edge `... INFO` lines.
+// We wrap stdout.write and DROP any line that is purely filler + `INFO`
+// (optionally starting with "You:"). Everything else passes through.
 //
-// Preserved:
-//  - Ctrl+C: fast exit in real runs (no finalize), disabled in tests.
-//  - Ctrl+Z: suspend; raw-mode re-armed on SIGCONT.
-//  - No double-delivery: prompt submission resolves OR background submit, never both.
+// Preserved: ESC finalize (once), interject hotkey, Ctrl+C fast exit in real runs,
+// Ctrl+Z suspend with raw-mode rearm, no double-delivery of user input.
 
 import { R } from "../runtime/runtime";
 import { Logger } from "../logger";
@@ -45,8 +41,12 @@ export class InputController {
   // ESC once guard
   private escInProgress = false;
 
+  // --- constructor -----------------------------------------------------------
   constructor(opts: InputControllerOptions = {}) {
-    const isTest = R.env.BUN_TESTING === "1" || R.env.JEST_WORKER_ID != null || R.env.ORG_TEST === "1";
+    const isTest =
+      R.env.BUN_TESTING === "1" ||
+      R.env.JEST_WORKER_ID != null ||
+      R.env.ORG_TEST === "1";
 
     this.opts = {
       interjectKey: opts.interjectKey ?? "i",
@@ -59,6 +59,10 @@ export class InputController {
 
     this.keyDebug = (R.env.ORG_KEY_DEBUG === "1" || R.env.DEBUG === "1");
 
+    // Install a very narrow stdout filter: drop "filler + INFO" lines.
+    this.installRightInfoFilter();
+
+    // Wire FSM
     this.fsm = new InputFSM(
       {
         write: (s: string) => { try { R.stdout.write(s); } catch {} },
@@ -84,7 +88,7 @@ export class InputController {
     } catch { /* ignore */ }
   }
 
-  // ---------- public API ----------
+  // --- public API ------------------------------------------------------------
   attachScheduler(s: any) {
     this.scheduler = s;
     const pick = this.pickSubmitFn(s);
@@ -106,7 +110,7 @@ export class InputController {
     }
   }
 
-  // ---------- stdin wiring ----------
+  // --- stdin wiring ----------------------------------------------------------
   private onData = (chunk: Buffer) => {
     const s = chunk.toString("utf8");
 
@@ -128,7 +132,7 @@ export class InputController {
       return;
     }
 
-    // ESC: graceful finalize (once)
+    // ESC graceful stop (once)
     if (s === "\x1B" && !this.pendingResolve) {
       if (!this.escInProgress) {
         this.escInProgress = true;
@@ -176,7 +180,7 @@ export class InputController {
     }
   }
 
-  // ---------- behaviors ----------
+  // --- behaviors -------------------------------------------------------------
   private async handleEscapeIdle() {
     try {
       const s = this.scheduler;
@@ -202,7 +206,7 @@ export class InputController {
     return await new Promise<string>((resolve) => {
       this.pendingResolve = (s: string) => {
         this.pendingResolve = null;
-        this.setUIBusy(false);           // leave prompt: allow fills again
+        this.setUIBusy(false);      // leave prompt
         const out = (s ?? "");
         Logger.debug(`[input] prompt resolved (${out.length} chars)`);
         resolve(out);
@@ -217,12 +221,11 @@ export class InputController {
 
     if (hadPrompt) {
       const resolve = this.pendingResolve; this.pendingResolve = null;
-      this.setUIBusy(false);             // leave prompt
+      this.setUIBusy(false);
       try { resolve!(text); } catch {}
-      return;                            // do NOT also forward to scheduler
+      return; // do NOT also forward to scheduler
     }
 
-    // background interjection / kickoff
     if (text && this.scheduler && this.submitting) {
       Logger.debug(`[input] background submit via ${this.submittingName}: ${JSON.stringify(text)}`);
       try { this.submitting(text); } catch (e: any) {
@@ -233,7 +236,7 @@ export class InputController {
     }
   }
 
-  // ---------- helpers ----------
+  // --- helpers ---------------------------------------------------------------
   private setUIBusy(b: boolean) {
     try {
       const anyR = R as any;
@@ -245,9 +248,8 @@ export class InputController {
 
   private openInterjectNow() {
     this.setUIBusy(true);                 // pause dotted fills
-    // Clean current line (avoid 'You:' + trailing INFO)
+    // Clean line: CR + clear-to-EOL
     try { R.stdout.write("\r\x1b[K"); } catch {}
-    // Drive FSM as if the hotkey was pressed (this opens the prompt).
     this.fsm.handle({ type: "char", data: this.opts.interjectKey });
   }
 
@@ -271,23 +273,80 @@ export class InputController {
     return { fn: null, name: null };
   }
 
-  // ---- static for tty-guard ----
-  private static _active: InputController | null = null;
-  static disableKeys() { this._active?._detachKeys(); }
-  static enableKeys() { this._active?._attachKeys(); }
-  private _detachKeys() { try { R.stdin.off?.("data", this.onData); } catch {}; this.disableRaw(); }
+  // --- stdout filter ---------------------------------------------------------
+  private installRightInfoFilter() {
+    try {
+      const out: any = R.stdout as any;
+      const orig = out.write.bind(out);
+
+      out.write = (chunk: any, ...rest: any[]) => {
+        try {
+          const s =
+            typeof chunk === "string"
+              ? chunk
+              : Buffer.isBuffer(chunk)
+              ? chunk.toString("utf8")
+              : String(chunk ?? "");
+
+          if (s.indexOf("\n") === -1) {
+            // no newline -> pass through (avoid buffering streaming tokens)
+            return orig(chunk, ...rest);
+          }
+
+          // Process line-by-line and drop only pure filler+INFO lines.
+          let changed = false;
+          const parts = s.split(/\n/);
+          for (let i = 0; i < parts.length - 1; i++) { // full lines
+            const line = parts[i];
+            const stripped = stripAnsi(line);
+            if (isRightEdgeInfoFiller(stripped)) {
+              parts[i] = ""; // drop line
+              changed = true;
+            }
+          }
+          const rebuilt = parts.join("\n");
+          if (changed) {
+            return orig(rebuilt, ...rest);
+          }
+        } catch {
+          // fall through
+        }
+        return orig(chunk, ...rest);
+      };
+    } catch { /* ignore */ }
+  }
 }
 
 // Normalize interject hotkey detection across decodeKey shapes.
 function isInterjectHotkey(ev: any, key: string): boolean {
   if (!ev) return false;
-  // shape A (preferred): { type: 'char', data: 'i' }
   if (ev.type === "char" && ev.data === key) return true;
-  // shape B: { name: 'i', ctrl?: false, meta?: false }
   if (ev.name === key && !ev.ctrl && !ev.meta) return true;
-  // shape C: { key?: { name: 'i' } }  (some key decoders)
   if (ev.key && ev.key.name === key && !ev.key.ctrl && !ev.key.meta) return true;
   return false;
+}
+
+// --- helpers for the stdout filter ------------------------------------------
+
+/** Strip ANSI SGR/control sequences. */
+function stripAnsi(s: string): string {
+  return s.replace(/\x1B\[[0-9;]*[A-Za-z]/g, "");
+}
+
+/**
+ * Return true if the *entire* line is just filler + "INFO" (optionally "You:" prefix).
+ * Examples that will be dropped:
+ *   "........................................INFO"
+ *   "You: ................................. INFO"
+ *   "                                     INFO"
+ */
+function isRightEdgeInfoFiller(strippedLine: string): boolean {
+  const line = strippedLine.trimEnd(); // keep left spaces
+  if (!line.endsWith("INFO")) return false;
+  const body = line.slice(0, -4); // remove trailing "INFO"
+  const noYou = body.replace(/^You:\s*/i, "");
+  // purely filler (dots/spaces/box-drawing etc.)?
+  return /^[.\s•·\u2500-\u257F\u2591-\u2593_\-\\|]*$/.test(noYou);
 }
 
 /* -------------------------------------------------------------------------- */
