@@ -21,7 +21,7 @@ while [ -L "$SCRIPT" ]; do
     *)  SCRIPT="$(cd "$(dirname "$SCRIPT")" && cd "$(dirname "$L")" && pwd)/$(basename "$L")" ;;
   esac
 done
-APPDIR="$(cd "$(dirname "$SCRIPT")" && pwd)"   # usually <repo>
+APPDIR="$(cd "$(dirname "$SCRIPT")" && pwd)"   # where the tool is installed
 log "script=$SCRIPT"
 log "appdir=$APPDIR"
 
@@ -58,17 +58,32 @@ export ORG_CALLER_CWD="$PROJ"
 log "project=$ORG_CALLER_CWD"
 
 # -------------------
-# Find entrypoint
+# Find entrypoint (ANCHOR TO APPDIR, not project)
 # -------------------
-ENTRY="${ORG_ENTRY:-"$PROJ/src/app.ts"}"
-if [ ! -f "$ENTRY" ]; then
-  err "entrypoint not found: $ENTRY"
+ENTRY="${ORG_ENTRY:-}"
+if [ -z "$ENTRY" ]; then
+  for p in \
+    "$APPDIR/src/app.ts" \
+    "$APPDIR/runner.ts" \
+    "$APPDIR/runner.mts" \
+    "$APPDIR/runner.js" \
+    "$APPDIR/dist/runner.js"
+  do
+    if [ -f "$p" ]; then
+      ENTRY="$p"
+      break
+    fi
+  done
+fi
+if [ -z "$ENTRY" ]; then
+  err "entrypoint not found near $APPDIR"
   exit 66
 fi
 if [ "$DBG" = "1" ]; then
   ls -l "$ENTRY" >&2 || true
   head -n 1 "$ENTRY" >&2 || true
 fi
+log "entry=$ENTRY"
 
 # -------------------
 # Container settings (override via env if needed)
@@ -78,7 +93,7 @@ ORG_IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
 log "engine=$ORG_ENGINE image=$ORG_IMAGE"
 
 # -------------------
-# Prepare logs (always in <repo>/.org/logs)
+# Prepare logs (always in <project>/.org/logs)
 # -------------------
 LOG_DIR="${ORG_LOG_DIR:-"$PROJ/.org/logs"}"
 mkdir -p "$LOG_DIR" || true
@@ -90,22 +105,23 @@ log "log_dir=$LOG_DIR"
 log "log_file=$LOG_FILE"
 
 # -------------------
-# Host console runner
+# Host console runner (NO bash -lc; pass "$@" directly)
 # -------------------
 run_console() {
   log "ui=console"
-  export ORG_APPDIR="$PROJ"
+  export ORG_APPDIR="$APPDIR"  # tool dir (not project)
   export ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}"
 
   if command -v bun >/dev/null 2>&1; then
     log "exec: bun \"$ENTRY\" $*"
-    # tee to capture early runtime failures too
-    exec bash -lc 'bun "'"$ENTRY"'" '"$*" 2>&1' | tee -a "'"$LOG_FILE"'"'
+    bun "$ENTRY" "$@" 2>&1 | tee -a "$LOG_FILE"
+    exit "${PIPESTATUS[0]}"
   fi
   if command -v node >/dev/null 2>&1; then
     if command -v npx >/dev/null 2>&1; then
       log "exec: npx --yes tsx \"$ENTRY\" $*"
-      exec bash -lc 'npx --yes tsx "'"$ENTRY"'" '"$*" 2>&1' | tee -a "'"$LOG_FILE"'"'
+      npx --yes tsx "$ENTRY" "$@" 2>&1 | tee -a "$LOG_FILE"
+      exit "${PIPESTATUS[0]}"
     fi
     err "Node found but tsx is missing. Install tsx (npm i -g tsx) or install Bun."
     exit 127
@@ -116,22 +132,26 @@ run_console() {
 
 # -------------------
 # tmux in container
-#   - mount the WHOLE repo at /work (so /work is the git repo root)
-#   - run bun /work/src/app.ts --ui console … inside tmux
-#   - write logs to /work/.org/logs/ (visible on host as <repo>/.org/logs/)
+#   - mount the project at /work
+#   - mount the tool at /tool
+#   - run bun /tool/src/app.ts --ui console … inside tmux
+#   - write logs to /work/.org/logs/ (visible on host as <project>/.org/logs/)
 # -------------------
 run_tmux_in_container() {
   log "ui=tmux"
 
-  local CTR_WORK="/work"              # container project root (repo root)
-  local CTR_APPDIR="$CTR_WORK"        # app dir is the repo root
-  local CTR_ENTRY="$CTR_APPDIR/src/app.ts"
-  local MNT="$PROJ:$CTR_WORK:Z"
+  local CTR_WORK="/work"              # container project root
+  local CTR_TOOL="/tool"              # container tool root (code lives here)
+  local CTR_ENTRY="$CTR_TOOL/src/app.ts"
+
+  local MNT_PROJ="$PROJ:$CTR_WORK:Z"
+  local MNT_TOOL="$APPDIR:$CTR_TOOL:Z"
 
   mkdir -p "$PROJ/.org/logs" "$PROJ/.org/logs/tmux-logs" || true
   local LOG_FILE_HOST="$PROJ/.org/logs/tmux-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
 
-  log "mount: $MNT"
+  log "mount proj: $MNT_PROJ"
+  log "mount tool: $MNT_TOOL"
   log "host tmux log: $LOG_FILE_HOST"
 
   # Join args safely for passing to inner script
@@ -140,15 +160,15 @@ run_tmux_in_container() {
     for a in "$@"; do ARGS_JOINED+=" $(printf '%q' "$a")"; done
   fi
 
-  local INNER_SCRIPT="$CTR_APPDIR/.org/.tmux-inner.sh"
+  local INNER_SCRIPT="$CTR_WORK/.org/.tmux-inner.sh"
 
-  # Create inner script INSIDE the container (no cp from host)
+  # Create inner script INSIDE the container
   local CREATE_AND_RUN="
 set -Eeuo pipefail
 umask 0002
 
 echo '[ctr] creating log dirs and inner script...'
-mkdir -p \"$CTR_APPDIR/.org/logs\" \"$CTR_APPDIR/.org/logs/tmux-logs\"
+mkdir -p \"$CTR_WORK/.org/logs\" \"$CTR_WORK/.org/logs/tmux-logs\"
 
 cat > \"$INNER_SCRIPT\" <<'EOS'
 set -Eeuo pipefail
@@ -174,22 +194,23 @@ EOS
 chmod +x \"$INNER_SCRIPT\"
 
 export ENTRY=\"$CTR_ENTRY\"
-export TMUX_TMPDIR=\"$CTR_APPDIR/.org/logs/tmux-logs\"
+export TMUX_TMPDIR=\"$CTR_WORK/.org/logs/tmux-logs\"
 
 echo '[ctr] starting tmux -vv ...'
 tmux -vv new -A -s org bash --noprofile --norc \"$INNER_SCRIPT\" $ARGS_JOINED
 "
 
-  log "about to exec container (this should replace the current process)"
+  log "about to exec container (this replaces the current process)"
   exec "$ORG_ENGINE" run --rm -it --network host \
-    -v "$MNT" \
+    -v "$MNT_PROJ" \
+    -v "$MNT_TOOL" \
     -w "$CTR_WORK" \
     -e ORG_TMUX=1 \
     -e ORG_FORCE_UI=console \
-    -e ORG_APPDIR="$CTR_APPDIR" \
+    -e ORG_APPDIR="$CTR_TOOL" \
     -e ORG_CALLER_CWD="$CTR_WORK" \
-    -e ORG_LOG_DIR="$CTR_APPDIR/.org/logs" \
-    -e ORG_LOG_FILE="$CTR_APPDIR/.org/logs/$(basename "$LOG_FILE_HOST")" \
+    -e ORG_LOG_DIR="$CTR_WORK/.org/logs" \
+    -e ORG_LOG_FILE="$CTR_WORK/.org/logs/$(basename "$LOG_FILE_HOST")" \
     -e ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}" \
     "$ORG_IMAGE" bash -lc "$CREATE_AND_RUN"
 }
@@ -198,7 +219,7 @@ tmux -vv new -A -s org bash --noprofile --norc \"$INNER_SCRIPT\" $ARGS_JOINED
 # Dispatch
 # -------------------
 case "${UI:-${ORG_FORCE_UI:-console}}" in
-  tmux)      run_tmux_in_container "$@" ;;
+  tmux)       run_tmux_in_container "$@" ;;
   ""|console) run_console "$@" ;;
-  *)         err "unknown --ui value: ${UI}"; exit 2 ;;
+  *)          err "unknown --ui value: ${UI}"; exit 2 ;;
 esac
