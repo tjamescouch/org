@@ -1,78 +1,124 @@
-# Common helpers for the org launcher (bash only)
+# Sourced by ./org
+# Minimal helpers shared by console.sh and tmux.sh
 
-# ---------- logging ----------
+# -------------------
+# Debug logging
+# -------------------
 DBG="${ORG_DEBUG:-${DEBUG:-0}}"
 log() { [ "$DBG" = "1" ] && printf '[org.sh] %s\n' "$*" >&2 || true; }
 err() { printf 'org: %s\n' "$*" >&2; }
 
-# ---------- args ----------
-# Sets: ORG_UI, ORG_CWD, ORG_FWD_ARGS (array)
+# -------------------
+# Args
+#  - sets ORG_UI, ORG_CWD, ORG_FWD_ARGS (array)
+# -------------------
 parse_args() {
   ORG_UI=""
   ORG_CWD=""
   ORG_FWD_ARGS=()
   while (($#)); do
     case "$1" in
-      -C|--cwd) shift; ORG_CWD="${1:-}"; shift || true ;;
-      --ui)     shift; ORG_UI="${1:-}"; shift || true ;;
-      --ui=*)   ORG_UI="${1#*=}"; shift ;;
-      *)        ORG_FWD_ARGS+=("$1"); shift ;;
+      -C|--cwd)  shift; ORG_CWD="${1:-}"; shift || true ;;
+      --ui)      shift; ORG_UI="${1:-}"; shift || true ;;
+      --ui=*)    ORG_UI="${1#*=}"; shift ;;
+      *)         ORG_FWD_ARGS+=("$1"); shift ;;
     esac
   done
-  log "parsed args: ui=${ORG_UI:-<default>} cwd=${ORG_CWD:-<none>} fwd=${ORG_FWD_ARGS[*]:-<none>}"
+  export ORG_UI ORG_CWD
+  # ORG_FWD_ARGS is left as a global array
+  log "parsed: ui=${ORG_UI:-<default>} cwd=${ORG_CWD:-<none>} args=${#ORG_FWD_ARGS[@]}"
 }
 
-# Join args for safe re-injection into a single command line.
-# Prints a leading space when there is at least one arg.
-join_args() {
-  local out="" a
-  for a in "$@"; do
-    out+=" $(printf '%q' "$a")"
-  done
-  printf '%s' "$out"
-}
-
-# ---------- project / entry ----------
+# -------------------
+# Project root (repo you want to work on)
+# -------------------
 detect_project_root() {
-  if git -C "$PWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    ORG_PROJ="$(git -C "$PWD" rev-parse --show-toplevel)"
+  local seed="${PWD}"
+  if [ -n "${ORG_CWD:-}" ]; then seed="$ORG_CWD"; fi
+
+  if git -C "$seed" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    ORG_PROJ="$(git -C "$seed" rev-parse --show-toplevel)"
   else
-    ORG_PROJ="$PWD"
+    ORG_PROJ="$seed"
   fi
+  export ORG_PROJ
   export ORG_CALLER_CWD="$ORG_PROJ"
-  log "project=$ORG_CALLER_CWD"
+  log "project=$ORG_PROJ"
 }
 
+# -------------------
+# Entrypoint resolution
+# IMPORTANT: resolve relative to APPDIR (where the script lives),
+# not ORG_PROJ (which may be a temp -C dir in tests).
+# -------------------
 find_entrypoint() {
-  ORG_ENTRY="${ORG_ENTRY:-"$ORG_PROJ/src/app.ts"}"
-  if [ ! -f "$ORG_ENTRY" ]; then
-    err "entrypoint not found: $ORG_ENTRY"
-    return 66
+  if [ -n "${ORG_ENTRY:-}" ] && [ -f "$ORG_ENTRY" ]; then
+    log "entry (env)=$ORG_ENTRY"
+    return 0
   fi
-  if [ "$DBG" = "1" ]; then
-    ls -l "$ORG_ENTRY" >&2 || true
-    head -n 1 "$ORG_ENTRY" >&2 || true
-  fi
-  log "entry=$ORG_ENTRY"
-  return 0
+
+  local cands=(
+    "$APPDIR/src/app.ts"
+    "$APPDIR/app.ts"
+    "$APPDIR/runner.ts"
+    "$APPDIR/runner.mts"
+    "$APPDIR/runner.js"
+    "$APPDIR/dist/app.js"
+    "$APPDIR/dist/runner.js"
+  )
+  local p
+  for p in "${cands[@]}"; do
+    if [ -f "$p" ]; then
+      ORG_ENTRY="$p"
+      export ORG_ENTRY
+      log "entry=$ORG_ENTRY (exists)"
+      return 0
+    fi
+  done
+
+  err "entrypoint not found near $APPDIR (searched: ${cands[*]})"
+  return 66
 }
 
-# ---------- container defaults ----------
+# -------------------
+# Engine defaults
+# -------------------
 engine_defaults() {
   ORG_ENGINE="${ORG_ENGINE:-podman}"
   ORG_IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
+  export ORG_ENGINE ORG_IMAGE
   log "engine=$ORG_ENGINE image=$ORG_IMAGE"
 }
 
-# ---------- logging to disk ----------
+# -------------------
+# Logs (always under <project>/.org/logs)
+# -------------------
+_prepare_log_dir() {
+  local d="$1"
+  mkdir -p "$d" || true
+}
+
+_ts_utc() { date -u +%Y-%m-%dT%H-%M-%SZ; }
+
 prepare_logs() {
   ORG_LOG_DIR="${ORG_LOG_DIR:-"$ORG_PROJ/.org/logs"}"
-  mkdir -p "$ORG_LOG_DIR" || true
-  ORG_LOG_FILE="${ORG_LOG_FILE:-"$ORG_LOG_DIR/run-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"}"
+  _prepare_log_dir "$ORG_LOG_DIR"
+  ORG_LOG_FILE="${ORG_LOG_FILE:-"$ORG_LOG_DIR/run-$(_ts_utc).log"}"
   export ORG_LOG_DIR ORG_LOG_FILE
   ln -sf "$(basename "$ORG_LOG_FILE")" "$ORG_LOG_DIR/last.log" 2>/dev/null || true
-  printf '[org.sh] preflight %s\n' "$(date -u +%FT%TZ)" | tee -a "$ORG_LOG_FILE" >/dev/null
+  printf '[org.sh] preflight %s\n' "$(_ts_utc)" | tee -a "$ORG_LOG_FILE" >/dev/null
   log "log_dir=$ORG_LOG_DIR"
   log "log_file=$ORG_LOG_FILE"
-  export ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}"
+}
+
+# -------------------
+# Arg join helper for tee-wrapping shell -lc calls
+# -------------------
+join_args_quoted() {
+  local out=""
+  local a
+  for a in "${ORG_FWD_ARGS[@]:-}"; do
+    out+=" $(printf '%q' "$a")"
+  done
+  printf '%s' "$out"
 }

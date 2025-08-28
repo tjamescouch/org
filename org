@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
-# org — thin launcher that delegates to small libs under .org/launcher
-# Exit codes: 66 = entrypoint not found / cwd not found / libs missing; 127 = runtime missing
-
-# --- Re-exec under bash if invoked by /bin/sh -c (or other non-bash shells) ---
-if [ -z "${BASH_VERSION:-}" ]; then
-  exec bash "$0" "$@"
-fi
-
+# org — thin launcher delegating to .org/launcher/*
+# Exit codes: 66 = entrypoint/cwd not found; 127 = runtime missing
 set -euo pipefail
 
-# --- Resolve script/appdir (where this file lives) ---
+# --- Resolve script/appdir (where THIS file lives) ---
 SCRIPT="${BASH_SOURCE[0]:-$0}"
 while [ -L "$SCRIPT" ]; do
   L="$(readlink "$SCRIPT")"
@@ -20,44 +14,10 @@ while [ -L "$SCRIPT" ]; do
 done
 APPDIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
 
-# ---------- tiny inline logger (real logger comes from common.sh) ----------
-DBG="${ORG_DEBUG:-${DEBUG:-0}}"
-log_pre() { [ "$DBG" = "1" ] && printf '[org.sh] %s\n' "$*" >&2 || true; }
-err_pre() { printf 'org: %s\n' "$*" >&2; }
-
-log_pre "script=$SCRIPT"
-log_pre "appdir=$APPDIR"
-
-# --- Discover launcher library directory robustly ---
-_candidates=()
-# Highest priority: explicit override
-[ -n "${ORG_LIBDIR:-}" ] && _candidates+=("$ORG_LIBDIR")
-# Common locations next
-_candidates+=("$APPDIR/.org/launcher" "$APPDIR/launcher" "$APPDIR/.launcher")
-
-LIBDIR=""
-for d in "${_candidates[@]}"; do
-  if [ -n "$d" ] && [ -d "$d" ] && [ -r "$d/common.sh" ] && [ -r "$d/console.sh" ] && [ -r "$d/tmux.sh" ]; then
-    LIBDIR="$d"
-    break
-  fi
-done
-
-if [ -z "$LIBDIR" ]; then
-  err_pre "launcher libs not found."
-  err_pre "looked in:"
-  for d in "${_candidates[@]}"; do err_pre "  - $d"; done
-  err_pre "Set ORG_LIBDIR to the directory containing common.sh/console.sh/tmux.sh."
-  exit 66
-fi
-log_pre "libdir=$LIBDIR"
-
-# --- Load libs (define real log/err afterwards) ---
+LIBDIR="$APPDIR/.org/launcher"
 # shellcheck source=/dev/null
 . "$LIBDIR/common.sh"
-# shellcheck source=/dev/null
 . "$LIBDIR/console.sh"
-# shellcheck source=/dev/null
 . "$LIBDIR/tmux.sh"
 
 # --- Parse flags (sets ORG_UI, ORG_CWD, ORG_FWD_ARGS[]) ---
@@ -71,15 +31,15 @@ fi
 
 # --- Setup/derive context ---
 detect_project_root        # -> ORG_PROJ, ORG_CALLER_CWD
-find_entrypoint || exit $? # -> ORG_ENTRY
+find_entrypoint || exit $? # -> ORG_ENTRY (anchored to APPDIR)
 engine_defaults            # -> ORG_ENGINE, ORG_IMAGE
 prepare_logs               # -> ORG_LOG_DIR, ORG_LOG_FILE (+preflight line)
 
 UI="${ORG_UI:-${ORG_FORCE_UI:-console}}"
-log "ui=$UI"
+log "dispatch ui=$UI"
 
 case "$UI" in
-  tmux)       run_tmux_in_container ;;
-  ""|console) run_console ;;
-  *)          err "unknown --ui value: ${UI}"; exit 2 ;;
+  tmux)        run_tmux_in_container ;;
+  ""|console)  run_console ;;
+  *)           err "unknown --ui value: ${UI}"; exit 2 ;;
 esac
