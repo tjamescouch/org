@@ -1,279 +1,211 @@
 #!/usr/bin/env bash
-# install.sh — one-stop installer/doctor/build/link for org
-# Works on macOS (with podman-machine) and Debian/Ubuntu.
-# Commands:
-#   install        (default) doctor + machine (macOS) + build + link
-#   build          build the container image
-#   rebuild        build with --no-cache
-#   link           install host wrappers (org, apply_patch)
-#   unlink         remove host wrappers
-#   doctor         check host + container prereqs; fix what we safely can
-#   machine-init   (macOS) create/start 'podman machine'
-#   machine-start  (macOS) start podman machine
-#   machine-stop   (macOS) stop podman machine
-#
-# Options (for install/build):
-#   --engine podman|docker     # default: podman
-#   --image  NAME[:tag]        # default: localhost/org-build:debian-12
-#   --prefix DIR               # default: /usr/local/bin (or $HOME/.local/bin with --user)
-#   --user                     # install wrappers into $HOME/.local/bin (no sudo)
-#   --platform linux/arm64|linux/amd64  # override build platform
-#
-# Exit codes: 1 general, 2 usage, 3 missing tool, 4 machine error, 5 build error
+# Unified installer for org: doctor + build + link + apply_patch shim
+# Works on Debian/Ubuntu and macOS. Uses Podman (preferred) or Docker.
+set -euo pipefail
 
-set -Eeuo pipefail
+# ---------- ui helpers ----------
+C_RESET='\033[0m'; C_BOLD='\033[1m'
+C_GREEN='\033[32m'; C_YELLOW='\033[33m'; C_RED='\033[31m'; C_BLUE='\033[34m'
+say()   { printf "${C_BOLD}%s${C_RESET}\n" "$*"; }
+ok()    { printf "${C_GREEN}✔ %s${C_RESET}\n" "$*"; }
+warn()  { printf "${C_YELLOW}⚠ %s${C_RESET}\n" "$*"; }
+err()   { printf "${C_RED}✘ %s${C_RESET}\n" "$*" >&2; }
+step()  { printf "${C_BLUE}==> %s${C_RESET}\n" "$*"; }
 
-# ————————————————————————————————————————————————————————————————
-# Helpers
-# ————————————————————————————————————————————————————————————————
-log()  { printf "[install] %s\n" "$*"; }
-warn() { printf "[install][warn] %s\n" "$*" >&2; }
-die()  { printf "[install][error] %s\n" "$*" >&2; exit 1; }
-have() { command -v "$1" >/dev/null 2>&1; }
+# ---------- paths ----------
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+cd "$REPO_DIR"
 
-need() {
-  have "$1" || die "Missing tool: $1 (please install and re-run)."
+# Defaults (overridable)
+ENGINE="${ORG_ENGINE:-}"
+IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
+
+BIN_CANDIDATES=(/usr/local/bin "$HOME/.local/bin")
+BIN_DIR=""
+for d in "${BIN_CANDIDATES[@]}"; do
+  if [ -w "$d" ] || mkdir -p "$d" 2>/dev/null; then BIN_DIR="$d"; break; fi
+done
+if [ -z "$BIN_DIR" ]; then
+  err "No writable bin dir found (tried: ${BIN_CANDIDATES[*]}). Try: sudo ./install.sh install"
+  exit 1
+fi
+
+detect_engine() {
+  if [ -n "$ENGINE" ]; then return 0; fi
+  if command -v podman >/dev/null 2>&1; then ENGINE="podman"; return 0; fi
+  if command -v docker >/dev/null 2>&1; then ENGINE="docker"; return 0; fi
+  err "Neither podman nor docker found in PATH."
+  exit 1
 }
 
-SUDO=""
-maybesudo() {
-  if [ -w "$1" ]; then SUDO=""; else SUDO="sudo"; fi
+doctor() {
+  step "Doctor"
+  detect_engine
+  ok "container engine: $ENGINE"
+
+  # macOS podman machine hint
+  if [[ "$OSTYPE" == darwin* ]] && [[ "$ENGINE" == "podman" ]]; then
+    if ! podman machine inspect >/dev/null 2>&1; then
+      warn "Podman machine not initialized. Run: podman machine init && podman machine start"
+    else
+      if ! podman machine ls | awk 'NR>1{print $4}' | grep -q Running; then
+        warn "Podman machine not running. Run: podman machine start"
+      else
+        ok "podman machine running"
+      fi
+    fi
+  fi
+
+  if ! command -v git >/dev/null 2>&1; then
+    err "git not found"
+    exit 1
+  fi
+  ok "git found"
 }
 
-# ————————————————————————————————————————————————————————————————
-# Parse CLI
-# ————————————————————————————————————————————————————————————————
-CMD="${1:-install}"; shift || true
+build_image() {
+  step "Build image ($IMAGE)"
+  if [[ "$ENGINE" == "podman" ]]; then
+    podman build -t "$IMAGE" -f Containerfile "$REPO_DIR"
+  else
+    docker build -t "$IMAGE" -f Containerfile "$REPO_DIR"
+  fi
+  ok "image built: $IMAGE"
+}
 
-ENGINE="podman"
-IMAGE="localhost/org-build:debian-12"
-PREFIX="/usr/local/bin"
-USER_PREFIX=0
-PLATFORM=""
+link_org() {
+  step "Link CLI"
+  local target="$BIN_DIR/org"
+  # we want to link the repo's ./org shim (which sources .org/launcher/*)
+  ln -snf "$REPO_DIR/org" "$target"
+  chmod +x "$REPO_DIR/org"
+  ok "linked: $target -> $REPO_DIR/org"
+}
 
+install_host_apply_patch() {
+  step "Install host apply_patch fallback + repo wrapper"
+
+  # 1) system-wide (or ~/.local/bin) portable fallback
+  local sys_ap="$BIN_DIR/apply_patch"
+  cat >"$sys_ap" <<"APFALLBACK"
+#!/usr/bin/env bash
+# Portable apply_patch fallback: reads unified diff from stdin or -f FILE
+# and safe-applies it to the project git root using `git apply`.
+set -euo pipefail
+
+# Where to apply: prefer git toplevel; else current dir
+WORK_ROOT="${ORG_WORK:-$(git -C "${PWD}" rev-parse --show-toplevel 2>/dev/null || pwd)}"
+
+PATCH_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --engine)   ENGINE="${2:-}"; shift 2;;
-    --image)    IMAGE="${2:-}"; shift 2;;
-    --prefix)   PREFIX="${2:-}"; shift 2;;
-    --user)     USER_PREFIX=1; PREFIX="$HOME/.local/bin"; shift;;
-    --platform) PLATFORM="${2:-}"; shift 2;;
-    -h|--help)
-      sed -n '1,70p' "$0" | sed -n '1,60p' | sed 's/^# \{0,1\}//'
-      exit 0
-      ;;
+    -f|--file) PATCH_FILE="${2:-}"; shift 2;;
+    -) PATCH_FILE="-"; shift;;
+    --) shift; break;;
     *) break;;
   esac
 done
 
-REPO="$(cd "$(dirname "$0")" && pwd)"
-OS="$(uname -s)"      # Darwin or Linux
-ARCH="$(uname -m)"    # arm64, aarch64, x86_64, etc.
+tmp="${TMPDIR:-/tmp}/ap.$$.patch"
+trap 'rm -f "$tmp"' EXIT
 
-# Platform default for Podman build (Apple Silicon → linux/arm64)
-if [ -z "${PLATFORM}" ]; then
-  case "$ARCH" in
-    arm64|aarch64) PLATFORM="linux/arm64" ;;
-    x86_64|amd64)  PLATFORM="linux/amd64" ;;
-    *) PLATFORM="" ;; # let engine decide
-  esac
+if [ -n "${PATCH_FILE:-}" ] && [ "$PATCH_FILE" != "-" ]; then
+  cat "$PATCH_FILE" > "$tmp"
+else
+  cat > "$tmp"
 fi
 
-# Files we will install/link
-ORG_WRAPPER="$REPO/org"
-PATCH_TOOL="$REPO/apply_patch"
-CONTAINERFILE="$REPO/Containerfile"
+# Extract candidate paths from the diff and block dangerous ones
+mapfile -t paths < <(awk '/^diff --git a\//{print $4}' "$tmp" | sed -E 's#^b/##')
+if [ "${#paths[@]}" -eq 0 ]; then
+  echo "apply_patch: no file paths detected (expects unified diff)" >&2
+  exit 1
+fi
 
-# Sanity checks (these are required by the project layout)
-[ -f "$ORG_WRAPPER" ]  || die "missing ./org at repo root"
-[ -f "$PATCH_TOOL" ]   || die "missing ./apply_patch at repo root"
-[ -f "$CONTAINERFILE" ]|| die "missing ./Containerfile at repo root"
-
-# ————————————————————————————————————————————————————————————————
-# Engine adapters
-# ————————————————————————————————————————————————————————————————
-engine_bin() {
-  case "$ENGINE" in
-    podman) echo "podman" ;;
-    docker) echo "docker" ;;
-    *) die "Unsupported engine: $ENGINE" ;;
-  esac
-}
-
-engine_build() {
-  local nocache="$1" ; shift
-  local platflag=()
-  [ -n "$PLATFORM" ] && platflag=(--platform "$PLATFORM")
-
-  case "$ENGINE" in
-    podman)
-      ${ENGINE_BIN} build "${platflag[@]}" ${nocache:+--no-cache} \
-        -t "$IMAGE" -f "$CONTAINERFILE" "$REPO" || return 5
-      ;;
-    docker)
-      ${ENGINE_BIN} buildx build "${platflag[@]}" ${nocache:+--no-cache} \
-        -t "$IMAGE" -f "$CONTAINERFILE" "$REPO" || return 5
-      ;;
-  esac
-  return 0
-}
-
-engine_run() {
-  # run an ephemeral command inside the image (for smoke tests)
-  case "$ENGINE" in
-    podman) ${ENGINE_BIN} run --rm "$IMAGE" bash -lc "$*";;
-    docker) ${ENGINE_BIN} run --rm "$IMAGE" bash -lc "$*";;
-  esac
-}
-
-# ————————————————————————————————————————————————————————————————
-# OS‑specific prep
-# ————————————————————————————————————————————————————————————————
-doctor_common() {
-  need git
-  need bash
-
-  case "$ENGINE" in
-    podman) need podman ;;
-    docker) need docker ;;
-  esac
-
-  if [ "$OS" = "Linux" ]; then
-    # Debian/Ubuntu: suggest packages if missing
-    if [ "$ENGINE" = "podman" ] && ! have podman; then
-      warn "Podman not found. On Debian/Ubuntu: sudo apt-get install -y podman"
-      return 3
-    fi
+deny_regex='^(\.git/|\.org/|/|\.{2}(/|$)|.*\x00.*)'
+viol=""
+for p in "${paths[@]}"; do
+  p="${p#./}"
+  if [[ "$p" =~ $deny_regex ]]; then
+    viol+="$p\n"
   fi
+done
+if [ -n "$viol" ]; then
+  printf 'apply_patch: path policy violation(s):\n%s' "$viol" >&2
+  exit 3
+fi
 
-  if [ "$OS" = "Darwin" ] && [ "$ENGINE" = "podman" ]; then
-    have podman || die "Podman is required. Install via Homebrew: brew install podman"
-    : # macOS handled by machine doctor below
-  fi
+git -C "$WORK_ROOT" apply --index --whitespace=nowarn --check "$tmp"
+git -C "$WORK_ROOT" apply --index --whitespace=nowarn "$tmp"
+echo "apply_patch: OK"
+APFALLBACK
+  chmod +x "$sys_ap"
+  ok "installed fallback: $sys_ap"
 
-  return 0
-}
-
-doctor_machine_macos() {
-  [ "$OS" = "Darwin" ] || return 0
-  [ "$ENGINE" = "podman" ] || return 0
-
-  if ! podman machine inspect >/dev/null 2>&1; then
-    warn "No podman machine detected on macOS."
-    return 4
-  fi
-
-  if ! podman machine list 2>/dev/null | grep -q 'Running'; then
-    log "Starting podman machine…"
-    podman machine start || die "Failed to start podman machine (try: podman machine init; podman machine start)"
-  fi
-}
-
-machine_init_macos() {
-  [ "$OS" = "Darwin" ] || { warn "machine-init is macOS only"; return 0; }
-  [ "$ENGINE" = "podman" ] || { warn "machine-init only for podman"; return 0; }
-
-  local cpus="${ORG_MACHINE_CPUS:-4}"
-  local mem="${ORG_MACHINE_MEM:-8192}"     # MB
-  local disk="${ORG_MACHINE_DISK:-50}"     # GB
-
-  if podman machine inspect >/dev/null 2>&1; then
-    warn "podman machine already exists; skipping init"
+  # 2) repo-root wrapper (so tests or tools that invoke ./apply_patch keep working)
+  local repo_ap="$REPO_DIR/apply_patch"
+  if [ ! -f "$repo_ap" ]; then
+    cat >"$repo_ap" <<"APWRAP"
+#!/usr/bin/env bash
+# Wrapper: use system apply_patch (installed by installer)
+exec apply_patch "$@"
+APWRAP
+    chmod +x "$repo_ap"
+    ok "created repo wrapper: $repo_ap"
   else
-    log "Creating podman machine (cpus=$cpus, mem=${mem}MB, disk=${disk}GB)…"
-    podman machine init --cpus "$cpus" --memory "$mem" --disk-size "$disk" || die "machine init failed"
+    ok "repo wrapper already present: $repo_ap"
   fi
-  podman machine start || die "machine start failed"
 }
 
-# ————————————————————————————————————————————————————————————————
-# Link/Unlink host wrappers
-# ————————————————————————————————————————————————————————————————
-do_link() {
-  mkdir -p "$PREFIX"
-  maybesudo "$PREFIX"
-
-  $SUDO install -m 0755 "$PATCH_TOOL" "$PREFIX/apply_patch"
-  log "installed apply_patch -> $PREFIX/apply_patch"
-
-  # keep org as a symlink so upgrades use repo HEAD transparently
-  $SUDO rm -f "$PREFIX/org"
-  $SUDO ln -s "$ORG_WRAPPER" "$PREFIX/org"
-  log "symlinked org -> $PREFIX/org -> $ORG_WRAPPER"
-
-  # optional: repo hooks
-  if [ -d "$REPO/.githooks" ]; then
-    git -C "$REPO" config core.hooksPath .githooks || true
-    chmod +x "$REPO/.githooks/"* 2>/dev/null || true
-    log "git hooks enabled (core.hooksPath .githooks)"
+rebuild() {
+  step "Rebuild image (no cache)"
+  detect_engine
+  if [[ "$ENGINE" == "podman" ]]; then
+    podman build --no-cache --pull -t "$IMAGE" -f Containerfile "$REPO_DIR"
+  else
+    docker build --no-cache --pull -t "$IMAGE" -f Containerfile "$REPO_DIR"
   fi
-
-  # show where binaries landed
-  log "PATH hint: $PREFIX should be in your PATH"
+  ok "image rebuilt: $IMAGE"
 }
 
-do_unlink() {
-  maybesudo "$PREFIX"
-  $SUDO rm -f "$PREFIX/org" "$PREFIX/apply_patch"
-  log "removed $PREFIX/org and $PREFIX/apply_patch"
+uninstall() {
+  step "Uninstall"
+  rm -f "$BIN_DIR/org" "$BIN_DIR/apply_patch" 2>/dev/null || true
+  ok "removed links from $BIN_DIR"
+  warn "To remove the container image: ${ENGINE:-podman} rmi $IMAGE"
 }
 
-# ————————————————————————————————————————————————————————————————
-# Commands
-# ————————————————————————————————————————————————————————————————
-cmd_doctor() {
-  doctor_common || true
-  if [ "$OS" = "Darwin" ] && [ "$ENGINE" = "podman" ]; then
-    if ! podman machine inspect >/dev/null 2>&1; then
-      warn "No podman machine. Run: $0 machine-init"
-    else
-      doctor_machine_macos || true
-    fi
-  fi
-  log "doctor: OK (or actionable hints printed above)"
+usage() {
+  cat <<EOF
+Usage: $0 [command]
+
+Commands:
+  install     Doctor + build + link + install apply_patch
+  build       Build image
+  rebuild     Build image (no cache)
+  doctor      Check environment
+  link        Link org into PATH
+  uninstall   Remove links (and print image removal hint)
+
+Environment overrides:
+  ORG_ENGINE   podman|docker (default: auto-detect, prefer podman)
+  ORG_IMAGE    image tag (default: $IMAGE)
+EOF
 }
 
-cmd_build()   { engine_build "" || die "build failed"; }
-cmd_rebuild() { engine_build "--no-cache" || die "rebuild failed"; }
-cmd_link()    { do_link; }
-cmd_unlink()  { do_unlink; }
-
-cmd_machine_init()  { machine_init_macos; }
-cmd_machine_start() { [ "$OS" = "Darwin" ] && podman machine start || true; }
-cmd_machine_stop()  { [ "$OS" = "Darwin" ] && podman machine stop || true; }
-
-cmd_install() {
-  cmd_doctor
-  if [ "$OS" = "Darwin" ] && [ "$ENGINE" = "podman" ]; then
-    # auto-create a machine if none exists
-    if ! podman machine inspect >/dev/null 2>&1; then
-      machine_init_macos
-    else
-      doctor_machine_macos || true
-    fi
-  fi
-  cmd_build
-
-  # quick smoke test: ensure the image can run and PATH is sane
-  log "smoke test: container PATH"
-  engine_run 'echo "$PATH" && command -v bun && bun --version' || warn "smoke test failed (image still built)"
-
-  cmd_link
-  log "install complete. Try: org --help"
-}
-
-# ————————————————————————————————————————————————————————————————
-# Dispatch
-# ————————————————————————————————————————————————————————————————
-case "$CMD" in
-  install)        cmd_install ;;
-  build)          cmd_build ;;
-  rebuild)        cmd_rebuild ;;
-  link)           cmd_link ;;
-  unlink)         cmd_unlink ;;
-  doctor)         cmd_doctor ;;
-  machine-init)   cmd_machine_init ;;
-  machine-start)  cmd_machine_start ;;
-  machine-stop)   cmd_machine_stop ;;
-  *) die "Unknown command: $CMD (run with --help)";;
+cmd="${1:-install}"
+case "$cmd" in
+  doctor)    doctor ;;
+  build)     doctor; build_image ;;
+  link)      link_org ;;
+  rebuild)   doctor; rebuild ;;
+  uninstall) uninstall ;;
+  install)
+    doctor
+    build_image
+    link_org
+    install_host_apply_patch
+    ok "Install complete. Try: org --prompt 'hello'"
+    ;;
+  *) usage; exit 2 ;;
 esac
