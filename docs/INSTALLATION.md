@@ -48,7 +48,7 @@ The installation is *non-destructive*: no system libraries are modified, and eve
 ## 1) Clone the repository
 
 ```bash
-git clone <your-fork-or-repo-url> org
+git clone https://github.com/tjamescouch/org.git org
 cd org
 ```
 
@@ -224,7 +224,7 @@ If your shell says `org: command not found` right after installing, you likely n
 
 ```bash
 brew install podman && podman machine init && podman machine start
-git clone <your-repo-url> org && cd org
+git clone https://github.com/tjamescouch/org.git org && cd org
 ./create-container.sh
 ./install.sh
 org --prompt "hello"
