@@ -11,7 +11,7 @@ log() { [ "$DBG" = "1" ] && printf '[org.sh] %s\n' "$*" >&2 || true; }
 err() { printf 'org: %s\n' "$*" >&2; }
 
 # -------------------
-# Resolve script/app path
+# Resolve script path / appdir
 # -------------------
 SCRIPT="${BASH_SOURCE[0]:-$0}"
 while [ -L "$SCRIPT" ]; do
@@ -21,27 +21,25 @@ while [ -L "$SCRIPT" ]; do
     *)  SCRIPT="$(cd "$(dirname "$SCRIPT")" && cd "$(dirname "$L")" && pwd)/$(basename "$L")" ;;
   esac
 done
-APPDIR="$(cd "$(dirname "$SCRIPT")" && pwd)"   # repo/.org (where this script lives)
+APPDIR="$(cd "$(dirname "$SCRIPT")" && pwd)"   # usually <repo>
 log "script=$SCRIPT"
 log "appdir=$APPDIR"
 
 # -------------------
-# Parse a few flags
-#   -C/--cwd <dir>  (cd there before run)
-#   --ui console|tmux
-#   everything else is forwarded to the app
+# Parse flags (minimal; pass the rest to the app)
 # -------------------
-UI="console"
+UI=""
 CWD=""
 args=()
-while [ $# -gt 0 ]; do
+while (($#)); do
   case "$1" in
     -C|--cwd) shift; CWD="${1:-}"; shift || true ;;
-    --ui)     shift; UI="${1:-console}"; shift || true ;;
-    --ui=*)   UI="${1#*=}"; shift ;;
-    *)        args+=("$1"); shift ;;
+    --ui) shift; UI="${1:-}"; shift || true ;;
+    --ui=*) UI="${1#*=}"; shift ;;
+    *) args+=("$1"); shift ;;
   esac
 done
+set -- "${args[@]}"
 
 if [ -n "$CWD" ]; then
   log "cd -> $CWD"
@@ -49,9 +47,20 @@ if [ -n "$CWD" ]; then
 fi
 
 # -------------------
+# Detect project root (git toplevel if available)
+# -------------------
+if git -C "$PWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  PROJ="$(git -C "$PWD" rev-parse --show-toplevel)"
+else
+  PROJ="$PWD"
+fi
+export ORG_CALLER_CWD="$PROJ"
+log "project=$ORG_CALLER_CWD"
+
+# -------------------
 # Find entrypoint
 # -------------------
-ENTRY="$APPDIR/src/app.ts"
+ENTRY="${ORG_ENTRY:-"$PROJ/src/app.ts"}"
 if [ ! -f "$ENTRY" ]; then
   err "entrypoint not found: $ENTRY"
   exit 66
@@ -69,27 +78,34 @@ ORG_IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
 log "engine=$ORG_ENGINE image=$ORG_IMAGE"
 
 # -------------------
+# Prepare logs (always in <repo>/.org/logs)
+# -------------------
+LOG_DIR="${ORG_LOG_DIR:-"$PROJ/.org/logs"}"
+mkdir -p "$LOG_DIR" || true
+LOG_FILE="${ORG_LOG_FILE:-"$LOG_DIR/run-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"}"
+export ORG_LOG_DIR="$LOG_DIR" ORG_LOG_FILE="$LOG_FILE"
+ln -sf "$(basename "$LOG_FILE")" "$LOG_DIR/last.log" 2>/dev/null || true
+printf '[org.sh] preflight %s\n' "$(date -u +%FT%TZ)" | tee -a "$LOG_FILE" >/dev/null
+log "log_dir=$LOG_DIR"
+log "log_file=$LOG_FILE"
+
+# -------------------
 # Host console runner
 # -------------------
 run_console() {
   log "ui=console"
-  # Minimal preflight log env—keeps your app as-is
-  mkdir -p "$APPDIR/logs" || true
-  export ORG_APPDIR="$APPDIR"
-  export ORG_CALLER_CWD="$PWD"
-  export ORG_LOG_DIR="${ORG_LOG_DIR:-$APPDIR/logs}"
-  export ORG_LOG_FILE="${ORG_LOG_FILE:-$ORG_LOG_DIR/run-$(date -u +%Y-%m-%dT%H-%M-%SZ).log}"
+  export ORG_APPDIR="$PROJ"
   export ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}"
-  printf '[org.sh] preflight %s\n' "$(date -u +%FT%TZ)" >>"$ORG_LOG_FILE" 2>/dev/null || true
 
   if command -v bun >/dev/null 2>&1; then
-    log "exec: bun \"$ENTRY\" ${args[*]}"
-    exec bun "$ENTRY" "${args[@]}"
+    log "exec: bun \"$ENTRY\" $*"
+    # tee to capture early runtime failures too
+    exec bash -lc 'bun "'"$ENTRY"'" '"$*" 2>&1' | tee -a "'"$LOG_FILE"'"'
   fi
   if command -v node >/dev/null 2>&1; then
     if command -v npx >/dev/null 2>&1; then
-      log "exec: npx --yes tsx \"$ENTRY\" ${args[*]}"
-      exec npx --yes tsx "$ENTRY" "${args[@]}"
+      log "exec: npx --yes tsx \"$ENTRY\" $*"
+      exec bash -lc 'npx --yes tsx "'"$ENTRY"'" '"$*" 2>&1' | tee -a "'"$LOG_FILE"'"'
     fi
     err "Node found but tsx is missing. Install tsx (npm i -g tsx) or install Bun."
     exit 127
@@ -99,46 +115,40 @@ run_console() {
 }
 
 # -------------------
-# Container tmux runner
+# tmux in container
+#   - mount the WHOLE repo at /work (so /work is the git repo root)
+#   - run bun /work/src/app.ts --ui console … inside tmux
+#   - write logs to /work/.org/logs/ (visible on host as <repo>/.org/logs/)
 # -------------------
 run_tmux_in_container() {
-  log "ui=tmux (enter run_tmux_in_container)"
+  log "ui=tmux"
 
-  # ---- Mount the whole project at /work (so /work has .git)
-  local PROJ="${ORG_CALLER_CWD:-$PWD}"
-  if git -C "$PROJ" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    PROJ="$(git -C "$PROJ" rev-parse --show-toplevel)"
-  fi
-
-  local CTR_WORK="/work"
-  local CTR_APPDIR="$CTR_WORK/.org"
+  local CTR_WORK="/work"              # container project root (repo root)
+  local CTR_APPDIR="$CTR_WORK"        # app dir is the repo root
   local CTR_ENTRY="$CTR_APPDIR/src/app.ts"
   local MNT="$PROJ:$CTR_WORK:Z"
 
-  # Host logs (will be written by the app inside the container to /work/.org/logs/…)
-  mkdir -p "$APPDIR/logs" "$APPDIR/logs/tmux-logs" || true
-  local LOG_DIR_HOST="$APPDIR/logs"
-  local LOG_FILE_HOST="$LOG_DIR_HOST/tmux-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
+  mkdir -p "$PROJ/.org/logs" "$PROJ/.org/logs/tmux-logs" || true
+  local LOG_FILE_HOST="$PROJ/.org/logs/tmux-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
 
-  log "project root: $PROJ"
   log "mount: $MNT"
-  log "host log file: $LOG_FILE_HOST"
+  log "host tmux log: $LOG_FILE_HOST"
 
-  # Join args safely for passing to the inner script
+  # Join args safely for passing to inner script
   local ARGS_JOINED=""
-  if [ ${#args[@]} -gt 0 ]; then
-    for a in "${args[@]}"; do ARGS_JOINED+=" $(printf '%q' "$a")"; done
+  if [ $# -gt 0 ]; then
+    for a in "$@"; do ARGS_JOINED+=" $(printf '%q' "$a")"; done
   fi
 
-  local INNER_SCRIPT="$CTR_APPDIR/.tmux-inner.sh"
+  local INNER_SCRIPT="$CTR_APPDIR/.org/.tmux-inner.sh"
 
-  # Create the inner script *inside the container* with a heredoc (no host cp)
+  # Create inner script INSIDE the container (no cp from host)
   local CREATE_AND_RUN="
 set -Eeuo pipefail
 umask 0002
 
 echo '[ctr] creating log dirs and inner script...'
-mkdir -p \"$CTR_APPDIR/logs\" \"$CTR_APPDIR/logs/tmux-logs\"
+mkdir -p \"$CTR_APPDIR/.org/logs\" \"$CTR_APPDIR/.org/logs/tmux-logs\"
 
 cat > \"$INNER_SCRIPT\" <<'EOS'
 set -Eeuo pipefail
@@ -164,14 +174,13 @@ EOS
 chmod +x \"$INNER_SCRIPT\"
 
 export ENTRY=\"$CTR_ENTRY\"
-export TMUX_TMPDIR=\"$CTR_APPDIR/logs/tmux-logs\"
+export TMUX_TMPDIR=\"$CTR_APPDIR/.org/logs/tmux-logs\"
 
 echo '[ctr] starting tmux -vv ...'
 tmux -vv new -A -s org bash --noprofile --norc \"$INNER_SCRIPT\" $ARGS_JOINED
 "
 
-  log "about to exec $ORG_ENGINE run (should not return)"
-
+  log "about to exec container (this should replace the current process)"
   exec "$ORG_ENGINE" run --rm -it --network host \
     -v "$MNT" \
     -w "$CTR_WORK" \
@@ -179,21 +188,17 @@ tmux -vv new -A -s org bash --noprofile --norc \"$INNER_SCRIPT\" $ARGS_JOINED
     -e ORG_FORCE_UI=console \
     -e ORG_APPDIR="$CTR_APPDIR" \
     -e ORG_CALLER_CWD="$CTR_WORK" \
-    -e ORG_LOG_DIR="$CTR_APPDIR/logs" \
-    -e ORG_LOG_FILE="$CTR_APPDIR/logs/$(basename "$LOG_FILE_HOST")" \
+    -e ORG_LOG_DIR="$CTR_APPDIR/.org/logs" \
+    -e ORG_LOG_FILE="$CTR_APPDIR/.org/logs/$(basename "$LOG_FILE_HOST")" \
     -e ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}" \
     "$ORG_IMAGE" bash -lc "$CREATE_AND_RUN"
 }
 
-
-
-
-
 # -------------------
 # Dispatch
 # -------------------
-case "$UI" in
-  tmux)       run_tmux_in_container ;;
-  ""|console) run_console ;;
-  *)          err "unknown --ui value: $UI"; exit 2 ;;
+case "${UI:-${ORG_FORCE_UI:-console}}" in
+  tmux)      run_tmux_in_container "$@" ;;
+  ""|console) run_console "$@" ;;
+  *)         err "unknown --ui value: ${UI}"; exit 2 ;;
 esac
