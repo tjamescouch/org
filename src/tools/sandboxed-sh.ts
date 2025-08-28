@@ -295,6 +295,7 @@ export async function shInteractive(
 
   const child = spawn(engine, argv, { stdio: "inherit" });
   return await new Promise<{ code: number }>((resolve) => {
+    child.on("data", (chunk) => resolve({ Logger.streamInfo(chunk); }));
     child.on("close", (code) => resolve({ code: code ?? 0 }));
     child.on("exit",  (code) => resolve({ code: code ?? 0 }));
   });
