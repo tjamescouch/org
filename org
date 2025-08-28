@@ -1,78 +1,110 @@
 #!/usr/bin/env bash
-# org: robust launcher for the repo's Bun entrypoint.
-# - Resolves symlinks to find the repo path.
-# - Preserves caller's CWD (runs agents in the directory you invoked `org` from).
-# - Makes Bun discoverable even when PATH is sanitized (non-interactive shells, sudo).
-# - Allows manual override via ORG_BUN / BUN_BIN.
-set -euo pipefail
+# Host-side launcher for "org". No docker/podman knowledge required.
+# Usage:
+#   ./org --ui tmux
+#   ./org --ui console
+#   ./org --rebuild   (force rebuild of the image)
+#
+# Optional env you can set on the host:
+#   ORG_IMAGE=localhost/org-build:debian-12
+#   ORG_CONTAINERFILE=Containerfile
+#   OPENAI_BASE_URL (defaults to host.<engine>.internal:11434/v1)
+#   OPENAI_API_KEY
 
-# --- resolve repo directory (follow symlinks) ---------------------------------
-SELF="$0"
-if command -v python3 >/dev/null 2>&1; then
-  REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SELF")"
-elif command -v readlink >/dev/null 2>&1; then
-  # BSD readlink may lack -f; this still helps if available
-  REAL="$(readlink -f "$SELF" 2>/dev/null || echo "$SELF")"
+set -Eeuo pipefail
+
+# ---------------------------
+# Detect container engine
+# ---------------------------
+if command -v podman >/dev/null 2>&1; then
+  ENGINE="${ORG_ENGINE:-podman}"
+elif command -v docker >/dev/null 2>&1; then
+  ENGINE="${ORG_ENGINE:-docker}"
 else
-  REAL="$SELF"
-fi
-APPDIR="$(cd "$(dirname "$REAL")" && pwd)"
-
-RUNNER="$APPDIR/runner.ts"
-ENTRY="$APPDIR/src/app.ts"
-
-# --- environment --------------------------------------------------------------
-# Expose repo-local helpers first
-export PATH="$APPDIR:$APPDIR/scripts:$PATH"
-
-# Ensure Bun is discoverable even when PATH is sanitized (non-interactive, sudo)
-PATH="$HOME/.bun/bin:/usr/local/bin:/usr/bin:$PATH"
-
-# If invoked via sudo, also try the invoking user's ~/.bun/bin
-if [[ -n "${SUDO_USER:-}" ]]; then
-  SUDO_HOME="$(getent passwd "$SUDO_USER" 2>/dev/null | awk -F: '{print $6}')"
-  [[ -z "${SUDO_HOME:-}" ]] && SUDO_HOME="/home/$SUDO_USER"
-  if [[ -d "$SUDO_HOME/.bun/bin" ]]; then
-    PATH="$SUDO_HOME/.bun/bin:$PATH"
-  fi
-fi
-export PATH
-
-# Respect explicit caller override of working directory
-export ORG_CALLER_CWD="${ORG_CALLER_CWD:-$(pwd)}"
-export ORG_ENTRY="$ENTRY"
-export ORG_APPDIR="$APPDIR"
-
-# --- resolve Bun binary -------------------------------------------------------
-# Allow override via ORG_BUN or BUN_BIN
-BUN_BIN="${ORG_BUN:-${BUN_BIN:-}}"
-if [[ -z "${BUN_BIN:-}" ]]; then
-  if command -v bun >/dev/null 2>&1; then
-    BUN_BIN="$(command -v bun)"
-  else
-    for p in "$HOME/.bun/bin/bun" "/usr/local/bin/bun" "/usr/bin/bun"; do
-      if [[ -x "$p" ]]; then BUN_BIN="$p"; break; fi
-    done
-  fi
-fi
-
-if [[ -z "${BUN_BIN:-}" ]]; then
-  echo "org: bun not found. PATH=$PATH" >&2
-  echo "hint: install Bun (curl -fsSL https://bun.sh/install | bash) or set ORG_BUN=/path/to/bun" >&2
+  echo "[org][error] neither podman nor docker found in PATH." >&2
   exit 127
 fi
 
-# --- optional debug -----------------------------------------------------------
-if [[ "${ORG_DEBUG:-}" == "1" || "${DEBUG:-}" == "1" ]]; then
-  {
-    echo "[org] APPDIR=$APPDIR"
-    echo "[org] RUNNER=$RUNNER"
-    echo "[org] ORG_CALLER_CWD=$ORG_CALLER_CWD"
-    echo "[org] bun=$BUN_BIN"
-    echo "[org] PATH=$PATH"
-  } >&2
+# Host alias for reaching services on the host from inside the container
+if [[ "$ENGINE" == "podman" ]]; then
+  HOST_ALIAS="host.containers.internal"
+else
+  HOST_ALIAS="host.docker.internal"
 fi
 
-# --- run ----------------------------------------------------------------------
-# Keep the program's working directory as the caller's CWD.
-exec "$BUN_BIN" "$RUNNER" --cwd "$ORG_CALLER_CWD" "$@"
+# ---------------------------
+# Image + build file
+# ---------------------------
+IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
+FILE="${ORG_CONTAINERFILE:-Containerfile}"
+
+# ---------------------------
+# Parse flags
+# ---------------------------
+UI="console"
+REBUILD=0
+ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ui)
+      UI="${2:-console}"; shift 2;;
+    --rebuild)
+      REBUILD=1; shift;;
+    *)
+      ARGS+=("$1"); shift;;
+  esac
+done
+
+# ---------------------------
+# Build image (if needed / forced)
+# ---------------------------
+build_image() {
+  echo "[org] building image with $ENGINE (this can take a while)..."
+  "$ENGINE" build -t "$IMAGE" -f "$FILE" .
+  echo "[org] image built: $IMAGE"
+}
+
+if [[ $REBUILD -eq 1 ]]; then
+  build_image
+else
+  if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
+    build_image
+  fi
+fi
+
+# ---------------------------
+# Prepare run settings
+# ---------------------------
+REPO_DIR="$(pwd)"
+WORK_MOUNT="$REPO_DIR:/work"
+if [[ "$ENGINE" == "podman" ]]; then
+  # SELinux-friendly mount on Linux
+  WORK_MOUNT="$REPO_DIR:/work:Z"
+fi
+
+# Default model gateway unless you override OPENAI_BASE_URL
+OPENAI_BASE_URL="${OPENAI_BASE_URL:-http://${HOST_ALIAS}:11434/v1}"
+OPENAI_API_KEY="${OPENAI_API_KEY:-lm-studio}"
+
+RUN_BASE=( "$ENGINE" run --rm -it
+  -v "$WORK_MOUNT"
+  -w /work
+  -e ORG_APPDIR=/work
+  -e OPENAI_BASE_URL="$OPENAI_BASE_URL"
+  -e OPENAI_API_KEY="$OPENAI_API_KEY"
+  "$IMAGE"
+)
+
+# ---------------------------
+# Launch
+# ---------------------------
+if [[ "$UI" == "tmux" ]]; then
+  # Use the container-side tmux launcher (see file below).
+  exec "${RUN_BASE[@]}" bash -lc 'bash /work/org/launcher/tmux.sh'
+else
+  # Console UI (no tmux). Pass through any extra args you gave `./org`.
+  # If you use --prompt "..." etc., make sure you quote on the host.
+  CMD=(bun /work/src/app.ts --ui console "${ARGS[@]}")
+  exec "${RUN_BASE[@]}" bash -lc "$(printf '%q ' "${CMD[@]}")"
+fi
