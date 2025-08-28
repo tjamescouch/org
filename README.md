@@ -1,4 +1,4 @@
-
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 # org
 
 _Agentic dev helpers that can “do things” in your repo while you watch, review,
