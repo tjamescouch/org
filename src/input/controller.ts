@@ -1,8 +1,15 @@
 // src/input/controller.ts
 // Sole owner of TTY input in raw mode, driven by a small FSM.
-// This revision makes 'i' interjection deterministic and shields the prompt
-// from console line-fills (".... INFO"). It also keeps ESC/Ctrl+C/Ctrl+Z
-// behavior and preserves the test helper API.
+//
+// This revision adds *stateful suppression* of console "fill" writes
+// (dotted leaders + right-edge INFO) while the user prompt is active.
+// It also ensures the 'You: ' banner renders on a clean line.
+//
+// Behavior preserved from earlier edits:
+//   - ESC triggers graceful finalize (scheduler.stop() then finalizer()).
+//   - Ctrl+C fast-exits in real runs (no finalize); disabled in tests.
+//   - Ctrl+Z suspends and raw-mode is re-armed on SIGCONT.
+//   - No double-delivery of user input (resolve prompt OR forward background).
 
 import { R } from "../runtime/runtime";
 import { Logger } from "../logger";
@@ -17,8 +24,8 @@ export interface InputControllerOptions {
   interjectBanner?: string;       // default: 'You: '
   finalizer?: () => Promise<void> | void;
   exitOnEsc?: boolean;            // default: true
-  fastExitOnCtrlC?: boolean;      // default: true outside tests
-  suspendOnCtrlZ?: boolean;       // default: true outside tests
+  fastExitOnCtrlC?: boolean;      // default: true (real runs), false in tests
+  suspendOnCtrlZ?: boolean;       // default: true (real runs), false in tests
 }
 
 export class InputController {
@@ -32,12 +39,13 @@ export class InputController {
   private rawWasOn = false;
   private keyDebug = false;
 
-  // when an agent asks @@user a question
+  // When an agent asks @@user a question:
   private pendingResolve: ((s: string) => void) | null = null;
 
-  // newline hygiene + output guard
+  // Output hygiene & suppression while prompting:
   private lastWriteEndedWithNewline = true;
   private originalStdoutWrite: ((chunk: any, ...rest: any[]) => any) | null = null;
+  private suppressFillUntilNL = false; // when true, drop writes until we see '\n'
 
   // ---- static hooks (used by tty-guard etc.) ----
   private static _active: InputController | null = null;
@@ -71,20 +79,29 @@ export class InputController {
 
     this.keyDebug = (R.env.ORG_KEY_DEBUG === "1" || R.env.DEBUG === "1");
 
-    // Wrap stdout.write to track newline state *and* suppress line-fills while prompting.
+    // Wrap stdout.write to:
+    //  (1) track newline hygiene,
+    //  (2) drop "fill" writes while prompting, even if they arrive in partial chunks.
     try {
       const out: any = R.stdout as any;
       this.originalStdoutWrite = out.write.bind(out);
       out.write = (chunk: any, ...rest: any[]) => {
-        let s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+        const s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
 
-        // When prompt is active, drop pure "line-fill" writes (mostly dots + ANSI + 'INFO')
-        if (this.isPromptActive() && looksLikeFill(s)) {
-          // Keep a breadcrumb once per second to aid debugging
-          if (this.keyDebug) {
-            try { (R.stderr as any).write?.("[input] suppressed fill while prompting\n"); } catch {}
+        // Stateful suppression: if we're in a prompt and either
+        //  - already suppressing until newline, or
+        //  - this chunk looks like (part of) the dotted "fill" line,
+        // then drop it; when we eventually see a newline, stop suppressing.
+        if (this.isPromptActive()) {
+          if (this.suppressFillUntilNL || isLikelyFillChunk(s)) {
+            if (!this.suppressFillUntilNL) {
+              this.suppressFillUntilNL = true;
+              if (this.keyDebug) try { (R.stderr as any).write?.("[input] suppressing fill\n"); } catch {}
+            }
+            if (s.includes("\n")) this.suppressFillUntilNL = false;
+            // Consume but do not print.
+            return true;
           }
-          return true;
         }
 
         if (s.length) this.lastWriteEndedWithNewline = /\n$/.test(s);
@@ -102,7 +119,7 @@ export class InputController {
         banner: this.opts.interjectBanner,
         interjectKey: this.opts.interjectKey,
         onSubmit: (text) => this.submitText(text),
-        onCancel:  () => this.setUIBusy(false),     // leaving prompt
+        onCancel:  () => { /* leaving prompt; no special action */ },
         onEscapeIdle: () => this.handleEscapeIdle(),
       }
     );
@@ -173,6 +190,7 @@ export class InputController {
       return;
     }
 
+    // Decode normally
     const ev = decodeKey(chunk);
     if (this.keyDebug) {
       try { R.stderr.write(`[key] ${JSON.stringify(ev)}\n`); } catch {}
@@ -250,9 +268,9 @@ export class InputController {
     return await new Promise<string>((resolve) => {
       this.pendingResolve = (s: string) => {
         this.pendingResolve = null;
+        this.suppressFillUntilNL = false; // stop suppressing after submit
         const out = (s ?? "");
         Logger.debug(`[input] prompt resolved (${out.length} chars)`);
-        this.setUIBusy(false); // leaving prompt
         resolve(out);
       };
       this.openInterjectNow();
@@ -265,6 +283,7 @@ export class InputController {
 
     if (hadPrompt) {
       const resolve = this.pendingResolve; this.pendingResolve = null;
+      this.suppressFillUntilNL = false;
       try { resolve!(text); } catch {}
       // do NOT also forward to scheduler
       return;
@@ -287,20 +306,8 @@ export class InputController {
     return !!this.pendingResolve;
   }
 
-  private setUIBusy(b: boolean) {
-    try {
-      const anyR = R as any;
-      if (typeof anyR.setUIBusy === "function") { anyR.setUIBusy(b); return; }
-      if ("uiBusy" in anyR) { anyR.uiBusy = b; return; }
-      (anyR as any).UIBusy = b; // best-effort; some code checks this name
-    } catch { /* ignore */ }
-  }
-
   private openInterjectNow() {
-    this.setUIBusy(true);
-
-    // Ensure clean line: CR + clear-to-EOL + (optional) newline if previous write didn't end with one.
-    // Use CSI K to clear any right-edge adornments.
+    // Ensure we start on a clean line and clear any right-edge adornments.
     try {
       if (!this.lastWriteEndedWithNewline) {
         R.stdout.write("\r\x1b[K\n");
@@ -310,13 +317,12 @@ export class InputController {
       this.lastWriteEndedWithNewline = true;
     } catch {}
 
-    // Drive FSM as if user hit the configured hotkey.
+    // Drive FSM as if user hit the hotkey.
     this.fsm.handle({ type: "char", data: this.opts.interjectKey });
   }
 
   private writeFromFSM(s: string) {
-    // If the FSM is printing the banner, force a clean line first (again),
-    // then print the banner without trailing adornments.
+    // If FSM is printing the banner, clear the line first.
     const isBanner = s === this.opts.interjectBanner || s.endsWith(this.opts.interjectBanner);
     if (isBanner) {
       try { R.stdout.write("\r\x1b[K"); } catch {}
@@ -346,19 +352,38 @@ export class InputController {
   }
 }
 
-// Heuristic: “fill” lines are mostly dots/spaces/ANSI and end with INFO token.
-function looksLikeFill(s: string): boolean {
-  if (!s) return false;
-  // fast paths
-  if (s.indexOf("INFO") === -1 && s.indexOf("INFO".toLowerCase()) === -1) return false;
-  // strip ANSI
-  const stripped = s.replace(/\x1B\[[0-9;]*m/g, "");
-  // allow dotted leaders + the word INFO near the end
-  return /^[\s.\-•]*INFO\s*$/.test(stripped) || /\sINFO\s*$/.test(stripped);
+/* -------------------------------------------------------------------------- */
+/* Fill detection helpers                                                      */
+/* -------------------------------------------------------------------------- */
+
+/** Does this chunk look like part of the dotted "fill" line? */
+function isLikelyFillChunk(chunk: string): boolean {
+  if (!chunk) return false;
+
+  // Strip ANSI SGR sequences
+  const s = chunk.replace(/\x1B\[[0-9;]*m/g, "");
+
+  // If the chunk contains an explicit INFO token (often at the end), it's a fill.
+  if (/\bINFO\b\s*$/.test(s)) return true;
+
+  // Heuristic for partial fills: high ratio of filler glyphs (., space, bullets, box-drawings).
+  const filler = s.replace(/[.\s•·\u2500-\u257F\u2591-\u2593\-_|\\]/g, "");
+  const nonFillerLen = filler.length;
+  const total = s.length;
+
+  // If >80% of visible characters are filler glyphs AND there are no letters,
+  // treat as a fill segment.
+  if (total > 0) {
+    const letters = /[A-Za-z]/.test(s);
+    const fillerRatioHigh = (total - nonFillerLen) / total >= 0.8;
+    if (fillerRatioHigh && !letters) return true;
+  }
+
+  return false;
 }
 
 /* -------------------------------------------------------------------------- */
-/* Test helper: makeControllerForTests (back-compat)                          */
+/* Test helper: makeControllerForTests (back-compat)                           */
 /* -------------------------------------------------------------------------- */
 export function makeControllerForTests(
   opts: InputControllerOptions & { scheduler?: any } = {},
