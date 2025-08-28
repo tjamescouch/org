@@ -1,39 +1,62 @@
-// src/ui/tmux/index.ts
-import { spawnSync } from "node:child_process";
-import type { TmuxScope } from "../../cli/doctor";
+import * as path from "path";
+import * as fsp from "fs/promises";
+import { Logger } from "../../logger";
+import { shCapture, shInteractive } from "../../tools/sandboxed-sh";
 
-// From your sandbox layer; adapt names if needed.
-import { shInteractive, shCapture } from "../../tools/sandboxed-sh";
+export interface TmuxLaunchOpts {
+  /** Host project directory that is mounted at /work in the sandbox. */
+  projectDir?: string;
+  /** Agent session id (sandbox key). */
+  agentSessionId?: string;
+  /** Entry file to run with bun inside the sandbox. Defaults to /work/src/app.ts */
+  entry?: string;
+}
 
 /**
- * Launch org inside a tmux session.
- * - scope 'host': run the host's tmux
- * - scope 'container': run tmux inside the sandbox (container/VM)
+ * Launch the UI inside a tmux session that runs **in the sandbox**.
+ * Falls back to a clear error only if tmux is genuinely missing in the image.
  */
-export async function launchTmuxUI(argv: string[], scope: TmuxScope): Promise<number> {
-  // Avoid recursion if we're already inside tmux or after re-exec.
-  if (process.env.TMUX || process.env.ORG_TMUX === "1") return 0;
+export async function launchTmuxUI(opts: TmuxLaunchOpts = {}): Promise<{ code: number }> {
+  // Robust defaults so we never pass undefined opts to shCapture/shInteractive.
+  const projectDir = opts.projectDir ?? process.env.ORG_CALLER_CWD ?? process.cwd();
+  const agentSessionId = opts.agentSessionId ?? "default";
+  const entry = opts.entry ?? "/work/src/app.ts";
 
-  const payload = `export ORG_TMUX=1; exec ${argv.map(a => JSON.stringify(a)).join(" ")}`;
-  const tmuxArgs = ["new-session", "-A", "-D", "-s", "org", "bash", "-lc", payload];
+  Logger.info("[org/tmux] launcher start", { projectDir, agentSessionId, entry });
 
-  if (scope === "host") {
-    const r = spawnSync("tmux", tmuxArgs, { stdio: "inherit" });
-    return r.status ?? 0;
-  }
+  // Verify tmux exists **inside the sandbox** (not on host).
+  // Use POSIX 'command -v' (portable even if 'which' is absent).
+  const check = await shCapture(
+    `sh -lc 'command -v tmux >/dev/null 2>&1 && echo OK || echo MISSING'`,
+    { projectDir, agentSessionId }
+  );
 
-  // container/VM path: use sandbox shell with a TTY and inherited stdio
-  // (so tmux can control the terminal)
-  const check = await shCapture("bash -lc 'command -v tmux'");
-  if (check.code !== 0) {
-    // bubble up a readable error — your caller can decide what to show
-    process.stderr.write("tmux not found inside the sandbox. Install it in the image.\n");
-    return 1;
-  }
-
-  const r = await shInteractive(["tmux", ...tmuxArgs], {
-    tty: true,          // allocate TTY inside sandbox
-    inheritStdio: true, // hook container stdio to the user's terminal
+  Logger.info("[org/tmux] tmux check", {
+    code: check.code,
+    stdout: check.stdout.trim(),
+    stderr: check.stderr.trim(),
   });
-  return r.code ?? 0;
+
+  if (check.code !== 0 || check.stdout.trim() !== "OK") {
+    throw new Error(
+      "tmux not found in the sandbox image. Please add tmux to the image used for the sandbox."
+    );
+  }
+
+  // Ensure a place for tmux verbose logs inside the mounted project.
+  const tmuxLogsDir = path.join(projectDir, ".org", "logs", "tmux-logs");
+  try { await fsp.mkdir(tmuxLogsDir, { recursive: true }); } catch { /* best-effort */ }
+
+  // Run tmux inside the sandbox, and start our app in console mode within it.
+  // - TMUX_TMPDIR points to a writeable path under /work so logging works.
+  // - We attach the caller TTY via shInteractive, so Ctrl+C etc behave.
+  const cmd = `bash -lc "TMUX_TMPDIR=/work/.org/logs/tmux-logs tmux -vv new-session -A -s org 'bun ${entry} --ui console'"`;
+  Logger.info("[org/tmux] exec", { cmd });
+
+  const result = await shInteractive(cmd, { projectDir, agentSessionId });
+
+  Logger.info("[org/tmux] tmux exited", { code: result.code });
+  return result;
 }
+
+export default launchTmuxUI;
