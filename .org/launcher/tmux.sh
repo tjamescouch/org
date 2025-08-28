@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Robust tmux launcher that respects --ui and falls back to console when tmux
-# is not present. It never depends on console.sh being executable; we run it
-# via bash to avoid "Permission denied" on non-+x files.
+# tmux launcher that respects --ui, robustly finds tmux in the *current OS*,
+# and falls back to the console launcher when tmux is unavailable.
+# Notes:
+# - UI runs in the current shell environment (VM/host), not inside the sandbox container.
+# - Set ORG_TMUX_BIN=/abs/path/to/tmux to hard-override detection.
+# - Set ORG_DEBUG_LAUNCHER=1 for diagnostics.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -13,22 +16,22 @@ PANE_TITLE="${ORG_TMUX_PANE_TITLE:-org}"
 LOG_DIR="${ROOT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 
-# ----- collect forwarded args (from env and/or argv) -------------------------
+debug() { [[ "${ORG_DEBUG_LAUNCHER:-0}" == "1" ]] && echo "[launcher] $*" >&2 || true; }
+
+# ---------- collect forwarded args (env + argv) ----------
 FWD="${ORG_FWD_ARGS-}"
 declare -a ORG_ARGS=()
-# include arguments passed directly to this script (if any)
 if [[ $# -gt 0 ]]; then ORG_ARGS+=("$@"); fi
-# include arguments forwarded via env string
-if [[ -n "${FWD}" ]]; then
-  # shellwords-ish split (caller should quote; this is best-effort)
+if [[ -n "$FWD" ]]; then
+  # best-effort split; upstream should quote values containing spaces
   read -r -a _arr <<<"$FWD"
   ORG_ARGS+=("${_arr[@]}")
 fi
+debug "argv: ${ORG_ARGS[*]}"
 
-# ----- determine requested UI ------------------------------------------------
-UI="${ORG_UI-}"   # explicit env overrides CLI
-if [[ -z "${UI}" ]]; then
-  # parse --ui console|tmux or --ui=console|tmux
+# ---------- determine requested UI ----------
+UI="${ORG_UI-}"
+if [[ -z "$UI" ]]; then
   for ((i=0; i<${#ORG_ARGS[@]}; i++)); do
     a="${ORG_ARGS[$i]}"
     if [[ "$a" == "--ui" ]]; then
@@ -41,10 +44,11 @@ if [[ -z "${UI}" ]]; then
   done
 fi
 UI="${UI:-tmux}"
+debug "UI=${UI}"
 
-# ---- delegate to console launcher (via bash) when requested or required ----
+# ---------- console delegate (always via bash; no +x required) ----------
 console_delegate() {
-  # Always invoke through bash to avoid permission issues on console.sh
+  debug "delegating to console.sh"
   exec bash "${SCRIPT_DIR}/console.sh" "${ORG_ARGS[@]}"
 }
 
@@ -52,12 +56,35 @@ if [[ "${UI}" != "tmux" ]]; then
   console_delegate
 fi
 
-if ! command -v tmux >/dev/null 2>&1; then
+# ---------- robust tmux discovery ----------
+find_tmux() {
+  local cand
+  # explicit override
+  if [[ -n "${ORG_TMUX_BIN-}" && -x "${ORG_TMUX_BIN}" ]]; then
+    echo "${ORG_TMUX_BIN}"; return 0
+  fi
+  # PATH lookup (may fail in non-login shells)
+  cand="$(command -v tmux 2>/dev/null || true)"
+  if [[ -n "$cand" && -x "$cand" ]]; then
+    echo "$cand"; return 0
+  fi
+  # common absolute locations
+  for cand in /usr/bin/tmux /bin/tmux /usr/local/bin/tmux /opt/homebrew/bin/tmux; do
+    [[ -x "$cand" ]] && { echo "$cand"; return 0; }
+  done
+  return 1
+}
+
+TMUX_BIN="$(find_tmux || true)"
+debug "PATH=${PATH}"
+debug "TMUX_BIN=${TMUX_BIN:-<none>}"
+
+if [[ -z "${TMUX_BIN}" ]]; then
   echo "tmux not found. Falling back to console UI." >&2
   console_delegate
 fi
 
-# ----- choose runtime for the app -------------------------------------------
+# ---------- choose runtime for the app ----------
 ENTRY="${ROOT_DIR}/src/app.ts"
 declare -a RUN
 if command -v bun >/dev/null 2>&1; then
@@ -69,15 +96,15 @@ elif command -v tsx >/dev/null 2>&1; then
 else
   RUN=(node --loader ts-node/esm "${ENTRY}")
 fi
-
-# Build a safely-quoted command for tmux to run
 printf -v RUN_CMD '%q ' "${RUN[@]}" "${ORG_ARGS[@]}"
 START_CMD="cd ${ROOT_DIR} && LOG_FILE=${LOG_DIR}/run-\$(date -u +%Y-%m-%dT%H-%M-%SZ).log ${RUN_CMD}"
+debug "START_CMD=${START_CMD}"
 
-# ----- start tmux session (create if missing) -------------------------------
-if ! tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
-  tmux new-session -d -s "${SESSION_NAME}" -n "${PANE_TITLE}" "${START_CMD}"
+# ---------- start/attach session ----------
+if ! "${TMUX_BIN}" has-session -t "${SESSION_NAME}" 2>/dev/null; then
+  debug "creating new tmux session: ${SESSION_NAME}"
+  "${TMUX_BIN}" new-session -d -s "${SESSION_NAME}" -n "${PANE_TITLE}" "${START_CMD}"
 fi
 
-tmux select-window -t "${SESSION_NAME}:0"
-exec tmux attach-session -t "${SESSION_NAME}"
+"${TMUX_BIN}" select-window -t "${SESSION_NAME}:0"
+exec "${TMUX_BIN}" attach-session -t "${SESSION_NAME}"
