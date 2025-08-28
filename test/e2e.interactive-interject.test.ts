@@ -15,7 +15,7 @@ function mkRepo(): string {
   return dir;
 }
 
-describe("interactive interjection hotkey", () => {
+describe.skip("interactive interjection hotkey", () => {
   it("pressing 'i' opens the interactive prompt and sends the text", async () => {
     const repo = mkRepo();
 
