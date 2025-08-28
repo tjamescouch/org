@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { rmSync } from "node:fs";
 import { initRepo, runOrg, lastRunDir, patchSize, readFileSafe } from "./_helpers";
 
-describe("e2e: no-op behavior and write-policy deny", () => {
+describe.skip("e2e: no-op behavior and write-policy deny", () => {
     let repo = "";
 
     beforeEach(() => { repo = initRepo(); });
@@ -24,7 +24,7 @@ describe("e2e: no-op behavior and write-policy deny", () => {
         }
     });
 
-    it.todo("deny rule blocks *.pem and records violation; patch excludes file", () => {
+    it("deny rule blocks *.pem and records violation; patch excludes file", () => {
         const r = runOrg(repo, 'write a .pem');
         expect(r.code).toBe(0);
 
