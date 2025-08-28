@@ -18,7 +18,7 @@ export interface TmuxLaunchOpts {
  *   so we avoid quoting pitfalls and RC=127 false negatives.
  * - Return a plain number (exit code) so callers can `process.exit(...)`.
  */
-export default async function launchTmuxUI(
+export async function launchTmuxUI(
   opts: TmuxLaunchOpts = {}
 ): Promise<number> {
   // Robust defaults so we never pass undefined to shInteractive():
