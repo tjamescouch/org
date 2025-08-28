@@ -1,12 +1,13 @@
 // src/input/controller.ts
 // Sole owner of TTY input in raw mode, driven by a small FSM.
 //
-// Focused change: remove the ugly right-edge `... INFO` lines.
-// We wrap stdout.write and DROP any line that is purely filler + `INFO`
-// (optionally starting with "You:"). Everything else passes through.
+// Targeted fix: remove/normalize right‑edge "…INFO" tails.
+//  • Pure filler (dots/spaces/box-drawing) + INFO  -> dropped
+//  • Content + filler + INFO                        -> keep content only
 //
-// Preserved: ESC finalize (once), interject hotkey, Ctrl+C fast exit in real runs,
-// Ctrl+Z suspend with raw-mode rearm, no double-delivery of user input.
+// Preserved: ESC finalize (single‑press guard), interject hotkey,
+// Ctrl+C fast exit (real runs), Ctrl+Z suspend with raw‑mode rearm,
+// and no double‑delivery of user input.
 
 import { R } from "../runtime/runtime";
 import { Logger } from "../logger";
@@ -38,10 +39,9 @@ export class InputController {
 
   private pendingResolve: ((s: string) => void) | null = null;
 
-  // ESC once guard
+  // ESC single‑press guard
   private escInProgress = false;
 
-  // --- constructor -----------------------------------------------------------
   constructor(opts: InputControllerOptions = {}) {
     const isTest =
       R.env.BUN_TESTING === "1" ||
@@ -59,10 +59,10 @@ export class InputController {
 
     this.keyDebug = (R.env.ORG_KEY_DEBUG === "1" || R.env.DEBUG === "1");
 
-    // Install a very narrow stdout filter: drop "filler + INFO" lines.
-    this.installRightInfoFilter();
+    // Install a very narrow stdout filter that only touches right‑edge INFO tails.
+    this.installRightEdgeInfoNormalizer();
 
-    // Wire FSM
+    // FSM wiring
     this.fsm = new InputFSM(
       {
         write: (s: string) => { try { R.stdout.write(s); } catch {} },
@@ -88,7 +88,8 @@ export class InputController {
     } catch { /* ignore */ }
   }
 
-  // --- public API ------------------------------------------------------------
+  // ---- public API -----------------------------------------------------------
+
   attachScheduler(s: any) {
     this.scheduler = s;
     const pick = this.pickSubmitFn(s);
@@ -110,7 +111,8 @@ export class InputController {
     }
   }
 
-  // --- stdin wiring ----------------------------------------------------------
+  // ---- stdin wiring ---------------------------------------------------------
+
   private onData = (chunk: Buffer) => {
     const s = chunk.toString("utf8");
 
@@ -180,7 +182,8 @@ export class InputController {
     }
   }
 
-  // --- behaviors -------------------------------------------------------------
+  // ---- behaviors ------------------------------------------------------------
+
   private async handleEscapeIdle() {
     try {
       const s = this.scheduler;
@@ -206,7 +209,7 @@ export class InputController {
     return await new Promise<string>((resolve) => {
       this.pendingResolve = (s: string) => {
         this.pendingResolve = null;
-        this.setUIBusy(false);      // leave prompt
+        this.setUIBusy(false); // leaving prompt: allow fills again
         const out = (s ?? "");
         Logger.debug(`[input] prompt resolved (${out.length} chars)`);
         resolve(out);
@@ -236,7 +239,8 @@ export class InputController {
     }
   }
 
-  // --- helpers ---------------------------------------------------------------
+  // ---- helpers --------------------------------------------------------------
+
   private setUIBusy(b: boolean) {
     try {
       const anyR = R as any;
@@ -247,9 +251,8 @@ export class InputController {
   }
 
   private openInterjectNow() {
-    this.setUIBusy(true);                 // pause dotted fills
-    // Clean line: CR + clear-to-EOL
-    try { R.stdout.write("\r\x1b[K"); } catch {}
+    this.setUIBusy(true);                 // pause any cosmetic fills
+    try { R.stdout.write("\r\x1b[K"); } catch {} // draw on a clean line
     this.fsm.handle({ type: "char", data: this.opts.interjectKey });
   }
 
@@ -273,48 +276,63 @@ export class InputController {
     return { fn: null, name: null };
   }
 
-  // --- stdout filter ---------------------------------------------------------
-  private installRightInfoFilter() {
+  // ---- stdout normalizer ----------------------------------------------------
+
+  /**
+   * Only touches lines that *end* with dotted/box-drawing filler + "INFO".
+   *  - If the part before INFO is pure filler (or "You:" + filler), drop the line.
+   *  - If there's real content before the filler, strip the filler + INFO and keep content.
+   * Works line-by-line; does not buffer partial chunks.
+   */
+  private installRightEdgeInfoNormalizer() {
     try {
       const out: any = R.stdout as any;
       const orig = out.write.bind(out);
 
       out.write = (chunk: any, ...rest: any[]) => {
+        let s: string;
         try {
-          const s =
+          s =
             typeof chunk === "string"
               ? chunk
               : Buffer.isBuffer(chunk)
               ? chunk.toString("utf8")
               : String(chunk ?? "");
-
-          if (s.indexOf("\n") === -1) {
-            // no newline -> pass through (avoid buffering streaming tokens)
-            return orig(chunk, ...rest);
-          }
-
-          // Process line-by-line and drop only pure filler+INFO lines.
-          let changed = false;
-          const parts = s.split(/\n/);
-          for (let i = 0; i < parts.length - 1; i++) { // full lines
-            const line = parts[i];
-            const stripped = stripAnsi(line);
-            if (isRightEdgeInfoFiller(stripped)) {
-              parts[i] = ""; // drop line
-              changed = true;
-            }
-          }
-          const rebuilt = parts.join("\n");
-          if (changed) {
-            return orig(rebuilt, ...rest);
-          }
         } catch {
-          // fall through
+          return orig(chunk, ...rest);
         }
-        return orig(chunk, ...rest);
+
+        if (s.indexOf("\n") === -1) {
+          // No newline => do not reformat streaming tokens.
+          return orig(chunk, ...rest);
+        }
+
+        const lines = s.split("\n");
+        for (let i = 0; i < lines.length - 1; i++) { // process full lines only
+          const raw = lines[i];
+          const stripped = stripAnsi(raw);
+          const normalized = normalizeRightInfoLine(stripped);
+
+          if (normalized === null) {
+            // drop the line entirely (pure filler + INFO)
+            lines[i] = "";
+          } else if (normalized !== stripped) {
+            // replaced content; we lose ANSI coloring on that line (acceptable for filler lines)
+            lines[i] = normalized;
+          } // else leave as-is
+        }
+
+        const rebuilt = lines.join("\n");
+        return orig(rebuilt, ...rest);
       };
     } catch { /* ignore */ }
   }
+
+  // ---- static hook for tty-guard -------------------------------------------
+  private static _active: InputController | null = null;
+  static disableKeys() { this._active?._detachKeys(); }
+  static enableKeys() { this._active?._attachKeys(); }
+  private _detachKeys() { try { R.stdin.off?.("data", this.onData); } catch {}; this.disableRaw(); }
 }
 
 // Normalize interject hotkey detection across decodeKey shapes.
@@ -326,32 +344,45 @@ function isInterjectHotkey(ev: any, key: string): boolean {
   return false;
 }
 
-// --- helpers for the stdout filter ------------------------------------------
+/* -------------------------- right-edge INFO helpers ------------------------ */
 
 /** Strip ANSI SGR/control sequences. */
 function stripAnsi(s: string): string {
-  return s.replace(/\x1B\[[0-9;]*[A-Za-z]/g, "");
+  // Generic CSI + final byte
+  return s.replace(/\x1B\[[0-9;?]*[ -/]*[@-~]/g, "");
 }
+
+const FILL_RE = /[.\s•·\u2500-\u257F\u2591-\u2593_\-|\\]/;
 
 /**
- * Return true if the *entire* line is just filler + "INFO" (optionally "You:" prefix).
- * Examples that will be dropped:
- *   "........................................INFO"
- *   "You: ................................. INFO"
- *   "                                     INFO"
+ * If the line ends with filler + INFO:
+ *  • returns null  => drop (it was only filler)
+ *  • returns new string => content preserved, trailing filler+INFO removed
+ *  • returns original line => untouched
  */
-function isRightEdgeInfoFiller(strippedLine: string): boolean {
-  const line = strippedLine.trimEnd(); // keep left spaces
-  if (!line.endsWith("INFO")) return false;
-  const body = line.slice(0, -4); // remove trailing "INFO"
-  const noYou = body.replace(/^You:\s*/i, "");
-  // purely filler (dots/spaces/box-drawing etc.)?
-  return /^[.\s•·\u2500-\u257F\u2591-\u2593_\-\\|]*$/.test(noYou);
+function normalizeRightInfoLine(strippedLine: string): string | null {
+  const line = strippedLine.replace(/\r$/, "");
+
+  // Must end with "INFO" (optionally trailing spaces)
+  const m = line.match(/^(.*?)(\s*)([.\s•·\u2500-\u257F\u2591-\u2593_\-|\\]*?)\s*INFO\s*$/);
+  if (!m) return line;
+
+  const left = m[1];          // content before filler
+  const filler = m[3] || "";  // dotted leaders before INFO
+
+  // If left is empty or is just "You:" (prompt) optionally with spaces,
+  // then the whole thing is cosmetic -> drop.
+  if (!left.trim() || /^You:\s*$/i.test(left)) {
+    return null;
+  }
+
+  // If "left" has real content, strip the trailing filler+INFO and keep it.
+  // Also trim any trailing spaces introduced by removal.
+  const kept = left.replace(/\s+$/g, "");
+  return kept;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Test helper: makeControllerForTests (back-compat)                           */
-/* -------------------------------------------------------------------------- */
+/* ------------------------------ test helper ------------------------------- */
 export function makeControllerForTests(
   opts: InputControllerOptions & { scheduler?: any } = {},
 ): {
