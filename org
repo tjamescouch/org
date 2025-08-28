@@ -104,37 +104,37 @@ run_console() {
 run_tmux_in_container() {
   log "ui=tmux (enter run_tmux_in_container)"
 
-  local CTR_APPDIR="/work/.org"
-  local CTR_WORK="/work"
-  local CTR_ENTRY="$CTR_APPDIR/src/app.ts"
-  local SRC="$APPDIR"
-  local MNT="$SRC:$CTR_APPDIR:Z"
+  # ---- IMPORTANT: mount the whole project to /work
+  # We already computed/exported ORG_CALLER_CWD=PROJ earlier in the script.
+  local PROJ="${ORG_CALLER_CWD:-$PWD}"
+  if git -C "$PROJ" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    PROJ="$(git -C "$PROJ" rev-parse --show-toplevel)"
+  fi
 
-  # Host-side logs + tmux debug logs
+  local CTR_WORK="/work"
+  local CTR_APPDIR="$CTR_WORK/.org"
+  local CTR_ENTRY="$CTR_APPDIR/src/app.ts"
+  local MNT="$PROJ:$CTR_WORK:Z"
+
+  # Host logs + tmux logs
   mkdir -p "$APPDIR/logs/tmux-logs" || true
   local LOG_DIR_HOST="$APPDIR/logs"
   local LOG_FILE_HOST="$LOG_DIR_HOST/tmux-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
 
-  log "host log dir: $LOG_DIR_HOST"
-  log "host log file: $LOG_FILE_HOST"
+  log "project root: $PROJ"
   log "mount: $MNT"
+  log "host log file: $LOG_FILE_HOST"
 
-  # Join user args safely once (host side)
+  # Join args once, safely
   local ARGS_JOINED=""
   if [ ${#args[@]} -gt 0 ]; then
-    for a in "${args[@]}"; do
-      ARGS_JOINED+=" $(printf '%q' "$a")"
-    done
+    for a in "${args[@]}"; do ARGS_JOINED+=" $(printf '%q' "$a")"; done
   fi
-  log "args: $ARGS_JOINED"
 
-  # Inner script path inside container (and also write a host copy for inspection)
+  # Inner script both host copy (for inspection) and container path
   local INNER_SCRIPT="$CTR_APPDIR/.tmux-inner.sh"
   local INNER_SCRIPT_HOST="$APPDIR/logs/.tmux-inner.sh"
-  log "inner script (ctr): $INNER_SCRIPT"
-  log "inner script (host): $INNER_SCRIPT_HOST"
 
-  # The script that runs INSIDE the container (under tmux)
   cat > "$INNER_SCRIPT_HOST" <<'EOS'
 set -Eeuo pipefail
 umask 0002
@@ -158,7 +158,6 @@ exit "$ec"
 EOS
   chmod +x "$INNER_SCRIPT_HOST" || true
 
-  # Command that creates the inner script inside container, then runs tmux with -vv (tmux debug logs)
   local CREATE_AND_RUN="
     set -Eeuo pipefail
     umask 0002
@@ -175,7 +174,7 @@ EOS
     tmux -vv new -A -s org bash --noprofile --norc \"$INNER_SCRIPT\" $ARGS_JOINED
   "
 
-  log "about to exec $ORG_ENGINE run ... (this should not return)"
+  log "about to exec $ORG_ENGINE run (should not return)"
 
   exec "$ORG_ENGINE" run --rm -it --network host \
     -v "$MNT" \
@@ -189,6 +188,7 @@ EOS
     -e ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}" \
     "$ORG_IMAGE" bash -lc "$CREATE_AND_RUN"
 }
+
 
 
 
