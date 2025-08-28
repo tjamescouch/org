@@ -46,7 +46,7 @@ These are strongly recommended for day-to-day use:
    - dropped capabilities and `--userns=keep-id`.
    This shrinks the blast radius for accidental commands.
 
-3. **Keep “safe mode” on**  
+3. **Keep “safe mode” on (optional)**  
    The `--safe` flag (or `SAFE_MODE=1`) preserves additional guardrails. Treat
    the `sh` tool as untrusted input even in safe mode; guards are heuristics.
 

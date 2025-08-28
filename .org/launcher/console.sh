@@ -23,4 +23,3 @@ fi
 
 log "bun not found"
 exit 127
-

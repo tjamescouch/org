@@ -1,4 +1,4 @@
-import InputController from "./controller";
+import { InputController } from "./controller";
 import { Logger } from "../logger";
 
 // Install once

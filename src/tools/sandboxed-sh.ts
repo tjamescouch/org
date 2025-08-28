@@ -1,3 +1,4 @@
+// src/tools/sandboxed-sh.ts
 import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
@@ -20,7 +21,20 @@ export interface ToolCtx {
   idleHeartbeatMs?: number;
 }
 
+/** Result for capture/interactive convenience helpers. */
+export type ShRunResult = { code: number; ok: boolean; out?: string; err?: string };
+
+/* ------------------------------------------------------------------ *
+ * Module state
+ * ------------------------------------------------------------------ */
+
 let HEARTBEAT_MUTED = false;
+let LAST_SESSION_KEY: string | null = null;
+
+/** External readers (e.g. UI) can ask which session was last used here. */
+export function currentSandboxSessionKey(): string | null {
+  return LAST_SESSION_KEY;
+}
 
 export function setShHeartbeatMuted(muted: boolean) {
   HEARTBEAT_MUTED = muted;
@@ -169,6 +183,77 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
 
   return { ok: step.ok, stdout: out, stderr: err, exit_code: step.exit, cmd: args.cmd };
 }
+
+/* ------------------------------------------------------------------ *
+ * Convenience helpers used by UI and tests
+ * ------------------------------------------------------------------ */
+
+/** Run a command in the sandbox and return stdout/stderr/exit code (no live streaming). */
+export async function shCapture(
+  cmd: string,
+  opts: { projectDir: string; agentSessionId?: string; runRoot?: string }
+): Promise<ShRunResult> {
+  const sessionKey = opts.agentSessionId ?? "default";
+  const { session } = await ensureSession(opts.projectDir, sessionKey, opts.runRoot);
+
+  // Prefer a first-class capture if session implements one.
+  if (typeof (session as any).execCapture === "function") {
+    const r = await (session as any).execCapture(cmd);
+    return { code: r.exit ?? r.code ?? 0, ok: !!r.ok, out: r.stdout ?? "", err: r.stderr ?? "" };
+  }
+
+  // Fallback: normal exec + read artifacts
+  const r = await (session as any).exec(cmd);
+  const out = fs.existsSync(r.stdoutFile) ? fs.readFileSync(r.stdoutFile, "utf8") : "";
+  const err = fs.existsSync(r.stderrFile) ? fs.readFileSync(r.stderrFile, "utf8") : "";
+  return { code: r.exit ?? 0, ok: !!r.ok, out, err };
+}
+
+/**
+ * Run an interactive command in the sandbox, wiring stdio to the user's terminal.
+ * Requires the sandbox session to support a TTY execution method.
+ */
+export async function shInteractive(
+  cmd: string | string[],
+  opts: {
+    projectDir: string;
+    agentSessionId?: string;
+    runRoot?: string;
+    tty?: boolean;
+    inheritStdio?: boolean;
+    env?: Record<string, string>;
+    cwd?: string;
+  }
+): Promise<ShRunResult> {
+  const sessionKey = opts.agentSessionId ?? "default";
+  const { session } = await ensureSession(opts.projectDir, sessionKey, opts.runRoot);
+
+  const argsArray = Array.isArray(cmd) ? cmd : ["bash", "-lc", cmd];
+
+  if (typeof (session as any).execInteractive === "function") {
+    const r = await (session as any).execInteractive(argsArray, {
+      tty: !!opts.tty,
+      inheritStdio: !!opts.inheritStdio,
+      env: opts.env,
+      cwd: opts.cwd,
+    });
+    return { code: r.exit ?? r.code ?? 0, ok: (r.exit ?? 0) === 0 };
+  }
+
+  // If the backend cannot create a TTY, give a helpful message.
+  Logger.error(
+    "Interactive execution is not supported by this sandbox session. " +
+    "Your backend must provide a TTY-capable exec (e.g., `podman exec -it`)."
+  );
+
+  // Fallback: run without TTY so at least returns something.
+  const r = await (session as any).exec(argsArray.join(" "));
+  return { code: r.exit ?? 0, ok: !!r.ok };
+}
+
+/* ------------------------------------------------------------------ *
+ * Finalizers & misc
+ * ------------------------------------------------------------------ */
 
 export async function finalizeSandbox(ctx: ToolCtx) {
   const sessionKey = ctx.agentSessionId ?? "default";

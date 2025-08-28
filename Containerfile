@@ -67,13 +67,15 @@ RUN set -eux; \
   printf '%s\n' \
 '#!/usr/bin/env bash' \
 'set -euo pipefail' \
-'# If project provides its own helper, defer to it:' \
-'if [ -x /work/.org/bin/apply_patch ]; then' \
-'  exec /work/.org/bin/apply_patch "$@"' \
+'' \
+'# Prefer a project-local helper if present (works both under container and host-like envs).' \
+'WORK_ROOT="${ORG_WORK:-${ORG_CALLER_CWD:-/work}}"' \
+'PROJ_HELPER="$WORK_ROOT/.org/bin/apply_patch"' \
+'if [ -x "$PROJ_HELPER" ]; then' \
+'  exec "$PROJ_HELPER" "$@"' \
 'fi' \
 '' \
 '# Otherwise accept unified diff from stdin or -f <file> and apply safely.' \
-'WORK_ROOT="${ORG_WORK:-/work}"' \
 'PATCH_FILE=""' \
 'while [ $# -gt 0 ]; do' \
 '  case "$1" in' \
@@ -84,13 +86,13 @@ RUN set -eux; \
 'done' \
 '' \
 'tmp_patch="/tmp/ap.$$.patch"' \
-'if [ -z "$PATCH_FILE" ] || [ "$PATCH_FILE" = "-" ]; then' \
+'if [ -z "${PATCH_FILE:-}" ] || [ "$PATCH_FILE" = "-" ]; then' \
 '  cat > "$tmp_patch"' \
 'else' \
 '  cp "$PATCH_FILE" "$tmp_patch"' \
 'fi' \
 '' \
-'# Extract candidate paths (from diff --git ... b/...) and police them.' \
+'# Extract candidate paths and police them strictly.' \
 'mapfile -t paths < <(awk '\''/^diff --git a\\//{print $4}'\'' "$tmp_patch" | sed -E '\''s#^b/##'\'')' \
 'if [ "${#paths[@]}" -eq 0 ]; then' \
 '  echo "apply_patch: no file paths detected (expects unified diff)." >&2' \
@@ -110,12 +112,11 @@ RUN set -eux; \
 'fi' \
 '' \
 '# Dry-run first; then apply.' \
-'git -C "$WORK_ROOT" apply --index --whitespace=nowarn --check "$tmp_patch"' \
-'git -C "$WORK_ROOT" apply --index --whitespace=nowarn "$tmp_patch"' \
+'git -C "${WORK_ROOT:-/work}" apply --index --whitespace=nowarn --check "$tmp_patch"' \
+'git -C "${WORK_ROOT:-/work}" apply --index --whitespace=nowarn "$tmp_patch"' \
 'echo "apply_patch: OK"' \
 > /usr/local/bin/apply_patch \
  && chmod +x /usr/local/bin/apply_patch
 
-# Optional: patch viewer command (for tmux popup or scripts)
+# Optional: patch viewer command
 ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (command -v delta >/dev/null && delta -s --paging=never .org/last-session.patch || (echo; echo \"(delta not found; showing raw patch)\"; echo; cat .org/last-session.patch)); else echo \"No session patch found.\"; fi; echo; read -p \"Enter to close...\" _"'
-
