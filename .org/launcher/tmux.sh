@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 
 # Robust tmux launcher that respects --ui and falls back to console when tmux
-# is not present. Works even if invoked by /bin/sh callers.
+# is not present. It never depends on console.sh being executable; we run it
+# via bash to avoid "Permission denied" on non-+x files.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -26,7 +27,6 @@ fi
 
 # ----- determine requested UI ------------------------------------------------
 UI="${ORG_UI-}"   # explicit env overrides CLI
-
 if [[ -z "${UI}" ]]; then
   # parse --ui console|tmux or --ui=console|tmux
   for ((i=0; i<${#ORG_ARGS[@]}; i++)); do
@@ -42,15 +42,19 @@ if [[ -z "${UI}" ]]; then
 fi
 UI="${UI:-tmux}"
 
-# If the user asked for console, delegate immediately.
+# ---- delegate to console launcher (via bash) when requested or required ----
+console_delegate() {
+  # Always invoke through bash to avoid permission issues on console.sh
+  exec bash "${SCRIPT_DIR}/console.sh" "${ORG_ARGS[@]}"
+}
+
 if [[ "${UI}" != "tmux" ]]; then
-  exec "${SCRIPT_DIR}/console.sh" "${ORG_ARGS[@]}"
+  console_delegate
 fi
 
-# No tmux? degrade gracefully to console (do NOT error).
 if ! command -v tmux >/dev/null 2>&1; then
   echo "tmux not found. Falling back to console UI." >&2
-  exec "${SCRIPT_DIR}/console.sh" "${ORG_ARGS[@]}"
+  console_delegate
 fi
 
 # ----- choose runtime for the app -------------------------------------------
@@ -66,10 +70,13 @@ else
   RUN=(node --loader ts-node/esm "${ENTRY}")
 fi
 
+# Build a safely-quoted command for tmux to run
+printf -v RUN_CMD '%q ' "${RUN[@]}" "${ORG_ARGS[@]}"
+START_CMD="cd ${ROOT_DIR} && LOG_FILE=${LOG_DIR}/run-\$(date -u +%Y-%m-%dT%H-%M-%SZ).log ${RUN_CMD}"
+
 # ----- start tmux session (create if missing) -------------------------------
 if ! tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
-  tmux new-session -d -s "${SESSION_NAME}" -n "${PANE_TITLE}" \
-    "cd ${ROOT_DIR} && LOG_FILE=${LOG_DIR}/run-\$(date -u +%Y-%m-%dT%H-%M-%SZ).log ${RUN[*]} ${ORG_ARGS[*]}"
+  tmux new-session -d -s "${SESSION_NAME}" -n "${PANE_TITLE}" "${START_CMD}"
 fi
 
 tmux select-window -t "${SESSION_NAME}:0"
