@@ -37,9 +37,9 @@ args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     -C|--cwd) shift; CWD="${1:-}"; shift || true ;;
-    --ui) shift; UI="${1:-console}"; shift || true ;;
-    --ui=*) UI="${1#*=}"; shift ;;
-    *) args+=("$1"); shift ;;
+    --ui)     shift; UI="${1:-console}"; shift || true ;;
+    --ui=*)   UI="${1#*=}"; shift ;;
+    *)        args+=("$1"); shift ;;
   esac
 done
 
@@ -73,13 +73,14 @@ log "engine=$ORG_ENGINE image=$ORG_IMAGE"
 # -------------------
 run_console() {
   log "ui=console"
-  # Set logging env so the app writes files
+  # Minimal preflight log env—keeps your app as-is
   mkdir -p "$APPDIR/logs" || true
   export ORG_APPDIR="$APPDIR"
   export ORG_CALLER_CWD="$PWD"
   export ORG_LOG_DIR="${ORG_LOG_DIR:-$APPDIR/logs}"
-  export ORG_LOG_FILE="${ORG_LOG_FILE:-$ORG_LOG_DIR/run-$(date -u +%Y-%m-%dT%H-%M-%S.%3NZ).log}"
+  export ORG_LOG_FILE="${ORG_LOG_FILE:-$ORG_LOG_DIR/run-$(date -u +%Y-%m-%dT%H-%M-%SZ).log}"
   export ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}"
+  printf '[org.sh] preflight %s\n' "$(date -u +%FT%TZ)" >>"$ORG_LOG_FILE" 2>/dev/null || true
 
   if command -v bun >/dev/null 2>&1; then
     log "exec: bun \"$ENTRY\" ${args[*]}"
@@ -111,7 +112,7 @@ run_tmux_in_container() {
   # Host-side log path (mirrors inside)
   mkdir -p "$APPDIR/logs" || true
   local LOG_DIR_HOST="$APPDIR/logs"
-  local LOG_FILE_HOST="$LOG_DIR_HOST/tmux-$(date -u +%Y-%m-%dT%H-%M-%S.%3NZ).log"
+  local LOG_FILE_HOST="$LOG_DIR_HOST/tmux-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
 
   # Env passed into the app inside the container
   local ENV_BLOCK=""
@@ -123,30 +124,35 @@ run_tmux_in_container() {
   ENV_BLOCK+="ORG_LOG_FILE=$CTR_APPDIR/logs/$(basename "$LOG_FILE_HOST") "
   ENV_BLOCK+="ORG_LOG_LEVEL=${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}} "
 
-  # The actual app command the tmux session will run.
-  # - make sure the log dir exists
-  # - print where logs go
-  # - pipe all output through tee so you get logs even if the app fails before logger starts
+  # Re-quote forwarded args for inside command line
+  local JOINED_ARGS=""
+  if [ ${#args[@]} -gt 0 ]; then
+    for a in "${args[@]}"; do
+      JOINED_ARGS+=" $(printf '%q' "$a")"
+    done
+  fi
+
+  # The command that runs *inside* tmux in the container
   local INSIDE_CMD
   INSIDE_CMD="mkdir -p \"$CTR_APPDIR/logs\"; \
 echo \"[tmux] log -> \$ORG_LOG_FILE\"; \
 set -o pipefail; \
-bun \"$CTR_ENTRY\" --ui console $(printf ' %q' "${args[@]}") |& tee -a \"\$ORG_LOG_FILE\""
+bun \"$CTR_ENTRY\" --ui console$JOINED_ARGS |& tee -a \"\$ORG_LOG_FILE\""
 
-  # Build final inner invocation (run under bash -lc)
-  local FINAL_INNER
-  FINAL_INNER="env $ENV_BLOCK tmux new -A -s org bash -lc $(printf '%q' "$INSIDE_CMD")"
-  log "tmux inner: $FINAL_INNER"
+  # Wrap the inside command in tmux
+  local TMUX_INNER
+  TMUX_INNER="env $ENV_BLOCK tmux new -A -s org bash -lc $(printf '%q' "$INSIDE_CMD")"
+  log "tmux inner: $TMUX_INNER"
 
-  # Optional: preflight to catch missing tools early
-  local PROBE=( "$ORG_ENGINE" run --rm --network host -v "$MNT" -w "$CTR_WORK" "$ORG_IMAGE" \
-                bash -lc 'command -v tmux >/dev/null && command -v bun >/dev/null && test -f /work/.org/src/app.ts && echo probe_ok || exit 101' )
-  if ! "${PROBE[@]}" >/dev/null 2>&1; then
+  # Quick preflight to catch missing tmux/bun/entry
+  if ! "$ORG_ENGINE" run --rm --network host -v "$MNT" -w "$CTR_WORK" "$ORG_IMAGE" \
+       bash -lc 'command -v tmux >/dev/null && command -v bun >/dev/null && test -f /work/.org/src/app.ts' \
+       >/dev/null 2>&1; then
     err "container preflight failed: tmux/bun/entry not OK"
     "$ORG_ENGINE" run --rm --network host -v "$MNT" -w "$CTR_WORK" "$ORG_IMAGE" bash -lc '\
-echo \"tmux:\" $(command -v tmux || echo missing); tmux -V || true; \
-echo \"bun:\"  $(command -v bun  || echo missing); bun --version || true; \
-echo \"entry exists?\"; ls -l /work/.org/src/app.ts || true' >&2
+echo "tmux:" $(command -v tmux || echo missing); tmux -V || true; \
+echo "bun:"  $(command -v bun  || echo missing); bun --version || true; \
+echo "entry exists?"; ls -l /work/.org/src/app.ts || true' >&2 || true
     exit 1
   fi
 
@@ -155,14 +161,14 @@ echo \"entry exists?\"; ls -l /work/.org/src/app.ts || true' >&2
       -v "$MNT" \
       -w "$CTR_WORK" \
       "$ORG_IMAGE" \
-      bash -lc "$FINAL_INNER"
+      bash -lc "$TMUX_INNER"
 }
 
 # -------------------
 # Dispatch
 # -------------------
 case "$UI" in
-  tmux)    run_tmux_in_container ;;
+  tmux)       run_tmux_in_container ;;
   ""|console) run_console ;;
-  *)       err "unknown --ui value: $UI"; exit 2 ;;
+  *)          err "unknown --ui value: $UI"; exit 2 ;;
 esac
