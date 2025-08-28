@@ -1,110 +1,74 @@
-#!/usr/bin/env bash
+# shellcheck shell=bash
+
+_join_args() {
+  local s=""
+  local a
+  for a in "${ORG_FWD_ARGS[@]}"; do
+    s+=" $(printf '%q' "$a")"
+  done
+  printf '%s' "$s"
+}
+
+run_tmux_in_container() {
+  log "ui=tmux"
+
+  local SRC="$APPDIR"
+  local CTR_WORK="/work"
+  local CTR_APPDIR="$CTR_WORK"
+  local CTR_ENTRY="$CTR_APPDIR/src/app.ts"
+  local MNT="$SRC:$CTR_WORK:Z"
+
+  mkdir -p "$ORG_LOG_DIR" "$ORG_LOG_DIR/tmux-logs" || true
+  local LOG_FILE_HOST="$ORG_LOG_DIR/tmux-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
+
+  log "mount: $MNT"
+  log "host tmux log: $LOG_FILE_HOST"
+
+  local ARGS_JOINED; ARGS_JOINED="$(_join_args)"
+
+  local CREATE_AND_RUN="
 set -Eeuo pipefail
+umask 0002
 
-# tmux launcher that respects --ui, robustly finds tmux in the *current OS*,
-# and falls back to the console launcher when tmux is unavailable.
-# Notes:
-# - UI runs in the current shell environment (VM/host), not inside the sandbox container.
-# - Set ORG_TMUX_BIN=/abs/path/to/tmux to hard-override detection.
-# - Set ORG_DEBUG_LAUNCHER=1 for diagnostics.
+mkdir -p \"$CTR_APPDIR/.org/logs\" \"$CTR_APPDIR/.org/logs/tmux-logs\"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+cat > \"$CTR_APPDIR/.org/.tmux-inner.sh\" <<'EOS'
+set -Eeuo pipefail
+umask 0002
+: \"\${ORG_LOG_DIR:?}\"
+: \"\${ORG_LOG_FILE:?}\"
+: \"\${ENTRY:?}\"
 
-SESSION_NAME="${ORG_TMUX_SESSION:-org}"
-PANE_TITLE="${ORG_TMUX_PANE_TITLE:-org}"
-LOG_DIR="${ROOT_DIR}/logs"
-mkdir -p "${LOG_DIR}"
+mkdir -p \"\$ORG_LOG_DIR\"
+echo \"[tmux] log -> \$ORG_LOG_FILE\"
+echo \"[tmux] bun=\$(command -v bun || echo MISSING) entry='\$ENTRY' date=\$(date -u +%FT%TZ)\"
 
-debug() { [[ "${ORG_DEBUG_LAUNCHER:-0}" == "1" ]] && echo "[launcher] $*" >&2 || true; }
+set +e
+bun \"\$ENTRY\" --ui console $ARGS_JOINED 2>&1 | tee -a \"\$ORG_LOG_FILE\"
+ec=\${PIPESTATUS[0]}
+set -e
 
-# ---------- collect forwarded args (env + argv) ----------
-FWD="${ORG_FWD_ARGS-}"
-declare -a ORG_ARGS=()
-if [[ $# -gt 0 ]]; then ORG_ARGS+=("$@"); fi
-if [[ -n "$FWD" ]]; then
-  # best-effort split; upstream should quote values containing spaces
-  read -r -a _arr <<<"$FWD"
-  ORG_ARGS+=("${_arr[@]}")
-fi
-debug "argv: ${ORG_ARGS[*]}"
+echo \"[tmux] app exited with \$ec\"
+exit \"\$ec\"
+EOS
 
-# ---------- determine requested UI ----------
-UI="${ORG_UI-}"
-if [[ -z "$UI" ]]; then
-  for ((i=0; i<${#ORG_ARGS[@]}; i++)); do
-    a="${ORG_ARGS[$i]}"
-    if [[ "$a" == "--ui" ]]; then
-      UI="${ORG_ARGS[$((i+1))]:-}"
-      break
-    elif [[ "$a" == --ui=* ]]; then
-      UI="${a#--ui=}"
-      break
-    fi
-  done
-fi
-UI="${UI:-tmux}"
-debug "UI=${UI}"
+chmod +x \"$CTR_APPDIR/.org/.tmux-inner.sh\"
 
-# ---------- console delegate (always via bash; no +x required) ----------
-console_delegate() {
-  debug "delegating to console.sh"
-  exec bash "${SCRIPT_DIR}/console.sh" "${ORG_ARGS[@]}"
+export ENTRY=\"$CTR_ENTRY\"
+export TMUX_TMPDIR=\"$CTR_APPDIR/.org/logs/tmux-logs\"
+tmux -vv new -A -s org bash --noprofile --norc \"$CTR_APPDIR/.org/.tmux-inner.sh\"
+"
+
+  log "about to exec container"
+  exec "$ORG_ENGINE" run --rm -it --network host \
+    -v "$MNT" \
+    -w "$CTR_WORK" \
+    -e ORG_TMUX=1 \
+    -e ORG_FORCE_UI=console \
+    -e ORG_APPDIR="$CTR_APPDIR" \
+    -e ORG_CALLER_CWD="$CTR_WORK" \
+    -e ORG_LOG_DIR="$CTR_APPDIR/.org/logs" \
+    -e ORG_LOG_FILE="$CTR_APPDIR/.org/logs/$(basename "$LOG_FILE_HOST")" \
+    -e ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}" \
+    "$ORG_IMAGE" bash -lc "$CREATE_AND_RUN"
 }
-
-if [[ "${UI}" != "tmux" ]]; then
-  console_delegate
-fi
-
-# ---------- robust tmux discovery ----------
-find_tmux() {
-  local cand
-  # explicit override
-  if [[ -n "${ORG_TMUX_BIN-}" && -x "${ORG_TMUX_BIN}" ]]; then
-    echo "${ORG_TMUX_BIN}"; return 0
-  fi
-  # PATH lookup (may fail in non-login shells)
-  cand="$(command -v tmux 2>/dev/null || true)"
-  if [[ -n "$cand" && -x "$cand" ]]; then
-    echo "$cand"; return 0
-  fi
-  # common absolute locations
-  for cand in /usr/bin/tmux /bin/tmux /usr/local/bin/tmux /opt/homebrew/bin/tmux; do
-    [[ -x "$cand" ]] && { echo "$cand"; return 0; }
-  done
-  return 1
-}
-
-TMUX_BIN="$(find_tmux || true)"
-debug "PATH=${PATH}"
-debug "TMUX_BIN=${TMUX_BIN:-<none>}"
-
-if [[ -z "${TMUX_BIN}" ]]; then
-  echo "tmux not found. Falling back to console UI." >&2
-  console_delegate
-fi
-
-# ---------- choose runtime for the app ----------
-ENTRY="${ROOT_DIR}/src/app.ts"
-declare -a RUN
-if command -v bun >/dev/null 2>&1; then
-  RUN=(bun "${ENTRY}")
-elif [[ -f "${ROOT_DIR}/dist/app.js" ]] && command -v node >/dev/null 2>&1; then
-  RUN=(node "${ROOT_DIR}/dist/app.js")
-elif command -v tsx >/dev/null 2>&1; then
-  RUN=(tsx "${ENTRY}")
-else
-  RUN=(node --loader ts-node/esm "${ENTRY}")
-fi
-printf -v RUN_CMD '%q ' "${RUN[@]}" "${ORG_ARGS[@]}"
-START_CMD="cd ${ROOT_DIR} && LOG_FILE=${LOG_DIR}/run-\$(date -u +%Y-%m-%dT%H-%M-%SZ).log ${RUN_CMD}"
-debug "START_CMD=${START_CMD}"
-
-# ---------- start/attach session ----------
-if ! "${TMUX_BIN}" has-session -t "${SESSION_NAME}" 2>/dev/null; then
-  debug "creating new tmux session: ${SESSION_NAME}"
-  "${TMUX_BIN}" new-session -d -s "${SESSION_NAME}" -n "${PANE_TITLE}" "${START_CMD}"
-fi
-
-"${TMUX_BIN}" select-window -t "${SESSION_NAME}:0"
-exec "${TMUX_BIN}" attach-session -t "${SESSION_NAME}"
