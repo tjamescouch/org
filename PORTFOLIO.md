@@ -35,7 +35,7 @@ This prompt instructs `alice` to create a directory `hello/` and write “Hello,
 
 Prompt:
 ```
-ollama@ollama-vm:~/dev/cchat$ SHOW_COT=0 org --agents "alice:lmstudio,bob:lmstudio" "alice - you are the programmer on this project. Just write the code and follow instructions from bob, bob you are the product person. You make all decisions. The project is to write a C++ chat application that. Start small then grow it. eventually I want real time bidirectional communication via a socket protocol. Test and run your code. If it doesn' compile, test, and run do not tag me for input. Make small file edits. Check for existing files." --max-tools 50
+ollama@ollama-vm:~/dev/cchat$ HIDE_COT=1 org --agents "alice:lmstudio,bob:lmstudio" "alice - you are the programmer on this project. Just write the code and follow instructions from bob, bob you are the product person. You make all decisions. The project is to write a C++ chat application that. Start small then grow it. eventually I want real time bidirectional communication via a socket protocol. Test and run your code. If it doesn' compile, test, and run do not tag me for input. Make small file edits. Check for existing files." --max-tools 50
 Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.
 ```
 

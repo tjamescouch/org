@@ -1,32 +1,26 @@
-# shellcheck shell=bash
+#!/usr/bin/env bash
+# Console UI launcher
+set -Eeuo pipefail
 
-run_console() {
-  log "ui=console"
-  export ORG_APPDIR="$APPDIR"
-  export ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}"
+log() { printf '[org/console] %s\n' "$*"; }
 
-  local BUN;  BUN="$(command -v bun  || true)"
-  local NPX;  NPX="$(command -v npx  || true)"
-  local NODE; NODE="$(command -v node || true)"
+log "console launcher start"
+log "pwd: $(pwd)"
+log "APPDIR: ${APPDIR:-$(pwd)}"
+log "bun: $(command -v bun 2>/dev/null || echo 'not found')"
+TTY_STATE="$([ -t 0 ] && echo tty || echo ntty)"   # <-- no arithmetic substitution
+ISATTY="$(python3 -c 'import os,sys; print(os.isatty(0))' 2>/dev/null || true)"
+log "TERM: ${TERM:-unset}  TTY: ${TTY_STATE}  isatty=${ISATTY}"
 
-  if [ -n "$BUN" ]; then
-    log "exec: $BUN \"$ORG_ENTRY\" ${ORG_FWD_ARGS[*]:-}"
-    set +e
-    "$BUN" "$ORG_ENTRY" "${ORG_FWD_ARGS[@]}" 2>&1 | tee -a "$ORG_LOG_FILE"
-    local ec=${PIPESTATUS[0]}
-    set -e
-    exit "$ec"
-  fi
+# Keep the user's cwd. Run the same entry the tmux inner script runs.
+if command -v /usr/local/bin/bun >/dev/null 2>&1; then
+  exec /usr/local/bin/bun /work/src/app.ts "$@"
+fi
 
-  if [ -n "$NODE" ] && [ -n "$NPX" ]; then
-    log "exec: $NPX --yes tsx \"$ORG_ENTRY\" ${ORG_FWD_ARGS[*]:-}"
-    set +e
-    "$NPX" --yes tsx "$ORG_ENTRY" "${ORG_FWD_ARGS[@]}" 2>&1 | tee -a "$ORG_LOG_FILE"
-    local ec=${PIPESTATUS[0]}
-    set -e
-    exit "$ec"
-  fi
+if command -v bun >/dev/null 2>&1; then
+  exec bun /work/src/app.ts "$@"
+fi
 
-  err "neither Bun nor Node+tsx found in PATH."
-  exit 127
-}
+log "bun not found"
+exit 127
+

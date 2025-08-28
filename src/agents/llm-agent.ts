@@ -175,7 +175,7 @@ export class LlmAgent extends Agent {
       model: this.model,
       tools: this.tools,
       onReasoningToken: t => {
-        if (!process.env.SHOW_COT) {
+        if (process.env.HIDE_COT) {
           Logger.streamInfo(C.cyan('.'));
 
           return;

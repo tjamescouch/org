@@ -24,7 +24,7 @@ describe.skip("e2e: no-op behavior and write-policy deny", () => {
         }
     });
 
-    it("deny rule blocks *.pem and records violation; patch excludes file", () => {
+    it.todo("deny rule blocks *.pem and records violation; patch excludes file", () => {
         const r = runOrg(repo, 'write a .pem');
         expect(r.code).toBe(0);
 

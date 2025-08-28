@@ -1,44 +1,78 @@
 #!/usr/bin/env bash
-# org — thin launcher that delegates to small libs under .org/launcher
-# Exit codes: 66 = entrypoint/cwd not found; 127 = runtime missing
+# org: robust launcher for the repo's Bun entrypoint.
+# - Resolves symlinks to find the repo path.
+# - Preserves caller's CWD (runs agents in the directory you invoked `org` from).
+# - Makes Bun discoverable even when PATH is sanitized (non-interactive shells, sudo).
+# - Allows manual override via ORG_BUN / BUN_BIN.
 set -euo pipefail
 
-# --- Resolve script/appdir (where THIS file lives) ---
-SCRIPT="${BASH_SOURCE[0]:-$0}"
-while [ -L "$SCRIPT" ]; do
-  L="$(readlink "$SCRIPT")"
-  case "$L" in
-    /*) SCRIPT="$L" ;;
-    *)  SCRIPT="$(cd "$(dirname "$SCRIPT")" && cd "$(dirname "$L")" && pwd)/$(basename "$L")" ;;
-  esac
-done
-APPDIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
+# --- resolve repo directory (follow symlinks) ---------------------------------
+SELF="$0"
+if command -v python3 >/dev/null 2>&1; then
+  REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SELF")"
+elif command -v readlink >/dev/null 2>&1; then
+  # BSD readlink may lack -f; this still helps if available
+  REAL="$(readlink -f "$SELF" 2>/dev/null || echo "$SELF")"
+else
+  REAL="$SELF"
+fi
+APPDIR="$(cd "$(dirname "$REAL")" && pwd)"
 
-LIBDIR="$APPDIR/.org/launcher"
-# shellcheck source=/dev/null
-. "$LIBDIR/common.sh"
-. "$LIBDIR/console.sh"
-. "$LIBDIR/tmux.sh"
+RUNNER="$APPDIR/runner.ts"
+ENTRY="$APPDIR/src/app.ts"
 
-# --- Parse flags (sets ORG_UI, ORG_CWD, ORG_FWD_ARGS[]) ---
-parse_args "$@"
+# --- environment --------------------------------------------------------------
+# Expose repo-local helpers first
+export PATH="$APPDIR:$APPDIR/scripts:$PATH"
 
-# Optional working directory switch
-if [ -n "${ORG_CWD:-}" ]; then
-  log "cd -> $ORG_CWD"
-  cd "$ORG_CWD" 2>/dev/null || { err "cwd not found: $ORG_CWD"; exit 66; }
+# Ensure Bun is discoverable even when PATH is sanitized (non-interactive, sudo)
+PATH="$HOME/.bun/bin:/usr/local/bin:/usr/bin:$PATH"
+
+# If invoked via sudo, also try the invoking user's ~/.bun/bin
+if [[ -n "${SUDO_USER:-}" ]]; then
+  SUDO_HOME="$(getent passwd "$SUDO_USER" 2>/dev/null | awk -F: '{print $6}')"
+  [[ -z "${SUDO_HOME:-}" ]] && SUDO_HOME="/home/$SUDO_USER"
+  if [[ -d "$SUDO_HOME/.bun/bin" ]]; then
+    PATH="$SUDO_HOME/.bun/bin:$PATH"
+  fi
+fi
+export PATH
+
+# Respect explicit caller override of working directory
+export ORG_CALLER_CWD="${ORG_CALLER_CWD:-$(pwd)}"
+export ORG_ENTRY="$ENTRY"
+export ORG_APPDIR="$APPDIR"
+
+# --- resolve Bun binary -------------------------------------------------------
+# Allow override via ORG_BUN or BUN_BIN
+BUN_BIN="${ORG_BUN:-${BUN_BIN:-}}"
+if [[ -z "${BUN_BIN:-}" ]]; then
+  if command -v bun >/dev/null 2>&1; then
+    BUN_BIN="$(command -v bun)"
+  else
+    for p in "$HOME/.bun/bin/bun" "/usr/local/bin/bun" "/usr/bin/bun"; do
+      if [[ -x "$p" ]]; then BUN_BIN="$p"; break; fi
+    done
+  fi
 fi
 
-# --- Setup/derive context ---
-detect_project_root        # -> ORG_PROJ, ORG_CALLER_CWD
-find_entrypoint            # -> ORG_ENTRY (always under $APPDIR)
-engine_defaults            # -> ORG_ENGINE, ORG_IMAGE
-prepare_logs               # -> ORG_LOG_DIR, ORG_LOG_FILE (+preflight line)
+if [[ -z "${BUN_BIN:-}" ]]; then
+  echo "org: bun not found. PATH=$PATH" >&2
+  echo "hint: install Bun (curl -fsSL https://bun.sh/install | bash) or set ORG_BUN=/path/to/bun" >&2
+  exit 127
+fi
 
-UI="${ORG_UI:-${ORG_FORCE_UI:-console}}"
+# --- optional debug -----------------------------------------------------------
+if [[ "${ORG_DEBUG:-}" == "1" || "${DEBUG:-}" == "1" ]]; then
+  {
+    echo "[org] APPDIR=$APPDIR"
+    echo "[org] RUNNER=$RUNNER"
+    echo "[org] ORG_CALLER_CWD=$ORG_CALLER_CWD"
+    echo "[org] bun=$BUN_BIN"
+    echo "[org] PATH=$PATH"
+  } >&2
+fi
 
-case "$UI" in
-  tmux)       run_tmux_in_container ;;  # in a container, UI=console INSIDE tmux
-  ""|console) run_console ;;
-  *)          err "unknown --ui value: ${UI}"; exit 2 ;;
-esac
+# --- run ----------------------------------------------------------------------
+# Keep the program's working directory as the caller's CWD.
+exec "$BUN_BIN" "$RUNNER" --cwd "$ORG_CALLER_CWD" "$@"

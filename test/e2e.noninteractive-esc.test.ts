@@ -5,25 +5,6 @@ import { join } from "path";
 import { execFileSync } from "child_process";
 import { runOrgWithKeys } from "./helpers/run-org-with-keys";
 
-function seedPatch(repoDir: string) {
-  const dir = path.join(repoDir, ".org");
-  fs.mkdirSync(dir, { recursive: true });
-  const patch = path.join(dir, "last-session.patch");
-
-  // Minimal valid unified diff (kept tiny)
-  const contents = [
-    "diff --git a/README.md b/README.md",
-    "index 0000000..1111111 100644",
-    "--- a/README.md",
-    "+++ b/README.md",
-    "@@ -0,0 +1,1 @@",
-    "+hello",
-    ""
-  ].join("\n");
-
-  fs.writeFileSync(patch, contents, "utf8");
-}
-
 // ESC key
 const ESC = "\x1b";
 // Optional: the 'i' interject key
@@ -54,8 +35,6 @@ describe.skip("e2e (non-interactive, SANDBOX_BACKEND=none)", () => {
       `sh {"cmd":"bash -lc \\"echo hello > hello.txt\\""}`
     ;
 
-    seedPatch(repo);
-
     const r = await runOrgWithKeys(
       seed,
       [ESC],                              // press ESC once
@@ -82,8 +61,6 @@ describe.skip("e2e (non-interactive, SANDBOX_BACKEND=none)", () => {
     const seed =
       `sh {"cmd":"bash -lc \\"echo hi > a.txt\\""}`
     ;
-
-    seedPatch(repo);
 
     const r = await runOrgWithKeys(
       seed,

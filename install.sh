@@ -5,10 +5,41 @@
 # - Prints clear guidance when /usr/local/bin isn't writable
 set -Eeuo pipefail
 
+show_help() {
+  cat <<'EOF'
+usage: ./org/launcher/install.sh [--engine podman|docker] [--image NAME[:TAG]] [--file Containerfile] [--rebuild]
+
+Options:
+  --engine   Override container engine detection (podman|docker).
+  --image    Image name to build/use. Default: localhost/org-build:debian-12
+  --file     Containerfile/Dockerfile to build. Default: Containerfile
+  --rebuild  Force a rebuild of the image even if it already exists.
+EOF
+}
+
+ENGINE=""
+IMAGE=""
+FILE=""
+REBUILD=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --engine) ENGINE="$2"; shift 2;;
+    --image)  IMAGE="$2"; shift 2;;
+    --file)   FILE="$2"; shift 2;;
+    --rebuild) REBUILD=1; shift;;
+    -h|--help) show_help; exit 0;;
+    --) shift; break;;
+    *) echo "[install][warn] ignoring unknown arg: $1" >&2; shift;;
+  esac
+done
+
 # ---------------------------
 # Detect container engine
 # ---------------------------
-if command -v podman >/dev/null 2>&1; then
+if [ -n "$ENGINE" ]; then
+  true
+elif command -v podman >/dev/null 2>&1; then
   ENGINE="${ORG_ENGINE:-podman}"
 elif command -v docker >/dev/null 2>&1; then
   ENGINE="${ORG_ENGINE:-docker}"
@@ -20,22 +51,31 @@ fi
 # ---------------------------
 # Image + build file
 # ---------------------------
-IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
-FILE="${ORG_CONTAINERFILE:-Containerfile}"
+IMAGE="${IMAGE:-${ORG_IMAGE:-localhost/org-build:debian-12}}"
+FILE="${FILE:-${ORG_CONTAINERFILE:-Containerfile}}"
 
 echo "[install] engine = $ENGINE"
 echo "[install] image  = $IMAGE"
 echo "[install] file   = $FILE"
 
 # ---------------------------
-# Build image if missing
+# Build image (respects --rebuild)
 # ---------------------------
+need_build=1
 if "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "[install] image already present; skipping build"
-else
+  if [ "$REBUILD" -eq 1 ]; then
+    echo "[install] --rebuild given -> rebuilding image"
+  else
+    need_build=0
+  fi
+fi
+
+if [ "$need_build" -eq 1 ]; then
   echo "[install] building image (this can take a while)..."
   "$ENGINE" build -t "$IMAGE" -f "$FILE" .
   echo "[install] done. image built"
+else
+  echo "[install] image already present; skipping build"
 fi
 
 # ---------------------------

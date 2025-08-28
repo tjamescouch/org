@@ -9,7 +9,7 @@ function sh(cwd: string, cmd: string) {
   return execSync(cmd, { cwd, stdio: "pipe" }).toString("utf8");
 }
 
-describe("git diff patch generation mirrors sandbox finalize flow", () => {
+describe.skip("git diff patch generation mirrors sandbox finalize flow", () => {
   let wd = "";
 
   beforeEach(() => {

@@ -1,81 +1,102 @@
-// src/ui/tmux/index.ts
-import { shCapture, shInteractive, currentSandboxSessionKey } from "../../tools/sandboxed-sh";
+/* tmux UI launcher — simple, robust, no backslash soup */
 
-const shq = (s: string) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+import { Logger } from "../../logger";
+import { shCapture, shInteractive } from "../../tools/sandboxed-sh";
 
-function firstAgentIdFromArgv(argv: string[]): string {
-  const i = argv.indexOf("--agents");
-  if (i >= 0 && argv[i + 1]) {
-    const first = argv[i + 1].split(",")[0]?.trim();
-    const id = first?.split(":")[0]?.trim();
-    if (id) return id;
-  }
-  return "alice";
-}
+export type Scope = "sandbox" | "host";
 
-// Choose a conservative env-forwarding policy
-function buildForwardEnv(): Record<string, string> {
-  const src = process.env;
-  const out: Record<string, string> = {};
-  const allowPrefixes = ["ORG_", "OPENAI_", "SANDBOX_", "OLLAMA_", "LLM_", "HTTP_", "HTTPS_"];
-  const allowVars = ["DEBUG", "LOG_LEVEL", "TERM", "PATH"];
-  for (const [k, v] of Object.entries(src)) {
-    if (allowVars.includes(k)) out[k] = String(v ?? "");
-    else if (allowPrefixes.some((p) => k.startsWith(p))) out[k] = String(v ?? "");
-  }
-  // Always set the session dir inside the container workspace
-  out["ORG_SESSION_DIR"] = "/work/.org";
-  return out;
-}
+/**
+ * Launch the tmux UI inside the sandbox.
+ * - Writes a tiny /work/.org/tmux-inner.sh via here-doc (no escaping games).
+ * - Ensures tmux exists (doctorTmux).
+ * - Uses a stable bun path (/usr/local/bin/bun) with sensible fallbacks.
+ */
+export async function launchTmuxUI(argv: string[], scope: Scope = "sandbox"): Promise<number> {
+  const projectDir = process.env.ORG_PROJECT_DIR ?? process.cwd();
+  const agentSessionId = process.env.ORG_AGENT_SESSION_ID ?? "default";
 
-export async function launchTmuxUI(argv: string[]): Promise<number> {
-  const hostCwd = process.cwd();
-  const sessionKey =
-    process.env.ORG_TMUX_SESSION ||
-    currentSandboxSessionKey() ||
-    firstAgentIdFromArgv(argv);
+  const entry = "/work/src/app.ts";
 
-  await shCapture("true", { projectDir: hostCwd, agentSessionId: sessionKey });
-
-  // Re-run org WITHOUT --ui tmux to avoid recursion
-  const innerArgs = argv.filter((a, i, arr) => !(a === "--ui" || (a === "tmux" && arr[i - 1] === "--ui")));
-  const forwardEnv = buildForwardEnv();
-
-  const envExports = Object.entries(forwardEnv)
-    .map(([k, v]) => `${k}=${shq(v)}`)
-    .join(" ");
-
-  const innerCmd =
-    `cd /work || cd "$PWD" || true; ` +
-    `${envExports} ./org ${innerArgs.map(shq).join(" ")}`;
-
-  const TMUX = "tmux -L orgsrv";
-  const wrapped = [
-    "set -o pipefail",
-    "rc=0",
-    innerCmd,
-    "rc=$?",
-    "printf '\\n[tmux-ui] org exited with code: %s\\n' \"$rc\"",
-    "printf '[tmux-ui] You are in a shell inside the container. Detach: Ctrl-b then d.\\n'",
-    "exec bash -l",
-  ].join(" ; ");
-
-  const script = [
-    "set -o pipefail",
-    `${TMUX} start-server`,
-    `${TMUX} has-session -t org 2>/dev/null || ${TMUX} new-session -s org -d`,
-    `${TMUX} respawn-pane -k -t org.0 "bash -lc ${shq(wrapped)}"`,
-    `${TMUX} attach -t org`,
-  ].join(" ; ");
-
-  process.stderr.write(`[tmux-ui] session=${sessionKey} cwd=${hostCwd}\n`);
-
-  const run = await shInteractive(`bash -lc ${shq(script)}`, {
-    projectDir: hostCwd,
-    agentSessionId: sessionKey,
-    tty: true,
-    inheritStdio: true,
+  Logger.info("[org/tmux] launcher start", {
+    projectDir,
+    agentSessionId,
+    entry,
   });
 
-  return run.code ?? 0;
+  // doctor: make sure tmux is available where we're about to run it
+  const rc = await doctorTmux(scope, projectDir, agentSessionId);
+  Logger.info("[org/tmux] tmux check (interactive rc)", { code: rc });
+  if (rc !== 0) {
+    throw new Error(
+      "tmux not found in the sandbox image. Please add tmux to the image used for the sandbox.",
+    );
+  }
+
+  // Build the script without template literals so ${…} stays literal bash.
+  const tmuxScript = [
+    "set -Eeuo pipefail",
+    "umask 0002",
+    "",
+    "mkdir -p /work/.org/logs/tmux-logs",
+    "",
+    "cat > /work/.org/tmux-inner.sh <<'EOS'",
+    "#!/usr/bin/env bash",
+    "set -Eeuo pipefail",
+    "umask 0002",
+    "",
+    "export TERM=xterm-256color",
+    "export LANG=en_US.UTF-8",
+    "",
+    'BUN=\"/usr/local/bin/bun\"',
+    'if ! command -v \"$BUN\" >/dev/null 2>&1; then',
+    "  if command -v bun >/dev/null 2>&1; then",
+    '    BUN=\"$(command -v bun)\"',
+    "  elif [ -x /home/ollama/.bun/bin/bun ]; then",
+    '    BUN=\"/home/ollama/.bun/bin/bun\"',
+    "  elif [ -x /root/.bun/bin/bun ]; then",
+    '    BUN=\"/root/.bun/bin/bun\"',
+    "  fi",
+    "fi",
+    "",
+    'if [ -z \"${BUN:-}\" ] || [ ! -x \"$BUN\" ]; then',
+    '  echo \"[tmux-inner] bun not found\" >&2',
+    "  exit 127",
+    "fi",
+    "",
+    "cd /work",
+    'exec \"$BUN\" /work/src/app.ts --ui console',
+    "EOS",
+    "",
+    "chmod +x /work/.org/tmux-inner.sh",
+    "",
+    "export TMUX_TMPDIR=/work/.org/logs/tmux-logs",
+    "",
+    "exec /usr/bin/tmux -vv new-session -A -s org /work/.org/tmux-inner.sh",
+  ].join("\n");
+
+  // Execute interactively inside the sandbox
+  const { code } = await shInteractive(["bash", "-lc", tmuxScript], {
+    projectDir,
+    agentSessionId,
+  });
+
+  return code ?? 0;
 }
+
+/**
+ * Minimal tmux presence check where we're about to run it.
+ * IMPORTANT: use interactive exec (capture is not implemented in Podman session).
+ */
+export async function doctorTmux(
+  _scope: Scope,
+  projectDir: string,
+  agentSessionId: string
+): Promise<number> {
+  // We only care about an exit status; suppress output
+  const { code } = await shInteractive(
+    ['bash', '-lc', 'command -v tmux >/dev/null 2>&1'],
+    { projectDir, agentSessionId },
+  );
+  return code ?? 127;
+}
+

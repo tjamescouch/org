@@ -143,43 +143,6 @@ export class PodmanSession implements ISandboxSession {
         return path.join(this.spec.workHostDir, ".org", "steps");
     }
 
-    /**
-     * Interactive exec: wire container stdio to the caller's TTY.
-     */
-    public async execInteractive(
-        argv: string[],
-        opts: {
-            tty?: boolean;              // default: true
-            inheritStdio?: boolean;     // default: true
-            env?: Record<string, string>;
-            cwd?: string;
-        } = {}
-    ): Promise<{ exit: number; ok: boolean }> {
-        if (!this.started) await this.start();
-
-        const podmanArgs: string[] = ["exec"];
-        if (opts.tty !== false) podmanArgs.push("-it");
-        if (opts.cwd) podmanArgs.push("--workdir", opts.cwd);
-        for (const [k, v] of Object.entries(opts.env ?? {})) {
-            podmanArgs.push("--env", `${k}=${v}`);
-        }
-        podmanArgs.push(this.name, ...argv);
-
-        // Use cooked mode so tmux controls the terminal cleanly
-        return await withCookedTTY(async () => {
-            return await new Promise((resolve) => {
-                const child = spawn(this.tool, podmanArgs, {
-                    stdio: opts.inheritStdio === false ? "pipe" : "inherit",
-                });
-                child.on("exit", (code) =>
-                    resolve({ exit: code ?? 0, ok: (code ?? 0) === 0 })
-                );
-            });
-        });
-    }
-
-
-
     // ---------- lifecycle ----------
 
     async start() {
