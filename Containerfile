@@ -1,3 +1,6 @@
+# ------------------------------------------------------------
+# Rock-solid Org dev image with tmux + bun + tools
+# ------------------------------------------------------------
 FROM debian:12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -21,7 +24,22 @@ ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 # Safe default TERM inside the container; outer terminal can be anything.
 ENV TERM=xterm-256color
 
+# ------------------------------------------------------------
+# Install bun (pinned) and expose on PATH for ALL processes,
+# including tmux server processes.
+# ------------------------------------------------------------
+ARG BUN_VERSION=1.2.19
+ENV BUN_INSTALL=/root/.bun
+ENV PATH=${BUN_INSTALL}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+
+RUN set -eux; \
+  curl -fsSL https://bun.sh/install | bash -s -- "bun-v${BUN_VERSION}"; \
+  ln -sf "${BUN_INSTALL}/bin/bun" /usr/local/bin/bun; \
+  bun --version
+
+# ------------------------------------------------------------
 # Install 'delta' (nice patch viewer) from GitHub releases
+# ------------------------------------------------------------
 ARG DELTA_VER=0.17.0
 RUN set -eux; \
   arch="$(dpkg --print-architecture)"; \
@@ -35,11 +53,35 @@ RUN set -eux; \
   echo "Fetching $url"; \
   curl -fsSL "$url" -o /tmp/delta.tgz; \
   tar -xzf /tmp/delta.tgz -C /tmp; \
-  install -m 0755 /tmp/delta-${DELTA_VER}-${rel}/delta /usr/local/bin/delta; \
+  install -m 0755 "/tmp/delta-${DELTA_VER}-${rel}/delta" /usr/local/bin/delta; \
   rm -rf /tmp/delta*; \
   /usr/local/bin/delta --version || true
 
-# --- Portable apply_patch helper (no heredocs) ---
+# ------------------------------------------------------------
+# Stable workdir + tmux tmp/logs defaults (harmless if bind-mounted)
+# ------------------------------------------------------------
+RUN mkdir -p /work/.org/logs/tmux-logs
+ENV ORG_WORK=/work
+ENV TMUX_TMPDIR=/work/.org/logs/tmux-logs
+
+# ------------------------------------------------------------
+# org wrapper: predictable entrypoint for tmux/session commands
+#   - starts in /work by default
+#   - delegates to bun /work/src/app.ts
+# ------------------------------------------------------------
+RUN set -eux; \
+  printf '%s\n' \
+'#!/usr/bin/env bash' \
+'set -euo pipefail' \
+'cd "${ORG_WORK:-/work}"' \
+'ENTRY="${ORG_ENTRY:-/work/src/app.ts}"' \
+'exec bun "$ENTRY" "$@"' \
+> /usr/local/bin/org \
+ && chmod +x /usr/local/bin/org
+
+# ------------------------------------------------------------
+# Portable apply_patch helper (your original script)
+# ------------------------------------------------------------
 RUN set -eux; \
   printf '%s\n' \
 '#!/usr/bin/env bash' \
@@ -93,5 +135,12 @@ RUN set -eux; \
 > /usr/local/bin/apply_patch \
  && chmod +x /usr/local/bin/apply_patch
 
+# ------------------------------------------------------------
 # Optional: patch viewer command (for tmux popup or scripts)
+# ------------------------------------------------------------
 ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (command -v delta >/dev/null && delta -s --paging=never .org/last-session.patch || (echo; echo \"(delta not found; showing raw patch)\"; echo; cat .org/last-session.patch)); else echo \"No session patch found.\"; fi; echo; read -p \"Enter to close...\" _"'
+
+# Done. Image contains:
+#  - tmux (server-safe), bun (pinned) on PATH for all processes
+#  - `org` wrapper so tmux can run:  tmux new -A -s org 'org --ui console'
+#  - sane locale/TERM, delta, and apply_patch helper
