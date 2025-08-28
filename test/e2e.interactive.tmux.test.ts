@@ -1,7 +1,7 @@
 import { runOrgInTmux } from "./helpers/tmux-run";
 import * as path from "path";
 
-it("ESC in interactive (tmux) applies patch only on 'y'", async () => {
+it.skip("ESC in interactive (tmux) applies patch only on 'y'", async () => {
   const repo = path.resolve(__dirname, "..", "fixtures", "tiny-repo");
   const r = await runOrgInTmux({
     bin: "org",

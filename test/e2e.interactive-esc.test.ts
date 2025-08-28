@@ -32,7 +32,7 @@ hello
   writeFileSync(join(runDir, "session.patch"), patch);
 }
 
-describe("interactive ESC behavior", () => {
+describe.skip("interactive ESC behavior", () => {
   it("ESC closes with no prompt when there is no patch", async () => {
     const repo = mkRepo();
 

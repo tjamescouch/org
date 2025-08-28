@@ -1,6 +1,7 @@
 // src/input/controller.ts
-// Single owner of stdin in raw mode, built on a tiny FSM.
-// Public API kept compatible with existing app.ts usage.
+// Single owner of stdin in raw mode driven by a small FSM.
+// This version keeps changes minimal, adds debug logs, and restores
+// the test helper API expected by the suite.
 
 import { R } from "../runtime/runtime";
 import { Logger } from "../logger";
@@ -11,19 +12,40 @@ import { PassThrough } from "stream";
 type SubmitFn = (text: string) => any;
 
 export interface InputControllerOptions {
-  interjectKey?: string;          // default: 'i'
-  interjectBanner?: string;       // default: 'You: '
-  finalizer?: () => Promise<void> | void;
-  exitOnEsc?: boolean;            // default: true
+  interjectKey?: string;          // Hotkey to open the prompt. Default: 'i'
+  interjectBanner?: string;       // Prompt banner. Default: 'You: '
+  finalizer?: () => Promise<void> | void; // Called on graceful exit (ESC)
+  exitOnEsc?: boolean;            // We don't exit the process; we just finalize. Default: true
 }
 
 export class InputController {
-  private opts: Required<InputControllerOptions>;
+  private readonly opts: Required<InputControllerOptions>;
   private scheduler: any | null = null;
-  private submitting: SubmitFn | null = null; // dynamic submit method on scheduler
+  private submitting: SubmitFn | null = null;
+  private submittingName: string | null = null;
+
   private fsm: InputFSM;
   private rawWasOn = false;
+
   private keyDebug = false;
+
+  // --- pending resolver used when an agent explicitly asked the user ---
+  private pendingResolve: ((s: string) => void) | null = null;
+
+  // ---- static hooks used by tty-guard.ts ----
+  private static _active: InputController | null = null;
+  static setRawMode(v: boolean) {
+    const stdin: any = R.stdin as any;
+    if (stdin?.isTTY && typeof stdin.setRawMode === "function") {
+      try { stdin.setRawMode(v); } catch { /* ignore */ }
+      try { (stdin as any).isRaw = !!v; } catch { /* ignore */ }
+    }
+  }
+  static isRawMode(): boolean {
+    try { return !!(R.stdin as any)?.isRaw; } catch { return false; }
+  }
+  static disableKeys() { this._active?._detachKeys(); }
+  static enableKeys() { this._active?._attachKeys(); }
 
   constructor(opts: InputControllerOptions = {}) {
     this.opts = {
@@ -35,45 +57,45 @@ export class InputController {
 
     this.keyDebug = (R.env.ORG_KEY_DEBUG === "1" || R.env.DEBUG === "1");
 
-    // FSM IO adapter
+    // Wire FSM to IO + hooks
     this.fsm = new InputFSM(
       {
-        write: (s: string) => { R.stdout.write(s); },
-        bell: () => { R.stdout.write("\x07"); },
+        write: (s: string) => { try { R.stdout.write(s); } catch {} },
+        bell:  () => { try { R.stdout.write("\x07"); } catch {} },
       },
       {
         banner: this.opts.interjectBanner,
         interjectKey: this.opts.interjectKey,
         onSubmit: (text) => this.submitText(text),
-        onCancel: () => { /* no-op; we just return to idle */ },
-        onEscapeIdle: () => { this.handleEscapeIdle(); },
+        onCancel:  () => { /* no-op */ },
+        onEscapeIdle: () => this.handleEscapeIdle(),
       }
     );
 
-    // Become the SOLE owner of stdin
-    this.enableRaw();
-    R.stdin.on("data", this.onData);
-    // Ensure we clean up on exit signals
-    const restore = () => this.disableRaw();
-    R.on("exit", restore);
-    R.on("beforeExit", restore);
+    // Become sole stdin owner
+    InputController._active = this;
+    this._attachKeys();
   }
 
+  // Bind the scheduler; discover which submit method it exposes.
   attachScheduler(s: any) {
     this.scheduler = s;
-    this.submitting = this.pickSubmitFn(s);
+    const pick = this.pickSubmitFn(s);
+    this.submitting = pick.fn;
+    this.submittingName = pick.name;
+    if (pick.name) Logger.debug(`[input] bound scheduler submit: ${pick.name}`);
+    else Logger.warn("[input] no scheduler submit function found");
   }
 
-  // Used by scheduler via onAskUser hook
+  // Scheduler calls this when an agent asks @@user a question.
   async askUser(_fromAgent: string, content: string): Promise<string> {
-    // Print the agent's message; then open interject and wait
     if (content && content.length) {
-      R.stdout.write(content.endsWith("\n") ? content : content + "\n");
+      try { R.stdout.write(content.endsWith("\n") ? content : content + "\n"); } catch {}
     }
     return await this.promptOnce();
   }
 
-  // Kickoff asking: - true = ask user, string = seed text to scheduler
+  // Kickoff flow: boolean true => prompt immediately; string => send in background.
   async askInitialAndSend(kickoff?: string | boolean) {
     if (kickoff === true) {
       await this.promptOnce();
@@ -82,108 +104,154 @@ export class InputController {
     }
   }
 
-  // ---- internal ----
+  // ---------------- internal wiring ----------------
 
   private onData = (chunk: Buffer) => {
     const ev = decodeKey(chunk);
     if (this.keyDebug) {
-      try { R.stderr.write(`[key] ${JSON.stringify(ev)}\n`); } catch { /* ignore */ }
+      try { R.stderr.write(`[key] ${JSON.stringify(ev)}\n`); } catch {}
     }
     this.fsm.handle(ev);
   };
 
+  private _attachKeys() {
+    this.enableRaw();
+    try { R.stdin.on("data", this.onData); } catch {}
+    const restore = () => this.disableRaw();
+    R.on("exit", restore);
+    R.on("beforeExit", restore);
+  }
+
+  private _detachKeys() {
+    try { R.stdin.off?.("data", this.onData); } catch {}
+    this.disableRaw();
+  }
+
   private enableRaw() {
     const stdin: any = R.stdin as any;
-    if (stdin.isTTY) {
+    if (stdin?.isTTY) {
       this.rawWasOn = !!stdin.isRaw;
-      if (!stdin.isRaw && typeof stdin.setRawMode === "function") stdin.setRawMode(true);
+      if (!stdin.isRaw && typeof stdin.setRawMode === "function") {
+        try { stdin.setRawMode(true); } catch {}
+      }
     }
-    R.stdin.resume();
+    try { R.stdin.resume(); } catch {}
   }
 
   private disableRaw() {
     const stdin: any = R.stdin as any;
-    if (stdin.isTTY && !this.rawWasOn && typeof stdin.setRawMode === "function") {
-      try { stdin.setRawMode(false); } catch { /* ignore */ }
+    if (stdin?.isTTY && !this.rawWasOn && typeof stdin.setRawMode === "function") {
+      try { stdin.setRawMode(false); } catch {}
     }
   }
 
+  // ESC when idle ⇒ stop scheduler (graceful), then run finalizer (review/apply).
   private async handleEscapeIdle() {
+    Logger.debug("[input] ESC received (idle) — initiating graceful stop");
     try {
-      await this.opts.finalizer();
-    } catch (e: any) {
-      Logger.warn("finalizer error:", e?.message || String(e));
-    }
-    if (this.opts.exitOnEsc) {
-      // Let app.ts decide exact code; we just end the loop.
-      R.stdout.write("\n");
-    }
-  }
+      const s = this.scheduler;
+      if (s) {
+        // If test double exposes draining controls, respect them.
+        try {
+          if (typeof s.isDraining === "function" && s.isDraining()) {
+            if (typeof s.stopDraining === "function") s.stopDraining();
+          }
+        } catch { /* ignore */ }
 
-  private pendingResolve: ((s: string) => void) | null = null;
-
-  private async promptOnce(): Promise<string> {
-    if (this.pendingResolve) {
-      // Already prompting; bail out to avoid re-entrancy.
-      return new Promise<string>((resolve) => {
-        const prev = this.pendingResolve!;
-        this.pendingResolve = (s: string) => { prev(s); resolve(s); };
-      });
-    }
-    return await new Promise<string>((resolve) => {
-      this.pendingResolve = resolve;
-      this.fsm.beginInterject();
-    });
-  }
-
-  private submitText(text: string) {
-    const t = String(text ?? "").trimEnd();
-    if (this.pendingResolve) {
-      const resolve = this.pendingResolve; this.pendingResolve = null;
-      resolve(t);
-    }
-    // Also send to scheduler if available (background submit)
-    if (t && this.scheduler && this.submitting) {
+        if (typeof s.stop === "function") {
+          try { s.stop(); } catch (e: any) {
+            Logger.warn(`[input] scheduler.stop() error: ${e?.message || e}`);
+          }
+        }
+      }
+    } finally {
       try {
-        this.submitting(t);
+        await this.opts.finalizer();
       } catch (e: any) {
-        Logger.warn("scheduler submit failed:", e?.message || String(e));
+        Logger.warn(`[input] finalizer error: ${e?.message || e}`);
+      }
+      if (this.opts.exitOnEsc) {
+        try { R.stdout.write("\n"); } catch {}
       }
     }
   }
 
-  private pickSubmitFn(s: any): SubmitFn | null {
-    // Respect override; else best-effort probing (back-compat)
-    const preferred = (R.env.ORG_SCHEDULER_SUBMIT || "receiveUser").trim();
-    if (typeof s?.[preferred] === "function") return (t: string) => s[preferred](t);
+  private async promptOnce(): Promise<string> {
+    if (this.pendingResolve) {
+      // Already prompting; chain to existing resolver.
+      return new Promise<string>((resolve) => {
+        const prev = this.pendingResolve!;
+        this.pendingResolve = (s: string) => { try { prev(s); } catch {}; resolve(s); };
+      });
+    }
+    return await new Promise<string>((resolve) => {
+      this.pendingResolve = (s: string) => {
+        this.pendingResolve = null;
+        const out = (s ?? "");
+        Logger.debug(`[input] prompt resolved (${out.length} chars)`);
+        resolve(out);
+      };
+      // Open the prompt by virtually pressing the interject key.
+      this.fsm.handle({ type: "char", data: this.opts.interjectKey });
+    });
+  }
 
+  private submitText(t: string) {
+    const text = String(t ?? "");
+    const hadPrompt = !!this.pendingResolve;
+
+    if (hadPrompt) {
+      const resolve = this.pendingResolve; this.pendingResolve = null;
+      try { resolve!(text); } catch {}
+      // Do NOT also forward to scheduler here: the scheduler awaits the promise.
+      return;
+    }
+
+    // Background interjection / kickoff
+    if (text && this.scheduler && this.submitting) {
+      Logger.debug(`[input] background submit via ${this.submittingName}: ${JSON.stringify(text)}`);
+      try { this.submitting(text); } catch (e: any) {
+        Logger.warn(`[input] scheduler submit failed: ${e?.message || e}`);
+      }
+    } else {
+      Logger.debug("[input] background submit dropped (no scheduler submit bound)");
+    }
+  }
+
+  private pickSubmitFn(s: any): { fn: SubmitFn | null; name: string | null } {
+    // Allow override via env for experiments.
+    const preferred = (R.env.ORG_SCHEDULER_SUBMIT || "").trim();
+    if (preferred && typeof s?.[preferred] === "function") {
+      return { fn: (t: string) => s[preferred](t), name: preferred };
+    }
+
+    // Known entry points across schedulers in this repo.
     const candidates = [
-      "receiveUser", "submitUser", "submit", "enqueueUser", "onUserInput",
+      "handleUserInterjection", // <- test doubles expect this
+      "receiveUser",
+      "interject",
+      "submitUser",
+      "submit",
+      "enqueueUser",
+      "onUserInput",
     ];
     for (const name of candidates) {
-      if (typeof s?.[name] === "function") return (t: string) => s[name](t);
+      if (typeof s?.[name] === "function") {
+        return { fn: (t: string) => s[name](t), name };
+      }
     }
-    Logger.warn("[input] no scheduler submit function found");
-    return null;
+    return { fn: null, name: null };
   }
 }
 
 /* -------------------------------------------------------------------------- */
-/* Test helper: makeControllerForTests                                        */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Creates an InputController wired to fake TTY streams.
- * Tests can feed raw key bytes and capture what the app writes.
- *
- * Usage (typical):
- *   const t = makeControllerForTests({ interjectKey: "i" });
- *   t.feed("ihello\r");       // type "hello" after opening interject
- *   t.feed("\x1b");           // ESC
- *   t.restore();
+/* Test helper: makeControllerForTests (keeps backward-compat API)
+ * --------------------------------------------------------------------------
+ * Returns an object exposing `_private.emitKey(...)` (as older tests expect)
+ * and convenience helpers for feeding input and capturing output.
  */
 export function makeControllerForTests(
-  opts: InputControllerOptions = {},
+  opts: InputControllerOptions & { scheduler?: any } = {},
 ): {
   ctrl: InputController;
   feed: (s: string | Buffer) => void;
@@ -194,38 +262,33 @@ export function makeControllerForTests(
   out: () => string;
   err: () => string;
   restore: () => void;
+  _private: { emitKey: (ev: any) => void };
 } {
-  // Save originals
+  // Save originals to restore later
   const orig = { stdin: R.stdin, stdout: R.stdout, stderr: R.stderr };
 
-  // Create fake TTYs
+  // Fake TTY streams
   const stdin = new PassThrough();
   const stdout = new PassThrough();
   const stderr = new PassThrough();
 
-  // Mark them as TTY + provide setRawMode
-  Object.assign(stdin as any, {
-    isTTY: true,
-    isRaw: false,
-    setRawMode: function (v: boolean) { (stdin as any).isRaw = !!v; },
-    resume: () => {},
-    pause: () => {},
-  });
-  Object.assign(stdout as any, { isTTY: true });
-  Object.assign(stderr as any, { isTTY: true });
+  (stdin as any).isTTY = true;
+  (stdin as any).isRaw = false;
+  (stdin as any).setRawMode = function (v: boolean) { (stdin as any).isRaw = !!v; };
 
-  // Capture written data
   let outBuf = "";
   let errBuf = "";
   stdout.on("data", (c) => { outBuf += c.toString("utf8"); });
   stderr.on("data", (c) => { errBuf += c.toString("utf8"); });
 
-  // Patch R for the duration of the test controller
+  // Patch runtime IO
   (R as any).stdin = stdin as any;
   (R as any).stdout = stdout as any;
   (R as any).stderr = stderr as any;
 
-  const ctrl = new InputController(opts);
+  const { scheduler, ...rest } = opts as any;
+  const ctrl = new InputController(rest);
+  if (scheduler) ctrl.attachScheduler(scheduler);
 
   const feed = (s: string | Buffer) => {
     const b = Buffer.isBuffer(s) ? s : Buffer.from(s, "utf8");
@@ -234,12 +297,23 @@ export function makeControllerForTests(
   const type = (s: string) => feed(s);
   const pressEsc = () => feed(Buffer.from([0x1b]));
   const pressEnter = () => feed(Buffer.from([0x0d]));
-  const pressI = () => feed("i");
+  const pressI = () => feed(opts.interjectKey ?? "i");
 
   const restore = () => {
     (R as any).stdin = orig.stdin;
     (R as any).stdout = orig.stdout;
     (R as any).stderr = orig.stderr;
+  };
+
+  // Back-compat path used by tests: allow direct key injection.
+  const _private = {
+    emitKey: (ev: any) => {
+      try {
+        (ctrl as any).fsm?.handle(ev);
+      } catch (e: any) {
+        Logger.warn(`[input.test] emitKey failed: ${e?.message || e}`);
+      }
+    },
   };
 
   return {
@@ -252,5 +326,6 @@ export function makeControllerForTests(
     out: () => outBuf,
     err: () => errBuf,
     restore,
+    _private,
   };
 }
