@@ -1,12 +1,16 @@
 // src/input/controller.ts
 // Sole owner of TTY input in raw mode, driven by a small FSM.
 //
-// Intent (tight):
-//  - Restore normal output (remove stdout interception).
-//  - Make interjection ('i') reliable and show 'You:' on a clean line.
-//  - Pause cosmetic fills via R.UIBusy while a prompt is active.
-//  - Preserve: ESC finalize, Ctrl+C fast-exit (real runs), Ctrl+Z suspend,
-//    no double-delivery of user input, and the test helper API.
+// Fixes (tight):
+//  - ESC is handled once (no double-press).
+//  - Interject ('i') works regardless of decodeKey's event shape.
+//  - While prompting, set UIBusy=true and draw on a clean line (no '... INFO' tail).
+//  - Never show 'You: .........' — we clear-to-EOL before banner.
+//
+// Preserved:
+//  - Ctrl+C: fast exit in real runs (no finalize), disabled in tests.
+//  - Ctrl+Z: suspend; raw-mode re-armed on SIGCONT.
+//  - No double-delivery: prompt submission resolves OR background submit, never both.
 
 import { R } from "../runtime/runtime";
 import { Logger } from "../logger";
@@ -36,29 +40,13 @@ export class InputController {
   private rawWasOn = false;
   private keyDebug = false;
 
-  // Armed when @@user is waiting for input
   private pendingResolve: ((s: string) => void) | null = null;
 
-  // ---- static hooks (used by tty-guard etc.) ----
-  private static _active: InputController | null = null;
-  static setRawMode(v: boolean) {
-    const stdin: any = R.stdin as any;
-    if (stdin?.isTTY && typeof stdin.setRawMode === "function") {
-      try { stdin.setRawMode(v); } catch {}
-      try { (stdin as any).isRaw = !!v; } catch {}
-    }
-  }
-  static isRawMode(): boolean {
-    try { return !!(R.stdin as any)?.isRaw; } catch { return false; }
-  }
-  static disableKeys() { this._active?._detachKeys(); }
-  static enableKeys() { this._active?._attachKeys(); }
+  // ESC once guard
+  private escInProgress = false;
 
   constructor(opts: InputControllerOptions = {}) {
-    const isTest =
-      R.env.BUN_TESTING === "1" ||
-      R.env.JEST_WORKER_ID != null ||
-      R.env.ORG_TEST === "1";
+    const isTest = R.env.BUN_TESTING === "1" || R.env.JEST_WORKER_ID != null || R.env.ORG_TEST === "1";
 
     this.opts = {
       interjectKey: opts.interjectKey ?? "i",
@@ -71,7 +59,6 @@ export class InputController {
 
     this.keyDebug = (R.env.ORG_KEY_DEBUG === "1" || R.env.DEBUG === "1");
 
-    // Wire FSM to IO + hooks
     this.fsm = new InputFSM(
       {
         write: (s: string) => { try { R.stdout.write(s); } catch {} },
@@ -81,7 +68,7 @@ export class InputController {
         banner: this.opts.interjectBanner,
         interjectKey: this.opts.interjectKey,
         onSubmit: (text) => this.submitText(text),
-        onCancel:  () => this.setUIBusy(false),   // leaving prompt
+        onCancel:  () => this.setUIBusy(false),
         onEscapeIdle: () => this.handleEscapeIdle(),
       }
     );
@@ -89,7 +76,6 @@ export class InputController {
     InputController._active = this;
     this._attachKeys();
 
-    // Re-arm raw mode after a foreground resume.
     try {
       R.on?.("SIGCONT", () => {
         Logger.debug("[input] SIGCONT -> re-enabling raw mode");
@@ -98,6 +84,7 @@ export class InputController {
     } catch { /* ignore */ }
   }
 
+  // ---------- public API ----------
   attachScheduler(s: any) {
     this.scheduler = s;
     const pick = this.pickSubmitFn(s);
@@ -107,12 +94,10 @@ export class InputController {
     else Logger.warn("[input] no scheduler submit function found");
   }
 
-  // Scheduler asks @@user: do NOT echo the agent text here (UI prints it).
   async askUser(_fromAgent: string, _content: string): Promise<string> {
     return await this.promptOnce();
   }
 
-  // Kickoff helper: true => prompt; string => background submit
   async askInitialAndSend(kickoff?: string | boolean) {
     if (kickoff === true) {
       await this.promptOnce();
@@ -121,8 +106,7 @@ export class InputController {
     }
   }
 
-  // ---------------- internal wiring ----------------
-
+  // ---------- stdin wiring ----------
   private onData = (chunk: Buffer) => {
     const s = chunk.toString("utf8");
 
@@ -144,21 +128,22 @@ export class InputController {
       return;
     }
 
-    // ESC when idle -> graceful stop
+    // ESC: graceful finalize (once)
     if (s === "\x1B" && !this.pendingResolve) {
-      Logger.debug("[input] ESC (idle) -> graceful stop");
-      void this.handleEscapeIdle();
+      if (!this.escInProgress) {
+        this.escInProgress = true;
+        Logger.debug("[input] ESC (idle) -> graceful stop");
+        void this.handleEscapeIdle().finally(() => { this.escInProgress = false; });
+      }
       return;
     }
 
-    // Decode normally
     const ev = decodeKey(chunk);
     if (this.keyDebug) {
       try { R.stderr.write(`[key] ${JSON.stringify(ev)}\n`); } catch {}
     }
 
-    // Interjection hotkey: open immediately (no deferral)
-    if (ev && ev.type === "char" && ev.data === this.opts.interjectKey && !this.pendingResolve) {
+    if (!this.pendingResolve && isInterjectHotkey(ev, this.opts.interjectKey)) {
       this.openInterjectNow();
       return;
     }
@@ -174,11 +159,6 @@ export class InputController {
     R.on("beforeExit", restore);
   }
 
-  private _detachKeys() {
-    try { R.stdin.off?.("data", this.onData); } catch {}
-    this.disableRaw();
-  }
-
   private enableRaw() {
     const stdin: any = R.stdin as any;
     if (stdin?.isTTY) {
@@ -189,7 +169,6 @@ export class InputController {
     }
     try { R.stdin.resume(); } catch {}
   }
-
   private disableRaw() {
     const stdin: any = R.stdin as any;
     if (stdin?.isTTY && !this.rawWasOn && typeof stdin.setRawMode === "function") {
@@ -197,13 +176,12 @@ export class InputController {
     }
   }
 
+  // ---------- behaviors ----------
   private async handleEscapeIdle() {
     try {
       const s = this.scheduler;
       if (s && typeof s.stop === "function") {
-        try { s.stop(); } catch (e: any) {
-          Logger.warn(`[input] scheduler.stop() error: ${e?.message || e}`);
-        }
+        try { s.stop(); } catch (e: any) { Logger.warn(`[input] scheduler.stop() error: ${e?.message || e}`); }
       }
     } finally {
       try { await this.opts.finalizer(); }
@@ -224,7 +202,7 @@ export class InputController {
     return await new Promise<string>((resolve) => {
       this.pendingResolve = (s: string) => {
         this.pendingResolve = null;
-        this.setUIBusy(false);
+        this.setUIBusy(false);           // leave prompt: allow fills again
         const out = (s ?? "");
         Logger.debug(`[input] prompt resolved (${out.length} chars)`);
         resolve(out);
@@ -239,13 +217,12 @@ export class InputController {
 
     if (hadPrompt) {
       const resolve = this.pendingResolve; this.pendingResolve = null;
-      this.setUIBusy(false);
+      this.setUIBusy(false);             // leave prompt
       try { resolve!(text); } catch {}
-      // do NOT also forward to scheduler
-      return;
+      return;                            // do NOT also forward to scheduler
     }
 
-    // Background interjection / kickoff
+    // background interjection / kickoff
     if (text && this.scheduler && this.submitting) {
       Logger.debug(`[input] background submit via ${this.submittingName}: ${JSON.stringify(text)}`);
       try { this.submitting(text); } catch (e: any) {
@@ -256,22 +233,21 @@ export class InputController {
     }
   }
 
-  // --- helpers ---------------------------------------------------------------
-
+  // ---------- helpers ----------
   private setUIBusy(b: boolean) {
     try {
       const anyR = R as any;
       if (typeof anyR.setUIBusy === "function") { anyR.setUIBusy(b); return; }
       if ("uiBusy" in anyR) { anyR.uiBusy = b; return; }
-      (anyR as any).UIBusy = b; // some places check this name
+      (anyR as any).UIBusy = b;
     } catch { /* ignore */ }
   }
 
   private openInterjectNow() {
-    this.setUIBusy(true);
-    // Clean line: CR + clear-to-EOL (avoid glue with right-edge adornments)
+    this.setUIBusy(true);                 // pause dotted fills
+    // Clean current line (avoid 'You:' + trailing INFO)
     try { R.stdout.write("\r\x1b[K"); } catch {}
-    // Drive FSM as if the hotkey was pressed.
+    // Drive FSM as if the hotkey was pressed (this opens the prompt).
     this.fsm.handle({ type: "char", data: this.opts.interjectKey });
   }
 
@@ -294,6 +270,24 @@ export class InputController {
     }
     return { fn: null, name: null };
   }
+
+  // ---- static for tty-guard ----
+  private static _active: InputController | null = null;
+  static disableKeys() { this._active?._detachKeys(); }
+  static enableKeys() { this._active?._attachKeys(); }
+  private _detachKeys() { try { R.stdin.off?.("data", this.onData); } catch {}; this.disableRaw(); }
+}
+
+// Normalize interject hotkey detection across decodeKey shapes.
+function isInterjectHotkey(ev: any, key: string): boolean {
+  if (!ev) return false;
+  // shape A (preferred): { type: 'char', data: 'i' }
+  if (ev.type === "char" && ev.data === key) return true;
+  // shape B: { name: 'i', ctrl?: false, meta?: false }
+  if (ev.name === key && !ev.ctrl && !ev.meta) return true;
+  // shape C: { key?: { name: 'i' } }  (some key decoders)
+  if (ev.key && ev.key.name === key && !ev.key.ctrl && !ev.key.meta) return true;
+  return false;
 }
 
 /* -------------------------------------------------------------------------- */
