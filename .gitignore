@@ -64,6 +64,7 @@ logs/
 # Keep launcher code and any static assets you want to ship
 !/.org/launcher/
 !/.org/launcher/**
+!/.org/bin
 
 # Optionally keep docs/config in .org
 !/.org/*.md
@@ -77,6 +78,7 @@ logs/
 # Ignore runtime artifacts under .org
 /.org/logs/
 /.org/runs/
+/.org/tmp/
 /.org/tmp/
 /.org/sandboxes/
 /.org/**/tmux-logs/
