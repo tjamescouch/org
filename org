@@ -104,8 +104,7 @@ run_console() {
 run_tmux_in_container() {
   log "ui=tmux (enter run_tmux_in_container)"
 
-  # ---- IMPORTANT: mount the whole project to /work
-  # We already computed/exported ORG_CALLER_CWD=PROJ earlier in the script.
+  # ---- Mount the whole project at /work (so /work has .git)
   local PROJ="${ORG_CALLER_CWD:-$PWD}"
   if git -C "$PROJ" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     PROJ="$(git -C "$PROJ" rev-parse --show-toplevel)"
@@ -116,8 +115,8 @@ run_tmux_in_container() {
   local CTR_ENTRY="$CTR_APPDIR/src/app.ts"
   local MNT="$PROJ:$CTR_WORK:Z"
 
-  # Host logs + tmux logs
-  mkdir -p "$APPDIR/logs/tmux-logs" || true
+  # Host logs (will be written by the app inside the container to /work/.org/logs/…)
+  mkdir -p "$APPDIR/logs" "$APPDIR/logs/tmux-logs" || true
   local LOG_DIR_HOST="$APPDIR/logs"
   local LOG_FILE_HOST="$LOG_DIR_HOST/tmux-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
 
@@ -125,54 +124,51 @@ run_tmux_in_container() {
   log "mount: $MNT"
   log "host log file: $LOG_FILE_HOST"
 
-  # Join args once, safely
+  # Join args safely for passing to the inner script
   local ARGS_JOINED=""
   if [ ${#args[@]} -gt 0 ]; then
     for a in "${args[@]}"; do ARGS_JOINED+=" $(printf '%q' "$a")"; done
   fi
 
-  # Inner script both host copy (for inspection) and container path
   local INNER_SCRIPT="$CTR_APPDIR/.tmux-inner.sh"
-  local INNER_SCRIPT_HOST="$APPDIR/logs/.tmux-inner.sh"
 
-  cat > "$INNER_SCRIPT_HOST" <<'EOS'
+  # Create the inner script *inside the container* with a heredoc (no host cp)
+  local CREATE_AND_RUN="
 set -Eeuo pipefail
 umask 0002
 
-: "${ORG_LOG_DIR:?ORG_LOG_DIR not set}"
-: "${ORG_LOG_FILE:?ORG_LOG_FILE not set}"
-: "${ENTRY:?ENTRY not set}"
+echo '[ctr] creating log dirs and inner script...'
+mkdir -p \"$CTR_APPDIR/logs\" \"$CTR_APPDIR/logs/tmux-logs\"
 
-mkdir -p "$ORG_LOG_DIR"
-echo "[tmux] log -> $ORG_LOG_FILE"
-echo "[tmux] bun=$(command -v bun || echo 'MISSING') entry='$ENTRY' date=$(date -u +%FT%TZ)"
+cat > \"$INNER_SCRIPT\" <<'EOS'
+set -Eeuo pipefail
+umask 0002
 
-# Run app and keep bun's exit code even after tee
+: \"\${ORG_LOG_DIR:?ORG_LOG_DIR not set}\"
+: \"\${ORG_LOG_FILE:?ORG_LOG_FILE not set}\"
+: \"\${ENTRY:?ENTRY not set}\"
+
+mkdir -p \"\$ORG_LOG_DIR\"
+echo \"[tmux] log -> \$ORG_LOG_FILE\"
+echo \"[tmux] bun=\$(command -v bun || echo 'MISSING') entry='\$ENTRY' date=\$(date -u +%FT%TZ)\"
+
 set +e
-bun "$ENTRY" --ui console "$@" 2>&1 | tee -a "$ORG_LOG_FILE"
-ec=${PIPESTATUS[0]}
+bun \"\$ENTRY\" --ui console \"\$@\" 2>&1 | tee -a \"\$ORG_LOG_FILE\"
+ec=\${PIPESTATUS[0]}
 set -e
 
-echo "[tmux] app exited with $ec"
-exit "$ec"
+echo \"[tmux] app exited with \$ec\"
+exit \"\$ec\"
 EOS
-  chmod +x "$INNER_SCRIPT_HOST" || true
 
-  local CREATE_AND_RUN="
-    set -Eeuo pipefail
-    umask 0002
-    echo '[ctr] creating log dirs and inner script...'
-    mkdir -p \"$CTR_APPDIR/logs\" \"$CTR_APPDIR/logs/tmux-logs\"
-    cp -f \"$INNER_SCRIPT_HOST\" \"$INNER_SCRIPT\"
-    chmod +x \"$INNER_SCRIPT\"
-    export ENTRY=\"$CTR_ENTRY\"
-    export TMUX_TMPDIR=\"$CTR_APPDIR/logs/tmux-logs\"
-    echo '[ctr] ENTRY='$CTR_ENTRY
-    echo '[ctr] ORG_LOG_DIR='$CTR_APPDIR/logs
-    echo '[ctr] ORG_LOG_FILE='$CTR_APPDIR/logs/$(basename "$LOG_FILE_HOST")
-    echo '[ctr] starting tmux -vv ...'
-    tmux -vv new -A -s org bash --noprofile --norc \"$INNER_SCRIPT\" $ARGS_JOINED
-  "
+chmod +x \"$INNER_SCRIPT\"
+
+export ENTRY=\"$CTR_ENTRY\"
+export TMUX_TMPDIR=\"$CTR_APPDIR/logs/tmux-logs\"
+
+echo '[ctr] starting tmux -vv ...'
+tmux -vv new -A -s org bash --noprofile --norc \"$INNER_SCRIPT\" $ARGS_JOINED
+"
 
   log "about to exec $ORG_ENGINE run (should not return)"
 
@@ -188,6 +184,7 @@ EOS
     -e ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}" \
     "$ORG_IMAGE" bash -lc "$CREATE_AND_RUN"
 }
+
 
 
 
