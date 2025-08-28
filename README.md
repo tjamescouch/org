@@ -81,7 +81,7 @@ podman machine start
 
 ```bash
 # 1) Get the code
-git clone <your-repo-url> org
+git clone git@github.com:tjamescouch/org.git
 cd org
 
 # 2) Install (doctor + build image + link CLI)
