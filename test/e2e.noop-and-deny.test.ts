@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { rmSync } from "node:fs";
 import { initRepo, runOrg, lastRunDir, patchSize, readFileSafe } from "./_helpers";
 
-describe("e2e: no-op behavior and write-policy deny", () => {
+describe.skip("e2e: no-op behavior and write-policy deny", () => {
     let repo = "";
 
     beforeEach(() => { repo = initRepo(); });

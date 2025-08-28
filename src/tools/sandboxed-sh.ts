@@ -6,7 +6,7 @@ import { ExecPolicy } from "../sandbox/policy";
 import { detectBackend } from "../sandbox/detect";
 import { Logger } from "../logger";
 
-// NOTE: older revs may NOT export sandboxImageTag; import the module as a namespace
+// Import as a namespace so we can tolerate export-shape differences across revs.
 import * as PodmanBackend from "../sandbox/backends/podman";
 import type { PodmanSession } from "../sandbox/backends/podman";
 
@@ -29,12 +29,27 @@ export function setShHeartbeatMuted(muted: boolean) {
   HEARTBEAT_MUTED = muted;
 }
 
-/** Handy helper so callers can do: `await withMutedShHeartbeat(async () => { ... })` */
 export async function withMutedShHeartbeat<T>(fn: () => Promise<T>): Promise<T> {
   const prev = HEARTBEAT_MUTED;
   HEARTBEAT_MUTED = true;
   try { return await fn(); }
   finally { HEARTBEAT_MUTED = prev; }
+}
+
+/* -----------------------------------------------------------------------------
+ * Utilities
+ * ---------------------------------------------------------------------------*/
+
+function defaultProjectDir(): string {
+  return (
+    process.env.ORG_CALLER_CWD ||
+    process.env.ORG_APPDIR ||
+    process.cwd()
+  );
+}
+
+function defaultAgentSessionId(): string {
+  return process.env.ORG_AGENT_SESSION_ID || "default";
 }
 
 /* -----------------------------------------------------------------------------
@@ -119,19 +134,16 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   const mgr = await getManager(sessionKey, projectDir, runRoot);
   const session = await mgr.getOrCreate(sessionKey, ctx.policy);
 
-  // Figure out the host path that mirrors /work/.org/steps inside the sandbox.
-  // PodmanSession exposes getStepsHostDir(); fall back to a best effort if missing.
+  // Host path mirrored to /work/.org/steps inside the sandbox.
   const stepsHostDir: string =
     (typeof (session as any).getStepsHostDir === "function")
       ? (session as any).getStepsHostDir()
-      : path.join(runRoot, "tmp", "unknown-steps"); // unlikely fallback
+      : path.join(runRoot, "tmp", "unknown-steps");
 
-  // Predict the filenames this step will use; then set up live tail.
   const nextIdx   = await computeNextStepIdx(stepsHostDir);
   const liveOut   = path.join(stepsHostDir, `step-${nextIdx}.out`);
   const liveErr   = path.join(stepsHostDir, `step-${nextIdx}.err`);
 
-  // Prefix + heartbeat (stderr), matching the local UX.
   process.stderr.write(`sh: ${args.cmd} -> `);
   let lastOutputAt = Date.now();
   let printedHeartbeat = false;
@@ -151,7 +163,6 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
     }
   }, Math.max(250, Math.floor(Math.max(1, idleHeartbeatMs) / 2)));
 
-  // Start tailers (they will wait until files appear)
   const outTail = tailFile(
     liveOut,
     (s) => { process.stdout.write(s); },
@@ -163,20 +174,16 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
     () => { lastOutputAt = Date.now(); breakHeartbeatLineOnce(); }
   );
 
-  // Run the step inside the sandbox (this writes those files)
   const step = await session.exec(args.cmd);
 
-  // Stop heartbeat + tailers and clean up the line nicely.
   clearInterval(hbTimer);
   outTail.stop();
   errTail.stop();
   if (printedHeartbeat && !brokeLineAfterHeartbeat) process.stderr.write("\n");
   if (!printedHeartbeat && step.ok && !fs.existsSync(liveOut) && !fs.existsSync(liveErr)) {
-    // nothing at all — still end the line
     process.stderr.write("\n");
   }
 
-  // Read the final results from the step artifacts the way the rest of the system expects.
   const out = fs.existsSync(step.stdoutFile)
     ? fs.readFileSync(step.stdoutFile, "utf8")
     : (fs.existsSync(liveOut) ? fs.readFileSync(liveOut, "utf8") : "");
@@ -222,7 +229,6 @@ export const SANDBOXED_SH_TOOL_SCHEMA = {
  * Podman convenience helpers (capture/interactive)
  * ---------------------------------------------------------------------------*/
 
-/** Resolve the dev sandbox image tag across revisions without requiring a named export. */
 function resolveSandboxImageTag(): string {
   const anyMod = PodmanBackend as any;
   const v = anyMod?.sandboxImageTag;
@@ -233,7 +239,6 @@ function resolveSandboxImageTag(): string {
   if (typeof v === "string" && v.length > 0) {
     return v;
   }
-  // Fallbacks (env first, then a conservative default)
   return (
     process.env.ORG_IMAGE ||
     process.env.SANDBOX_IMAGE ||
@@ -245,18 +250,19 @@ function resolveSandboxImageTag(): string {
 /** Internal: get a Podman session object for this (projectDir, sessionKey) pair */
 function getPodman(projectDir: string, sessionKey: string): PodmanSession {
   const tag = resolveSandboxImageTag();
-  // Use namespace import to be robust to export shape changes
   const Ctor = (PodmanBackend as any).PodmanSession as new (img: string, dir: string, key: string) => PodmanSession;
   return new Ctor(tag, projectDir, sessionKey);
 }
 
-/** Simple non-interactive capture. */
+/** Simple non-interactive capture.  (tolerates undefined opts) */
 export async function shCapture(
   cmd: string,
-  opts: { projectDir: string; agentSessionId: string }
+  opts?: { projectDir?: string; agentSessionId?: string }
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const pod = getPodman(opts.projectDir, opts.agentSessionId);
-  // Support older/newer method names
+  const projectDir = opts?.projectDir ?? defaultProjectDir();
+  const sessionId  = opts?.agentSessionId ?? defaultAgentSessionId();
+
+  const pod = getPodman(projectDir, sessionId);
   const r: any = (pod as any).execCapture
     ? (pod as any).execCapture(cmd)
     : (pod as any).capture
@@ -266,16 +272,19 @@ export async function shCapture(
   return { code: r.status ?? 0, stdout: r.stdout || "", stderr: r.stderr || "" };
 }
 
-/** Interactive execution: attach TTY and inherit stdio. */
+/** Interactive execution: attach TTY and inherit stdio.  (tolerates undefined opts) */
 export async function shInteractive(
   cmdOrArgv: string | string[],
-  opts: { projectDir: string; agentSessionId: string; }
+  opts?: { projectDir?: string; agentSessionId?: string; }
 ): Promise<{ code: number }> {
   const cmd = Array.isArray(cmdOrArgv)
     ? cmdOrArgv.map(a => JSON.stringify(a)).join(" ")
     : cmdOrArgv;
 
-  const pod = getPodman(opts.projectDir, opts.agentSessionId);
+  const projectDir = opts?.projectDir ?? defaultProjectDir();
+  const sessionId  = opts?.agentSessionId ?? defaultAgentSessionId();
+
+  const pod = getPodman(projectDir, sessionId);
   const child: any = (pod as any).execInteractive
     ? (pod as any).execInteractive(cmd)
     : (pod as any).interactive
@@ -287,6 +296,5 @@ export async function shInteractive(
   return await new Promise<{ code: number }>((resolve) => {
     child.on("close", (code: number) => resolve({ code: code ?? 0 }));
     child.on("exit",  (code: number) => resolve({ code: code ?? 0 }));
-    // If the spawn fails synchronously, Node throws — caller will see.
   });
 }

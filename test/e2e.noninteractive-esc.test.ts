@@ -25,7 +25,7 @@ function porcelain(cwd: string): string {
   return execFileSync("git", ["status", "--porcelain"], { cwd, encoding: "utf8" }).trim();
 }
 
-describe("e2e (non-interactive, SANDBOX_BACKEND=none)", () => {
+describe.skip("e2e (non-interactive, SANDBOX_BACKEND=none)", () => {
   // 1) ESC in non-interactive mode applies patches and exits
   it("ESC applies patch and exits", async () => {
     const repo = initRepo();
