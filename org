@@ -101,7 +101,7 @@ RUN_BASE=( "$ENGINE" run --rm -it
 # ---------------------------
 if [[ "$UI" == "tmux" ]]; then
   # Use the container-side tmux launcher (see file below).
-  exec "${RUN_BASE[@]}" bash -lc 'bash /work/org/launcher/tmux.sh'
+  exec "${RUN_BASE[@]}" bash -lc 'bash /work/.org/launcher/tmux.sh'
 else
   # Console UI (no tmux). Pass through any extra args you gave `./org`.
   # If you use --prompt "..." etc., make sure you quote on the host.

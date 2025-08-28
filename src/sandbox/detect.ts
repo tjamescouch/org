@@ -1,15 +1,22 @@
-// src/sandbox/detect.ts
 import { spawnSync } from "child_process";
 
-export type SandboxBackend = "podman" | "mock";
+export type Backend = "podman" | "docker" | "mock";
 
-/** Decide which backend to use.  Defaults to "mock" when Podman isn't available. */
-export function detectBackend(): SandboxBackend {
-  const forced = (process.env.SANDBOX_BACKEND || "").toLowerCase() as SandboxBackend;
-  if (forced === "podman" || forced === "mock") return forced;
+/** Decide which sandbox backend to use. Env var wins. Then Podman, then Docker, last-resort mock. */
+export function detectBackend(): Backend {
+  const forced = (process.env.ORG_BACKEND || "").toLowerCase();
+  if (forced === "podman" || forced === "docker" || forced === "mock") {
+    return forced as Backend;
+  }
 
-  // Prefer Podman only when it is available and reachable
-  const v = spawnSync("podman", ["version"], { stdio: "ignore" });
-  if (v.status === 0) return "podman";
+  const has = (bin: string) =>
+    spawnSync(bin, ["--version"], { stdio: "ignore" }).status === 0;
+
+  if (has("podman")) return "podman";
+  if (has("docker")) return "docker";
   return "mock";
+}
+
+export function isMock(): boolean {
+  return detectBackend() === "mock";
 }
