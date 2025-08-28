@@ -1,50 +1,49 @@
-# shellcheck shell=bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-_join_args() {
-  local s=""
-  local a
-  for a in "${ORG_FWD_ARGS[@]}"; do
-    s+=" $(printf '%q' "$a")"
-  done
-  printf '%s' "$s"
-}
-
+# run inside a container and open a tmux session that runs the console UI
 run_tmux_in_container() {
   log "ui=tmux"
 
-  local SRC="$APPDIR"
-  local CTR_WORK="/work"
-  local CTR_APPDIR="$CTR_WORK"
-  local CTR_ENTRY="$CTR_APPDIR/src/app.ts"
-  local MNT="$SRC:$CTR_WORK:Z"
+  local PROJ="${ORG_PROJ}"
+  local CTR_WORK="/work"               # mount repo root here
+  local CTR_ENTRY="$CTR_WORK/src/app.ts"
+  local MNT="$PROJ:$CTR_WORK:Z"
 
-  mkdir -p "$ORG_LOG_DIR" "$ORG_LOG_DIR/tmux-logs" || true
-  local LOG_FILE_HOST="$ORG_LOG_DIR/tmux-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
+  mkdir -p "$PROJ/.org/logs" "$PROJ/.org/logs/tmux-logs" || true
+  local LOG_FILE_HOST="$PROJ/.org/logs/tmux-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
 
-  log "mount: $MNT"
-  log "host tmux log: $LOG_FILE_HOST"
+  # join forwarded args safely
+  local ARGS_JOINED=""
+  if [ "${#ORG_FWD_ARGS[@]:-0}" -gt 0 ]; then
+    for a in "${ORG_FWD_ARGS[@]}"; do ARGS_JOINED+=" $(printf '%q' "$a")"; done
+  fi
 
-  local ARGS_JOINED; ARGS_JOINED="$(_join_args)"
+  # inner script path (inside the container)
+  local INNER_SCRIPT="$CTR_WORK/.org/.tmux-inner.sh"
 
+  # create the inner script and launch tmux (all inside the container)
   local CREATE_AND_RUN="
 set -Eeuo pipefail
 umask 0002
 
-mkdir -p \"$CTR_APPDIR/.org/logs\" \"$CTR_APPDIR/.org/logs/tmux-logs\"
+echo '[ctr] creating log dirs and inner script...'
+mkdir -p '$CTR_WORK/.org/logs' '$CTR_WORK/.org/logs/tmux-logs'
 
-cat > \"$CTR_APPDIR/.org/.tmux-inner.sh\" <<'EOS'
+cat > '$INNER_SCRIPT' <<'EOS'
 set -Eeuo pipefail
 umask 0002
-: \"\${ORG_LOG_DIR:?}\"
-: \"\${ORG_LOG_FILE:?}\"
-: \"\${ENTRY:?}\"
+
+: \"\${ORG_LOG_DIR:?ORG_LOG_DIR not set}\"
+: \"\${ORG_LOG_FILE:?ORG_LOG_FILE not set}\"
+: \"\${ENTRY:?ENTRY not set}\"
 
 mkdir -p \"\$ORG_LOG_DIR\"
 echo \"[tmux] log -> \$ORG_LOG_FILE\"
-echo \"[tmux] bun=\$(command -v bun || echo MISSING) entry='\$ENTRY' date=\$(date -u +%FT%TZ)\"
+echo \"[tmux] bun=\$(command -v bun || echo 'MISSING') entry='\$ENTRY' date=\$(date -u +%FT%TZ)\"
 
 set +e
-bun \"\$ENTRY\" --ui console $ARGS_JOINED 2>&1 | tee -a \"\$ORG_LOG_FILE\"
+bun \"\$ENTRY\" --ui console \"\$@\" 2>&1 | tee -a \"\$ORG_LOG_FILE\"
 ec=\${PIPESTATUS[0]}
 set -e
 
@@ -52,23 +51,27 @@ echo \"[tmux] app exited with \$ec\"
 exit \"\$ec\"
 EOS
 
-chmod +x \"$CTR_APPDIR/.org/.tmux-inner.sh\"
+chmod +x '$INNER_SCRIPT'
 
-export ENTRY=\"$CTR_ENTRY\"
-export TMUX_TMPDIR=\"$CTR_APPDIR/.org/logs/tmux-logs\"
-tmux -vv new -A -s org bash --noprofile --norc \"$CTR_APPDIR/.org/.tmux-inner.sh\"
+export ENTRY='$CTR_ENTRY'
+export TMUX_TMPDIR='$CTR_WORK/.org/logs/tmux-logs'
+
+echo '[ctr] starting tmux -vv ...'
+tmux -vv new -A -s org bash --noprofile --norc '$INNER_SCRIPT' $ARGS_JOINED
 "
 
   log "about to exec container"
+
   exec "$ORG_ENGINE" run --rm -it --network host \
     -v "$MNT" \
     -w "$CTR_WORK" \
     -e ORG_TMUX=1 \
     -e ORG_FORCE_UI=console \
-    -e ORG_APPDIR="$CTR_APPDIR" \
+    -e ORG_APPDIR="$CTR_WORK" \
     -e ORG_CALLER_CWD="$CTR_WORK" \
-    -e ORG_LOG_DIR="$CTR_APPDIR/.org/logs" \
-    -e ORG_LOG_FILE="$CTR_APPDIR/.org/logs/$(basename "$LOG_FILE_HOST")" \
+    -e ORG_LOG_DIR="$CTR_WORK/.org/logs" \
+    -e ORG_LOG_FILE="$CTR_WORK/.org/logs/$(basename "$LOG_FILE_HOST")" \
     -e ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}" \
+    -e SANDBOX_BACKEND=none \            # <<< the important bit
     "$ORG_IMAGE" bash -lc "$CREATE_AND_RUN"
 }
