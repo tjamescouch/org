@@ -7,7 +7,29 @@ import * as os from "os";
  * Colors (unchanged surface)
  * =========================== */
 
-export enum C {
+const Reset = "\u001b[0m";
+const Dim = "\u001b[2m";
+const FgCyan = "\u001b[36m";
+const FgGreen = "\u001b[32m";
+const FgMagenta = "\u001b[35m";
+const FgYellow = "\u001b[33m";
+const FgBlue = "\u001b[34m";
+
+export const C = {
+  reset: "\x1b[0m",
+  bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
+  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
+  green: (s: string) => `\x1b[32m${s}\x1b[0m`,   // <-- fixed here
+  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
+  blue: (s: string) => `\x1b[34m${s}\x1b[0m`,
+  magenta: (s: string) => `\x1b[35m${s}\x1b[0m`,
+  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
+  white: (s: string) => `\x1b[37m${s}\x1b[0m`,
+  gray: (s: string) => `\x1b[90m${s}\x1b[0m`,
+};
+
+
+export enum COL {
   reset   = "\x1b[0m",
   bold    = "\x1b[1m",
   dim     = "\x1b[2m",
@@ -19,20 +41,20 @@ export enum C {
   cyan    = "\x1b[36m",
 }
 
-function colorize(s: string, ...codes: C[]) {
+function colorize(s: string, ...codes: COL[]) {
   if (!codes.length) return s;
-  return codes.join("") + s + C.reset;
+  return codes.join("") + s + COL.reset;
 }
 
 // Keep the familiar helpers:
-export const red     = (s: string) => colorize(s, C.red);
-export const yellow  = (s: string) => colorize(s, C.yellow);
-export const green   = (s: string) => colorize(s, C.green);
-export const blue    = (s: string) => colorize(s, C.blue);
-export const magenta = (s: string) => colorize(s, C.magenta);
-export const cyan    = (s: string) => colorize(s, C.cyan);
-export const dim     = (s: string) => colorize(s, C.dim);
-export const bold    = (s: string) => colorize(s, C.bold);
+export const red     = (s: string) => colorize(s, COL.red);
+export const yellow  = (s: string) => colorize(s, COL.yellow);
+export const green   = (s: string) => colorize(s, COL.green);
+export const blue    = (s: string) => colorize(s, COL.blue);
+export const magenta = (s: string) => colorize(s, COL.magenta);
+export const cyan    = (s: string) => colorize(s, COL.cyan);
+export const dim     = (s: string) => colorize(s, COL.dim);
+export const bold    = (s: string) => colorize(s, COL.bold);
 
 /* ===========================
  * Logger (compatible surface)
@@ -197,22 +219,22 @@ export class Logger {
     const label = level.toUpperCase().padEnd(5);
 
     // Console format (colored)
-    const line = [colorize(`[${ts}]`, C.dim), label, ...args];
+    const line = [colorize(`[${ts}]`, COL.dim), label, ...args];
 
     switch (level) {
       case "trace":
       case "debug":
         // faint label for debug-ish
-        console.log(colorize(label, C.dim), ...line.slice(2));
+        console.log(colorize(label, COL.dim), ...line.slice(2));
         break;
       case "info":
-        console.log(colorize(label, C.cyan), ...line.slice(2));
+        console.log(colorize(label, COL.cyan), ...line.slice(2));
         break;
       case "warn":
-        console.warn(colorize(label, C.yellow), ...line.slice(2));
+        console.warn(colorize(label, COL.yellow), ...line.slice(2));
         break;
       case "error":
-        console.error(colorize(label, C.red), ...line.slice(2));
+        console.error(colorize(label, COL.red), ...line.slice(2));
         break;
     }
 
