@@ -1,4 +1,3 @@
-# Rock-solid dev image for org – with tmux + bun + nice UX
 FROM debian:12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -9,6 +8,7 @@ RUN apt-get update \
     bash ca-certificates curl git rsync jq file \
     build-essential pkg-config cmake clang llvm lldb \
     python3 python3-pip python3-venv \
+    nodejs npm \
     unzip zip tar xz-utils \
     tmux ncurses-term less locales \
     vim-nox \
@@ -17,25 +17,11 @@ RUN apt-get update \
 # Locale for better readline/Unicode behavior
 RUN sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+
 # Safe default TERM inside the container
 ENV TERM=xterm-256color
 
-# Install Bun to /usr/local/bin
-ARG BUN_VERSION="1.2.19"
-RUN set -eux; \
-  arch="$(uname -m)"; \
-  case "$arch" in \
-    x86_64)  barch="x64" ;; \
-    aarch64) barch="aarch64" ;; \
-    *) echo "Unsupported arch: $arch"; exit 1 ;; \
-  esac; \
-  curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-${barch}.zip" -o /tmp/bun.zip; \
-  unzip -q /tmp/bun.zip -d /tmp/bun; \
-  install -m 0755 "/tmp/bun/bun-linux-${barch}/bun" /usr/local/bin/bun; \
-  rm -rf /tmp/bun /tmp/bun.zip; \
-  bun --version
-
-# Optional: install delta (nice patch viewer)
+# Install 'delta' (nice patch viewer)
 ARG DELTA_VER=0.17.0
 RUN set -eux; \
   arch="$(dpkg --print-architecture)"; \
@@ -52,6 +38,29 @@ RUN set -eux; \
   install -m 0755 /tmp/delta-${DELTA_VER}-${rel}/delta /usr/local/bin/delta; \
   rm -rf /tmp/delta*; \
   /usr/local/bin/delta --version || true
+
+# ---------- Bun: install to a fixed, root-owned path ----------
+# (So we never depend on $HOME/.bun and can hard-code it safely)
+ARG BUN_VERSION=1.2.19
+RUN set -eux; \
+  arch="$(dpkg --print-architecture)"; \
+  case "$arch" in \
+    amd64) bun_arch='x64' ;; \
+    arm64) bun_arch='aarch64' ;; \
+    *) echo "Unsupported arch for Bun: $arch"; exit 1 ;; \
+  esac; \
+  curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-${bun_arch}.zip" -o /tmp/bun.zip; \
+  mkdir -p /tmp/bun; \
+  unzip /tmp/bun.zip -d /tmp/bun >/dev/null; \
+  # zip layout: bun-linux-<arch>/bun
+  install -m 0755 /tmp/bun/bun-linux-${bun_arch}/bun /usr/local/bin/bun; \
+  rm -rf /tmp/bun /tmp/bun.zip; \
+  /usr/local/bin/bun --version
+
+# Hard-coded paths we’ll reference from the app
+ENV ORG_BUN_BIN=/usr/local/bin/bun
+ENV ORG_TMUX_BIN=/usr/bin/tmux
+ENV ORG_DEFAULT_CWD=/work
 
 # --- Portable apply_patch helper (no heredocs) ---
 RUN set -eux; \
@@ -107,8 +116,6 @@ RUN set -eux; \
 > /usr/local/bin/apply_patch \
  && chmod +x /usr/local/bin/apply_patch
 
-# Optional: patch viewer (handy for tmux popups)
+# Optional: patch viewer command (for tmux popup or scripts)
 ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (command -v delta >/dev/null && delta -s --paging=never .org/last-session.patch || (echo; echo \"(delta not found; showing raw patch)\"; echo; cat .org/last-session.patch)); else echo \"No session patch found.\"; fi; echo; read -p \"Enter to close...\" _"'
 
-# Working dir is mounted at /work by the launcher
-WORKDIR /work

@@ -1,14 +1,11 @@
 import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
+import { spawn, spawnSync } from "child_process";
 import { SandboxManager, sandboxMangers } from "../sandbox/session";
 import { ExecPolicy } from "../sandbox/policy";
 import { detectBackend } from "../sandbox/detect";
 import { Logger } from "../logger";
-
-// Import as a namespace so we can tolerate export-shape differences across revs.
-import * as PodmanBackend from "../sandbox/backends/podman";
-import type { PodmanSession } from "../sandbox/backends/podman";
 
 export type ToolArgs   = { cmd: string };
 export type ToolResult = { ok: boolean; stdout: string; stderr: string; exit_code: number; cmd: string };
@@ -29,27 +26,12 @@ export function setShHeartbeatMuted(muted: boolean) {
   HEARTBEAT_MUTED = muted;
 }
 
+/** Handy helper so callers can do: `await withMutedShHeartbeat(async () => { ... })` */
 export async function withMutedShHeartbeat<T>(fn: () => Promise<T>): Promise<T> {
   const prev = HEARTBEAT_MUTED;
   HEARTBEAT_MUTED = true;
   try { return await fn(); }
   finally { HEARTBEAT_MUTED = prev; }
-}
-
-/* -----------------------------------------------------------------------------
- * Utilities
- * ---------------------------------------------------------------------------*/
-
-function defaultProjectDir(): string {
-  return (
-    process.env.ORG_CALLER_CWD ||
-    process.env.ORG_APPDIR ||
-    process.cwd()
-  );
-}
-
-function defaultAgentSessionId(): string {
-  return process.env.ORG_AGENT_SESSION_ID || "default";
 }
 
 /* -----------------------------------------------------------------------------
@@ -120,10 +102,9 @@ function tailFile(
 }
 
 /* -----------------------------------------------------------------------------
- * Public API
+ * Public API — non-interactive with heartbeat
  * ---------------------------------------------------------------------------*/
 
-/** Run a shell command inside the agent's sandbox with live streaming + heartbeat. */
 export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
   const sessionKey = ctx.agentSessionId ?? "default";
   const projectDir = ctx.projectDir ?? process.cwd();
@@ -134,11 +115,10 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   const mgr = await getManager(sessionKey, projectDir, runRoot);
   const session = await mgr.getOrCreate(sessionKey, ctx.policy);
 
-  // Host path mirrored to /work/.org/steps inside the sandbox.
   const stepsHostDir: string =
     (typeof (session as any).getStepsHostDir === "function")
       ? (session as any).getStepsHostDir()
-      : path.join(runRoot, "tmp", "unknown-steps");
+      : path.join(runRoot, "tmp", "unknown-steps"); // fallback
 
   const nextIdx   = await computeNextStepIdx(stepsHostDir);
   const liveOut   = path.join(stepsHostDir, `step-${nextIdx}.out`);
@@ -174,7 +154,7 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
     () => { lastOutputAt = Date.now(); breakHeartbeatLineOnce(); }
   );
 
-  const step = await session.exec(args.cmd);
+  const step = await (session as any).exec(args.cmd);
 
   clearInterval(hbTimer);
   outTail.stop();
@@ -184,12 +164,8 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
     process.stderr.write("\n");
   }
 
-  const out = fs.existsSync(step.stdoutFile)
-    ? fs.readFileSync(step.stdoutFile, "utf8")
-    : (fs.existsSync(liveOut) ? fs.readFileSync(liveOut, "utf8") : "");
-  const err = fs.existsSync(step.stderrFile)
-    ? fs.readFileSync(step.stderrFile, "utf8")
-    : (fs.existsSync(liveErr) ? fs.readFileSync(liveErr, "utf8") : "");
+  const out = fs.existsSync(step.stdoutFile) ? fs.readFileSync(step.stdoutFile, "utf8") : "";
+  const err = fs.existsSync(step.stderrFile) ? fs.readFileSync(step.stderrFile, "utf8") : "";
 
   return { ok: step.ok, stdout: out, stderr: err, exit_code: step.exit, cmd: args.cmd };
 }
@@ -226,75 +202,101 @@ export const SANDBOXED_SH_TOOL_SCHEMA = {
 } as const;
 
 /* -----------------------------------------------------------------------------
- * Podman convenience helpers (capture/interactive)
+ * Interactive helpers (session first; podman/docker fallback)
  * ---------------------------------------------------------------------------*/
 
-function resolveSandboxImageTag(): string {
-  const anyMod = PodmanBackend as any;
-  const v = anyMod?.sandboxImageTag;
-
-  if (typeof v === "function") {
-    try { return v(); } catch { /* ignore */ }
-  }
-  if (typeof v === "string" && v.length > 0) {
-    return v;
-  }
-  return (
-    process.env.ORG_IMAGE ||
-    process.env.SANDBOX_IMAGE ||
-    process.env.ORG_SANDBOX_IMAGE ||
-    "org-dev:latest"
-  );
-}
-
-/** Internal: get a Podman session object for this (projectDir, sessionKey) pair */
-function getPodman(projectDir: string, sessionKey: string): PodmanSession {
-  const tag = resolveSandboxImageTag();
-  const Ctor = (PodmanBackend as any).PodmanSession as new (img: string, dir: string, key: string) => PodmanSession;
-  return new Ctor(tag, projectDir, sessionKey);
-}
-
-/** Simple non-interactive capture.  (tolerates undefined opts) */
 export async function shCapture(
   cmd: string,
-  opts?: { projectDir?: string; agentSessionId?: string }
+  opts: { projectDir: string; agentSessionId: string }
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const projectDir = opts?.projectDir ?? defaultProjectDir();
-  const sessionId  = opts?.agentSessionId ?? defaultAgentSessionId();
-
-  const pod = getPodman(projectDir, sessionId);
-  const r: any = (pod as any).execCapture
-    ? (pod as any).execCapture(cmd)
-    : (pod as any).capture
-      ? (pod as any).capture(cmd)
-      : (() => ({ status: 127, stdout: "", stderr: "PodmanSession capture not implemented" }))();
-
-  return { code: r.status ?? 0, stdout: r.stdout || "", stderr: r.stderr || "" };
+  const mgr = await getManager(opts.agentSessionId, opts.projectDir);
+  const session = await mgr.getOrCreate(opts.agentSessionId);
+  const r = await (session as any).exec(cmd);
+  const stdout = (r && r.stdoutFile && fs.existsSync(r.stdoutFile)) ? fs.readFileSync(r.stdoutFile, "utf8") : (r?.stdout ?? "");
+  const stderr = (r && r.stderrFile && fs.existsSync(r.stderrFile)) ? fs.readFileSync(r.stderrFile, "utf8") : (r?.stderr ?? "");
+  return { code: r?.exit ?? 0, stdout, stderr };
 }
 
-/** Interactive execution: attach TTY and inherit stdio.  (tolerates undefined opts) */
+function findEngine(): "podman" | "docker" | null {
+  for (const e of ["podman", "docker"] as const) {
+    try { const r = spawnSync(e, ["--version"], { stdio: "ignore" }); if (r.status === 0) return e; } catch {}
+  }
+  return null;
+}
+
+function getContainerName(session: any): string | null {
+  const candidates = [
+    "containerName", "ctrName", "name", "container", "id",
+    ["backend", "containerName"],
+    ["podman", "containerName"],
+  ];
+  for (const c of candidates) {
+    if (Array.isArray(c)) {
+      const v = c.reduce((acc, k) => (acc && typeof acc === "object" ? acc[k] : undefined), session);
+      if (typeof v === "string" && v.trim()) return v.trim();
+    } else {
+      const v = session?.[c];
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+  }
+  return null;
+}
+
+/** Interactive exec inside the sandbox. Preserves newlines / here-docs. */
 export async function shInteractive(
   cmdOrArgv: string | string[],
-  opts?: { projectDir?: string; agentSessionId?: string; }
+  opts: { projectDir: string; agentSessionId: string; }
 ): Promise<{ code: number }> {
-  const cmd = Array.isArray(cmdOrArgv)
-    ? cmdOrArgv.map(a => JSON.stringify(a)).join(" ")
-    : cmdOrArgv;
+  // Preserve REAL newlines; do NOT JSON.stringify.
+  let script: string;
+  if (Array.isArray(cmdOrArgv)) {
+    // Prefer raw shell script when caller uses ["bash","-lc", "<script>"]
+    if (cmdOrArgv.length >= 2 && cmdOrArgv[0] === "bash" && cmdOrArgv[1] === "-lc") {
+      script = cmdOrArgv.slice(2).join(" ");
+    } else {
+      // Best-effort for other shapes; assume caller handled quoting.
+      script = cmdOrArgv.join(" ");
+    }
+  } else {
+    script = cmdOrArgv;
+  }
 
-  const projectDir = opts?.projectDir ?? defaultProjectDir();
-  const sessionId  = opts?.agentSessionId ?? defaultAgentSessionId();
+  const mgr = await getManager(opts.agentSessionId, opts.projectDir);
+  const session = await mgr.getOrCreate(opts.agentSessionId);
 
-  const pod = getPodman(projectDir, sessionId);
-  const child: any = (pod as any).execInteractive
-    ? (pod as any).execInteractive(cmd)
-    : (pod as any).interactive
-      ? (pod as any).interactive(cmd)
+  const runInteractive =
+    (session && typeof (session as any).execInteractive === "function")
+      ? (session as any).execInteractive.bind(session)
       : null;
 
-  if (!child) return { code: 127 };
+  if (runInteractive) {
+    const child = runInteractive(script);
+    return await new Promise<{ code: number }>((resolve) => {
+      child.on("close", (code: number | null) => resolve({ code: code ?? 0 }));
+      child.on("exit",  (code: number | null) => resolve({ code: code ?? 0 }));
+    });
+  }
 
+  // Fallback to container engine.
+  const engine = findEngine();
+  const cname  = getContainerName(session);
+  if (!engine || !cname) {
+    const keys = Object.keys(session ?? {}).sort();
+    throw new Error(
+      "[sandboxed-sh] Interactive exec is not supported by the current session backend, " +
+      "and engine/container fallback was unavailable. " +
+      `engine=${engine ?? "null"} container=${cname ?? "null"}; ` +
+      `session keys: ${JSON.stringify(keys)}`
+    );
+  }
+
+  const argv = ["exec", "-it", cname, "bash", "-lc", script];
+  Logger.info(`[sandboxed-sh] fallback interactive via ${engine}: ${argv.join(" ")}`);
+
+  const child = spawn(engine, argv, { stdio: "inherit" });
   return await new Promise<{ code: number }>((resolve) => {
-    child.on("close", (code: number) => resolve({ code: code ?? 0 }));
-    child.on("exit",  (code: number) => resolve({ code: code ?? 0 }));
+    child.on("close", (code) => resolve({ code: code ?? 0 }));
+    child.on("exit",  (code) => resolve({ code: code ?? 0 }));
   });
 }
+
