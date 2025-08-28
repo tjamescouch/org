@@ -1,78 +1,74 @@
-# Sourced by ./org
-# Run the app inside tmux, in a container. We keep logs under <project>/.org/logs.
+# shellcheck shell=bash
+
+_join_args() {
+  local s=""
+  local a
+  for a in "${ORG_FWD_ARGS[@]}"; do
+    s+=" $(printf '%q' "$a")"
+  done
+  printf '%s' "$s"
+}
 
 run_tmux_in_container() {
-  log "ui=tmux entry=$ORG_ENTRY proj=$ORG_PROJ appdir=$APPDIR"
+  log "ui=tmux"
 
-  local CTR_WORK="/work"          # mount point for the PROJECT
-  local CTR_APPDIR="$CTR_WORK"    # appdir for logging defaults inside container is project root
-  local CTR_ENTRY                 # code entrypoint must be bind-mounted too
-  local HOST_MOUNT="$ORG_PROJ:$CTR_WORK:Z"
+  local SRC="$APPDIR"
+  local CTR_WORK="/work"
+  local CTR_APPDIR="$CTR_WORK"
+  local CTR_ENTRY="$CTR_APPDIR/src/app.ts"
+  local MNT="$SRC:$CTR_WORK:Z"
 
-  # We also need to mount the REPO where the entry lives (APPDIR) if it differs from ORG_PROJ.
-  # Bind it under /code and compute the inside path to ORG_ENTRY.
-  local codeMount=""
-  local codeInside="/code"
-  if [ "$APPDIR" != "$ORG_PROJ" ]; then
-    codeMount="-v $APPDIR:$codeInside:Z"
-    CTR_ENTRY="$codeInside/${ORG_ENTRY#$APPDIR/}"
-  else
-    CTR_ENTRY="$CTR_WORK/${ORG_ENTRY#$ORG_PROJ/}"
-  fi
+  mkdir -p "$ORG_LOG_DIR" "$ORG_LOG_DIR/tmux-logs" || true
+  local LOG_FILE_HOST="$ORG_LOG_DIR/tmux-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
 
-  mkdir -p "$ORG_PROJ/.org/logs" "$ORG_PROJ/.org/logs/tmux-logs" || true
-  local LOG_FILE_HOST="$ORG_PROJ/.org/logs/tmux-$(_ts_utc).log"
-
-  log "mount proj: $HOST_MOUNT"
-  [ -n "$codeMount" ] && log "mount code: $codeMount"
+  log "mount: $MNT"
   log "host tmux log: $LOG_FILE_HOST"
-  log "ctr entry: $CTR_ENTRY"
 
-  # Join args safely
-  local JOINED; JOINED="$(join_args_quoted)"
+  local ARGS_JOINED; ARGS_JOINED="$(_join_args)"
 
-  local INNER_SCRIPT="$CTR_APPDIR/.org/.tmux-inner.sh"
-  local CREATE_AND_RUN
-  CREATE_AND_RUN=$(
-    cat <<'EOS'
+  local CREATE_AND_RUN="
 set -Eeuo pipefail
 umask 0002
-EOS
-  )
-  CREATE_AND_RUN+="
-ORG_LOG_DIR=\"$CTR_APPDIR/.org/logs\"
-ORG_LOG_FILE=\"$CTR_APPDIR/.org/logs/$(basename "$LOG_FILE_HOST")\"
-ENTRY=\"$CTR_ENTRY\"
-export ORG_LOG_DIR ORG_LOG_FILE ENTRY
-mkdir -p \"\$ORG_LOG_DIR\" \"$CTR_APPDIR/.org/logs/tmux-logs\"
-cat > \"$INNER_SCRIPT\" <<'INN'
+
+mkdir -p \"$CTR_APPDIR/.org/logs\" \"$CTR_APPDIR/.org/logs/tmux-logs\"
+
+cat > \"$CTR_APPDIR/.org/.tmux-inner.sh\" <<'EOS'
 set -Eeuo pipefail
 umask 0002
 : \"\${ORG_LOG_DIR:?}\"
 : \"\${ORG_LOG_FILE:?}\"
 : \"\${ENTRY:?}\"
+
+mkdir -p \"\$ORG_LOG_DIR\"
 echo \"[tmux] log -> \$ORG_LOG_FILE\"
-echo \"[tmux] bun=\$(command -v bun || echo 'MISSING') entry='\$ENTRY' date=\$(date -u +%FT%TZ)\"
+echo \"[tmux] bun=\$(command -v bun || echo MISSING) entry='\$ENTRY' date=\$(date -u +%FT%TZ)\"
+
 set +e
-bun \"\$ENTRY\" --ui console $JOINED 2>&1 | tee -a \"\$ORG_LOG_FILE\"
+bun \"\$ENTRY\" --ui console $ARGS_JOINED 2>&1 | tee -a \"\$ORG_LOG_FILE\"
 ec=\${PIPESTATUS[0]}
 set -e
+
 echo \"[tmux] app exited with \$ec\"
 exit \"\$ec\"
-INN
-chmod +x \"$INNER_SCRIPT\"
+EOS
+
+chmod +x \"$CTR_APPDIR/.org/.tmux-inner.sh\"
+
+export ENTRY=\"$CTR_ENTRY\"
 export TMUX_TMPDIR=\"$CTR_APPDIR/.org/logs/tmux-logs\"
-tmux -vv new -A -s org bash --noprofile --norc \"$INNER_SCRIPT\"
+tmux -vv new -A -s org bash --noprofile --norc \"$CTR_APPDIR/.org/.tmux-inner.sh\"
 "
 
-  # shellcheck disable=SC2086
+  log "about to exec container"
   exec "$ORG_ENGINE" run --rm -it --network host \
-    -v "$HOST_MOUNT" $codeMount \
+    -v "$MNT" \
     -w "$CTR_WORK" \
     -e ORG_TMUX=1 \
     -e ORG_FORCE_UI=console \
     -e ORG_APPDIR="$CTR_APPDIR" \
     -e ORG_CALLER_CWD="$CTR_WORK" \
+    -e ORG_LOG_DIR="$CTR_APPDIR/.org/logs" \
+    -e ORG_LOG_FILE="$CTR_APPDIR/.org/logs/$(basename "$LOG_FILE_HOST")" \
     -e ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}" \
     "$ORG_IMAGE" bash -lc "$CREATE_AND_RUN"
 }

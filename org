@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# org — thin launcher delegating to .org/launcher/*
+# org — thin launcher that delegates to small libs under .org/launcher
 # Exit codes: 66 = entrypoint/cwd not found; 127 = runtime missing
 set -euo pipefail
 
@@ -31,15 +31,14 @@ fi
 
 # --- Setup/derive context ---
 detect_project_root        # -> ORG_PROJ, ORG_CALLER_CWD
-find_entrypoint || exit $? # -> ORG_ENTRY (anchored to APPDIR)
+find_entrypoint            # -> ORG_ENTRY (always under $APPDIR)
 engine_defaults            # -> ORG_ENGINE, ORG_IMAGE
 prepare_logs               # -> ORG_LOG_DIR, ORG_LOG_FILE (+preflight line)
 
 UI="${ORG_UI:-${ORG_FORCE_UI:-console}}"
-log "dispatch ui=$UI"
 
 case "$UI" in
-  tmux)        run_tmux_in_container ;;
-  ""|console)  run_console ;;
-  *)           err "unknown --ui value: ${UI}"; exit 2 ;;
+  tmux)       run_tmux_in_container ;;  # in a container, UI=console INSIDE tmux
+  ""|console) run_console ;;
+  *)          err "unknown --ui value: ${UI}"; exit 2 ;;
 esac
