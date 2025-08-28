@@ -1,7 +1,7 @@
 // Tmux UI launcher – runs tmux *inside the sandbox* and attaches your app.
 import * as path from "path";
 import { Logger } from "../../logger";
-import { shInteractive } from "../tools/sandboxed-sh";
+import { shInteractive } from "../../tools/sandboxed-sh";
 
 type Scope = "sandbox" | "host";
 
