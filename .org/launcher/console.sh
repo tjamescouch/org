@@ -2,14 +2,14 @@
 # vim: set ts=2 sw=2 et:
 set -Eeuo pipefail
 
-# Console UI path with targeted logging. Safe to keep enabled permanently.
+# Console UI launcher with targeted logging (no brittle substitutions)
 
 APPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOG_DIR="${ORG_LOG_DIR:-${APPDIR}/.org/logs}"
 mkdir -p "${LOG_DIR}" || true
 LAUNCH_LOG="${LOG_DIR}/console-launcher-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
 
-# Tee stdout+stderr to terminal and file so we always see something.
+# Stream logs to terminal and file (line-buffered)
 exec > >(awk '{ print; fflush() }' | tee -a "${LAUNCH_LOG}") 2>&1
 
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -21,7 +21,14 @@ trap 'log "console-launcher exit code: $?"' EXIT
 log "console launcher start"
 log "pwd: $(pwd)"
 log "APPDIR: ${APPDIR}"
-log "TERM: ${TERM:-unset}  TTY: ${([ -t 0 ] && echo tty) || echo ntty}  isatty=$(python3 -c "import sys,os; print(os.isatty(0))" 2>/dev/null || true)"
+
+# TTY info without fancy substitution (portable)
+if [ -t 0 ]; then
+  tty_state="tty"
+else
+  tty_state="ntty"
+fi
+log "TERM: ${TERM:-unset}  TTY: ${tty_state}"
 
 ENTRY="${ORG_APPDIR:-${APPDIR}}/src/app.ts"
 if [[ ! -f "${ENTRY}" ]]; then
@@ -29,14 +36,14 @@ if [[ ! -f "${ENTRY}" ]]; then
   exit 1
 fi
 
-# Make sure bun is visible, and print its version for traceability.
+# bun is required in console mode; if unavailable, be explicit
 if ! command -v bun >/dev/null 2>&1; then
-  log "bun not found on PATH"
+  log "bun not found on PATH. Install bun or use '--ui tmux' (containerized)."
   exit 1
 fi
 log "bun: $(command -v bun)  version: $(bun --version 2>/dev/null || echo '?')"
 
-# Force console UI on the app so we’re aligned with this launcher.
+# Force console UI for the app
 export ORG_FORCE_UI="${ORG_FORCE_UI:-console}"
 
 log "exec: bun '${ENTRY}' $*"
