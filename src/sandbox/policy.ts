@@ -2,6 +2,7 @@
 import { randomUUID } from "crypto";
 import * as path from "path";
 import * as os from "os";
+import { CONTAINER_NAME } from "../constants";
 
 export type NetPolicy =
     | { mode: "deny" }
@@ -55,7 +56,7 @@ export function defaultPolicy(opts: {
     return {
         projectDir,
         runRoot,
-        image: opts.image ?? "localhost/org-build:debian-12",
+        image: opts.image ?? CONTAINER_NAME,
         net: opts.net ?? { mode: "deny" },
         limits: {
             timeoutMs: opts.limits?.timeoutMs ?? 30_000,
