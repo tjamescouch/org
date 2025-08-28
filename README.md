@@ -22,9 +22,8 @@ and approve every change._
 ## Contents
 
 - [Vision](#vision)
-- [Quick start](#quick-start)
 - [Installation](#installation)
-- [CLI](#cli)
+- [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Sandbox (optional)](#sandbox-optional)
 - [Write policy](#write-policy-what-files-the-agent-may-touch)
@@ -57,80 +56,77 @@ The vision is simple: **an agent CLI that feels like a real teammate — fast, o
 ---
 
 
-## Quick start
-
-```bash
-# 1) From a working repo with a clean git tree:
-git status
-
-# 2) Start an agent (uses your local LLM by default)
-org --agents "alice:lmstudio" --max-tools 20
-
-# 3) Ask for something small
-@alice write “hello world” to a file named hello/hello-world.txt
-````
-
-When the tool wants to touch the filesystem, it first produces a **patch**. You
-can read, approve, or reject it. After approval, the agent continues.&#x20;
-
-All artifacts for each run land in:
-
-```
-<your-repo>/.org/runs/<uuid>/
-  ├─ manifest.json
-  ├─ session.patch
-  ├─ steps/
-  │   ├─ step-0.out / step-0.err / step-0.meta.json
-  │   ├─ step-1.out / …
-  │   └─ …
-  └─ artifacts/        # files added by the run (copied out of the sandbox)
-```
-
-`session.patch` is produced from a baseline commit created at run start, so it
-contains exactly what changed during this run.&#x20;
-
----
-
 ## Installation
 
-This project uses **Bun**.
+Full guide: see [INSTALLATION.md](./INSTALLATION.md).  
+If you just want it running:
+
+### Prereqs
+- macOS (Apple Silicon/Intel) or Debian/Ubuntu
+- **One** container engine: Podman (preferred) or Docker
+- `git`
+
+<details>
+<summary>macOS first-time Podman setup</summary>
 
 ```bash
-bun install
-bun run build    # if you have a build step
-```
+brew install podman
+podman machine init
+podman machine start
+````
 
-Optionally ensure Podman is installed if you plan to use the sandbox backend.
+</details>
 
----
-
-## CLI
-
-```bash
-org [options] [--prompt "…"]
-```
-
-Common options:
-
-| Flag / Env                     | Meaning                                                   |                            |                                                   |
-| ------------------------------ | --------------------------------------------------------- | -------------------------- | ------------------------------------------------- |
-| `--agents "alice:lmstudio,…"`  | Configure agent(s) and driver(s)                          |                            |                                                   |
-| `--max-tools N`                | Cap total tool invocations per run                        |                            |                                                   |
-| `--safe` / `SAFE_MODE=1`       | Extra confirmation gates for shell & writes               |                            |                                                   |
-| `--review ask`                 | auto                                                      |`never`                     | Patch review mode (interactive by default on TTY) |
-| `-C <dir>` / `--project <dir>` | Run **from any directory**; treat `<dir>` as project root |                            |                                                   |
-| `--debug` / `DEBUG=1`          | Verbose logging                                           |                            |                                                   |
-| `SANDBOX\_BACKEND=podman`      | none\`                                                    | Choose backend (see below) |                                                   |
-
-Examples:
+### Quick start
 
 ```bash
-# Run from anywhere, operate on ~/dev/myrepo
-org -C ~/dev/myrepo --agents "alice:lmstudio" --max-tools 50 --review ask
+# 1) Get the code
+git clone <your-repo-url> org
+cd org
 
-# Auto-apply small/safe patches (applies only if the patch is clean & touches no restricted paths)
-ORG_REVIEW=auto org --agents "alice:lmstudio"
+# 2) Install (doctor + build image + link CLI)
+chmod +x install.sh
+./install.sh            # same as: ./install.sh install
+
+# 3) Sanity check (console UI)
+org --prompt "hello"
+
+# (optional) tmux UI inside the container
+org --ui tmux --prompt "hi"
 ```
+
+Logs are written per-project under `.org/logs/`:
+
+```bash
+tail -f .org/logs/last.log
+```
+
+### Engine/image overrides
+
+```bash
+# Use Docker instead of Podman
+ORG_ENGINE=docker ./install.sh install
+
+# Choose a different image tag
+ORG_IMAGE=localhost/org-build:debian-12 ./install.sh build
+```
+
+### Update
+
+```bash
+git pull
+./install.sh rebuild    # clean container rebuild if Containerfile changed
+```
+
+### Uninstall
+
+```bash
+sudo rm -f /usr/local/bin/org /usr/local/bin/apply_patch
+# optional: remove the local image
+podman rmi localhost/org-build:debian-12   # or: docker rmi ...
+```
+
+
 
 ---
 
