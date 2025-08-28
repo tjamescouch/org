@@ -1,10 +1,11 @@
 // src/input/controller.ts
-// Sole owner of TTY input in raw mode, driven by a tiny FSM.
-// Surgical changes:
-//  - Robust handling for ESC, Ctrl+C, Ctrl+Z via raw-byte fallback.
-//  - Fast exit on Ctrl+C in real runs (no finalize); tests stay safe.
-//  - Proper suspend/resume on Ctrl+Z with raw-mode re-arm on SIGCONT.
-//  - Minimal debug logs; keeps prior test helper API (_private.emitKey).
+// Sole owner of TTY input in raw mode, driven by a small FSM.
+// This revision adds:
+//  - Stream-aware interject: defer 'You:' until output is quiet (prevents mid-stream overlay)
+//  - No echo of agent content in askUser() (UI already prints it) -> removes duplication
+//  - Fresh-line banner before 'You:' to avoid right-edge INFO collision
+//  - Robust handling for ESC / Ctrl+C / Ctrl+Z
+//  - Test helper API preserved
 
 import { R } from "../runtime/runtime";
 import { Logger } from "../logger";
@@ -19,12 +20,14 @@ export interface InputControllerOptions {
   interjectBanner?: string;       // default: 'You: '
   finalizer?: () => Promise<void> | void;
   exitOnEsc?: boolean;            // default: true
-  fastExitOnCtrlC?: boolean;      // default: true in real runs; tests override to false
-  suspendOnCtrlZ?: boolean;       // default: true (real runs); tests override to false
+  fastExitOnCtrlC?: boolean;      // default: true (real runs), false in tests
+  suspendOnCtrlZ?: boolean;       // default: true (real runs), false in tests
+  quietInterjectMs?: number;      // default: 260ms (real runs), 0 in tests
 }
 
 export class InputController {
   private readonly opts: Required<InputControllerOptions>;
+
   private scheduler: any | null = null;
   private submitting: SubmitFn | null = null;
   private submittingName: string | null = null;
@@ -33,6 +36,13 @@ export class InputController {
   private rawWasOn = false;
   private keyDebug = false;
   private pendingResolve: ((s: string) => void) | null = null;
+
+  // Output quiet detection
+  private lastStdoutWriteMs = Date.now();
+  private lastWriteEndedWithNewline = true;
+  private originalStdoutWrite: ((chunk: any, ...rest: any[]) => any) | null = null;
+  private deferInterject = false;
+  private deferTimer: NodeJS.Timeout | null = null;
 
   // ---- static hooks (used by tty-guard etc.) ----
   private static _active: InputController | null = null;
@@ -57,16 +67,29 @@ export class InputController {
       interjectBanner: opts.interjectBanner ?? "You: ",
       finalizer: opts.finalizer ?? (() => {}),
       exitOnEsc: opts.exitOnEsc ?? true,
-      fastExitOnCtrlC: opts.fastExitOnCtrlC ?? !isTest, // fast-exit in real runs
+      fastExitOnCtrlC: opts.fastExitOnCtrlC ?? !isTest,
       suspendOnCtrlZ: opts.suspendOnCtrlZ ?? !isTest,
+      quietInterjectMs: opts.quietInterjectMs ?? (isTest ? 0 : (Number(R.env.ORG_QUIET_INTERJECT_MS) || 260)),
     };
 
     this.keyDebug = (R.env.ORG_KEY_DEBUG === "1" || R.env.DEBUG === "1");
 
+    // Wrap stdout.write to track "quiet" intervals and newline state.
+    try {
+      const out: any = R.stdout as any;
+      this.originalStdoutWrite = out.write.bind(out);
+      out.write = (chunk: any, ...rest: any[]) => {
+        const s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+        this.lastStdoutWriteMs = Date.now();
+        if (s.length) this.lastWriteEndedWithNewline = /\n$/.test(s);
+        return this.originalStdoutWrite!(chunk, ...rest);
+      };
+    } catch { /* ignore */ }
+
     // Wire FSM to IO + hooks
     this.fsm = new InputFSM(
       {
-        write: (s: string) => { try { R.stdout.write(s); } catch {} },
+        write: (s: string) => { this.writeFromFSM(s); },
         bell:  () => { try { R.stdout.write("\x07"); } catch {} },
       },
       {
@@ -100,11 +123,9 @@ export class InputController {
     else Logger.warn("[input] no scheduler submit function found");
   }
 
-  // Used by scheduler when an agent explicitly asks @@user
-  async askUser(_fromAgent: string, content: string): Promise<string> {
-    if (content && content.length) {
-      try { R.stdout.write(content.endsWith("\n") ? content : content + "\n"); } catch {}
-    }
+  // Used by scheduler when an agent explicitly asks @@user.
+  // NOTE: do NOT echo 'content' here; the UI prints it already.
+  async askUser(_fromAgent: string, _content: string): Promise<string> {
     return await this.promptOnce();
   }
 
@@ -120,18 +141,16 @@ export class InputController {
   // ---------------- internal wiring ----------------
 
   private onData = (chunk: Buffer) => {
-    // Raw-byte fallback for control keys (robust across decode variations)
     const s = chunk.toString("utf8");
 
     // Ctrl+C
     if (s === "\x03") {
       Logger.debug("[input] Ctrl+C");
       if (this.opts.fastExitOnCtrlC) {
-        // Fast exit: do NOT finalize. Ensure raw is disabled so terminal state is sane.
         try { this.disableRaw(); } catch {}
         try { (R as any).exit?.(130); } catch { try { (globalThis as any).process?.exit?.(130); } catch {} }
       }
-      return; // In tests (fastExitOnCtrlC=false), do nothing.
+      return;
     }
 
     // Ctrl+Z
@@ -142,20 +161,58 @@ export class InputController {
       return;
     }
 
-    // ESC (single byte only, not arrow keys that start with ESC+[)
+    // ESC (single byte) when idle -> graceful stop
     if (s === "\x1B" && !this.pendingResolve) {
       Logger.debug("[input] ESC (idle) -> graceful stop");
       void this.handleEscapeIdle();
       return;
     }
 
-    // Otherwise, decode normally
+    // Decode normally
     const ev = decodeKey(chunk);
     if (this.keyDebug) {
       try { R.stderr.write(`[key] ${JSON.stringify(ev)}\n`); } catch {}
     }
+
+    // Stream-aware interject: defer showing the prompt while output is "hot"
+    if (ev && ev.type === "char" && ev.data === this.opts.interjectKey && !this.pendingResolve) {
+      const quiet = Date.now() - this.lastStdoutWriteMs >= this.opts.quietInterjectMs;
+      if (!quiet) {
+        Logger.debug("[input] interject queued until stream is quiet");
+        this.deferInterject = true;
+        this.armDeferTimer();
+        return; // don't open prompt yet
+      }
+      // else fall-through to open immediately
+    }
+
     this.fsm.handle(ev);
   };
+
+  private armDeferTimer() {
+    if (this.deferTimer) return;
+    this.deferTimer = setInterval(() => {
+      if (!this.deferInterject) { this.clearDeferTimer(); return; }
+      const quiet = Date.now() - this.lastStdoutWriteMs >= this.opts.quietInterjectMs;
+      if (quiet && !this.pendingResolve) {
+        this.deferInterject = false;
+        this.clearDeferTimer();
+        this.openInterjectNow();
+      }
+    }, 50);
+  }
+  private clearDeferTimer() {
+    if (this.deferTimer) { clearInterval(this.deferTimer); this.deferTimer = null; }
+  }
+
+  private openInterjectNow() {
+    // Ensure the banner starts on a fresh line to avoid "...INFO" collisions.
+    if (!this.lastWriteEndedWithNewline) {
+      try { R.stdout.write("\n"); } catch {}
+      this.lastWriteEndedWithNewline = true;
+    }
+    this.fsm.handle({ type: "char", data: this.opts.interjectKey });
+  }
 
   private _attachKeys() {
     this.enableRaw();
@@ -210,7 +267,7 @@ export class InputController {
 
   private async promptOnce(): Promise<string> {
     if (this.pendingResolve) {
-      // Already prompting; chain to avoid re-entrancy.
+      // Already prompting; chain to existing resolver.
       return new Promise<string>((resolve) => {
         const prev = this.pendingResolve!;
         this.pendingResolve = (s: string) => { try { prev(s); } catch {}; resolve(s); };
@@ -223,8 +280,8 @@ export class InputController {
         Logger.debug(`[input] prompt resolved (${out.length} chars)`);
         resolve(out);
       };
-      // Open prompt by virtually pressing the interject key.
-      this.fsm.handle({ type: "char", data: this.opts.interjectKey });
+      // Open prompt immediately here (explicit ask by agent).
+      this.openInterjectNow();
     });
   }
 
@@ -247,6 +304,16 @@ export class InputController {
     } else {
       Logger.debug("[input] background submit dropped (no scheduler submit bound)");
     }
+  }
+
+  private writeFromFSM(s: string) {
+    // If the FSM is printing the banner and we're mid-line, force a newline first.
+    const isBanner = s === this.opts.interjectBanner || s.endsWith(this.opts.interjectBanner);
+    if (isBanner && !this.lastWriteEndedWithNewline) {
+      try { R.stdout.write("\n"); } catch {}
+      this.lastWriteEndedWithNewline = true;
+    }
+    try { R.stdout.write(s); } catch {}
   }
 
   private pickSubmitFn(s: any): { fn: SubmitFn | null; name: string | null } {
@@ -309,8 +376,9 @@ export function makeControllerForTests(
   const { scheduler, ...rest } = opts as any;
   const ctrl = new InputController({
     ...rest,
-    fastExitOnCtrlC: false, // keep tests safe
+    fastExitOnCtrlC: false,   // tests: don't terminate process
     suspendOnCtrlZ: false,
+    quietInterjectMs: 0,      // tests: show banner immediately
   });
   if (scheduler) ctrl.attachScheduler(scheduler);
 
@@ -332,7 +400,6 @@ export function makeControllerForTests(
   const _private = {
     emitKey: (ev: any) => {
       try {
-        // Re-use controller's routing so tests match real behavior.
         (ctrl as any).onData?.(
           typeof ev === "string" ? Buffer.from(ev, "utf8")
           : ev?.name === "escape" ? Buffer.from([0x1b])
@@ -340,7 +407,6 @@ export function makeControllerForTests(
           : (ev?.name === "z" && ev?.ctrl) ? Buffer.from([0x1a])
           : Buffer.from([])
         );
-        // If tests pass structured events, let FSM handle them too.
         if (ev && typeof ev === "object" && !ev.length) {
           (ctrl as any).fsm?.handle(ev);
         }
