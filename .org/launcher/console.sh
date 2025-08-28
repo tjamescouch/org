@@ -2,7 +2,7 @@
 # vim: set ts=2 sw=2 et:
 set -Eeuo pipefail
 
-# Console UI launcher with targeted logging (no brittle substitutions)
+# Console UI launcher with targeted logging (portable, no fancy substitutions)
 
 APPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOG_DIR="${ORG_LOG_DIR:-${APPDIR}/.org/logs}"
@@ -22,7 +22,7 @@ log "console launcher start"
 log "pwd: $(pwd)"
 log "APPDIR: ${APPDIR}"
 
-# TTY info without fancy substitution (portable)
+# TTY info (portable)
 if [ -t 0 ]; then
   tty_state="tty"
 else
@@ -36,7 +36,6 @@ if [[ ! -f "${ENTRY}" ]]; then
   exit 1
 fi
 
-# bun is required in console mode; if unavailable, be explicit
 if ! command -v bun >/dev/null 2>&1; then
   log "bun not found on PATH. Install bun or use '--ui tmux' (containerized)."
   exit 1
@@ -46,5 +45,14 @@ log "bun: $(command -v bun)  version: $(bun --version 2>/dev/null || echo '?')"
 # Force console UI for the app
 export ORG_FORCE_UI="${ORG_FORCE_UI:-console}"
 
-log "exec: bun '${ENTRY}' $*"
-exec bun "${ENTRY}" "$@"
+# ---- RUN BUN WITHOUT exec SO WE CAN LOG THE RETURN CODE ----
+CMD=(bun "${ENTRY}" "$@")
+log "spawn: ${CMD[*]}"
+
+set +e
+"${CMD[@]}"
+rc=$?
+set -e
+
+log "bun exited rc=${rc}"
+exit "${rc}"
