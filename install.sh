@@ -1,141 +1,173 @@
 #!/usr/bin/env bash
-# Unified installer for org (Linux/macOS).
-# - Builds container image only if missing (or --rebuild)
-# - No longer requires ./apply_patch at repo root
-# - Prefers podman; set ORG_ENGINE=docker to use Docker
-# - Safe pulls: --pull=missing (won't repull if cached)
+# Unified installer for org
+# - Detects engine (podman|docker)
+# - Builds image only if missing (or --rebuild)
+# - Installs a runnable `org` on your PATH via symlink
+# - Works on Debian/Ubuntu and macOS
 
 set -euo pipefail
 
-# -----------------------------
-# Config (overridable via env)
-# -----------------------------
-ENGINE="${ORG_ENGINE:-podman}"                         # podman | docker
-IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"    # final image tag
-CONTAINERFILE="${ORG_CONTAINERFILE:-Containerfile}"    # path to Containerfile
-LINK_BIN=1                                             # create /usr/local/bin/org symlink
-REBUILD=0
+# -----------------------
+# Pretty logging helpers
+# -----------------------
+note() { printf '[install] %s\n' "$*"; }
+ok()   { printf '[install] done. %s\n' "$*" ; }
+warn() { printf '[install][warn] %s\n' "$*" >&2; }
+err()  { printf '[install][error] %s\n' "$*" >&2; }
 
-# -----------------------------
-# Args
-# -----------------------------
+# -----------------------
+# Parse flags
+# -----------------------
+REBUILD=0
+ENGINE_OVERRIDE=""
+IMAGE_OVERRIDE=""
 while (($#)); do
   case "$1" in
-    --engine=*) ENGINE="${1#*=}"; shift;;
-    --image=*)  IMAGE="${1#*=}"; shift;;
-    --file=*)   CONTAINERFILE="${1#*=}"; shift;;
-    --no-link)  LINK_BIN=0; shift;;
-    --rebuild)  REBUILD=1; shift;;
+    --rebuild) REBUILD=1; shift;;
+    --engine=*) ENGINE_OVERRIDE="${1#*=}"; shift;;
+    --image=*)  IMAGE_OVERRIDE="${1#*=}"; shift;;
     -h|--help)
-      cat <<EOF
-Usage: ./install.sh [options]
+      cat <<'USAGE'
+Usage: ./install.sh [--rebuild] [--engine=podman|docker] [--image=<tag>]
 
-Options:
-  --engine=podman|docker     Container engine (default: podman)
-  --image=<tag>              Image tag (default: localhost/org-build:debian-12)
-  --file=<Containerfile>     Build file (default: Containerfile)
-  --rebuild                  Force a rebuild even if image exists
-  --no-link                  Don't create /usr/local/bin/org symlink
-  -h, --help                 Show this help
-EOF
+  --rebuild       Force container image rebuild.
+  --engine=...    Override engine detection (podman|docker).
+  --image=...     Override image tag (default: localhost/org-build:debian-12).
+
+Examples:
+  ./install.sh
+  ./install.sh --rebuild
+  ./install.sh --engine=podman --image=localhost/org-build:debian-12
+USAGE
       exit 0;;
     *)
-      echo "[install][warn] unknown arg: $1" >&2; shift;;
+      warn "unknown flag $1 (ignored)"; shift;;
   esac
 done
 
-# -----------------------------
-# Helpers
-# -----------------------------
-say() { printf '[install] %s\n' "$*"; }
-die() { printf '[install][error] %s\n' "$*" >&2; exit 1; }
+# -----------------------
+# Paths & repo root
+# -----------------------
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORG_BIN="$REPO/org"
+CONTEXT="$REPO"
+FILE="$REPO/Containerfile"
 
-need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+if [[ ! -f "$ORG_BIN" ]]; then
+  err "cannot find launcher at $ORG_BIN"
+  exit 66
+fi
+if [[ ! -f "$FILE" ]]; then
+  err "cannot find Containerfile at $FILE"
+  exit 66
+fi
 
-engine() { "$ENGINE" "$@"; }
+# Optional: project patch helper (not required to install)
+if [[ ! -x "$REPO/.org/bin/apply_patch" ]]; then
+  note "optional: no project patch helper at .org/bin/apply_patch (using image fallback)"
+fi
 
+# -----------------------
+# Engine detection
+# -----------------------
+detect_engine() {
+  if [[ -n "$ENGINE_OVERRIDE" ]]; then
+    echo "$ENGINE_OVERRIDE"
+    return
+  fi
+  if command -v podman >/dev/null 2>&1; then
+    echo "podman"; return
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    echo "docker"; return
+  fi
+  err "neither podman nor docker found in PATH"
+  exit 127
+}
+
+ENGINE="$(detect_engine)"
+IMAGE="${IMAGE_OVERRIDE:-localhost/org-build:debian-12}"
+
+note "engine = $ENGINE"
+note "image  = $IMAGE"
+note "file   = $(basename "$FILE")"
+
+# -----------------------
+# Image presence check
+# -----------------------
 image_exists() {
   case "$ENGINE" in
-    podman) engine image exists "$IMAGE" >/dev/null 2>&1 ;;
-    docker) engine image inspect "$IMAGE" >/dev/null 2>&1 ;;
-    *) die "unknown engine: $ENGINE" ;;
+    podman) podman images -q "$IMAGE" 2>/dev/null | grep -q . ;;
+    docker) docker images -q "$IMAGE" 2>/dev/null | grep -q . ;;
+    *) return 1 ;;
   esac
 }
 
-ensure_podman_machine() {
-  # macOS only: start/init podman machine if needed
-  if [[ "$(uname -s)" == "Darwin" && "$ENGINE" == "podman" ]]; then
-    if ! command -v podman-machine >/dev/null 2>&1; then
-      # Newer podman bundles subcommand as "podman machine"
-      if podman machine ls >/dev/null 2>&1; then
-        :
-      else
-        die "Podman is installed but 'podman machine' is unavailable. Reinstall Podman Desktop or brew install podman."
-      fi
-    fi
-    state="$(podman machine inspect --format '{{.State}}' default 2>/dev/null || true)"
-    if [[ -z "$state" ]]; then
-      say "initializing podman machine (first run)…"
-      podman machine init
-    fi
-    if [[ "$state" != "running" ]]; then
-      say "starting podman machine…"
-      podman machine start
-    fi
+# -----------------------
+# Build image if needed
+# -----------------------
+if (( REBUILD )) || ! image_exists; then
+  note "building image (this can take a few minutes)…"
+  case "$ENGINE" in
+    podman) podman build -t "$IMAGE" -f "$FILE" "$CONTEXT" ;;
+    docker) docker build -t "$IMAGE" -f "$FILE" "$CONTEXT" ;;
+  esac
+  ok "image built"
+else
+  note "image already present; skipping build (use --rebuild to force)"
+fi
+
+# -----------------------
+# Choose install dir for the `org` shim (symlink)
+# -----------------------
+UNAME="$(uname -s || echo unknown)"
+DEFAULT_DIR="/usr/local/bin"
+
+if [[ "$UNAME" == "Darwin" ]]; then
+  # Prefer Homebrew bin if present (Apple Silicon often uses /opt/homebrew/bin)
+  if [[ -d "/opt/homebrew/bin" ]]; then
+    DEFAULT_DIR="/opt/homebrew/bin"
   fi
+fi
+
+link_into_dir() {
+  local dir="$1"
+  mkdir -p "$dir"
+  ln -sf "$ORG_BIN" "$dir/org"
 }
 
-# -----------------------------
-# Preflight
-# -----------------------------
-need git
-need "$ENGINE"
-[[ -f "$CONTAINERFILE" ]] || die "Containerfile not found at: $CONTAINERFILE"
-
-ensure_podman_machine
-
-say "engine = $ENGINE"
-say "image  = $IMAGE"
-say "file   = $CONTAINERFILE"
-
-# -----------------------------
-# Project layout (no hard reqs)
-# -----------------------------
-mkdir -p .org/logs .org/bin
-
-# NOTE: We no longer require ./apply_patch in the repo.
-# The container includes a portable /usr/local/bin/apply_patch that:
-#   - defers to /work/.org/bin/apply_patch if you add one later
-#   - otherwise accepts unified diffs from stdin or -f <file>
-
-# -----------------------------
-# Build (only if needed)
-# -----------------------------
-if [[ "$REBUILD" -eq 1 ]]; then
-  say "forcing rebuild (--rebuild)…"
-  engine build --pull=missing -t "$IMAGE" -f "$CONTAINERFILE" .
+# Try system-wide first, else fallback to ~/.local/bin
+if link_into_dir "$DEFAULT_DIR" 2>/dev/null; then
+  ok "installed: $DEFAULT_DIR/org -> $ORG_BIN"
 else
-  if image_exists; then
-    say "image already present; skipping build"
-  else
-    say "image not found; building…"
-    engine build --pull=missing -t "$IMAGE" -f "$CONTAINERFILE" .
+  warn "cannot write $DEFAULT_DIR (no sudo?): attempting user bin (~/.local/bin)"
+  USER_BIN="$HOME/.local/bin"
+  mkdir -p "$USER_BIN"
+  if link_into_dir "$USER_BIN" 2>/dev/null; then
+    ok "installed: $USER_BIN/org -> $ORG_BIN"
+    # Ensure PATH info is obvious
+    case ":$PATH:" in
+      *":$USER_BIN:"*) ;;
+      *)
+        warn "Your PATH does not include $USER_BIN"
+        printf '%s\n' \
+          "[install] Add this to your shell rc (e.g., ~/.bashrc):" \
+          "  export PATH=\"\$HOME/.local/bin:\$PATH\"" \
+          "Then open a new shell or run:  source ~/.bashrc"
+        ;;
+    esac
+    printf '%s\n' \
+      "[install] If you prefer a system-wide link, run:" \
+      "  sudo ln -sf \"$ORG_BIN\" \"$DEFAULT_DIR/org\""
   fi
 fi
 
-# -----------------------------
-# Optional host symlink
-# -----------------------------
-if [[ "$LINK_BIN" -eq 1 ]]; then
-  target="/usr/local/bin/org"
-  if [[ -w "$(dirname "$target")" ]]; then
-    ln -sf "$(pwd)/org" "$target"
-    say "linked $(pwd)/org -> $target"
-  else
-    say "cannot write $target; try:"
-    echo "  sudo ln -sf \"$(pwd)/org\" \"$target\""
-  fi
-fi
-
-say "done."
-say "Try:  org --ui console --prompt 'say hi'"
+# -----------------------
+# Final hint
+# -----------------------
+printf '\n'
+note "Try:"
+printf '  %s\n' "org --ui console --prompt 'say hi'"
+printf '  %s\n' "org --ui tmux    --prompt 'say hi'"
+printf '\n'
+ok "installation complete"
