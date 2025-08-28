@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Robust patch applier for AI-generated patches.
+# Project-local robust patch applier for AI-generated patches.
 # Supports:
 #   *** Begin Patch / *** End Patch
 #   *** Update File: path
@@ -19,40 +19,49 @@
 #   - Whitespace-insensitive search for - blocks
 #
 # Usage:
-#   apply_patch [--dry-run] [--verbose] <<'PATCH'
-#   *** Begin Patch
-#   *** Update File: src/app.ts
-#   @@ at:top @@
-#   +console.log("cwd=", process.cwd());
-#   *** End Patch
-#   PATCH
-
+#   apply_patch [--dry-run] [--verbose] [-f file]            # or read from stdin
+#
 set -euo pipefail
 
 DRY_RUN=0
 VERBOSE=0
-for a in "$@"; do
-  case "$a" in
-    --dry-run) DRY_RUN=1 ;;
-    --verbose|-v) VERBOSE=1 ;;
-    *) echo "apply_patch: unknown arg: $a" >&2; exit 2 ;;
+PATCH_FILE=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift;;
+    --verbose|-v) VERBOSE=1; shift;;
+    -f|--file) PATCH_FILE="${2:-}"; shift 2;;
+    -) PATCH_FILE="-"; shift;;
+    *) echo "apply_patch: unknown arg: $1" >&2; exit 2;;
   esac
 done
 
+# Resolve work root to the project directory
+WORK_ROOT="${ORG_WORK:-${ORG_CALLER_CWD:-$PWD}}"
+
 tmp="$(mktemp -t apply_patch.XXXXXX)"
 trap 'rm -f "$tmp"' EXIT
-cat >"$tmp"
+
+if [ -n "${PATCH_FILE}" ] && [ "${PATCH_FILE}" != "-" ]; then
+  cat -- "${PATCH_FILE}" > "$tmp"
+else
+  cat > "$tmp"
+fi
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "apply_patch: python3 is required" >&2
   exit 1
 fi
 
-python3 - "$tmp" "$DRY_RUN" "$VERBOSE" <<'PY'
-import sys, os, re, shutil, time, json
+# ---- Python core ------------------------------------------------------------
+python3 - "$tmp" "$DRY_RUN" "$VERBOSE" "$WORK_ROOT" <<'PY'
+import sys, os, re, shutil, time
+
 patch_path = sys.argv[1]
 DRY_RUN = sys.argv[2] == "1"
 VERBOSE = sys.argv[3] == "1"
+WORK_ROOT = sys.argv[4]
 
 def dbg(*a):
     if VERBOSE:
@@ -68,7 +77,7 @@ text = slurp(patch_path)
 m = re.search(r'^\*\*\*\s*Begin Patch\s*$([\s\S]*?)^\*\*\*\s*End Patch\s*$', text, re.M)
 payload = m.group(1) if m else text
 
-# Strip code fences
+# Strip code fences and normalize newlines
 payload = re.sub(r'```[a-zA-Z0-9_-]*\s*', '', payload)
 payload = re.sub(r'```', '', payload)
 payload = payload.replace('\r\n', '\n').replace('\r', '\n')
@@ -186,15 +195,15 @@ def find_fuzzy(hay:list[str], needle:list[str])->int:
 def contains_block(hay:list[str], block:list[str])->bool:
     return find_exact(hay, block) != -1 or find_fuzzy(hay, block) != -1
 
-def insert_top_strategy(lines:list[str], plus:list[str])->int:
+def insert_top_strategy(lines:list[str])->int:
     # after shebang if present
     idx=0
     if lines and lines[0].startswith("#!"):
         idx=1
-    # after leading comment/header lines
+    # skip blank/comment header
     while idx < len(lines) and (lines[idx].strip()=="" or lines[idx].lstrip().startswith("//") or lines[idx].lstrip().startswith("/*")):
         idx+=1
-    # after top import block for js/ts
+    # after top import block (js/ts)
     while idx < len(lines) and re.match(r'^\s*(import|export\s+\*)\b', lines[idx]):
         idx+=1
     return idx
@@ -202,7 +211,7 @@ def insert_top_strategy(lines:list[str], plus:list[str])->int:
 def find_anchor_index(lines:list[str], anchor:dict)->int:
     if not anchor or "type" not in anchor: return -1
     t = anchor["type"]
-    if t=="top": return insert_top_strategy(lines, [])
+    if t=="top": return insert_top_strategy(lines)
     if t=="bottom": return len(lines)
     if t in ("before","after"):
         pat = anchor.get("pattern","")
@@ -216,10 +225,11 @@ def find_anchor_index(lines:list[str], anchor:dict)->int:
     return -1
 
 def apply_update(path:str, hunks:list[dict])->bool:
-    if not os.path.exists(path):
+    abspath = os.path.join(WORK_ROOT, path) if not os.path.isabs(path) else path
+    if not os.path.exists(abspath):
         print(f"apply_patch: update failed, file not found: {path}", file=sys.stderr)
         return False
-    with open(path,"r",encoding="utf-8",errors="ignore") as f:
+    with open(abspath,"r",encoding="utf-8",errors="ignore") as f:
         lines=f.read().splitlines()
 
     changed=False
@@ -241,6 +251,7 @@ def apply_update(path:str, hunks:list[dict])->bool:
                 lines[idx:idx+len(minus)] = plus
                 changed=True
                 continue
+
         # No -block found (or minus empty). Try anchor directive
         aidx = find_anchor_index(lines, anchor)
         if aidx != -1:
@@ -250,7 +261,7 @@ def apply_update(path:str, hunks:list[dict])->bool:
 
         # Default fallback: if only additions, insert near top; else fail
         if minus==[] and plus:
-            pos = insert_top_strategy(lines, plus)
+            pos = insert_top_strategy(lines)
             lines[pos:pos] = plus
             changed=True
             continue
@@ -266,8 +277,9 @@ def apply_update(path:str, hunks:list[dict])->bool:
         dbg("[dry-run] would write", path)
         return True
 
-    backup(path)
-    with open(path,"w",encoding="utf-8") as f:
+    abspath = os.path.join(WORK_ROOT, path) if not os.path.isabs(path) else path
+    backup(abspath)
+    with open(abspath,"w",encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     return True
 
@@ -275,34 +287,44 @@ ok=True
 for op in ops:
     if op["op"]=="add":
         p=op["path"]; c=op.get("content","")
+        abspath = os.path.join(WORK_ROOT, p) if not os.path.isabs(p) else p
         if DRY_RUN:
             dbg("[dry-run] add", p, f"({len(c)} bytes)")
         else:
-            ensure_dir(p); backup(p)
-            with open(p,"w",encoding="utf-8") as f: f.write(c if c.endswith("\n") else c+"\n")
+            d=os.path.dirname(abspath)
+            if d and not os.path.exists(d): os.makedirs(d, exist_ok=True)
+            backup(abspath)
+            with open(abspath,"w",encoding="utf-8") as f: f.write(c if c.endswith("\n") else c+"\n")
         ok = ok and True
     elif op["op"]=="update":
         ok = apply_update(op["path"], op["hunks"]) and ok
     elif op["op"]=="delete":
         p=op["path"]
-        if os.path.exists(p):
+        abspath = os.path.join(WORK_ROOT, p) if not os.path.isabs(p) else p
+        if os.path.exists(abspath):
             if not DRY_RUN:
-                backup(p); os.remove(p)
+                backup(abspath); os.remove(abspath)
         ok = ok and True
     elif op["op"]=="rename":
         src, dst = op["from"], op["to"]
-        if not os.path.exists(src):
+        asrc = os.path.join(WORK_ROOT, src) if not os.path.isabs(src) else src
+        adst = os.path.join(WORK_ROOT, dst) if not os.path.isabs(dst) else dst
+        if not os.path.exists(asrc):
             print(f"apply_patch: rename failed: {src} not found", file=sys.stderr)
             ok=False
         else:
-            ensure_dir(dst)
+            d=os.path.dirname(adst)
+            if d and not os.path.exists(d): os.makedirs(d, exist_ok=True)
             if not DRY_RUN:
-                backup(dst) if os.path.exists(dst) else None
-                os.rename(src,dst)
+                if os.path.exists(adst):
+                    # make a backup of destination before overwrite
+                    ts=time.strftime("%Y%m%d-%H%M%S")
+                    bak=f"{adst}.bak.{ts}"
+                    shutil.copy2(adst, bak)
+                os.rename(asrc, adst)
             ok = ok and True
     else:
         print("apply_patch: unknown op", op["op"], file=sys.stderr); ok=False
 
 sys.exit(0 if ok else 1)
 PY
-

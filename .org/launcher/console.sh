@@ -1,28 +1,32 @@
-# Sourced by ./org
-# Console runner that tees stdout/stderr into the log for early runtime failures.
+# shellcheck shell=bash
 
 run_console() {
-  log "ui=console entry=$ORG_ENTRY proj=$ORG_PROJ appdir=$APPDIR"
-
-  export ORG_APPDIR="$ORG_PROJ"
+  log "ui=console"
+  export ORG_APPDIR="$APPDIR"
   export ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}"
 
-  local JOINED; JOINED="$(join_args_quoted)"
+  local BUN;  BUN="$(command -v bun  || true)"
+  local NPX;  NPX="$(command -v npx  || true)"
+  local NODE; NODE="$(command -v node || true)"
 
-  if command -v bun >/dev/null 2>&1; then
-    log "exec: bun \"$ORG_ENTRY\"$JOINED"
-    exec bash -lc 'bun "'"$ORG_ENTRY"'" '"$JOINED 2>&1"' | tee -a "'"$ORG_LOG_FILE"'"'
+  if [ -n "$BUN" ]; then
+    log "exec: $BUN \"$ORG_ENTRY\" ${ORG_FWD_ARGS[*]:-}"
+    set +e
+    "$BUN" "$ORG_ENTRY" "${ORG_FWD_ARGS[@]}" 2>&1 | tee -a "$ORG_LOG_FILE"
+    local ec=${PIPESTATUS[0]}
+    set -e
+    exit "$ec"
   fi
 
-  if command -v node >/dev/null 2>&1; then
-    if command -v npx >/dev/null 2>&1; then
-      log "exec: npx --yes tsx \"$ORG_ENTRY\"$JOINED"
-      exec bash -lc 'npx --yes tsx "'"$ORG_ENTRY"'" '"$JOINED 2>&1"' | tee -a "'"$ORG_LOG_FILE"'"'
-    fi
-    err "Node found but tsx is missing. Install tsx (npm i -g tsx) or install Bun."
-    exit 127
+  if [ -n "$NODE" ] && [ -n "$NPX" ]; then
+    log "exec: $NPX --yes tsx \"$ORG_ENTRY\" ${ORG_FWD_ARGS[*]:-}"
+    set +e
+    "$NPX" --yes tsx "$ORG_ENTRY" "${ORG_FWD_ARGS[@]}" 2>&1 | tee -a "$ORG_LOG_FILE"
+    local ec=${PIPESTATUS[0]}
+    set -e
+    exit "$ec"
   fi
 
-  err "neither Bun nor Node runtime found in PATH."
+  err "neither Bun nor Node+tsx found in PATH."
   exit 127
 }

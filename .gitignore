@@ -64,6 +64,7 @@ logs/
 # Keep launcher code and any static assets you want to ship
 !/.org/launcher/
 !/.org/launcher/**
+!/.org/bin
 
 # Optionally keep docs/config in .org
 !/.org/*.md
@@ -78,7 +79,18 @@ logs/
 /.org/logs/
 /.org/runs/
 /.org/tmp/
+/.org/tmp/
 /.org/sandboxes/
 /.org/**/tmux-logs/
 /.org/last.log
 /.org/last-session.patch
+
+# --- org runtime artifacts ---
+.org/logs/
+.org/logs/**           # rotating run logs (and last.log symlink)
+.org/runs/             # per-run artifacts / patches (if you keep them here)
+.org/sandboxes/        # sandbox/cache, if used
+.org/.tmux-inner.sh    # generated inner script used by tmux
+
+# tmux debug logs (in case they ever land in repo root)
+tmux-*.log
