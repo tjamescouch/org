@@ -50,9 +50,15 @@ installTtyGuard();
   }
 
   // Determine base app dir for defaults
-  const BASE =
-    process.env.ORG_APPDIR ? path.resolve(process.env.ORG_APPDIR) : process.cwd();
-  const DEFAULT_DIR = path.resolve(BASE, ".org", "logs");
+  // Choose the logs base directory safely
+  const baseRaw = process.env.ORG_APPDIR
+    ? path.resolve(process.env.ORG_APPDIR)
+    : process.cwd();
+
+  // If ORG_APPDIR already ends with "/.org", put logs inside it; otherwise use "<base>/.org"
+  const DEFAULT_DIR = baseRaw.endsWith(path.sep + ".org")
+    ? path.join(baseRaw, "logs")
+    : path.join(baseRaw, ".org", "logs");
 
   // Resolve directory
   const DIR_INPUT = (process.env.ORG_LOG_DIR ?? "").trim();
