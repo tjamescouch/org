@@ -1,58 +1,137 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Run org inside a containerized tmux session with a predictable CWD (/work).
-# Changes vs your restored script:
-#   - Inner script does: cd "$ORG_APPDIR" (== /work) BEFORE launching bun.
-#   - tmux new-session tries: -c /work (start-directory). Falls back if unsupported.
+# Smooth tmux launcher:
+# - Auto-detect container engine (podman/docker)
+# - Auto-build image from Containerfile/Dockerfile if not present
+# - Start tmux inside the container in /work (bind-mount of repo)
+# - Fall back to console UI if engine/image are unavailable
 
-# ---- resolve paths ----------------------------------------------------------
+# --------------- small logging helpers ----------------
+log() { printf '[org/tmux] %s\n' "$*" >&2; }
+dbg() { [[ "${ORG_DEBUG_LAUNCHER:-0}" == "1" ]] && log "$*"; }
+
+# --------------- repo paths ---------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APPDIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"                # repo root on host
-CTR_WORK="/work"
-CTR_APPDIR="${CTR_WORK}"
+APPDIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"        # repo root on host
+CTR_WORK="/work"                                   # bind mount target
+CTR_APPDIR="${CTR_WORK}"                           # app root in container
 
-# ---- container engine & image ----------------------------------------------
-ENGINE="${ORG_ENGINE:-}"
+# --------------- choose UI if forced ------------------
+UI="${ORG_UI-}"
+if [[ -z "${UI}" ]]; then
+  for arg in "$@"; do
+    case "$arg" in
+      --ui=*) UI="${arg#--ui=}" ;;
+      --ui)   shift; UI="${1-}"; break ;;
+    esac
+  done
+fi
+UI="${UI:-tmux}"
+
+console_delegate() {
+  dbg "delegating to console UI"
+  ORG_UI=console ORG_FORCE_UI=console exec bash "${SCRIPT_DIR}/console.sh" "$@"
+}
+
+if [[ "${UI}" != "tmux" ]]; then
+  console_delegate "$@"
+fi
+
+# --------------- detect container engine --------------
+detect_engine() {
+  if [[ -n "${ORG_ENGINE-}" ]]; then echo "${ORG_ENGINE}"; return 0; fi
+  if command -v podman >/dev/null 2>&1; then echo podman; return 0; fi
+  if command -v docker >/dev/null 2>&1; then echo docker; return 0; fi
+  return 1
+}
+ENGINE="$(detect_engine || true)"
+
 if [[ -z "${ENGINE}" ]]; then
-  if command -v podman >/dev/null 2>&1; then ENGINE="podman"
-  elif command -v docker >/dev/null 2>&1; then ENGINE="docker"
-  else
-    echo "No container engine found (podman or docker)." >&2
-    exit 1
-  fi
+  log "No container engine (podman/docker) found; falling back to console UI."
+  console_delegate "$@"
 fi
+dbg "ENGINE=${ENGINE}"
 
+# --------------- resolve / build image ----------------
 IMAGE="${ORG_IMAGE:-${SANDBOX_IMAGE:-${ORG_SANDBOX_IMAGE:-}}}"
-if [[ -z "${IMAGE}" ]]; then
-  echo "Set ORG_IMAGE (or SANDBOX_IMAGE/ORG_SANDBOX_IMAGE) to the dev image that has tmux+bun." >&2
-  exit 1
-fi
+DEFAULT_TAG="org-dev:latest"
 
-# ---- logs -------------------------------------------------------------------
+engine_image_exists() {
+  local tag="$1"
+  if [[ "${ENGINE}" == "podman" ]]; then
+    podman image exists "${tag}"
+  else
+    docker image inspect "${tag}" >/dev/null 2>&1
+  fi
+}
+
+engine_build() {
+  local tag="$1" file="$2"
+  log "Preparing dev image (first run only)…"
+  if [[ "${ENGINE}" == "podman" ]]; then
+    # -q prints image ID only (quiet)
+    podman build -q -t "${tag}" -f "${file}" "${APPDIR}" >/dev/null
+  else
+    DOCKER_BUILDKIT=1 docker build -q -t "${tag}" -f "${file}" "${APPDIR}" >/dev/null
+  fi
+}
+
+ensure_image() {
+  if [[ -n "${IMAGE}" ]]; then
+    dbg "Using provided image: ${IMAGE}"
+    echo "${IMAGE}"
+    return 0
+  fi
+
+  # If a local dev image already exists, use it; otherwise build it.
+  if engine_image_exists "${DEFAULT_TAG}"; then
+    dbg "Found local image: ${DEFAULT_TAG}"
+    echo "${DEFAULT_TAG}"
+    return 0
+  fi
+
+  local f=
+  if [[ -f "${APPDIR}/Containerfile" ]]; then f="${APPDIR}/Containerfile"
+  elif [[ -f "${APPDIR}/Dockerfile" ]]; then f="${APPDIR}/Dockerfile"
+  fi
+
+  if [[ -n "${f}" ]]; then
+    engine_build "${DEFAULT_TAG}" "${f}" || {
+      log "Image build failed; falling back to console UI."
+      console_delegate "$@"
+    }
+    echo "${DEFAULT_TAG}"
+    return 0
+  fi
+
+  log "No Containerfile/Dockerfile found; falling back to console UI."
+  console_delegate "$@"
+}
+
+IMAGE="$(ensure_image "$@")"
+dbg "IMAGE=${IMAGE}"
+
+# --------------- logs --------------------------------
 ORG_LOG_DIR="${ORG_LOG_DIR:-${APPDIR}/.org/logs}"
 mkdir -p "${ORG_LOG_DIR}" "${ORG_LOG_DIR}/tmux-logs" || true
 LOG_FILE_HOST="${ORG_LOG_DIR}/tmux-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
 
-# ---- forward args -----------------------------------------------------------
-# Combine argv and optional ORG_FWD_ARGS string into a single args array
+# --------------- forward args to app -----------------
 declare -a ORG_ARGS=("$@")
 if [[ -n "${ORG_FWD_ARGS-}" ]]; then
-  # shellwords-ish split; upstream should quote if needed
   read -r -a _fwd <<<"${ORG_FWD_ARGS}"
   ORG_ARGS+=("${_fwd[@]}")
 fi
 printf -v ARGS_JOINED ' %q' "${ORG_ARGS[@]}"
 
-# ---- mount options ----------------------------------------------------------
+# --------------- mount (SELinux-friendly) ------------
 MNT_SPEC="${APPDIR}:${CTR_WORK}"
-# Add :z/:Z label where supported (SELinux contexts)
 case "${ENGINE}" in
   podman|docker) MNT_SPEC="${MNT_SPEC}:z" ;;
 esac
 
-# ---- inner script that tmux actually runs -----------------------------------
-# Key fix: `cd "$ORG_APPDIR"` ensures the app CWD is /work before bun starts.
+# --------------- inner app runner (inside tmux) ------
 read -r -d '' CREATE_AND_RUN <<'EOS'
 set -Eeuo pipefail
 umask 0002
@@ -66,7 +145,7 @@ mkdir -p "$ORG_LOG_DIR"
 echo "[tmux] log -> $ORG_LOG_FILE"
 echo "[tmux] entry='$ENTRY' date=$(date -u +%FT%TZ)"
 
-# >>> FIX: guarantee predictable working directory inside tmux <<<
+# Ensure we run in the bind-mounted repo (/work)
 cd "$ORG_APPDIR"
 
 set +e
@@ -77,10 +156,9 @@ set -e
 echo "[tmux] app exited with $ec"
 exit "$ec"
 EOS
-# inject the joined args into the heredoc safely
 CREATE_AND_RUN="${CREATE_AND_RUN/__ORG_ARGS_PLACEHOLDER__/${ARGS_JOINED}}"
 
-# ---- wrapper that creates the inner script and starts tmux ------------------
+# --------------- tmux wrapper (inside container) ----
 read -r -d '' WRAPPER <<'EOS'
 set -Eeuo pipefail
 umask 0002
@@ -100,7 +178,7 @@ export ENTRY="$CTR_APPDIR/src/app.ts"
 export ORG_APPDIR="$CTR_APPDIR"
 export TMUX_TMPDIR="$CTR_APPDIR/.org/logs/tmux-logs"
 
-# Try to set the session start-directory to /work (-c). If not supported, fall back.
+# Prefer starting the session in /work; fall back if -c unsupported.
 if tmux new-session -d -s org -c "$CTR_WORK" "bash --noprofile --norc '$INNER_TMUX_SCRIPT'"; then
   :
 else
@@ -109,22 +187,34 @@ fi
 
 exec tmux attach -t org
 EOS
-# substitute placeholders
 WRAPPER="${WRAPPER/__CTR_APPDIR__/${CTR_APPDIR}}"
 WRAPPER="${WRAPPER/__CTR_WORK__/${CTR_WORK}}"
-# careful to inject the whole inner script text
-# (printf %q would over-escape; we embed via heredoc above)
 WRAPPER="${WRAPPER/__CREATE_AND_RUN__/${CREATE_AND_RUN}}"
 
-# ---- run the container ------------------------------------------------------
-exec "${ENGINE}" run --rm -it --network host \
-  -v "${MNT_SPEC}" \
-  -w "${CTR_WORK}" \
-  -e ORG_TMUX=1 \
-  -e ORG_FORCE_UI=console \
-  -e ORG_APPDIR="${CTR_APPDIR}" \
-  -e ORG_CALLER_CWD="${CTR_WORK}" \
-  -e ORG_LOG_DIR="${CTR_APPDIR}/.org/logs" \
-  -e ORG_LOG_FILE="${CTR_APPDIR}/.org/logs/$(basename "${LOG_FILE_HOST}")" \
-  -e ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}" \
-  "${IMAGE}" bash -lc "${WRAPPER}"
+# --------------- run container ----------------------
+# Always invoke console.sh via bash if we ever need to delegate again.
+if [[ "${ENGINE}" == "podman" ]]; then
+  exec podman run --rm -it --network host \
+    -v "${MNT_SPEC}" \
+    -w "${CTR_WORK}" \
+    -e ORG_TMUX=1 \
+    -e ORG_FORCE_UI=console \
+    -e ORG_APPDIR="${CTR_APPDIR}" \
+    -e ORG_CALLER_CWD="${CTR_WORK}" \
+    -e ORG_LOG_DIR="${CTR_APPDIR}/.org/logs" \
+    -e ORG_LOG_FILE="${CTR_APPDIR}/.org/logs/$(basename "${LOG_FILE_HOST}")" \
+    -e ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}" \
+    "${IMAGE}" bash -lc "${WRAPPER}"
+else
+  exec docker run --rm -it --network host \
+    -v "${MNT_SPEC}" \
+    -w "${CTR_WORK}" \
+    -e ORG_TMUX=1 \
+    -e ORG_FORCE_UI=console \
+    -e ORG_APPDIR="${CTR_APPDIR}" \
+    -e ORG_CALLER_CWD="${CTR_WORK}" \
+    -e ORG_LOG_DIR="${CTR_APPDIR}/.org/logs" \
+    -e ORG_LOG_FILE="${CTR_APPDIR}/.org/logs/$(basename "${LOG_FILE_HOST}")" \
+    -e ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}" \
+    "${IMAGE}" bash -lc "${WRAPPER}"
+fi
