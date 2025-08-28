@@ -1,17 +1,12 @@
 // src/input/controller.ts
 // Sole owner of TTY input in raw mode, driven by a small FSM.
 //
-// This revision fixes two visible IO issues:
-//  1) Agent responses not printing (we were over-suppressing "INFO"-suffixed lines).
-//  2) Dotted right-edge fills trampling the 'You:' prompt.
-// We now *only* suppress true fill lines while a prompt is active and never
-// suppress content lines (even if they end with "INFO").
-//
-// Preserved behavior:
-//  - ESC -> scheduler.stop() then finalizer().
-//  - Ctrl+C fast exit in real runs (no finalize), disabled in tests.
-//  - Ctrl+Z suspend + raw mode re-armed on SIGCONT.
-//  - No double-delivery of user input.
+// Intent (tight):
+//  - Restore normal output (remove stdout interception).
+//  - Make interjection ('i') reliable and show 'You:' on a clean line.
+//  - Pause cosmetic fills via R.UIBusy while a prompt is active.
+//  - Preserve: ESC finalize, Ctrl+C fast-exit (real runs), Ctrl+Z suspend,
+//    no double-delivery of user input, and the test helper API.
 
 import { R } from "../runtime/runtime";
 import { Logger } from "../logger";
@@ -41,13 +36,8 @@ export class InputController {
   private rawWasOn = false;
   private keyDebug = false;
 
-  // When @@user is asked:
+  // Armed when @@user is waiting for input
   private pendingResolve: ((s: string) => void) | null = null;
-
-  // Output hygiene & suppression while prompting:
-  private lastWriteEndedWithNewline = true;
-  private originalStdoutWrite: ((chunk: any, ...rest: any[]) => any) | null = null;
-  private suppressFillUntilNL = false; // drop fill chunks until newline while prompting
 
   // ---- static hooks (used by tty-guard etc.) ----
   private static _active: InputController | null = null;
@@ -81,43 +71,17 @@ export class InputController {
 
     this.keyDebug = (R.env.ORG_KEY_DEBUG === "1" || R.env.DEBUG === "1");
 
-    // Wrap stdout.write to:
-    //  (1) track newline hygiene, and
-    //  (2) drop only *true* fill lines while prompting (stateful across partial writes).
-    try {
-      const out: any = R.stdout as any;
-      this.originalStdoutWrite = out.write.bind(out);
-      out.write = (chunk: any, ...rest: any[]) => {
-        const s = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
-
-        if (this.isPromptActive()) {
-          if (this.suppressFillUntilNL || isLikelyFillChunk(s)) {
-            if (!this.suppressFillUntilNL) {
-              this.suppressFillUntilNL = true;
-              if (this.keyDebug) try { (R.stderr as any).write?.("[input] suppressing fill\n"); } catch {}
-            }
-            if (s.includes("\n")) this.suppressFillUntilNL = false;
-            // swallow this cosmetic fill
-            return true;
-          }
-        }
-
-        if (s.length) this.lastWriteEndedWithNewline = /\n$/.test(s);
-        return this.originalStdoutWrite!(chunk, ...rest);
-      };
-    } catch { /* ignore */ }
-
     // Wire FSM to IO + hooks
     this.fsm = new InputFSM(
       {
-        write: (t: string) => this.writeFromFSM(t),
+        write: (s: string) => { try { R.stdout.write(s); } catch {} },
         bell:  () => { try { R.stdout.write("\x07"); } catch {} },
       },
       {
         banner: this.opts.interjectBanner,
         interjectKey: this.opts.interjectKey,
         onSubmit: (text) => this.submitText(text),
-        onCancel:  () => this.setUIBusy(false),
+        onCancel:  () => this.setUIBusy(false),   // leaving prompt
         onEscapeIdle: () => this.handleEscapeIdle(),
       }
     );
@@ -125,6 +89,7 @@ export class InputController {
     InputController._active = this;
     this._attachKeys();
 
+    // Re-arm raw mode after a foreground resume.
     try {
       R.on?.("SIGCONT", () => {
         Logger.debug("[input] SIGCONT -> re-enabling raw mode");
@@ -142,11 +107,12 @@ export class InputController {
     else Logger.warn("[input] no scheduler submit function found");
   }
 
-  // Scheduler asks @@user: do NOT echo content; UI prints it elsewhere.
+  // Scheduler asks @@user: do NOT echo the agent text here (UI prints it).
   async askUser(_fromAgent: string, _content: string): Promise<string> {
     return await this.promptOnce();
   }
 
+  // Kickoff helper: true => prompt; string => background submit
   async askInitialAndSend(kickoff?: string | boolean) {
     if (kickoff === true) {
       await this.promptOnce();
@@ -244,7 +210,6 @@ export class InputController {
       catch (e: any) { Logger.warn(`[input] finalizer error: ${e?.message || e}`); }
       if (this.opts.exitOnEsc) {
         try { R.stdout.write("\n"); } catch {}
-        this.lastWriteEndedWithNewline = true;
       }
     }
   }
@@ -259,7 +224,6 @@ export class InputController {
     return await new Promise<string>((resolve) => {
       this.pendingResolve = (s: string) => {
         this.pendingResolve = null;
-        this.suppressFillUntilNL = false;      // stop suppression after submit
         this.setUIBusy(false);
         const out = (s ?? "");
         Logger.debug(`[input] prompt resolved (${out.length} chars)`);
@@ -275,10 +239,10 @@ export class InputController {
 
     if (hadPrompt) {
       const resolve = this.pendingResolve; this.pendingResolve = null;
-      this.suppressFillUntilNL = false;
       this.setUIBusy(false);
       try { resolve!(text); } catch {}
-      return; // do NOT also forward to scheduler
+      // do NOT also forward to scheduler
+      return;
     }
 
     // Background interjection / kickoff
@@ -294,39 +258,21 @@ export class InputController {
 
   // --- helpers ---------------------------------------------------------------
 
-  private isPromptActive(): boolean {
-    return !!this.pendingResolve;
-  }
-
   private setUIBusy(b: boolean) {
     try {
       const anyR = R as any;
       if (typeof anyR.setUIBusy === "function") { anyR.setUIBusy(b); return; }
       if ("uiBusy" in anyR) { anyR.uiBusy = b; return; }
-      (anyR as any).UIBusy = b;
+      (anyR as any).UIBusy = b; // some places check this name
     } catch { /* ignore */ }
   }
 
   private openInterjectNow() {
     this.setUIBusy(true);
-    // Clear current line to avoid glue with right-edge "INFO"
-    try {
-      if (!this.lastWriteEndedWithNewline) R.stdout.write("\r\x1b[K\n");
-      else R.stdout.write("\r\x1b[K");
-      this.lastWriteEndedWithNewline = true;
-    } catch {}
-    // Start collecting input
+    // Clean line: CR + clear-to-EOL (avoid glue with right-edge adornments)
+    try { R.stdout.write("\r\x1b[K"); } catch {}
+    // Drive FSM as if the hotkey was pressed.
     this.fsm.handle({ type: "char", data: this.opts.interjectKey });
-  }
-
-  private writeFromFSM(s: string) {
-    // If FSM is printing the banner, clear the line again for safety.
-    const isBanner = s === this.opts.interjectBanner || s.endsWith(this.opts.interjectBanner);
-    if (isBanner) {
-      try { R.stdout.write("\r\x1b[K"); } catch {}
-    }
-    try { R.stdout.write(s); } catch {}
-    if (s.length) this.lastWriteEndedWithNewline = /\n$/.test(s);
   }
 
   private pickSubmitFn(s: any): { fn: SubmitFn | null; name: string | null } {
@@ -348,46 +294,6 @@ export class InputController {
     }
     return { fn: null, name: null };
   }
-}
-
-/* -------------------------------------------------------------------------- */
-/* Fill detection helpers                                                      */
-/* -------------------------------------------------------------------------- */
-
-/** strip ANSI SGR and line-clear sequences */
-function stripAnsi(s: string): string {
-  return s.replace(/\x1B\[[0-9;]*[A-Za-z]/g, "");
-}
-
-/**
- * True if `chunk` looks like (part of) the cosmetic fill line.
- * Rules:
- *  - If it ends with "INFO" but the characters *before* INFO contain any
- *    non-filler (letters/digits/punctuation), it's NOT a fill (that's real content).
- *  - Pure dots/spaces/box-drawing (with or without trailing "INFO") are fills.
- *  - Partial segments of the dotted line (no INFO yet) are fills if they contain
- *    only filler glyphs (heuristic ratio removed to avoid false positives).
- */
-function isLikelyFillChunk(chunk: string): boolean {
-  if (!chunk) return false;
-  const s = stripAnsi(chunk);
-
-  // Separate any trailing INFO token (common in the UI)
-  const m = s.match(/^(.*?)(?:\s*INFO\s*)$/);
-  if (m) {
-    const before = m[1] ?? "";
-    // If anything before INFO is non-filler, it's content, not fill.
-    if (!/^[.\s•·\u2500-\u257F\u2591-\u2593_\-|\\]*$/.test(before)) return false;
-    return true; // pure leaders + INFO
-  }
-
-  // No explicit INFO: treat as fill only if entirely made of filler glyphs.
-  if (/^[.\s•·\u2500-\u257F\u2591-\u2593_\-|\\]*$/.test(s)) {
-    // Ignore empty strings—it won't be written anyway; treat non-empty filler as fill.
-    return s.length > 0;
-  }
-
-  return false;
 }
 
 /* -------------------------------------------------------------------------- */
