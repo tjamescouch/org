@@ -1,110 +1,51 @@
 #!/usr/bin/env bash
-# Host-side launcher for "org". No docker/podman knowledge required.
-# Usage:
-#   ./org --ui tmux
-#   ./org --ui console
-#   ./org --rebuild   (force rebuild of the image)
-#
-# Optional env you can set on the host:
-#   ORG_IMAGE=localhost/org-build:debian-12
-#   ORG_CONTAINERFILE=Containerfile
-#   OPENAI_BASE_URL (defaults to host.<engine>.internal:11434/v1)
-#   OPENAI_API_KEY
+# CWD-agnostic org launcher: always mounts the repo root to /work
+# and runs bun /work/src/app.ts inside the container.
 
 set -Eeuo pipefail
 
-# ---------------------------
-# Detect container engine
-# ---------------------------
-if command -v podman >/dev/null 2>&1; then
-  ENGINE="${ORG_ENGINE:-podman}"
-elif command -v docker >/dev/null 2>&1; then
-  ENGINE="${ORG_ENGINE:-docker}"
-else
-  echo "[org][error] neither podman nor docker found in PATH." >&2
-  exit 127
-fi
-
-# Host alias for reaching services on the host from inside the container
-if [[ "$ENGINE" == "podman" ]]; then
-  HOST_ALIAS="host.containers.internal"
-else
-  HOST_ALIAS="host.docker.internal"
-fi
-
-# ---------------------------
-# Image + build file
-# ---------------------------
-IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
-FILE="${ORG_CONTAINERFILE:-Containerfile}"
-
-# ---------------------------
-# Parse flags
-# ---------------------------
-UI="console"
-REBUILD=0
-ARGS=()
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --ui)
-      UI="${2:-console}"; shift 2;;
-    --rebuild)
-      REBUILD=1; shift;;
-    *)
-      ARGS+=("$1"); shift;;
-  esac
-done
-
-# ---------------------------
-# Build image (if needed / forced)
-# ---------------------------
-build_image() {
-  echo "[org] building image with $ENGINE (this can take a while)..."
-  "$ENGINE" build -t "$IMAGE" -f "$FILE" .
-  echo "[org] image built: $IMAGE"
+# ---------- resolve real path to this script (portable) ----------
+resolve_realpath() {
+  # Prefer readlink -f if available; fall back to Python
+  if command -v readlink >/dev/null 2>&1; then
+    readlink -f "$1" 2>/dev/null || python3 - "$1" <<'PY'
+import os, sys; print(os.path.realpath(sys.argv[1]))
+PY
+  else
+    python3 - "$1" <<'PY'
+import os, sys; print(os.path.realpath(sys.argv[1]))
+PY
+  fi
 }
 
-if [[ $REBUILD -eq 1 ]]; then
-  build_image
-else
-  if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
-    build_image
-  fi
+SCRIPT_PATH="$(resolve_realpath "$0")"
+REPO_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+
+# ---------- engine/image/file ----------
+ENGINE="${ORG_ENGINE:-podman}"   # set ORG_ENGINE=docker if you prefer
+IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
+FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
+
+echo "[org] engine = $ENGINE"
+echo "[org] image  = $IMAGE"
+echo "[org] file   = $FILE"
+echo "[org] repo   = $REPO_DIR"
+
+# ---------- ensure image exists (build if missing) ----------
+if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "[org] building image with $ENGINE (this can take a while)..."
+  "$ENGINE" build -t "$IMAGE" -f "$FILE" "$REPO_DIR"
+  echo "[org] image built: $IMAGE"
 fi
 
-# ---------------------------
-# Prepare run settings
-# ---------------------------
-REPO_DIR="$(pwd)"
-WORK_MOUNT="$REPO_DIR:/work"
-if [[ "$ENGINE" == "podman" ]]; then
-  # SELinux-friendly mount on Linux
-  WORK_MOUNT="$REPO_DIR:/work:Z"
-fi
+# ---------- run bun inside the container, mounting the repo root ----------
+# - Always mount REPO_DIR → /work, regardless of the caller's CWD.
+# - Workdir is /work so /work/src/app.ts is stable.
+# - Pass through your args unchanged.
+exec "$ENGINE" run --rm -it \
+  -v "$REPO_DIR:/work:Z" \
+  -w /work \
+  -e ORG_PROJECT_DIR=/work \
+  -e TERM="${TERM:-xterm-256color}" \
+  "$IMAGE" bun /work/src/app.ts "$@"
 
-# Default model gateway unless you override OPENAI_BASE_URL
-OPENAI_BASE_URL="${OPENAI_BASE_URL:-http://${HOST_ALIAS}:11434/v1}"
-OPENAI_API_KEY="${OPENAI_API_KEY:-lm-studio}"
-
-RUN_BASE=( "$ENGINE" run --rm -it
-  -v "$WORK_MOUNT"
-  -w /work
-  -e ORG_APPDIR=/work
-  -e OPENAI_BASE_URL="$OPENAI_BASE_URL"
-  -e OPENAI_API_KEY="$OPENAI_API_KEY"
-  "$IMAGE"
-)
-
-# ---------------------------
-# Launch
-# ---------------------------
-if [[ "$UI" == "tmux" ]]; then
-  # Use the container-side tmux launcher (see file below).
-  exec "${RUN_BASE[@]}" bash -lc 'bash /work/.org/launcher/tmux.sh'
-else
-  # Console UI (no tmux). Pass through any extra args you gave `./org`.
-  # If you use --prompt "..." etc., make sure you quote on the host.
-  CMD=(bun /work/src/app.ts --ui console "${ARGS[@]}")
-  exec "${RUN_BASE[@]}" bash -lc "$(printf '%q ' "${CMD[@]}")"
-fi
