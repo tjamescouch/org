@@ -156,14 +156,7 @@ org --ui tmux --prompt "hi there"
   ```bash
   git pull
   ```
-* **Rebuild the container** (when the `Containerfile` changes or dependencies are updated):
-
-  ```bash
-  ./create-container.sh
-  ```
-
-  (Clean rebuild with `--no-cache` is already baked into the script.)&#x20;
-* **Update the shims** (if `org` or `apply_patch` changed):
+* **Run the installer**:
 
   ````bash
   ./install.sh
