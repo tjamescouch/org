@@ -39,9 +39,10 @@ export async function launchTmuxUI(
   if (check.code !== 0) {
     // If you prefer silent fallback to console UI, we can add that later;
     // for now a clear error is better signal during bring-up.
-    throw new Error(
-      "tmux not found in the sandbox image. Please add tmux to the image used for the sandbox."
-    );
+    //throw new Error(
+    //  "tmux not found in the sandbox image. Please add tmux to the image used for the sandbox."
+    //);
+    Logger.error("Please add tmux to the image used for the sandbox.");
   }
 
   // Ensure a writable logs dir for tmux -vv (under /work in the sandbox)
