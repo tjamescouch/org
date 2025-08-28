@@ -4,7 +4,7 @@ import { GuardRail } from "../guardrails/guardrail";
 import { Logger } from "../logger";
 import { AgentMemory } from "../memory";
 import { sandboxedSh } from "../tools/sandboxed-sh";
-import { runVimdiff } from "../tools/vimdiff";
+//import { runVimdiff } from "../tools/vimdiff";
 import { normalizeContent, sanitizeContent } from "../utils/sanitize-content";
 import type { ExecuteToolsParams, ExecuteToolsResult } from "./tool-executor";
 import { ToolExecutor } from "./tool-executor";
@@ -91,39 +91,39 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
 }
 
 
-const vimdiffHandler = async (agentId: string, toolcall: ChatToolCall, text: string, memory: AgentMemory, guard: GuardRail): Promise<ToolHandlerResult> => {
-    const name = toolcall.function?.name || "";
-    let args: any = {};
-    try { args = JSON.parse(toolcall.function?.arguments || "{}"); } catch { args = {}; }
-    Logger.debug(`${agentId} tool ->`, { name, toolcall });
-    const t = Date.now();
-    const result = await runVimdiff({ left: args.left, right: args.right, cwd: args.cwd });
-    Logger.debug(`${agentId} tool <-`, { name, ms: Date.now() - t });
-
-    // Let GuardRail see the signature to stop "same command" repetition
-    const repeatDecision = guard.noteToolCall({
-        name: "vimdiff",
-        argsSig: toolcall.function?.arguments, // argument signature = canonicalized cmd
-        resSig: `N/A`,
-        exitCode: 0,
-    });
-    if (repeatDecision?.nudge) {
-        await memory.add({ role: "system", content: repeatDecision.nudge, from: "System" });
-    }
-    if (repeatDecision?.endTurn) {
-        // Still record the tool output so the model can read it later.
-        const contentJSON = JSON.stringify(result);
-        await memory.add({ role: "tool", content: contentJSON, tool_call_id: toolcall.id, name: "sh", from: "Tool" });
-
-        if (text) await memory.add({ role: "assistant", content: text, from: "Me" });
-        return { toolsUsed: 1, forceEndTurn: true, stdout: "vimdiff completed", stderr: '', ok: true, exit_code: 0 };
-    }
-
-    const content = JSON.stringify(result);
-    await memory.add({ role: "tool", content, tool_call_id: toolcall.id, name: "sh", from: "Tool" });
-
-    return { toolsUsed: 1, forceEndTurn: false, stdout: "vimdiff completed", stderr: '', ok: true, exit_code: 0 };
-}
+//const vimdiffHandler = async (agentId: string, toolcall: ChatToolCall, text: string, memory: AgentMemory, guard: GuardRail): Promise<ToolHandlerResult> => {
+//    const name = toolcall.function?.name || "";
+//    let args: any = {};
+//    try { args = JSON.parse(toolcall.function?.arguments || "{}"); } catch { args = {}; }
+//    Logger.debug(`${agentId} tool ->`, { name, toolcall });
+//    const t = Date.now();
+//    const result = await runVimdiff({ left: args.left, right: args.right, cwd: args.cwd });
+//    Logger.debug(`${agentId} tool <-`, { name, ms: Date.now() - t });
+//
+//    // Let GuardRail see the signature to stop "same command" repetition
+//    const repeatDecision = guard.noteToolCall({
+//        name: "vimdiff",
+//        argsSig: toolcall.function?.arguments, // argument signature = canonicalized cmd
+//        resSig: `N/A`,
+//        exitCode: 0,
+//    });
+//    if (repeatDecision?.nudge) {
+//        await memory.add({ role: "system", content: repeatDecision.nudge, from: "System" });
+//    }
+//    if (repeatDecision?.endTurn) {
+//        // Still record the tool output so the model can read it later.
+//        const contentJSON = JSON.stringify(result);
+//        await memory.add({ role: "tool", content: contentJSON, tool_call_id: toolcall.id, name: "sh", from: "Tool" });
+//
+//        if (text) await memory.add({ role: "assistant", content: text, from: "Me" });
+//        return { toolsUsed: 1, forceEndTurn: true, stdout: "vimdiff completed", stderr: '', ok: true, exit_code: 0 };
+//    }
+//
+//    const content = JSON.stringify(result);
+//    await memory.add({ role: "tool", content, tool_call_id: toolcall.id, name: "sh", from: "Tool" });
+//
+//    return { toolsUsed: 1, forceEndTurn: false, stdout: "vimdiff completed", stderr: '', ok: true, exit_code: 0 };
+//}
 
 /**
  * StandardToolExecutor
@@ -136,7 +136,7 @@ export class StandardToolExecutor extends ToolExecutor {
     private readonly toolHandlers: Record<string, ToolHandler> = {
         sh: shHandler,
         exec: shHandler,
-        vimdiff: vimdiffHandler //FIXME
+        //vimdiff: vimdiffHandler //FIXME
     };
 
     async execute(params: ExecuteToolsParams): Promise<ExecuteToolsResult> {
