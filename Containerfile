@@ -119,3 +119,19 @@ RUN set -eux; \
 # Optional: patch viewer command (for tmux popup or scripts)
 ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (command -v delta >/dev/null && delta -s --paging=never .org/last-session.patch || (echo; echo \"(delta not found; showing raw patch)\"; echo; cat .org/last-session.patch)); else echo \"No session patch found.\"; fi; echo; read -p \"Enter to close...\" _"'
 
+# --- Robust networking defaults for UI processes (console + tmux) ---
+
+# Stable alias to the VM host from inside a Linux container. Works with podman & docker.
+# (We don't strictly need to set this, but it's nice to have a canonical place.)
+ENV ORG_HOST_ALIAS=host.containers.internal
+
+# Default OpenAI-compatible base if none is provided. LM Studio often lives at 11434.
+# Your code that builds the client should prefer ORG_OPENAI_BASE if present.
+ENV ORG_OPENAI_BASE_DEFAULT=http://host.containers.internal:11434/v1
+
+# Make proxy bypass bulletproof for local endpoints and the VM host alias.
+# If user already sets NO_PROXY, keep it; just append what we need.
+ENV NO_PROXY=localhost,127.0.0.1,::1,host.containers.internal,192.168.56.1
+
+# (Optional) if you want PATH to always contain bun for clean tmux shells:
+ENV PATH="/root/.bun/bin:/home/ollama/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

@@ -1,3 +1,4 @@
+
 // src/sandbox/policy.ts
 import { randomUUID } from "crypto";
 import * as path from "path";
@@ -94,4 +95,31 @@ export function toSpec(p: ExecPolicy): ExecSpec {
         limits: p.limits,
         write: p.write,
     };
+}
+
+export type ExecPolicy2 = {
+  /** Allow outbound network calls from inside the container */
+  allowNetwork: boolean;
+  /** Allow invoking any binary (or restrict to a list) */
+  allowBin: "all" | string[];
+  /** Relative-to-/work globs that can be written to */
+  writeAllow: string[];
+};
+
+/** Default policy; becomes fully open if ORG_TRUSTED=1 or ORG_POLICY=open. */
+export function defaultExecPolicy(): ExecPolicy2 {
+  if (process.env.ORG_TRUSTED === "1" || process.env.ORG_POLICY === "open") {
+    // Fully permissive inside the container (safest place to do it).
+    return {
+      allowNetwork: true,
+      allowBin: "all",
+      writeAllow: ["**"],  // anything under /work
+    };
+  }
+  // Conservative defaults (tweak these if you like)
+  return {
+    allowNetwork: true,
+    allowBin: "all",
+    writeAllow: [".org/**", "tmp/**", "dist/**", "build/**"],
+  };
 }

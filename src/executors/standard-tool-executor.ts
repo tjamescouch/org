@@ -1,9 +1,9 @@
 // src/executors/standard-tool-executor.ts
 import { ChatToolCall } from "../drivers/types";
 import { GuardRail } from "../guardrails/guardrail";
-import { Logger } from "../logger";
+import { Logger, C } from "../logger";
 import { AgentMemory } from "../memory";
-import { sandboxedSh } from "../tools/sandboxed-sh";
+import { sandboxedSh, ToolResult } from "../tools/sandboxed-sh";
 //import { runVimdiff } from "../tools/vimdiff";
 import { normalizeContent, sanitizeContent } from "../utils/sanitize-content";
 import type { ExecuteToolsParams, ExecuteToolsResult } from "./tool-executor";
@@ -20,6 +20,11 @@ interface ToolHandlerResult {
 }
 
 type ToolHandler = (agentId: string, toolcall: ChatToolCall, text: string, memory: AgentMemory, guard: GuardRail) => Promise<ToolHandlerResult>;
+
+const formatToolResult = (tr: ToolResult): string => {
+    return `ok: ${tr.ok} code: ${tr.exit_code} stdout: ${tr.stdout} stderr: ${tr.stderr}`;
+}
+
 
 const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, memory: AgentMemory, guard: GuardRail): Promise<ToolHandlerResult> => {
     let args: any = {};
@@ -63,6 +68,7 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
     Logger.debug(`${agentId} tool ->`, { name, cmd: cmd.slice(0, 160) });
     const t = Date.now();
     const result = await sandboxedSh({ cmd }, { agentSessionId: agentId, projectDir: args.cwd ?? process.cwd() ?? ".", policy: { image: "localhost/org-build:debian-12" } })
+    Logger.info(C.bold(formatToolResult(result)) );
     Logger.debug(`${agentId} tool <-`, { name, ms: Date.now() - t, exit: result.exit_code, outChars: result.stdout.length, errChars: result.stderr.length });
 
     // Let GuardRail see the signature to stop "same command" repetition

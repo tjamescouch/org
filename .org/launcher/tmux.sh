@@ -1,74 +1,60 @@
-# shellcheck shell=bash
+#!/usr/bin/env bash
+# Launch the org tmux UI from inside the container.
+# Repo file (persistent): org/launcher/tmux.sh
+# Runtime artifacts (ephemeral): .org/*
+set -Eeuo pipefail
 
-_join_args() {
-  local s=""
-  local a
-  for a in "${ORG_FWD_ARGS[@]}"; do
-    s+=" $(printf '%q' "$a")"
+# ----- Resolve directories -----
+APPDIR="${ORG_APPDIR:-$PWD}"           # repo root in the container (we mount PWD -> /work)
+RUNDIR="$APPDIR/.org"                  # runtime output
+LOGDIR="$RUNDIR/logs"
+TMUXLOG="$LOGDIR/tmux-logs"
+INNER="$RUNDIR/tmux-inner.sh"
+
+mkdir -p "$TMUXLOG"
+
+# ----- Environment for a decent TTY -----
+export TMUX_TMPDIR="$TMUXLOG"
+export TERM="${TERM:-xterm-256color}"
+export LANG="${LANG:-en_US.UTF-8}"
+
+# ----- Find bun (try common locations if not on PATH) -----
+if ! command -v bun >/dev/null 2>&1; then
+  for c in /usr/local/bin/bun /home/ollama/.bun/bin/bun /root/.bun/bin/bun; do
+    if [ -x "$c" ]; then
+      export PATH="$(dirname "$c"):$PATH"
+      break
+    fi
   done
-  printf '%s' "$s"
-}
+fi
 
-run_tmux_in_container() {
-  log "ui=tmux"
+if ! command -v bun >/dev/null 2>&1; then
+  echo "[tmux] bun not found in PATH; looked in /usr/local/bin, ~/.bun/bin, and /root/.bun/bin" >&2
+  exit 127
+fi
 
-  local SRC="$APPDIR"
-  local CTR_WORK="/work"
-  local CTR_APPDIR="$CTR_WORK"
-  local CTR_ENTRY="$CTR_APPDIR/src/app.ts"
-  local MNT="$SRC:$CTR_WORK:Z"
+# ----- Command to run inside tmux -----
+# You may override with:  ORG_TMUX_ENTRY='bun /work/src/app.ts --ui console'
+ENTRY="${ORG_TMUX_ENTRY:-"bun $APPDIR/src/app.ts --ui console"}"
 
-  mkdir -p "$ORG_LOG_DIR" "$ORG_LOG_DIR/tmux-logs" || true
-  local LOG_FILE_HOST="$ORG_LOG_DIR/tmux-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
-
-  log "mount: $MNT"
-  log "host tmux log: $LOG_FILE_HOST"
-
-  local ARGS_JOINED; ARGS_JOINED="$(_join_args)"
-
-  local CREATE_AND_RUN="
+# ----- Create a tiny inner script to keep quoting sane -----
+cat >"$INNER" <<'EOS'
+#!/usr/bin/env bash
 set -Eeuo pipefail
-umask 0002
+: "${TERM:=xterm-256color}"
+: "${LANG:=en_US.UTF-8}"
 
-mkdir -p \"$CTR_APPDIR/.org/logs\" \"$CTR_APPDIR/.org/logs/tmux-logs\"
+if [[ -z "${ORG_TMUX_ENTRY:-}" ]]; then
+  echo "[tmux-inner] ORG_TMUX_ENTRY is empty" >&2
+  exit 64
+fi
 
-cat > \"$CTR_APPDIR/.org/.tmux-inner.sh\" <<'EOS'
-set -Eeuo pipefail
-umask 0002
-: \"\${ORG_LOG_DIR:?}\"
-: \"\${ORG_LOG_FILE:?}\"
-: \"\${ENTRY:?}\"
-
-mkdir -p \"\$ORG_LOG_DIR\"
-echo \"[tmux] log -> \$ORG_LOG_FILE\"
-echo \"[tmux] bun=\$(command -v bun || echo MISSING) entry='\$ENTRY' date=\$(date -u +%FT%TZ)\"
-
-set +e
-bun \"\$ENTRY\" --ui console $ARGS_JOINED 2>&1 | tee -a \"\$ORG_LOG_FILE\"
-ec=\${PIPESTATUS[0]}
-set -e
-
-echo \"[tmux] app exited with \$ec\"
-exit \"\$ec\"
+# Run in a login shell so PATH and rc files behave
+exec bash -lc "$ORG_TMUX_ENTRY"
 EOS
+chmod +x "$INNER"
 
-chmod +x \"$CTR_APPDIR/.org/.tmux-inner.sh\"
+export ORG_TMUX_ENTRY="$ENTRY"
 
-export ENTRY=\"$CTR_ENTRY\"
-export TMUX_TMPDIR=\"$CTR_APPDIR/.org/logs/tmux-logs\"
-tmux -vv new -A -s org bash --noprofile --norc \"$CTR_APPDIR/.org/.tmux-inner.sh\"
-"
-
-  log "about to exec container"
-  exec "$ORG_ENGINE" run --rm -it --network host \
-    -v "$MNT" \
-    -w "$CTR_WORK" \
-    -e ORG_TMUX=1 \
-    -e ORG_FORCE_UI=console \
-    -e ORG_APPDIR="$CTR_APPDIR" \
-    -e ORG_CALLER_CWD="$CTR_WORK" \
-    -e ORG_LOG_DIR="$CTR_APPDIR/.org/logs" \
-    -e ORG_LOG_FILE="$CTR_APPDIR/.org/logs/$(basename "$LOG_FILE_HOST")" \
-    -e ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}" \
-    "$ORG_IMAGE" bash -lc "$CREATE_AND_RUN"
-}
+# ----- Fire up tmux (session name: 'org') -----
+exec /work/bin/.bin/tmux -vv new-session -A -s org "$INNER"

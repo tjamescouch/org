@@ -1,78 +1,51 @@
 #!/usr/bin/env bash
-# org: robust launcher for the repo's Bun entrypoint.
-# - Resolves symlinks to find the repo path.
-# - Preserves caller's CWD (runs agents in the directory you invoked `org` from).
-# - Makes Bun discoverable even when PATH is sanitized (non-interactive shells, sudo).
-# - Allows manual override via ORG_BUN / BUN_BIN.
-set -euo pipefail
+# CWD-agnostic org launcher: always mounts the repo root to /work
+# and runs bun /work/src/app.ts inside the container.
 
-# --- resolve repo directory (follow symlinks) ---------------------------------
-SELF="$0"
-if command -v python3 >/dev/null 2>&1; then
-  REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SELF")"
-elif command -v readlink >/dev/null 2>&1; then
-  # BSD readlink may lack -f; this still helps if available
-  REAL="$(readlink -f "$SELF" 2>/dev/null || echo "$SELF")"
-else
-  REAL="$SELF"
-fi
-APPDIR="$(cd "$(dirname "$REAL")" && pwd)"
+set -Eeuo pipefail
 
-RUNNER="$APPDIR/runner.ts"
-ENTRY="$APPDIR/src/app.ts"
-
-# --- environment --------------------------------------------------------------
-# Expose repo-local helpers first
-export PATH="$APPDIR:$APPDIR/scripts:$PATH"
-
-# Ensure Bun is discoverable even when PATH is sanitized (non-interactive, sudo)
-PATH="$HOME/.bun/bin:/usr/local/bin:/usr/bin:$PATH"
-
-# If invoked via sudo, also try the invoking user's ~/.bun/bin
-if [[ -n "${SUDO_USER:-}" ]]; then
-  SUDO_HOME="$(getent passwd "$SUDO_USER" 2>/dev/null | awk -F: '{print $6}')"
-  [[ -z "${SUDO_HOME:-}" ]] && SUDO_HOME="/home/$SUDO_USER"
-  if [[ -d "$SUDO_HOME/.bun/bin" ]]; then
-    PATH="$SUDO_HOME/.bun/bin:$PATH"
-  fi
-fi
-export PATH
-
-# Respect explicit caller override of working directory
-export ORG_CALLER_CWD="${ORG_CALLER_CWD:-$(pwd)}"
-export ORG_ENTRY="$ENTRY"
-export ORG_APPDIR="$APPDIR"
-
-# --- resolve Bun binary -------------------------------------------------------
-# Allow override via ORG_BUN or BUN_BIN
-BUN_BIN="${ORG_BUN:-${BUN_BIN:-}}"
-if [[ -z "${BUN_BIN:-}" ]]; then
-  if command -v bun >/dev/null 2>&1; then
-    BUN_BIN="$(command -v bun)"
+# ---------- resolve real path to this script (portable) ----------
+resolve_realpath() {
+  # Prefer readlink -f if available; fall back to Python
+  if command -v readlink >/dev/null 2>&1; then
+    readlink -f "$1" 2>/dev/null || python3 - "$1" <<'PY'
+import os, sys; print(os.path.realpath(sys.argv[1]))
+PY
   else
-    for p in "$HOME/.bun/bin/bun" "/usr/local/bin/bun" "/usr/bin/bun"; do
-      if [[ -x "$p" ]]; then BUN_BIN="$p"; break; fi
-    done
+    python3 - "$1" <<'PY'
+import os, sys; print(os.path.realpath(sys.argv[1]))
+PY
   fi
+}
+
+SCRIPT_PATH="$(resolve_realpath "$0")"
+REPO_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+
+# ---------- engine/image/file ----------
+ENGINE="${ORG_ENGINE:-podman}"   # set ORG_ENGINE=docker if you prefer
+IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
+FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
+
+echo "[org] engine = $ENGINE"
+echo "[org] image  = $IMAGE"
+echo "[org] file   = $FILE"
+echo "[org] repo   = $REPO_DIR"
+
+# ---------- ensure image exists (build if missing) ----------
+if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "[org] building image with $ENGINE (this can take a while)..."
+  "$ENGINE" build -t "$IMAGE" -f "$FILE" "$REPO_DIR"
+  echo "[org] image built: $IMAGE"
 fi
 
-if [[ -z "${BUN_BIN:-}" ]]; then
-  echo "org: bun not found. PATH=$PATH" >&2
-  echo "hint: install Bun (curl -fsSL https://bun.sh/install | bash) or set ORG_BUN=/path/to/bun" >&2
-  exit 127
-fi
+# ---------- run bun inside the container, mounting the repo root ----------
+# - Always mount REPO_DIR → /work, regardless of the caller's CWD.
+# - Workdir is /work so /work/src/app.ts is stable.
+# - Pass through your args unchanged.
+exec "$ENGINE" run --rm -it \
+  -v "$REPO_DIR:/work:Z" \
+  -w /work \
+  -e ORG_PROJECT_DIR=/work \
+  -e TERM="${TERM:-xterm-256color}" \
+  "$IMAGE" bun /work/src/app.ts "$@"
 
-# --- optional debug -----------------------------------------------------------
-if [[ "${ORG_DEBUG:-}" == "1" || "${DEBUG:-}" == "1" ]]; then
-  {
-    echo "[org] APPDIR=$APPDIR"
-    echo "[org] RUNNER=$RUNNER"
-    echo "[org] ORG_CALLER_CWD=$ORG_CALLER_CWD"
-    echo "[org] bun=$BUN_BIN"
-    echo "[org] PATH=$PATH"
-  } >&2
-fi
-
-# --- run ----------------------------------------------------------------------
-# Keep the program's working directory as the caller's CWD.
-exec "$BUN_BIN" "$RUNNER" --cwd "$ORG_CALLER_CWD" "$@"

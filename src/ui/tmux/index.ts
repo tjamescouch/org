@@ -1,7 +1,7 @@
 /* tmux UI launcher — simple, robust, no backslash soup */
 
 import { Logger } from "../../logger";
-import { shCapture, shInteractive } from "../../tools/sandboxed-sh";
+import { shInteractive } from "../../tools/sandboxed-sh";
 
 export type Scope = "sandbox" | "host";
 
