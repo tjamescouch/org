@@ -103,66 +103,82 @@ run_console() {
 # -------------------
 run_tmux_in_container() {
   log "ui=tmux"
-  local CTR_APPDIR="/work/.org"         # where your repo/.org is mounted in the container
-  local CTR_WORK="/work"                # container working directory for the app
+  local CTR_APPDIR="/work/.org"
+  local CTR_WORK="/work"
   local CTR_ENTRY="$CTR_APPDIR/src/app.ts"
   local SRC="$APPDIR"
   local MNT="$SRC:$CTR_APPDIR:Z"
 
-  # Host-side log path (mirrors inside)
-  mkdir -p "$APPDIR/logs" || true
+  # Host-side logs
+  mkdir -p "$APPDIR/logs" "$APPDIR/logs/tmux-logs" || true
   local LOG_DIR_HOST="$APPDIR/logs"
   local LOG_FILE_HOST="$LOG_DIR_HOST/tmux-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
 
-  # Env passed into the app inside the container
-  local ENV_BLOCK=""
-  ENV_BLOCK+="ORG_TMUX=1 "
-  ENV_BLOCK+="ORG_FORCE_UI=console "     # run console UI *inside* tmux
-  ENV_BLOCK+="ORG_APPDIR=$CTR_APPDIR "
-  ENV_BLOCK+="ORG_CALLER_CWD=$CTR_WORK "
-  ENV_BLOCK+="ORG_LOG_DIR=$CTR_APPDIR/logs "
-  ENV_BLOCK+="ORG_LOG_FILE=$CTR_APPDIR/logs/$(basename "$LOG_FILE_HOST") "
-  ENV_BLOCK+="ORG_LOG_LEVEL=${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}} "
-
-  # Re-quote forwarded args for inside command line
-  local JOINED_ARGS=""
+  # Join user args once (host side) for safe injection
+  local ARGS_JOINED=""
   if [ ${#args[@]} -gt 0 ]; then
     for a in "${args[@]}"; do
-      JOINED_ARGS+=" $(printf '%q' "$a")"
+      ARGS_JOINED+=" $(printf '%q' "$a")"
     done
   fi
 
-  # The command that runs *inside* tmux in the container
-  local INSIDE_CMD
-  INSIDE_CMD="mkdir -p \"$CTR_APPDIR/logs\"; \
-echo \"[tmux] log -> \$ORG_LOG_FILE\"; \
-set -o pipefail; \
-bun \"$CTR_ENTRY\" --ui console$JOINED_ARGS |& tee -a \"\$ORG_LOG_FILE\""
+  # Inner script path inside container
+  local INNER_SCRIPT="$CTR_APPDIR/.tmux-inner.sh"
 
-  # Wrap the inside command in tmux
-  local TMUX_INNER
-  TMUX_INNER="env $ENV_BLOCK tmux new -A -s org bash -lc $(printf '%q' "$INSIDE_CMD")"
-  log "tmux inner: $TMUX_INNER"
+  # This is the script content that will run inside tmux
+  # NOTE: we do not expand host variables here; it is written verbatim then executed in container.
+  read -r -d '' SCRIPT_CONTENT <<'EOS'
+set -Eeuo pipefail
+umask 0002
 
-  # Quick preflight to catch missing tmux/bun/entry
-  if ! "$ORG_ENGINE" run --rm --network host -v "$MNT" -w "$CTR_WORK" "$ORG_IMAGE" \
-       bash -lc 'command -v tmux >/dev/null && command -v bun >/dev/null && test -f /work/.org/src/app.ts' \
-       >/dev/null 2>&1; then
-    err "container preflight failed: tmux/bun/entry not OK"
-    "$ORG_ENGINE" run --rm --network host -v "$MNT" -w "$CTR_WORK" "$ORG_IMAGE" bash -lc '\
-echo "tmux:" $(command -v tmux || echo missing); tmux -V || true; \
-echo "bun:"  $(command -v bun  || echo missing); bun --version || true; \
-echo "entry exists?"; ls -l /work/.org/src/app.ts || true' >&2 || true
-    exit 1
-  fi
+: "${ORG_LOG_DIR:?ORG_LOG_DIR not set}"
+: "${ORG_LOG_FILE:?ORG_LOG_FILE not set}"
+: "${ENTRY:?ENTRY not set}"
+
+mkdir -p "$ORG_LOG_DIR"
+echo "[tmux] log -> $ORG_LOG_FILE"
+echo "[tmux] bun=$(command -v bun) entry='$ENTRY' date=$(date -u +%FT%TZ)"
+
+# Run the app, but keep exit code even after piping through tee
+set +e
+bun "$ENTRY" --ui console "$@" 2>&1 | tee -a "$ORG_LOG_FILE"
+ec=${PIPESTATUS[0]}
+set -e
+
+echo "[tmux] app exited with $ec"
+exit "$ec"
+EOS
+
+  # Command that creates the inner script and starts tmux with verbose logs
+  # We put tmux logs into $CTR_APPDIR/logs/tmux-logs which is bound to host ./logs/tmux-logs
+  local CREATE_AND_RUN="
+    set -Eeuo pipefail
+    umask 0002
+    mkdir -p \"$CTR_APPDIR/logs\" \"$CTR_APPDIR/logs/tmux-logs\"
+    export ENTRY=\"$CTR_ENTRY\"
+    cat > \"$INNER_SCRIPT\" <<'EOF'
+$SCRIPT_CONTENT
+EOF
+    chmod +x \"$INNER_SCRIPT\"
+    export TMUX_TMPDIR=\"$CTR_APPDIR/logs/tmux-logs\"
+    # -vv: tmux server/client logs into TMUX_TMPDIR
+    tmux -vv new -A -s org bash --noprofile --norc \"$INNER_SCRIPT\" $ARGS_JOINED
+  "
 
   # Final run
   exec "$ORG_ENGINE" run --rm -it --network host \
       -v "$MNT" \
       -w "$CTR_WORK" \
-      "$ORG_IMAGE" \
-      bash -lc "$TMUX_INNER"
+      -e ORG_TMUX=1 \
+      -e ORG_FORCE_UI=console \
+      -e ORG_APPDIR="$CTR_APPDIR" \
+      -e ORG_CALLER_CWD="$CTR_WORK" \
+      -e ORG_LOG_DIR="$CTR_APPDIR/logs" \
+      -e ORG_LOG_FILE="$CTR_APPDIR/logs/$(basename "$LOG_FILE_HOST")" \
+      -e ORG_LOG_LEVEL="${ORG_LOG_LEVEL:-${LOG_LEVEL:-info}}" \
+      "$ORG_IMAGE" bash -lc "$CREATE_AND_RUN"
 }
+
 
 # -------------------
 # Dispatch
