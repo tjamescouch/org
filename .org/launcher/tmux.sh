@@ -1,4 +1,4 @@
-# shellcheck shell=bash
+i# shellcheck shell=bash
 
 _join_args() {
   local s=""
@@ -29,31 +29,24 @@ run_tmux_in_container() {
   local CREATE_AND_RUN="
 set -Eeuo pipefail
 umask 0002
-
 mkdir -p \"$CTR_APPDIR/.org/logs\" \"$CTR_APPDIR/.org/logs/tmux-logs\"
-
 cat > \"$CTR_APPDIR/.org/.tmux-inner.sh\" <<'EOS'
 set -Eeuo pipefail
 umask 0002
 : \"\${ORG_LOG_DIR:?}\"
 : \"\${ORG_LOG_FILE:?}\"
 : \"\${ENTRY:?}\"
-
 mkdir -p \"\$ORG_LOG_DIR\"
 echo \"[tmux] log -> \$ORG_LOG_FILE\"
 echo \"[tmux] bun=\$(command -v bun || echo MISSING) entry='\$ENTRY' date=\$(date -u +%FT%TZ)\"
-
 set +e
 bun \"\$ENTRY\" --ui console $ARGS_JOINED 2>&1 | tee -a \"\$ORG_LOG_FILE\"
 ec=\${PIPESTATUS[0]}
 set -e
-
 echo \"[tmux] app exited with \$ec\"
 exit \"\$ec\"
 EOS
-
 chmod +x \"$CTR_APPDIR/.org/.tmux-inner.sh\"
-
 export ENTRY=\"$CTR_ENTRY\"
 export TMUX_TMPDIR=\"$CTR_APPDIR/.org/logs/tmux-logs\"
 tmux -vv new -A -s org bash --noprofile --norc \"$CTR_APPDIR/.org/.tmux-inner.sh\"

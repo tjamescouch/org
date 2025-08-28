@@ -1,4 +1,4 @@
-FROM debian:12-slim
+iROM debian:12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -118,4 +118,3 @@ RUN set -eux; \
 
 # Optional: patch viewer command (for tmux popup or scripts)
 ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (command -v delta >/dev/null && delta -s --paging=never .org/last-session.patch || (echo; echo \"(delta not found; showing raw patch)\"; echo; cat .org/last-session.patch)); else echo \"No session patch found.\"; fi; echo; read -p \"Enter to close...\" _"'
-

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+i#!/usr/bin/env bash
 # Unified installer for org
 # - Builds/pulls the container image if needed
 # - Installs a host-side launcher symlink

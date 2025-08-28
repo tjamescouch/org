@@ -6,6 +6,9 @@ import { detectBackend, SandboxBackend } from "./detect";
 import { ISandboxSession } from "./types";
 import { PodmanSession } from "./backends/podman";
 import { MockSession } from "./backends/mock";
+import { spawn } from "node:child_process";
+import { R } from "../runtime/runtime";
+import { CONTAINER_NAME } from "../constants";
 
 const DEFAULT_ORG_STEP_SH = `#!/usr/bin/env bash
 set -euo pipefail
@@ -62,7 +65,52 @@ export class SandboxManager {
 
     constructor(private projectDir: string, private runRoot?: string, private opts: SessionManagerOptions = { backend: "auto" }) { }
 
+/*
+    public async execInteractive(
+        argv: string[],
+        opts: {
+            tty?: boolean;              // default true
+            inheritStdio?: boolean;     // default true (let tmux control the terminal)
+            env?: Record<string, string>;
+            cwd?: string;
+        } = {}
+    ): Promise<{ exit: number; ok: boolean }> {
+        const name =
+            (this as any).containerName ??
+            (this as any).containerId ??
+            (typeof (this as any).ensureContainer === "function"
+                ? await (this as any).ensureContainer()
+                : null);
+
+        if (!name) {
+            throw new Error("PodmanSession: container name/id is not set (or ensureContainer failed).");
+        }
+
+        const podmanArgs: string[] = ["exec"];
+        // tmux needs a real TTY. Make it opt-out (tty true by default).
+        if (opts.tty !== false) podmanArgs.push("-it");
+        if (opts.cwd) podmanArgs.push("--workdir", opts.cwd);
+
+        for (const [k, v] of Object.entries(opts.env ?? {})) {
+            podmanArgs.push("-e", `${k}=${v}`);
+        }
+
+        podmanArgs.push(name, ...argv);
+
+        return await new Promise((resolve) => {
+            const child = spawn("podman", podmanArgs, {
+                stdio: opts.inheritStdio === false ? "pipe" : "inherit",
+                env: R.env,
+            });
+            child.on("exit", (code) => resolve({ exit: code ?? 0, ok: (code ?? 0) === 0 }));
+        });
+    }
+*/
+
+
     async getOrCreate(id: string, policyOverrides: Partial<ExecPolicy> = {}) {
+        console.log('getOrCreate', id, policyOverrides);
+
         let s = this.sessions.get(id);
         if (s) return s;
 
@@ -107,7 +155,7 @@ export class SandboxManager {
         await fsp.mkdir(path.dirname(dst), { recursive: true });
 
         // Resolution order:
-        const envPath = process.env.ORG_STEP_SCRIPT;
+        const envPath = R.env.ORG_STEP_SCRIPT;
         const candidates = [
             envPath && path.resolve(envPath),
             path.join(spec.projectDir, "scripts", "org-step.sh"),         // repo root
