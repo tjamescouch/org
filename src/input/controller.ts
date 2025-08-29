@@ -17,18 +17,19 @@ import * as tty from "tty";
 import { Logger } from "../logger";
 import type { RandomScheduler } from "../scheduler";
 import { finalizeAllSandboxes } from "../tools/sandboxed-sh";
+import { R } from "../runtime/runtime";
 
 export type InputControllerOptions = {
   interjectKey?: string;         // default: "i"
   interjectBanner?: string;      // default: "You: "
   promptTemplate?: (from: string, content: string) => string; // when a model asks the user
   finalizer?: () => void | Promise<void>;   // optional override for tests / DI
-  _testMode?: boolean;                        // when true, never process.exit(...)
+  _testMode?: boolean;                        // when true, never R.exit(...)
   exitOnEsc?: boolean;                        // default true
 };
 
 function resumeStdinHard() {
-  try { if (typeof (process.stdin as any).resume === "function") (process.stdin as any).resume(); } catch {}
+  try { if (typeof (R.stdin as any).resume === "function") (R.stdin as any).resume(); } catch {}
 }
 
 export class InputController {
@@ -55,14 +56,14 @@ export class InputController {
 
   /** Return current raw state if available. */
   private static isRawMode(): boolean {
-    const anyStdin: any = process.stdin as any;
+    const anyStdin: any = R.stdin as any;
     return !!(anyStdin && typeof anyStdin.isRaw === "boolean" && anyStdin.isRaw);
   }
 
   /** Centralized raw-mode switch with guards for non-TTY environments. */
   public static setRawMode(enable: boolean) {
-    const stdinAny: any = process.stdin as any;
-    if ((process.stdin as tty.ReadStream).isTTY && typeof stdinAny.setRawMode === "function") {
+    const stdinAny: any = R.stdin as any;
+    if ((R.stdin as tty.ReadStream).isTTY && typeof stdinAny.setRawMode === "function") {
       try { stdinAny.setRawMode(enable); } catch { /* ignore on CI/non-tty */ }
     }
     // Always resume so Node/Bun actually delivers events
@@ -79,10 +80,10 @@ export class InputController {
       try { InputController.enableKeys?.(); } catch { }
     };
 
-    process.on("exit", restore);
-    process.on("SIGTERM", () => { restore(); process.exit(143); });
-    process.on("uncaughtException", (err) => { restore(); Logger.error?.(err); });
-    process.on("unhandledRejection", (reason: any) => { restore(); Logger.error?.(reason); });
+    R.on("exit", restore);
+    R.on("SIGTERM", () => { restore(); R.exit(143); });
+    R.on("uncaughtException", (err) => { restore(); Logger.error?.(err); });
+    R.on("unhandledRejection", (reason: any) => { restore(); Logger.error?.(reason); });
   }
 
   /** Run a block in cooked (non-raw) mode and restore previous raw state. */
@@ -119,17 +120,17 @@ export class InputController {
     // Put stdin into raw/no-echo immediately (if TTY) and listen for hotkeys.
     InputController.setRawMode(true);
     resumeStdinHard();
-    readline.emitKeypressEvents(process.stdin as any);
+    readline.emitKeypressEvents(R.stdin as any);
     this.installRawKeyListener();
 
     // Optional: SIGINT fallback; raw handler below already covers ^C fast
-    process.on("SIGINT", () => {
+    R.on("SIGINT", () => {
       // Fast abort; do NOT finalize (user wanted instant cancel)
       this.detachRawKeyListener();
       try { InputController.setRawMode(false); } catch { }
       if (!this.testMode) {
-        process.stdout.write("\n");
-        process.exit(130);
+        R.stdout.write("\n");
+        R.exit(130);
       }
     });
   }
@@ -218,8 +219,8 @@ export class InputController {
 
         // Create readline interface with terminal controls enabled.
         this.rl = readline.createInterface({
-          input: process.stdin,
-          output: process.stdout,
+          input: R.stdin,
+          output: R.stdout,
           terminal: true,
           historySize: 50,
           removeHistoryDuplicates: true,
@@ -231,8 +232,8 @@ export class InputController {
           try { this.rl?.close(); } catch {}
           this.rl = null;
           if (!this.testMode) {
-            process.stdout.write("\n");
-            process.exit(130);
+            R.stdout.write("\n");
+            R.exit(130);
           }
         });
 
@@ -288,8 +289,8 @@ export class InputController {
     }
 
     if (willExitHere) {
-      process.stdout.write("\n");
-      process.exit(0);
+      R.stdout.write("\n");
+      R.exit(0);
     }
   }
 
@@ -299,7 +300,7 @@ export class InputController {
 
   private installRawKeyListener() {
     if (this.keypressHandler) return; // already installed
-    readline.emitKeypressEvents(process.stdin);
+    readline.emitKeypressEvents(R.stdin);
 
     // Primary path: readline's keypress events
     this.keypressHandler = (_str: string, key: readline.Key) => {
@@ -310,8 +311,8 @@ export class InputController {
         this.detachRawKeyListener();
         try { InputController.setRawMode(false); } catch { }
         if (!this.testMode) {
-          process.stdout.write("\n");
-          process.exit(130);
+          R.stdout.write("\n");
+          R.exit(130);
         }
         return;
       }
@@ -340,8 +341,8 @@ export class InputController {
         this.detachRawKeyListener();
         try { InputController.setRawMode(false); } catch {}
         if (!this.testMode) {
-          process.stdout.write("\n");
-          process.exit(130);
+          R.stdout.write("\n");
+          R.exit(130);
         }
         return;
       }
@@ -361,17 +362,17 @@ export class InputController {
 
     // Important: put stdin into raw to prevent kernel echo while idle.
     InputController.setRawMode(true);
-    (process.stdin as any).on("keypress", this.keypressHandler);
-    (process.stdin as any).on("data", dataHandler);
+    (R.stdin as any).on("keypress", this.keypressHandler);
+    (R.stdin as any).on("data", dataHandler);
   }
 
   private detachRawKeyListener() {
     if (this.keypressHandler) {
-      try { (process.stdin as any).removeListener("keypress", this.keypressHandler); } catch { }
+      try { R.stdin.removeListener("keypress", this.keypressHandler); } catch { }
       this.keypressHandler = undefined;
     }
     if ((this as any)._dataHandler) {
-      try { (process.stdin as any).removeListener("data", (this as any)._dataHandler); } catch {}
+      try { R.stdin.removeListener("data", (this as any)._dataHandler); } catch {}
       (this as any)._dataHandler = undefined;
     }
   }
@@ -392,7 +393,7 @@ export class InputController {
   };
 }
 
-// Factory used by tests to build a controller in "test mode" (no process.exit)
+// Factory used by tests to build a controller in "test mode" (no R.exit)
 export function makeControllerForTests(args: {
   scheduler: RandomScheduler;
   finalizer?: () => void | Promise<void>;
