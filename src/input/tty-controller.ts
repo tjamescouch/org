@@ -3,13 +3,10 @@
  * --------------
  * A small, well-scoped class that owns interactive TTY I/O.
  * - Provides a minimal state machine: "idle" → "reading" → "draining"/"closed".
- * - Buffers writes and flushes them at a configurable cadence to reduce flicker.
- * - Normalizes user input lines and keypresses (ESC for graceful exit, Ctrl+C for fast exit).
+ * - Buffered output with periodic flush to reduce flicker.
+ * - Predictable keys: ESC (graceful), Ctrl+C (fast), normal REPL typing/Enter.
  *
- * This file is intentionally self-contained; it does not monkey-patch anything and
- * it does not rely on legacy names. Integration code can adapt as needed.
- *
- * Filename: src/input/tty-controller.ts
+ * When ORG_TRACE=1, we emit trace logs for raw data, keypress, and line.
  */
 
 import { EventEmitter } from "node:events";
@@ -17,10 +14,6 @@ import { Readable, Writable } from "node:stream";
 import * as readline from "node:readline";
 import { SchedulerLike } from "../scheduler/scheduler";
 import { Logger } from "../logger";
-
-// ————————————————————————————————————————————————————————————————————————————
-// Types
-// ————————————————————————————————————————————————————————————————————————————
 
 export type TtyState = "idle" | "reading" | "draining" | "closed";
 
@@ -33,42 +26,26 @@ export interface Keypress {
 }
 
 export interface TtyControllerOptions {
-  /** Message to show when user presses Esc while model is busy. */
   waitOverlayMessage?: string;            // default: "Waiting for agent to finish"
-  /** Suppress writes (e.g., CoT stream) while overlay is active. */
   waitSuppressOutput?: boolean;           // default: true
-  /** How fast to tick the dots animation. */
   waitOverlayIntervalMs?: number;         // default: 250
 
   stdin: Readable & Partial<NodeJS.ReadStream>;
   stdout: Writable & Partial<NodeJS.WriteStream>;
   scheduler?: SchedulerLike;
-  /**
-   * If true, the controller will write a newline after each flushed chunk
-   * that does not already end with one. Default: false.
-   */
-  ensureTrailingNewline?: boolean;
-  /**
-   * Flush interval (ms). Buffers written via `write()` are coalesced and
-   * emitted to stdout at this cadence. Default: 24ms.
-   */
-  flushIntervalMs?: number;
-  /**
-   * Hard cap for immediate flush when buffered bytes exceed this size.
-   * Default: 4096 bytes.
-   */
-  flushHighWaterMark?: number;
-  /**
-   * Optional finalizer invoked during graceful shutdown (ESC).
-   */
+
+  ensureTrailingNewline?: boolean;        // default: false
+  flushIntervalMs?: number;               // default: 24
+  flushHighWaterMark?: number;            // default: 4096
+
   finalizer?: () => void | Promise<void>;
-  /**
-   * Optional prompt string. When defined, it is re-rendered after each flush
-   * while in "reading" state. Defaults to "User: ".
-   */
+
+  /** Prompt label shown by readline during normal REPL mode. Default: "User: ". */
   prompt?: string;
-  interjectKey?: string;        // default: "i"
-  interjectBanner?: string;     // default: "You: "
+  /** One-shot banner when entering askUser()/interjection. Default: "You: ". */
+  interjectBanner?: string;
+  /** Hotkey to enter interjection. Default: "i". */
+  interjectKey?: string;
 }
 
 export interface TtyControllerEvents {
@@ -78,10 +55,6 @@ export interface TtyControllerEvents {
   flush: () => void;
   close: () => void;
 }
-
-// ————————————————————————————————————————————————————————————————————————————
-// Implementation
-// ————————————————————————————————————————————————————————————————————————————
 
 export class TtyController extends EventEmitter {
   public state: TtyState = "idle";
@@ -94,7 +67,7 @@ export class TtyController extends EventEmitter {
 
   private scheduler?: SchedulerLike;
   private finalizer?: () => void | Promise<void>;
-  private prompt: string | undefined;
+  private prompt: string;
 
   private rl?: readline.Interface;
   private outBuf: (string | Buffer)[] = [];
@@ -114,8 +87,10 @@ export class TtyController extends EventEmitter {
   private waitSuppressOutput: boolean;
   private waitOverlayIntervalMs: number;
 
-  // Heuristic to detect "busy" output; updated on every write.
   private lastWriteAt = 0;
+
+  // listeners so we can cleanly detach
+  private dataListener?: (chunk: Buffer | string) => void;
 
   constructor(opts: TtyControllerOptions) {
     super();
@@ -124,31 +99,22 @@ export class TtyController extends EventEmitter {
     this.scheduler = opts.scheduler;
     this.finalizer = opts.finalizer;
 
-    this.prompt = opts.prompt ?? "User: ";  // sensible default
+    this.prompt = opts.prompt ?? "User: ";
+    this.interjectBanner = opts.interjectBanner ?? "You: ";
+    this.interjectKey = (opts.interjectKey ?? "i").toLowerCase();
 
     this.ensureTrailingNewline = !!opts.ensureTrailingNewline;
     this.flushIntervalMs = typeof opts.flushIntervalMs === "number" ? opts.flushIntervalMs : 24;
     this.flushHighWaterMark = typeof opts.flushHighWaterMark === "number" ? opts.flushHighWaterMark : 4096;
 
-    this.interjectKey = (opts.interjectKey ?? "i").toLowerCase();
-    this.interjectBanner = opts.interjectBanner ?? "You: ";
-
     this.waitOverlayMessage = opts.waitOverlayMessage ?? "Waiting for agent to finish";
     this.waitSuppressOutput = opts.waitSuppressOutput ?? true;
-    this.waitOverlayIntervalMs = typeof opts.waitOverlayIntervalMs === "number" ? opts.waitOverlayIntervalMs : 250;
+    this.waitOverlayIntervalMs =
+      typeof opts.waitOverlayIntervalMs === "number" ? opts.waitOverlayIntervalMs : 250;
   }
 
-  // ——————————————————————————————————————————————————————————
-  // Lifecycle & configuration
-  // ——————————————————————————————————————————————————————————
-
-  public setScheduler(s: SchedulerLike | undefined) {
-    this.scheduler = s;
-  }
-
-  public setFinalizer(f: (() => void | Promise<void>) | undefined) {
-    this.finalizer = f;
-  }
+  public setScheduler(s: SchedulerLike | undefined) { this.scheduler = s; }
+  public setFinalizer(f: (() => void | Promise<void>) | undefined) { this.finalizer = f; }
 
   public setPrompt(prompt: string | undefined) {
     this.prompt = prompt ?? "User: ";
@@ -156,29 +122,56 @@ export class TtyController extends EventEmitter {
   }
 
   /**
-   * Begin interactive processing. We do NOT pause; we resume stdin so keypress
-   * events always fire, even while the model is thinking.
+   * Start interactive I/O. Important details:
+   * - readline is created with both input and output so typed chars echo.
+   * - we set the prompt on the readline interface and call rl.prompt(true).
+   * - we *do not* pause stdin; we resume it so keypress/data fire consistently.
    */
   public start(): void {
     if (this.state !== "idle") return;
 
-    readline.emitKeypressEvents(this.stdin as NodeJS.ReadStream);
-    if ((this.stdin as NodeJS.ReadStream).isTTY?.valueOf?.() || (this.stdin as NodeJS.ReadStream).isTTY === true) {
-      try { (this.stdin as NodeJS.ReadStream).setRawMode?.(true); } catch {}
-      try { (this.stdin as NodeJS.ReadStream).resume?.(); } catch {}
+    const isTrace = process.env.ORG_TRACE === "1";
+    const rs = this.stdin as NodeJS.ReadStream;
+
+    // Keypress events
+    readline.emitKeypressEvents(rs);
+
+    // Raw mode and resume so 'data' and 'keypress' actually flow
+    if (rs.isTTY?.valueOf?.() || rs.isTTY === true) {
+      try { rs.setRawMode?.(true); } catch {}
+      try { rs.resume?.(); } catch {}
     }
 
-    (this.stdin as NodeJS.ReadStream).on("keypress", this.onKeypress);
+    // Optional raw byte trace
+    if (isTrace) {
+      this.dataListener = (chunk: Buffer | string) => {
+        const b = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+        const preview = b.length <= 16 ? b.toString("hex") : b.subarray(0, 16).toString("hex") + `…(+${b.length - 16})`;
+        Logger.info(`[TRACE] tty.data len=${b.length} hex=${preview}`);
+      };
+      rs.on("data", this.dataListener);
+    }
 
+    rs.on("keypress", this.onKeypress);
+
+    // Create readline with BOTH input and output so local echo works
     this.rl = readline.createInterface({
       input: this.stdin as Readable,
+      output: this.stdout as Writable,
       crlfDelay: Infinity,
-      terminal: (this.stdin as NodeJS.ReadStream).isTTY ?? false,
+      terminal: rs.isTTY ?? false,
     });
+
+    // Now (re)bind keypress to the interface context too
+    readline.emitKeypressEvents(rs, this.rl);
+
+    // Show the initial prompt under readline's control
+    this.rl.setPrompt(this.prompt);
+    (this.rl as any).prompt(true);
+
     this.rl.on("line", this.onLine);
 
     this.transition("reading");
-    this.renderPrompt();
   }
 
   public async close(graceful = false): Promise<void> {
@@ -192,13 +185,17 @@ export class TtyController extends EventEmitter {
       try { await this.finalizer?.(); } catch {}
     }
 
-    (this.stdin as NodeJS.ReadStream).off?.("keypress", this.onKeypress);
+    const rs = this.stdin as NodeJS.ReadStream;
+    rs.off?.("keypress", this.onKeypress);
+    if (this.dataListener) rs.off?.("data", this.dataListener);
+    this.dataListener = undefined;
+
     this.rl?.off("line", this.onLine);
     this.rl?.close();
     this.rl = undefined;
 
-    if ((this.stdin as NodeJS.ReadStream).isTTY) {
-      try { (this.stdin as NodeJS.ReadStream).setRawMode?.(false); } catch {}
+    if (rs.isTTY) {
+      try { rs.setRawMode?.(false); } catch {}
     }
 
     this.flush(true);
@@ -206,30 +203,23 @@ export class TtyController extends EventEmitter {
     this.emit("close");
   }
 
-  // ——————————————————————————————————————————————————————————
-  // Writing & flushing
-  // ——————————————————————————————————————————————————————————
+  // ------------------------- output buffering -------------------------
 
   public write(chunk: string | Buffer): void {
     if (this.state === "closed") return;
 
-    // Track activity for busy/idle heuristic
     this.lastWriteAt = Date.now();
-
-    // Drop output (e.g., CoT stream) while in wait overlay if requested
     if (this.waitOverlayActive && this.waitSuppressOutput) return;
 
     if (typeof chunk === "string" && this.ensureTrailingNewline && !chunk.endsWith("\n")) {
       chunk = chunk + "\n";
     }
+
     this.outBuf.push(chunk);
     this.outSize += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
 
-    if (this.outSize >= this.flushHighWaterMark) {
-      this.flush(true);
-    } else {
-      this.scheduleFlush();
-    }
+    if (this.outSize >= this.flushHighWaterMark) this.flush(true);
+    else this.scheduleFlush();
   }
 
   public flush(now = false): void {
@@ -246,7 +236,8 @@ export class TtyController extends EventEmitter {
     this.stdout.write(data);
     this.emit("flush");
 
-    if (this.state === "reading") this.renderPrompt();
+    // Re-render rl prompt if present
+    if (this.state === "reading" && this.rl) (this.rl as any).prompt(true);
   }
 
   private scheduleFlush() {
@@ -255,51 +246,47 @@ export class TtyController extends EventEmitter {
     }
   }
 
-  // ——————————————————————————————————————————————————————————
-  // Interjection helpers
-  // ——————————————————————————————————————————————————————————
+  // ------------------------- interjection/session -------------------------
 
   private beginInterject() {
     this.hideWaitOverlay();
     if (this.state === "closed" || this.interjectActive) return;
     this.interjectActive = true;
-    this.stdout.write("\n");
-    (this.rl as any)?.setPrompt?.(this.interjectBanner);
-    this.rl?.resume();
-    (this.rl as any)?.prompt?.();
+    if (this.rl) {
+      this.stdout.write("\n");
+      (this.rl as any).setPrompt?.(this.interjectBanner);
+      (this.rl as any).prompt?.();
+    }
   }
 
   private endInterject() {
     if (!this.interjectActive) return;
     this.interjectActive = false;
-    this.interjectDoneResolve?.();   // resolve askUser() promise if any
+    this.interjectDoneResolve?.();
     this.interjectDoneResolve = null;
-    this.renderPrompt();
+    // restore main prompt
+    if (this.rl) {
+      (this.rl as any).setPrompt?.(this.prompt);
+      (this.rl as any).prompt?.(true);
+    }
   }
 
   private renderPrompt() {
-    if (!this.prompt) return;
-    const out = this.stdout as Partial<NodeJS.WriteStream>;
-    if (out.clearLine && out.cursorTo) {
-      out.clearLine(0);
-      out.cursorTo(0);
-      this.stdout.write(this.prompt);
+    if (this.rl) {
+      (this.rl as any).setPrompt?.(this.prompt);
+      (this.rl as any).prompt?.(true);
     } else {
       this.stdout.write(this.prompt);
     }
   }
 
-  // ——————————————————————————————————————————————————————————
-  // Input handling
-  // ——————————————————————————————————————————————————————————
+  // ------------------------- input handling -------------------------
 
   private onLine = async (line: string) => {
-    // TRACE: prove we captured a line and are about to enqueue it
     if (process.env.ORG_TRACE === "1") {
       Logger.info(`[TRACE] tty.onLine`, { line });
     }
 
-    // Accept empty lines too — the scheduler policy can decide to ignore them
     const s = this.scheduler;
     try {
       if (s?.enqueueUserText)       await s.enqueueUserText(line);
@@ -307,13 +294,18 @@ export class TtyController extends EventEmitter {
       else if (s?.send)             await s.send(line);
       else                          this.emit("line", line);
     } finally {
-      this.endInterject(); // resolves askUser() if active; no-op otherwise
+      this.endInterject();
     }
   };
 
   private onKeypress = async (_: string, key: Keypress) => {
+    if (process.env.ORG_TRACE === "1") {
+      Logger.info(`[TRACE] tty.keypress`, key);
+    }
+
     this.emit("key", key);
 
+    // ESC
     if (key?.name === "escape") {
       if (this.interjectActive) {
         await this.close(true);
@@ -327,6 +319,7 @@ export class TtyController extends EventEmitter {
       return;
     }
 
+    // Ctrl+C => fast exit
     if (key?.name === "c" && key.ctrl) {
       await this.close(false);
       return;
@@ -352,9 +345,7 @@ export class TtyController extends EventEmitter {
     }
   };
 
-  // ——————————————————————————————————————————————————————————
-  // Helpers
-  // ——————————————————————————————————————————————————————————
+  // ------------------------- helpers -------------------------
 
   private transition(next: TtyState) {
     if (this.state === next) return;
@@ -370,14 +361,12 @@ export class TtyController extends EventEmitter {
 
     const out = this.stdout as Partial<NodeJS.WriteStream>;
     this.stdout.write("\n");
-
     const draw = () => {
       const dots = ".".repeat((this.waitOverlayDots++ % 10) + 1);
       const msg = `${this.waitOverlayMessage} ${dots}`;
       if (out.clearLine && out.cursorTo) { out.clearLine(0); out.cursorTo(0); this.stdout.write(msg); }
       else { this.stdout.write(`\r${msg}`); }
     };
-
     draw();
     this.waitOverlayTimer = setInterval(draw, this.waitOverlayIntervalMs);
   }
@@ -392,6 +381,7 @@ export class TtyController extends EventEmitter {
     this.stdout.write("\n");
   }
 
+  // Ask user one-off
   public async askUser(fromAgent: string, content: string): Promise<void> {
     const header = fromAgent ? `[${fromAgent}] ` : "";
     this.write(`\n${header}${content}\n`);
