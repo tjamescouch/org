@@ -61,14 +61,11 @@ export class RandomScheduler {
   private async startBody(): Promise<void> {
     while (this.running) {
       this.activeAgent = undefined;
-      Logger.info("1");
 
       if (this.paused || this.draining) {
         await this.sleep(25);
         continue;
       }
-
-      Logger.info("2");
 
       let didWork = false;
       this.rescheduleNow = false;
@@ -76,8 +73,6 @@ export class RandomScheduler {
       const order = this.shuffle(this.agents);
 
       // (We keep the same log label for continuity.)
-      Logger.info("2.5 – agents with work:", []);
-
       for (const agent of order) {
         if (this.rescheduleNow) break;
         if (this.isMuted?.(agent.id)) { Logger.debug?.(`muted: ${agent.id}`); continue; }
