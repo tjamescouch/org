@@ -1,11 +1,11 @@
 /**
- * RandomScheduler (type-safe, Inbox-backed, with strict validation)
+ * RandomScheduler (type-safe, Inbox-backed, with strict sanitation)
  * -----------------------------------------------------------------
  * - Implements IScheduler.
  * - Uses Inbox (ChatMessage routing).
- * - Yields when idle so TTY is responsive.
- * - **Validates** ChatMessage[] before agent.respond() and throws with a
- *   helpful error if any element is malformed (so we don't mask bugs).
+ * - Yields when idle so TTY input isn't starved.
+ * - **Sanitizes** ChatMessage before agent.respond() so drivers never see
+ *   "undefined" prefixes or invalid roles.
  */
 
 import { Logger } from "../logger";
@@ -19,30 +19,30 @@ import Inbox from "./inbox";
 
 const VALID_ROLES = new Set(["system", "user", "assistant", "tool"] as const);
 
+function cleanText(t: unknown): string {
+  if (typeof t === "string") return t;
+  if (t == null) return "";
+  try { return String(t); } catch { return ""; }
+}
+
+function sanitizeMessage(m: ChatMessage): ChatMessage {
+  // Copy to avoid mutating upstream objects
+  const role = VALID_ROLES.has(m.role as any) ? m.role : "user";
+  const content = cleanText(m.content).trim();
+  const from = m.from && String(m.from).trim();
+  const toRaw = m.to && String(m.to).trim();
+  const to = toRaw && toRaw !== "undefined" ? toRaw : "@group";
+  return { role, content, ...(from ? { from } : {}), ...(to ? { to } : {}) };
+}
+
 function summarizeMessages(msgs: ChatMessage[]): unknown {
   return msgs.map((m, i) => ({
     i,
-    role: m?.role,
-    contentLen: typeof m?.content === "string" ? m.content.length : undefined,
-    from: m?.from,
-    to: m?.to,
+    role: m.role,
+    contentLen: m.content.length,
+    from: m.from,
+    to: m.to,
   }));
-}
-
-function assertValidMessages(agentId: string, msgs: ChatMessage[]): void {
-  for (let i = 0; i < msgs.length; i++) {
-    const m = msgs[i] as Partial<ChatMessage>;
-    const where = `agent='${agentId}' messages[${i}]`;
-    if (!m || typeof m !== "object") {
-      throw new Error(`${where} is not an object`);
-    }
-    if (typeof m.role !== "string" || !VALID_ROLES.has(m.role as any)) {
-      throw new Error(`${where}.role is invalid: ${String(m.role)}`);
-    }
-    if (typeof m.content !== "string") {
-      throw new Error(`${where}.content is not a string`);
-    }
-  }
 }
 
 export default class RandomScheduler implements IScheduler {
@@ -65,12 +65,14 @@ export default class RandomScheduler implements IScheduler {
   }
 
   async enqueueUserText(text: string, opts?: { to?: string; from?: string }): Promise<void> {
-    // source of truth for user input → ChatMessage
+    const raw = cleanText(text);
+    const trimmed = raw.trim();
+    if (!trimmed) return; // ignore empty lines
     const msg: ChatMessage = {
       role: "user",
-      content: String(text ?? ""),
-      from: opts?.from,
-      to: opts?.to ?? "@group",
+      content: trimmed,
+      from: opts?.from && String(opts.from).trim() || undefined,
+      to: opts?.to && String(opts.to).trim() || "@group",
     };
     this.inbox.enqueue(msg);
   }
@@ -106,18 +108,19 @@ export default class RandomScheduler implements IScheduler {
         continue;
       }
 
-      const messages = this.inbox.nextPromptFor(agent.id);
+      // Pull and sanitize a message bundle for the agent
+      const rawMsgs = this.inbox.nextPromptFor(agent.id);
+      const messages = rawMsgs.map(sanitizeMessage).filter(m => m.content.length > 0);
+
       if (messages.length === 0) {
+        // all empty after sanitation; skip tick
         await this.sleep(1);
         continue;
       }
 
-      // ---- strict validation & tracing ----
       if (process.env.ORG_TRACE === "1") {
         Logger.info(`[TRACE] sched.nextPromptFor -> ${agent.id}`, summarizeMessages(messages));
       }
-      assertValidMessages(agent.id, messages);
-      // -------------------------------------
 
       try {
         const peers = this.agents.map(a => a.id);
