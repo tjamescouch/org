@@ -1,330 +1,427 @@
-// src/scheduler/random-scheduler.ts
-import { shuffle as fisherYatesShuffle } from "../utils/shuffle-array";
-import { C, Logger } from "../logger";
-import { NoiseFilters } from "./filters";
-import { Inbox } from "./inbox";
-import { routeWithSideEffects } from "./router";
-import { ReviewManager } from "./review-manager";
-import { TagSplitter, TagPart } from "../utils/tag-splitter";
-import type { GuardDecision } from "../guardrails/guardrail";
-import type { ChatMessage } from "../types";
-import type { Responder, SchedulerOptions, AskUserFn } from "./types";
-import { sandboxMangers } from "../sandbox/session";
+#!/usr/bin/env bun
+// src/app.ts
 
-export class RandomScheduler {
-  private readonly agents: Responder[];
-  private readonly maxTools: number;
-  private readonly shuffle: <T>(arr: T[]) => T[];
-  private readonly review: ReviewManager;
-  private readonly filters = new NoiseFilters();
-  private readonly inbox = new Inbox();
+import * as fs from "fs";
+import * as fsp from "fs/promises";
+import * as path from "path";
+import { execFileSync, spawn } from "child_process";
 
-  private running = false;
-  private paused = false;
-  private draining = false;
+import { R } from "./runtime/runtime";
+import { ExecutionGate } from "./tools/execution-gate";
+import { loadConfig } from "./config/config";
+import { Logger } from "./logger";
+import { RoundRobinScheduler } from "./scheduler";
+import { LlmAgent } from "./agents/llm-agent";
+import { MockModel } from "./agents/mock-model";
+import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
+import { getRecipe } from "./recipes";
+import { installTtyGuard, withCookedTTY } from "./input/tty-guard";
+import { ReviewManager } from "./scheduler/review-manager";
+import { sandboxMangers } from "./sandbox/session";
+import { SchedulerLike, TtyController } from "./input/tty-controller";
+import Passthrough from "./input/passthrough";
+import { trace } from "./debug/trace";
 
-  private activeAgent: Responder | undefined;
-  private respondingAgent: Responder | undefined;
+type InputPort = {
+  askUser(fromAgent: string, content: string): Promise<void>;
+  setScheduler(s: unknown): void;
+  start(): void;
+  close?(graceful?: boolean): Promise<void>;
+};
 
-  private keepAlive: NodeJS.Timeout | null = null;
+installTtyGuard();
 
-  private mutedUntil = new Map<string, number>();
-  private lastUserDMTarget: string | null = null;
-
-  private readonly idlePromptEvery = 3;
-
-  private readonly askUser: AskUserFn;
-  private readonly promptEnabled: boolean;
-  private readonly idleSleepMs: number;
-
-  // when true, break the current agent loop and start a new tick immediately
-  private rescheduleNow = false;
-
-  constructor(opts: SchedulerOptions) {
-    this.agents = opts.agents;
-    this.maxTools = opts.maxTools;
-    this.shuffle = opts.shuffle ?? fisherYatesShuffle;
-    this.review = new ReviewManager(opts.projectDir, opts.reviewMode ?? "ask");
-    this.askUser = opts.onAskUser;
-
-    this.promptEnabled = !!opts.promptEnabled;
-    this.idleSleepMs = opts.idleSleepMs ?? 25;
-
-    for (const a of this.agents) this.inbox.ensure(a.id);
-  }
-
-  /** Start the scheduling loop (idempotent). */
-  private startBody = async (): Promise<void> => {
-    if (this.running) return;
-    this.running = true;
-    this.keepAlive = setInterval(() => { /* keep event loop alive during idle */ }, 30_000);
-
-    let idleTicks = 0;
-
-    while (this.running) {
-      this.activeAgent = undefined;
-      Logger.info('1');
-
-      if (this.paused || this.draining) {
-        await this.sleep(25);
-        continue;
+/** ---------- CLI parsing ---------- */
+function parseArgs(argv: string[]) {
+  const out: Record<string, string | boolean> = {};
+  let key: string | null = null;
+  for (const a of argv) {
+    if (a.startsWith("--")) {
+      const [k, v] = a.slice(2).split("=", 2);
+      if (typeof v === "string") out[k] = v;
+      else {
+        key = k;
+        out[k] = true;
       }
-      Logger.info('2');
-
-      let didWork = false;
-      this.rescheduleNow = false;
-
-      // Choose agents that currently have messages waiting.
-      const ready = this.agents.filter(a => this.inbox.hasWork(a.id));
-      const order = this.shuffle(ready);
-
-      Logger.info('2.5 - agents with work:', ready);
-      for (const agent of order) {
-        Logger.info('3');
-        if (this.rescheduleNow) break;
-        if (this.isMuted(agent.id)) { Logger.debug(`muted: ${agent.id}`); continue; }
-
-        const a = this.respondingAgent ?? agent;
-        this.respondingAgent = undefined;
-
-        const messages = this.nextPromptFor(a.id);
-        if (messages.length === 0) {
-          Logger.debug(`no work for ${a.id}`);
-          continue;
-        }
-        Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(messages));
-        Logger.info('4');
-
-        let remaining = this.maxTools;
-        let totalToolsUsed = 0;
-
-        try {
-          for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
-            const peers = this.agents.map(x => x.id);
-            Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
-            this.activeAgent = a;
-
-            const replies = await a.respond(messages, Math.max(0, remaining), peers, () => this.draining);
-
-            for (const { message, toolsUsed } of replies) {
-              totalToolsUsed += toolsUsed;
-              this.activeAgent = undefined;
-              Logger.debug(`${a.id} replied toolsUsed=${toolsUsed} message=`, JSON.stringify(message));
-
-              const askedUser = await routeWithSideEffects(
-                {
-                  agents: this.agents,
-                  enqueue: (toId, msg) => this.inbox.push(toId, msg),
-                  setRespondingAgent: (id) => { this.respondingAgent = this.agents.find(x => x.id === id); },
-                  applyGuard: (from, dec) => this.applyGuardDecision(from, dec),
-                  setLastUserDMTarget: (id) => { this.lastUserDMTarget = id; },
-                },
-                a,
-                message,
-                this.filters,
-              );
-
-              didWork = true;
-
-              if (askedUser) {
-                if (this.promptEnabled) {
-                  // interactive: open prompt as before
-                  this.lastUserDMTarget = a.id;
-                  const userText = ((await this.askUser(a.id, message)) ?? "").trim();
-                  if (userText) await this.handleUserInterjection(userText, { defaultTargetId: a.id });
-                  this.rescheduleNow = true;
-                } else {
-                  // non-interactive: end the loop; finalization happens in CLI shutdown
-                  Logger.info(`(${a.id}) requested @@user; ending run (non-interactive).`);
-                  this.stop();
-                  this.rescheduleNow = true;
-                }
-                break;
-              }
-            }
-
-            if (this.rescheduleNow) break;
-            if (totalToolsUsed > 0) {
-              remaining = Math.max(0, remaining - totalToolsUsed);
-              if (remaining <= 0) break;
-            } else {
-              break;
-            }
-          }
-        } finally {
-          if (totalToolsUsed > 0) this.review.markDirty(agent.id);
-        }
-      }
-
-      if (!didWork) {
-        idleTicks++;
-        const queuesEmpty = this.inbox.allEmpty(this.agents.map(a => a.id));
-
-        if (queuesEmpty && (idleTicks % this.idlePromptEvery) === 0 && this.promptEnabled) {
-          const peers = this.agents.map(x => x.id);
-          const dec = this.agents[0]?.guardOnIdle?.({ idleTicks, peers, queuesEmpty: true }) || null;
-          const prompt =
-            dec?.askUser
-            ?? `(scheduler)
-All agents are idle. Provide the next concrete instruction or question.`;
-          const preferred = this.agents[0]?.id;
-          if (preferred) this.lastUserDMTarget = preferred;
-          const userText = ((await this.askUser("scheduler", prompt)) ?? "").trim();
-          if (userText) await this.handleUserInterjection(userText, { defaultTargetId: preferred || undefined });
-          idleTicks = 0;
-        } else {
-          await this.sleep(this.idleSleepMs); // cooperative idle
-        }
-      } else {
-        idleTicks = 0;
-      }
-    }
-
-    if (this.keepAlive) { clearInterval(this.keepAlive); this.keepAlive = null; }
-  };
-
-  // ------------------------------ Public API ------------------------------
-  async start() {
-    try { await this.startBody() }
-    catch (e) { Logger.error("Scheduler start failed.", e) }
-    finally {
-      if (this.keepAlive) { clearInterval(this.keepAlive); this.keepAlive = null; }
-
-      // Finalize any dirty sessions and run review/apply once.
-      // Make ReviewManager.finalizeAndReview() idempotent so double-calls are safe.
-      await this.review.finalizeAndReview();
-      this.running = false;
+    } else if (key) {
+      out[key] = a;
+      key = null;
+    } else {
+      if (!("prompt" in out)) out["prompt"] = a;
+      else out[`arg${Object.keys(out).length}`] = a;
     }
   }
-  stop() { this.running = false; Logger.debug("stopped"); }
-  pause() { this.paused = true; Logger.debug("paused"); }
-  resume() { this.paused = false; Logger.debug("resumed"); }
-
-  async drain(): Promise<boolean> {
-    if (this.draining) return false;
-    this.draining = true;
-    while (this.hasActiveAgent()) {
-      Logger.info(C.magenta(`\nWaiting for agent to complete...`));
-      await this.sleep(1000);
-    }
-    return true;
-  }
-
-  stopDraining(): void { this.draining = false; }
-  isDraining(): boolean { return this.draining; }
-  hasActiveAgent(): boolean { return !!this.activeAgent; }
-
-  /** External entry for user interjections (e.g., CLI input). */
-  async interject(text: string) {
-    await this.handleUserInterjection(text, { defaultTargetId: this.lastUserDMTarget || undefined });
-  }
-
-  async finalizeAndReviewAll(): Promise<void> {
-    try {
-      await this.review.finalizeAndReview(this.agents.map(a => a.id));
-    } catch (e: any) {
-      Logger.error("finalizeAndReviewAll:", e?.message ?? e);
-    }
-  }
-
-  /**
-   * Enqueue user text.
-   * - Explicit agent tags override everything (we reschedule immediately).
-   * - Otherwise DM the default target, else broadcast to group.
-   */
-  async handleUserInterjection(text: string, opts?: { defaultTargetId?: string }) {
-    const raw = String(text ?? "");
-    const parts = TagSplitter.split(raw, {
-      allowSingleAt: true,
-      allowSingleHash: false,
-      userTokens: ["user"],
-      groupTokens: ["group"],
-      agentTokens: this.agents.map(a => a.id),   // allowlist
-      fileTokens: ["file"],
-      allowFileShorthand: false,
-    });
-
-    // Explicit @@agent tags
-    const agentParts = parts.filter(p => p.kind === "agent") as Array<TagPart & { kind: "agent" }>;
-    if (agentParts.length > 0) {
-      const targets: Responder[] = [];
-      for (const ap of agentParts) {
-        const ag = this.findAgentByIdExact(ap.tag);
-        if (ag && !targets.some(t => t.id === ag.id)) targets.push(ag);
-      }
-      if (targets.length > 0) {
-        this.respondingAgent = targets[0];
-        this.lastUserDMTarget = targets[0].id;
-        for (const ap of agentParts) {
-          const ag = this.findAgentByIdExact(ap.tag);
-          if (!ag) continue;
-          const msg: ChatMessage = { content: ap.content, role: "user", from: "User" };
-          this.inbox.push(ag.id, msg);
-          Logger.info(`[user → @@${ag.id}] ${raw}`);
-        }
-        this.rescheduleNow = true;
-        return;
-      }
-    }
-
-    // No explicit tags -> DM default if provided
-    if (opts?.defaultTargetId) {
-      const ag = this.findAgentByIdExact(opts.defaultTargetId);
-      if (ag) {
-        const msg: ChatMessage = { content: raw.trim(), role: "user", from: "User" };
-        this.respondingAgent = ag;
-        this.lastUserDMTarget = ag.id;
-        this.inbox.push(ag.id, msg);
-        Logger.info(`[user → @@${ag.id}] ${raw}`);
-        this.rescheduleNow = true;
-        return;
-      }
-    }
-
-    // Fallback: broadcast to group
-    for (const a of this.agents) {
-      this.inbox.push(a.id, { content: raw, role: "user", from: "User" });
-    }
-
-    Logger.debug('End of interjection');
-    Logger.info(`[user → @@group] ${raw}`);
-  }
-
-  // ------------------------------ Internals ------------------------------
-
-  private nextPromptFor(id: string): ChatMessage[] { return this.inbox.drain(id); }
-
-  private isMuted(id: string): boolean {
-    const until = this.mutedUntil.get(id) ?? 0;
-    return Date.now() < until;
-  }
-
-  private mute(id: string, ms: number) {
-    this.mutedUntil.set(id, Date.now() + Math.max(250, ms));
-  }
-
-  private async applyGuardDecision(agent: Responder, dec: GuardDecision) {
-    if ((dec as any).warnings && (dec as any).warnings.length) {
-      Logger.debug(`[guard][${agent.id}] ` + (dec as any).warnings.join("; "));
-    }
-    if ((dec as any).nudge) {
-      this.inbox.push(agent.id, { content: (dec as any).nudge, from: "System", role: "system" });
-    }
-    if ((dec as any).muteMs && (dec as any).muteMs > 0) {
-      this.mute(agent.id, (dec as any).muteMs);
-    }
-    if ((dec as any).askUser && this.promptEnabled) {
-      this.lastUserDMTarget = agent.id; // prefer the nudging agent
-      const userText = ((await this.askUser(agent.id, (dec as any).askUser)) ?? "").trim();
-      if (userText) await this.handleUserInterjection(userText, { defaultTargetId: agent.id });
-    }
-  }
-
-  /** Exact id match, case-insensitive. */
-  private findAgentByIdExact(key: string): Responder | undefined {
-    const t = key.toLowerCase();
-    return this.agents.find(a => a.id.toLowerCase() === t);
-  }
-
-  private sleep(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }
+  return out;
 }
+
+function resolveProjectDir(seed: string): string {
+  try {
+    const out = execFileSync("git", ["-C", seed, "rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+    }).trim();
+    if (out) return out;
+  } catch {}
+  let d = path.resolve(seed);
+  while (true) {
+    if (fs.existsSync(path.join(d, ".git"))) return d;
+    const up = path.dirname(d);
+    if (up === d) break;
+    d = up;
+  }
+  throw new Error(
+    `Could not locate project root from ${seed}. Pass --project <dir> or run inside the repo.`,
+  );
+}
+
+// very small arg parser for -C/--project
+function getProjectFromArgs(argv: string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "-C" || argv[i] === "--project") return argv[i + 1];
+  }
+  return R.env.ORG_PROJECT_DIR;
+}
+
+function enableDebugIfRequested(args: Record<string, string | boolean>) {
+  if (args["debug"] || R.env.DEBUG) {
+    R.env.DEBUG = String(args["debug"] ?? R.env.DEBUG ?? "1");
+    Logger.info("[DBG] debug logging enabled");
+  }
+}
+
+function setupProcessGuards() {
+  const dbgOn = !!R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false";
+  if (dbgOn) {
+    R.on("beforeExit", (code) => {
+      Logger.info("[DBG] beforeExit", code, "— scheduler stays alive unless Ctrl+C");
+      setTimeout(() => {}, 60_000);
+    });
+    R.on("uncaughtException", (e) => {
+      Logger.info("[DBG] uncaughtException:", e);
+    });
+    R.on("unhandledRejection", (e) => {
+      Logger.info("[DBG] unhandledRejection:", e);
+    });
+    R.stdin.on("end", () => Logger.info("[DBG] stdin end"));
+    R.stdin.on("pause", () => Logger.info("[DBG] stdin paused"));
+    R.stdin.on("resume", () => Logger.info("[DBG] stdin resumed"));
+  }
+}
+
+/** ---------- Mode / safety ---------- */
+function computeMode(extra?: { allowTools?: string[] | undefined }) {
+  const interactive = true;
+  const cfg = loadConfig();
+  const safe = !!(cfg as any)?.runtime?.safe;
+  ExecutionGate.configure({ safe, interactive, allowTools: extra?.allowTools });
+  return { interactive, safe };
+}
+
+type ModelKind = "mock" | "lmstudio";
+type AgentSpec = { id: string; kind: ModelKind; model: any };
+
+function parseAgents(
+  spec: string | undefined,
+  llmDefaults: { model: string; baseUrl: string; protocol: "openai"; apiKey?: string },
+  recipeSystemPrompt?: string | null,
+): AgentSpec[] {
+  const list = String(spec || "alice:lmstudio")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const out: AgentSpec[] = [];
+  for (const item of list) {
+    const [id, kindRaw = "mock"] = item.split(":");
+    const kind = (kindRaw as ModelKind) || "mock";
+    if (kind === "mock") {
+      const m = new MockModel(id);
+      out.push({ id, kind, model: m });
+    } else if (kind === "lmstudio") {
+      if (llmDefaults.protocol !== "openai")
+        throw new Error(`Unsupported protocol: ${llmDefaults.protocol}`);
+      const driver = makeStreamingOpenAiLmStudio({
+        baseUrl: llmDefaults.baseUrl,
+        model: llmDefaults.model,
+        apiKey: (llmDefaults as any).apiKey,
+      });
+      const agentModel = new LlmAgent(id, driver, llmDefaults.model) as any;
+      if (recipeSystemPrompt && typeof agentModel.setSystemPrompt === "function") {
+        agentModel.setSystemPrompt(recipeSystemPrompt);
+      }
+      out.push({ id, kind, model: agentModel });
+    } else {
+      throw new Error(`Unknown model kind: ${kindRaw}`);
+    }
+  }
+  return out;
+}
+
+/** ---------- helpers for finalization/review ---------- */
+
+async function listRecentSessionPatches(projectDir: string, minutes = 20): Promise<string[]> {
+  const root = path.join(projectDir, ".org", "runs");
+  const out: string[] = [];
+  try {
+    const entries = await fsp.readdir(root);
+    const cutoff = Date.now() - minutes * 60_000;
+    for (const d of entries) {
+      const patch = path.join(root, d, "session.patch");
+      try {
+        const st = await fsp.stat(patch);
+        if (st.isFile() && st.size > 0 && st.mtimeMs >= cutoff) out.push(patch);
+      } catch {}
+    }
+  } catch {}
+  return out.sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
+}
+
+async function openPager(filePath: string) {
+  await withCookedTTY(async () => {
+    await new Promise<void>((resolve) => {
+      const pager = R.env.ORG_PAGER || "delta -s || less -R || cat";
+      const p = spawn("sh", ["-lc", `${pager} ${JSON.stringify(filePath)}`], { stdio: "inherit" });
+      p.on("exit", () => resolve());
+    });
+  });
+}
+
+async function askYesNo(prompt: string): Promise<boolean> {
+  const rl = await import("readline");
+  return await new Promise<boolean>((resolve) => {
+    const rli = rl.createInterface({ input: R.stdin, output: R.stdout, terminal: true });
+    rli.question(`${prompt} `, (ans) => {
+      rli.close();
+      const a = String(ans || "").trim().toLowerCase();
+      resolve(a === "y" || a === "yes");
+    });
+  });
+}
+
+function applyPatch(projectDir: string, patchPath: string) {
+  execFileSync("git", ["-C", projectDir, "apply", "--index", patchPath], { stdio: "inherit" });
+}
+
+/**
+ * Finalize: drain/stop scheduler, finalize sandboxes, and review/apply session patches.
+ */
+async function finalizeOnce(
+  scheduler: SchedulerLike | null,
+  projectDir: string,
+  reviewMode: "ask" | "auto" | "never",
+) {
+  try {
+    await scheduler?.drain?.();
+  } catch {}
+  try {
+    await (sandboxMangers as any)?.finalizeAll?.();
+  } catch {}
+  try {
+    scheduler?.stop?.();
+  } catch {}
+
+  const isTTY = R.stdout.isTTY;
+  const patches = await listRecentSessionPatches(projectDir, 120);
+  if (patches.length === 0) {
+    Logger.info("No patch produced.");
+    return;
+  }
+
+  for (const patch of patches) {
+    Logger.info(`Patch ready: ${patch}`);
+
+    if (reviewMode === "never") continue;
+
+    if (reviewMode === "auto" || !isTTY) {
+      try {
+        applyPatch(projectDir, patch);
+        Logger.info("Patch auto-applied.");
+      } catch (e: any) {
+        Logger.error("Auto-apply failed:", e?.message || e);
+        Logger.info(`You can apply manually: git -C ${projectDir} apply --index ${patch}`);
+      }
+      continue;
+    }
+
+    await openPager(patch);
+    const yes = await askYesNo("Apply this patch? [y/N]");
+    if (yes) {
+      try {
+        applyPatch(projectDir, patch);
+        Logger.info("Patch applied.");
+      } catch (e: any) {
+        Logger.error("Apply failed:", e?.message || e);
+        Logger.info(`You can apply manually: git -C ${projectDir} apply --index ${patch}`);
+      }
+    } else {
+      Logger.info("Patch NOT applied.");
+    }
+  }
+}
+
+async function main() {
+  const cfg = loadConfig();
+  const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
+  const args = parseArgs(argv);
+
+  if (args["ui"] === "tmux" && R.env.ORG_TMUX !== "1") {
+    const sandbox = R.env.SANDBOX_BACKEND ?? "podman"; // "none" = host
+    const tmuxScope: "host" | "container" =
+      (R.env.ORG_TMUX_SCOPE as any) ?? (sandbox === "none" ? "host" : "container");
+
+    const { doctorTmux } = await import("./cli/doctor");
+    if (tmuxScope === "host") {
+      if ((await doctorTmux("host")) !== 0) R.exit(1);
+    }
+    const { launchTmuxUI } = await import("./ui/tmux");
+    const code = await launchTmuxUI(R.argv, tmuxScope);
+    R.exit(code);
+  }
+
+  enableDebugIfRequested(args);
+  setupProcessGuards();
+
+  const seed = getProjectFromArgs(R.argv) ?? R.cwd();
+  const projectDir = resolveProjectDir(seed);
+
+  // ---- Recipe wiring ----
+  const recipeName =
+    (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
+  const recipe = getRecipe(recipeName || null);
+
+  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
+    Logger.info("[DBG] args:", args);
+    if (recipe) Logger.info("[DBG] recipe:", recipe.name);
+  }
+
+  // Budgets
+  let maxTools = Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20)));
+
+  // Mode + (optional) tool allowlist
+  computeMode({ allowTools: recipe?.allowTools });
+
+  Logger.info(
+    "Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.",
+  );
+
+  // Build agents, set recipe system prompt if supported
+  const agentSpecs = parseAgents(
+    String(args["agents"] || "alice:lmstudio"),
+    cfg.llm,
+    recipe?.system ?? null,
+  );
+  if (agentSpecs.length === 0) {
+    Logger.error(
+      'No agents. Use --agents "alice:lmstudio,bob:mock" or "alice:mock,bob:mock"',
+    );
+    R.exit(1);
+  }
+
+  const agents = agentSpecs.map((a) => ({
+    id: a.id,
+    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) =>
+      a.model.respond(prompt, budget, peers, cb),
+    guardOnIdle: (state: any) => a.model.guardOnIdle?.(state) ?? null,
+    guardCheck: (route: any, content: string, peers: string[]) =>
+      a.model.guardCheck?.(route, content, peers) ?? null,
+  }));
+
+  trace("app", "agents parsed", { agents: agents?.map((a) => a.id) });
+
+  // Late-bind input so scheduler can call back
+  let input!: InputPort;
+
+  const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
+  const scheduler: SchedulerLike = new RoundRobinScheduler({
+    agents,
+    maxTools,
+    onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
+    projectDir,
+    reviewMode,
+    // promptEnabled: if --prompt is provided as a string we treat it as non-interactive seed
+    promptEnabled: typeof args["prompt"] === "boolean" ? (args["prompt"] as boolean) : R.stdin.isTTY,
+  });
+  trace("app", "scheduler constructed");
+
+  // Seed initial instruction: CLI --prompt wins; else recipe.kickoff; else undefined
+  const kickoff: string | undefined =
+    typeof args["prompt"] === "string"
+      ? (args["prompt"] as string)
+      : typeof recipe?.kickoff === "string"
+      ? (recipe!.kickoff as string)
+      : undefined;
+
+  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
+    Logger.info(
+      "[DBG] kickoff:",
+      typeof kickoff === "string" ? kickoff : "(none)",
+    );
+  }
+
+  // ---- Build input (TTY or non-TTY) ----
+  if (R.stdin.isTTY) {
+    input = new TtyController({
+      waitOverlayMessage: "Waiting for agent to finish",
+      waitSuppressOutput: true,
+      stdin: R.stdin,
+      stdout: R.stdout,
+      // prompt label (banner), not the seed text
+      prompt: String(args["banner"] ?? "User: "),
+      interjectKey: String(args["interject-key"] ?? "i"),
+      interjectBanner: String(args["banner"] ?? "You: "),
+      finalizer: async () => {
+        await finalizeOnce(scheduler, projectDir, reviewMode);
+      },
+    });
+  } else {
+    input = new Passthrough({
+      stdin: R.stdin,
+      stdout: R.stdout,
+      scheduler,
+      finalizer: async () => {
+        await finalizeOnce(scheduler, projectDir, reviewMode);
+      },
+    });
+  }
+
+  input.setScheduler(scheduler as any);
+  input.start();
+  trace("app", "input started", { tty: (R.stdin as any).isTTY });
+
+  // ---- Kickoff (seed) ----
+  if (typeof kickoff === "string" && kickoff.length > 0) {
+    const s: any = scheduler;
+    if (s.enqueueUserText) {
+      trace("app", "enqueueUserText(kickoff)");
+      await s.enqueueUserText(kickoff);
+    } else if (s.enqueue) {
+      trace("app", "enqueue(kickoff)");
+      await s.enqueue({ role: "user", content: kickoff });
+    } else if (s.send) {
+      trace("app", "send(kickoff)");
+      await s.send(kickoff);
+    } else {
+      trace("app", "NO ENQUEUE API!");
+    }
+  }
+
+  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
+    Logger.info("[DBG] agents:", agents.map((a) => a.id).join(", "));
+    Logger.info("[DBG] maxTools:", maxTools);
+  }
+
+  // Ensure enqueue lands, then start the loop
+  await new Promise<void>((r) => setTimeout(r, 0));
+
+  // ---- Run scheduler until stopped ----
+  const reviewManager = new ReviewManager(projectDir, reviewMode);
+  await scheduler.start();
+  await reviewManager.finalizeAndReview();
+
+  // Non-interactive or explicit scheduler stop comes back here.
+  await finalizeOnce(scheduler, projectDir, reviewMode);
+  R.exit(0);
+}
+
+main().catch((e) => {
+  Logger.info(e);
+  R.exit(1);
+});
