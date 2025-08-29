@@ -31,8 +31,6 @@ export interface Keypress {
   shift?: boolean;
 }
 
-
-
 export interface TtyControllerOptions {
   /** Message to show when user presses Esc while model is busy. */
   waitOverlayMessage?: string;            // default: "Waiting for agent to finish"
@@ -105,8 +103,7 @@ export class TtyController extends EventEmitter {
   private interjectKey: string;
   private interjectBanner: string;
   private interjectActive = false;
-
-  private interjectActive = false; // already present in your file
+  private interjectDoneResolve: (() => void) | null = null;
 
   private waitOverlayActive = false;
   private waitOverlayTimer: NodeJS.Timeout | null = null;
@@ -115,7 +112,6 @@ export class TtyController extends EventEmitter {
   private waitOverlayMessage: string;
   private waitSuppressOutput: boolean;
   private waitOverlayIntervalMs: number;
-
 
   constructor(opts: TtyControllerOptions) {
     super();
@@ -157,23 +153,24 @@ export class TtyController extends EventEmitter {
   /**
    * Begin interactive processing. This attaches listeners and transitions
    * the controller to the "reading" state.
+   *
+   * EDIT 1: do NOT pause the stream; explicitly resume so keypress events fire.
    */
   public start(): void {
     if (this.state !== "idle") return;
 
     // Keypress support
     readline.emitKeypressEvents(this.stdin as NodeJS.ReadStream);
-    // Only set raw mode when we truly have a TTY.
+
+    // Only set raw mode when we truly have a TTY and resume to ensure keypress events.
     if ((this.stdin as NodeJS.ReadStream).isTTY?.valueOf?.() || (this.stdin as NodeJS.ReadStream).isTTY === true) {
-      try {
-        (this.stdin as NodeJS.ReadStream).setRawMode?.(true);
-      } catch {
-        /* ignore for non-ttys */
-      }
+      try { (this.stdin as NodeJS.ReadStream).setRawMode?.(true); } catch { /* ignore for non-ttys */ }
+      try { (this.stdin as NodeJS.ReadStream).resume?.(); } catch { /* ignore */ }
     }
 
     (this.stdin as NodeJS.ReadStream).on("keypress", this.onKeypress);
-    // Line-reader for normal input
+
+    // Line-reader for normal input (kept active; we'll only process lines during interjection)
     this.rl = readline.createInterface({
       input: this.stdin as Readable,
       crlfDelay: Infinity,
@@ -190,8 +187,7 @@ export class TtyController extends EventEmitter {
    * drain the scheduler before closing and call the finalizer.
    */
   public async close(graceful = false): Promise<void> {
-    this.hideWaitOverlay();  
-
+    this.hideWaitOverlay();
     if (this.state === "closed") return;
 
     if (graceful) {
@@ -213,29 +209,13 @@ export class TtyController extends EventEmitter {
 
     // Restore cooked mode if we enabled raw mode
     if ((this.stdin as NodeJS.ReadStream).isTTY) {
-      try {
-        (this.stdin as NodeJS.ReadStream).setRawMode?.(false);
-      } catch { /* ignore */ }
+      try { (this.stdin as NodeJS.ReadStream).setRawMode?.(false); } catch { /* ignore */ }
     }
 
     this.flush(true);
     this.transition("closed");
     this.emit("close");
-
-    // at the end of start()
-    this.rl = readline.createInterface({
-      input: this.stdin as Readable,
-      crlfDelay: Infinity,
-      terminal: (this.stdin as NodeJS.ReadStream).isTTY ?? false,
-    });
-    this.rl.on("line", this.onLine);
-    this.rl.pause();                // <— important: only read during interjections
-
-    this.transition("reading");
-    this.renderPrompt();
-
   }
-
 
   // ——————————————————————————————————————————————————————————
   // Writing & flushing
@@ -246,13 +226,16 @@ export class TtyController extends EventEmitter {
    */
   public write(chunk: string | Buffer): void {
     if (this.state === "closed") return;
+
+    // Drop output (e.g., CoT stream) while in wait overlay if requested
     if (this.waitOverlayActive && this.waitSuppressOutput) return;
 
     if (typeof chunk === "string" && this.ensureTrailingNewline && !chunk.endsWith("\n")) {
       chunk = chunk + "\n";
     }
     this.outBuf.push(chunk);
-    this.outSize += Buffer.byteLength(chunk as string);
+    this.outSize += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
+
     if (this.outSize >= this.flushHighWaterMark) {
       this.flush(true);
     } else {
@@ -290,9 +273,12 @@ export class TtyController extends EventEmitter {
     }
   }
 
-  private beginInterject() {
-    this.hideWaitOverlay();  
+  // ——————————————————————————————————————————————————————————
+  // Interjection helpers
+  // ——————————————————————————————————————————————————————————
 
+  private beginInterject() {
+    this.hideWaitOverlay();  // Clear any "waiting…" overlay
     if (this.state === "closed" || this.interjectActive) return;
     this.interjectActive = true;
     this.stdout.write("\n");
@@ -301,13 +287,17 @@ export class TtyController extends EventEmitter {
     (this.rl as any)?.prompt?.();
   }
 
+  /**
+   * EDIT 3: do NOT pause the interface so Esc remains responsive mid-run.
+   */
   private endInterject() {
     if (!this.interjectActive) return;
     this.interjectActive = false;
-    this.rl?.pause();
+    // No rl.pause() here — keeping stdin flowing for keypress events.
+    this.interjectDoneResolve?.();   // resolve askUser() promise if any
+    this.interjectDoneResolve = null;
     this.renderPrompt();
   }
-
 
   private renderPrompt() {
     if (!this.prompt) return;
@@ -326,51 +316,45 @@ export class TtyController extends EventEmitter {
   // Input handling
   // ——————————————————————————————————————————————————————————
 
+  /**
+   * EDIT 2: Only accept a line while at the prompt (interjectActive).
+   * Ignore stray input while the model is thinking.
+   */
   private onLine = async (line: string) => {
-    // Forward to the best available scheduler method; otherwise just emit.
-    const s = this.scheduler;
-    if (s?.enqueueUserText) await s.enqueueUserText(line);
-    else if (s?.enqueue) await s.enqueue({ role: "user", content: line });
-    else if (s?.send) await s.send(line);
-    else this.emit("line", line);
-
-    // in onLine()
-    if (this.interjectActive) {
-      const text = line;
-      if (s?.enqueueUserText) await s.enqueueUserText(text);
-      else if (s?.enqueue) await s.enqueue({ role: "user", content: text });
-      else if (s?.send) await s.send(text);
-      else this.emit("line", text);
-
-      this.endInterject();
+    if (!this.interjectActive) {
+      // Ignore lines entered while not prompting (model busy).
       return;
     }
 
-    // (keep the existing non-interjection path if you want lines to be accepted
-    // even without pressing the interject key; otherwise you can no-op here.)
+    const s = this.scheduler;
+    if (s?.enqueueUserText)       await s.enqueueUserText(line);
+    else if (s?.enqueue)          await s.enqueue({ role: "user", content: line });
+    else if (s?.send)             await s.send(line);
+    else                          this.emit("line", line);
 
+    this.endInterject();
   };
 
   private onKeypress = async (_: string, key: Keypress) => {
     this.emit("key", key);
 
+    // ESC: at prompt => graceful exit; otherwise show waiting overlay.
     if (key?.name === "escape") {
       if (this.interjectActive) {
-        // At user prompt: graceful finalize.
         await this.close(true);
       } else {
-        // Not at prompt (model busy): show overlay, don't exit.
         this.showWaitOverlay();
       }
       return;
     }
 
-
+    // Ctrl+C => fast exit
     if (key?.name === "c" && key.ctrl) {
       await this.close(false);
       return;
     }
 
+    // Interjection hotkey (default: 'i')
     if (!key.ctrl && !key.meta) {
       const k = (key.name ?? key.sequence ?? "").toLowerCase();
       if (k === this.interjectKey) {
@@ -379,8 +363,7 @@ export class TtyController extends EventEmitter {
       }
     }
 
-
-    // Let the scheduler know that a user intervened (if supported)
+    // Notify scheduler of user interjection for other keys (optional hook)
     if (this.scheduler?.handleUserInterjection) {
       try {
         await this.scheduler.handleUserInterjection(key.sequence ?? key.name ?? "");
@@ -401,40 +384,6 @@ export class TtyController extends EventEmitter {
     this.emit("state", next, prev);
   }
 
-
-  // TtyController (add a field)
-  private interjectActive = false;
-  private interjectDoneResolve: (() => void) | null = null;
-
-  // begin/end helpers you likely already have
-  private beginInterject() {
-    if (this.interjectActive) return;
-    this.interjectActive = true;
-    this.stdout.write("\n");
-    (this.rl as any)?.setPrompt?.(this.interjectBanner);
-    this.rl?.resume();
-    (this.rl as any)?.prompt?.();
-  }
-  private endInterject() {
-    if (!this.interjectActive) return;
-    this.interjectActive = false;
-    this.rl?.pause();
-    this.interjectDoneResolve?.();   // resolve askUser() promise
-    this.interjectDoneResolve = null;
-    this.renderPrompt();
-  }
-
-  // 1) Implement askUser: show the question, take one line, resolve.
-  public async askUser(fromAgent: string, content: string): Promise<void> {
-    const header = fromAgent ? `[${fromAgent}] ` : "";
-    this.write(`\n${header}${content}\n`);
-    return new Promise<void>((resolve) => {
-      this.interjectDoneResolve = resolve;
-      this.beginInterject();
-    });
-  }
-
-
   // Typed overloads for EventEmitter
   override on<U extends keyof TtyControllerEvents>(event: U, listener: TtyControllerEvents[U]): this;
   override on(event: string, listener: (...args: any[]) => void): this {
@@ -448,6 +397,10 @@ export class TtyController extends EventEmitter {
   override emit(event: string, ...args: any[]): boolean {
     return super.emit(event, ...args);
   }
+
+  // ——————————————————————————————————————————————————————————
+  // Overlay
+  // ——————————————————————————————————————————————————————————
 
   private showWaitOverlay() {
     if (this.waitOverlayActive) return;
@@ -487,7 +440,18 @@ export class TtyController extends EventEmitter {
     this.stdout.write("\n");
   }
 
+  // ——————————————————————————————————————————————————————————
+  // Ask user (used by scheduler callback)
+  // ——————————————————————————————————————————————————————————
 
+  public async askUser(fromAgent: string, content: string): Promise<void> {
+    const header = fromAgent ? `[${fromAgent}] ` : "";
+    this.write(`\n${header}${content}\n`);
+    return new Promise<void>((resolve) => {
+      this.interjectDoneResolve = resolve;
+      this.beginInterject();
+    });
+  }
 }
 
 export default TtyController;
