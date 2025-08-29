@@ -34,6 +34,13 @@ export interface Keypress {
 
 
 export interface TtyControllerOptions {
+  /** Message to show when user presses Esc while model is busy. */
+  waitOverlayMessage?: string;            // default: "Waiting for agent to finish"
+  /** Suppress writes (e.g., CoT stream) while overlay is active. */
+  waitSuppressOutput?: boolean;           // default: true
+  /** How fast to tick the dots animation. */
+  waitOverlayIntervalMs?: number;         // default: 250
+
   stdin: Readable & Partial<NodeJS.ReadStream>;
   stdout: Writable & Partial<NodeJS.WriteStream>;
   scheduler?: SchedulerLike;
@@ -99,6 +106,17 @@ export class TtyController extends EventEmitter {
   private interjectBanner: string;
   private interjectActive = false;
 
+  private interjectActive = false; // already present in your file
+
+  private waitOverlayActive = false;
+  private waitOverlayTimer: NodeJS.Timeout | null = null;
+  private waitOverlayDots = 0;
+
+  private waitOverlayMessage: string;
+  private waitSuppressOutput: boolean;
+  private waitOverlayIntervalMs: number;
+
+
   constructor(opts: TtyControllerOptions) {
     super();
     this.stdin = opts.stdin;
@@ -113,6 +131,10 @@ export class TtyController extends EventEmitter {
 
     this.interjectKey = (opts.interjectKey ?? "i").toLowerCase();
     this.interjectBanner = opts.interjectBanner ?? "You: ";
+
+    this.waitOverlayMessage = opts.waitOverlayMessage ?? "Waiting for agent to finish";
+    this.waitSuppressOutput = opts.waitSuppressOutput ?? true;
+    this.waitOverlayIntervalMs = typeof opts.waitOverlayIntervalMs === "number" ? opts.waitOverlayIntervalMs : 250;
   }
 
   // ——————————————————————————————————————————————————————————
@@ -168,6 +190,8 @@ export class TtyController extends EventEmitter {
    * drain the scheduler before closing and call the finalizer.
    */
   public async close(graceful = false): Promise<void> {
+    this.hideWaitOverlay();  
+
     if (this.state === "closed") return;
 
     if (graceful) {
@@ -222,6 +246,8 @@ export class TtyController extends EventEmitter {
    */
   public write(chunk: string | Buffer): void {
     if (this.state === "closed") return;
+    if (this.waitOverlayActive && this.waitSuppressOutput) return;
+
     if (typeof chunk === "string" && this.ensureTrailingNewline && !chunk.endsWith("\n")) {
       chunk = chunk + "\n";
     }
@@ -265,6 +291,8 @@ export class TtyController extends EventEmitter {
   }
 
   private beginInterject() {
+    this.hideWaitOverlay();  
+
     if (this.state === "closed" || this.interjectActive) return;
     this.interjectActive = true;
     this.stdout.write("\n");
@@ -327,9 +355,16 @@ export class TtyController extends EventEmitter {
     this.emit("key", key);
 
     if (key?.name === "escape") {
-      await this.close(true);
+      if (this.interjectActive) {
+        // At user prompt: graceful finalize.
+        await this.close(true);
+      } else {
+        // Not at prompt (model busy): show overlay, don't exit.
+        this.showWaitOverlay();
+      }
       return;
     }
+
 
     if (key?.name === "c" && key.ctrl) {
       await this.close(false);
@@ -367,37 +402,37 @@ export class TtyController extends EventEmitter {
   }
 
 
-// TtyController (add a field)
-private interjectActive = false;
-private interjectDoneResolve: (() => void) | null = null;
+  // TtyController (add a field)
+  private interjectActive = false;
+  private interjectDoneResolve: (() => void) | null = null;
 
-// begin/end helpers you likely already have
-private beginInterject() {
-  if (this.interjectActive) return;
-  this.interjectActive = true;
-  this.stdout.write("\n");
-  (this.rl as any)?.setPrompt?.(this.interjectBanner);
-  this.rl?.resume();
-  (this.rl as any)?.prompt?.();
-}
-private endInterject() {
-  if (!this.interjectActive) return;
-  this.interjectActive = false;
-  this.rl?.pause();
-  this.interjectDoneResolve?.();   // resolve askUser() promise
-  this.interjectDoneResolve = null;
-  this.renderPrompt();
-}
+  // begin/end helpers you likely already have
+  private beginInterject() {
+    if (this.interjectActive) return;
+    this.interjectActive = true;
+    this.stdout.write("\n");
+    (this.rl as any)?.setPrompt?.(this.interjectBanner);
+    this.rl?.resume();
+    (this.rl as any)?.prompt?.();
+  }
+  private endInterject() {
+    if (!this.interjectActive) return;
+    this.interjectActive = false;
+    this.rl?.pause();
+    this.interjectDoneResolve?.();   // resolve askUser() promise
+    this.interjectDoneResolve = null;
+    this.renderPrompt();
+  }
 
-// 1) Implement askUser: show the question, take one line, resolve.
-public async askUser(fromAgent: string, content: string): Promise<void> {
-  const header = fromAgent ? `[${fromAgent}] ` : "";
-  this.write(`\n${header}${content}\n`);
-  return new Promise<void>((resolve) => {
-    this.interjectDoneResolve = resolve;
-    this.beginInterject();
-  });
-}
+  // 1) Implement askUser: show the question, take one line, resolve.
+  public async askUser(fromAgent: string, content: string): Promise<void> {
+    const header = fromAgent ? `[${fromAgent}] ` : "";
+    this.write(`\n${header}${content}\n`);
+    return new Promise<void>((resolve) => {
+      this.interjectDoneResolve = resolve;
+      this.beginInterject();
+    });
+  }
 
 
   // Typed overloads for EventEmitter
@@ -413,6 +448,46 @@ public async askUser(fromAgent: string, content: string): Promise<void> {
   override emit(event: string, ...args: any[]): boolean {
     return super.emit(event, ...args);
   }
+
+  private showWaitOverlay() {
+    if (this.waitOverlayActive) return;
+    this.waitOverlayActive = true;
+    this.waitOverlayDots = 0;
+
+    const out = this.stdout as Partial<NodeJS.WriteStream>;
+    this.stdout.write("\n"); // own line
+
+    const draw = () => {
+      const dots = ".".repeat((this.waitOverlayDots++ % 10) + 1);
+      const msg = `${this.waitOverlayMessage} ${dots}`;
+      if (out.clearLine && out.cursorTo) {
+        out.clearLine(0); out.cursorTo(0);
+        this.stdout.write(msg);
+      } else {
+        this.stdout.write(`\r${msg}`);
+      }
+    };
+
+    draw();
+    this.waitOverlayTimer = setInterval(draw, this.waitOverlayIntervalMs);
+  }
+
+  private hideWaitOverlay() {
+    if (!this.waitOverlayActive) return;
+    if (this.waitOverlayTimer) {
+      clearInterval(this.waitOverlayTimer);
+      this.waitOverlayTimer = null;
+    }
+    this.waitOverlayActive = false;
+
+    const out = this.stdout as Partial<NodeJS.WriteStream>;
+    if (out.clearLine && out.cursorTo) {
+      out.clearLine(0); out.cursorTo(0);
+    }
+    this.stdout.write("\n");
+  }
+
+
 }
 
 export default TtyController;

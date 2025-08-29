@@ -336,6 +336,8 @@ async function main() {
 
   if (R.stdin.isTTY) {
     input = new TtyController({
+      waitOverlayMessage: "Waiting for agent to finish",
+      waitSuppressOutput: true,
       stdin: R.stdin,
       stdout: R.stdout,
       prompt: typeof args["prompt"] === "string" ? String(args["prompt"]) : undefined,
