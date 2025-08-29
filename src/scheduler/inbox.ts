@@ -35,16 +35,20 @@ export class Inbox {
   }
 
   hasAnyWork(ids?: string[]): boolean {
-    const all = ids ?? Object.keys(this.queues);
+    const all = ids ?? this.getAllIds();
     return all.some(id => this.hasWork(id));
   }
 
   /** True iff *every* queue is currently empty. (Fixed inversion bug.) */
   allEmpty(ids?: string[]): boolean {
-    const all = ids ?? Object.keys(this.queues);
+    const all = ids ?? this.getAllIds();
     for (const id of all) {
       if (this.hasWork(id)) return false; // <- correct: any work => not all empty
     }
     return true;
+  }
+
+  private getAllIds(): string[] {
+    return Object.keys(this.queues);
   }
 }
