@@ -17,6 +17,10 @@ export class Inbox {
     this.ensure(id).push(msg);
   }
 
+  shift(id: string): void {
+    this.ensure(id).shift();
+  }
+
   /** Drain all pending messages for an agent. */
   drain(id: string): ChatMessage[] {
     const q = this.ensure(id);
@@ -30,9 +34,15 @@ export class Inbox {
     return (this.queues.get(id) ?? []).length > 0;
   }
 
+  hasAnyWork(ids?: string[]): boolean {
+    const all = ids ?? Object.keys(this.queues);
+    return all.some(id => this.hasWork(id));
+  }
+
   /** True iff *every* queue is currently empty. (Fixed inversion bug.) */
-  allEmpty(ids: string[]): boolean {
-    for (const id of ids) {
+  allEmpty(ids?: string[]): boolean {
+    const all = ids ?? Object.keys(this.queues);
+    for (const id of all) {
       if (this.hasWork(id)) return false; // <- correct: any work => not all empty
     }
     return true;

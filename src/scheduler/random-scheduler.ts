@@ -8,7 +8,9 @@
  * FIFO queue for user text and dispatches messages round-robin to agents.
  */
 
+
 import { Logger } from "../logger";
+import { Inbox } from "./inbox";
 import {
   IScheduler,
   SchedulerAgent,
@@ -24,7 +26,7 @@ export class RandomScheduler implements IScheduler {
   private running = false;
   private draining = false;
 
-  private q: string[] = [];
+  private readonly inbox = new Inbox();
   private rr = 0; // round-robin cursor
 
   constructor(opts: SchedulerOptions) {
@@ -35,7 +37,7 @@ export class RandomScheduler implements IScheduler {
   }
 
   async enqueueUserText(text: string): Promise<void> {
-    this.q.push(String(text ?? ""));
+    this.inbox.push(String(text ?? ""));
   }
 
   async start(): Promise<void> {
@@ -43,7 +45,7 @@ export class RandomScheduler implements IScheduler {
 
     // If the app allowed prompting first and there is no queued work,
     // request a concrete instruction.
-    if (this.promptEnabled && this.q.length === 0) {
+    if (this.promptEnabled && !this.inbox.hasAnyWork()) {
       await this.safeAskUser(
         "scheduler",
         "[scheduler]\nAll agents are idle — no queued work and no actionable outputs.\nPlease provide the next *concrete* instruction."
@@ -53,18 +55,18 @@ export class RandomScheduler implements IScheduler {
     }
 
     while (this.running) {
-      if (this.draining && this.q.length === 0) {
+      if (this.draining && !this.inbox.allEmpty()) {
         // Graceful drain complete.
         this.running = false;
         break;
       }
 
-      if (this.q.length === 0 || this.agents.length === 0) {
+      if (this.inbox.allEmpty()) {
         await this.sleep(25);
         continue;
       }
 
-      const text = this.q.shift()!;
+      const message = this.inbox.shift()!;
       const agent = this.pickAgent();
 
       try {
