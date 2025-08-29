@@ -16,6 +16,7 @@ import { EventEmitter } from "node:events";
 import { Readable, Writable } from "node:stream";
 import * as readline from "node:readline";
 import { SchedulerLike } from "../scheduler/scheduler";
+import { Logger } from "../logger";
 
 // ————————————————————————————————————————————————————————————————————————————
 // Types
