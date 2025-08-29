@@ -450,6 +450,7 @@ export class TtyController extends EventEmitter {
   // ——————————————————————————————————————————————————————————
 
   public async askUser(fromAgent: string, content: string): Promise<void> {
+    Logger.info('askUser');
     const header = fromAgent ? `[${fromAgent}] ` : "";
     this.write(`\n${header}${content}\n`);
     return new Promise<void>((resolve) => {
