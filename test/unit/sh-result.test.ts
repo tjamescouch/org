@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { ensureOk } from "../src/sandbox/sh-result";
+import { ensureOk } from "../../src/sandbox/sh-result";
 
 describe("ensureOk", () => {
   it("treats undefined code as success", () => {

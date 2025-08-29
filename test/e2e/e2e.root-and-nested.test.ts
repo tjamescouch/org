@@ -1,7 +1,7 @@
 // tests/e2e.root-and-nested.test.ts
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { rmSync } from "node:fs";
-import { initRepo, runOrg, lastRunDir, readFileSafe } from "./_helpers";
+import { initRepo, runOrg, lastRunDir, readFileSafe } from "../_helpers";
 
 describe.skip("e2e: patch generation (root & nested)", () => {
     let repo = "";

@@ -1,7 +1,7 @@
 // tests/e2e.sandbox-none.test.ts
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { rmSync } from "node:fs";
-import { initRepo, runOrg, lastRunDir, readFileSafe } from "./_helpers";
+import { initRepo, runOrg, lastRunDir, readFileSafe } from "../_helpers";
 
 describe.skip("e2e: sandbox NONE fallback still works", () => {
     let repo = "";

@@ -1,6 +1,6 @@
 // src/utils/llm-noise-filter.test.ts
 import { describe, it, expect } from "bun:test";
-import { LLMNoiseFilter } from "../src/utils/llm-noise-filter";
+import { LLMNoiseFilter } from "../../src/utils/llm-noise-filter";
 
 function collect(filter: LLMNoiseFilter, chunks: string[]): { text: string; removed: number } {
   let text = "";

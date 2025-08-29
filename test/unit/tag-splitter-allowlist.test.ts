@@ -1,6 +1,6 @@
 // test/tag-splitter-allowlist.test.ts
 import { describe, it, expect } from "bun:test";
-import { TagSplitter } from "../src/utils/tag-splitter";
+import { TagSplitter } from "../../src/utils/tag-splitter";
 
 const opts = {
   agentTokens: ["alice", "bob"],

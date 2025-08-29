@@ -12,14 +12,14 @@
 import { test } from 'bun:test';
 import assert from 'assert';
 
-import { TagParser } from '../src/utils/tag-parser';
-import { routeWithTags, makeRouter } from '../src/routing/route-with-tags';
-import { ExecutionGate } from '../src/tools/execution-gate';
-import { NoDangerousRm, NoRm, NoGitPush } from '../src/tools/execution-guards';
-import { runSh } from '../src/tools/sh';
-import { LlmAgent } from '../src/agents/llm-agent';
-import type { ChatDriver, ChatOutput, ChatToolCall } from '../src/drivers/types';
-import { AgentReply } from '../src/agents/agent';
+import { TagParser } from '../../src/utils/tag-parser';
+import { routeWithTags, makeRouter } from '../../src/routing/route-with-tags';
+import { ExecutionGate } from '../../src/tools/execution-gate';
+import { NoDangerousRm, NoRm, NoGitPush } from '../../src/tools/execution-guards';
+import { runSh } from '../../src/tools/sh';
+import { LlmAgent } from '../../src/agents/llm-agent';
+import type { ChatDriver, ChatOutput, ChatToolCall } from '../../src/drivers/types';
+import { AgentReply } from '../../src/agents/agent';
 
 // -----------------------------------------------------------------------------
 // Helper definitions
