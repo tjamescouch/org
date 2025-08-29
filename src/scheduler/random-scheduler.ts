@@ -55,8 +55,6 @@ export class RandomScheduler {
 
   /** Start the scheduling loop (idempotent). */
   private startBody = async (): Promise<void> => {
-    Logger.info("START BODY", this.agents);
-
     if (this.running) return;
     this.running = true;
     this.keepAlive = setInterval(() => { /* keep event loop alive during idle */ }, 30_000);
@@ -65,11 +63,13 @@ export class RandomScheduler {
 
     while (this.running) {
       this.activeAgent = undefined;
+      Logger.info('1');
 
       if (this.paused || this.draining) {
         await this.sleep(25);
         continue;
       }
+      Logger.info('2');
 
       let didWork = false;
       this.rescheduleNow = false;
@@ -79,6 +79,7 @@ export class RandomScheduler {
       const order = this.shuffle(ready);
 
       for (const agent of order) {
+        Logger.info('3');
         if (this.rescheduleNow) break;
         if (this.isMuted(agent.id)) { Logger.debug(`muted: ${agent.id}`); continue; }
 
@@ -91,6 +92,7 @@ export class RandomScheduler {
           continue;
         }
         Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(messages));
+        Logger.info('4');
 
         let remaining = this.maxTools;
         let totalToolsUsed = 0;
