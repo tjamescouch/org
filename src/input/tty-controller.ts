@@ -284,8 +284,6 @@ export class TtyController extends EventEmitter {
       Logger.info(`[TRACE] tty.keypress`, key);
     }
 
-    this.emit("key", key);
-
     // ESC
     if (key?.name === "escape") {
       if (this.interjectActive) {

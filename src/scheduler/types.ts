@@ -26,7 +26,7 @@ export interface Responder {
   guardCheck?: (route: GuardRouteKind, content: string, peers: string[]) => GuardDecision | null;
 }
 
-export type AskUserFn = (fromAgent: string, content: string) => Promise<string | null>;
+export type AskUserFn = (fromAgent: string, content: string) => Promise<void>;
 
 
 export type SchedulerOptions = {

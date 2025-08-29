@@ -11,6 +11,7 @@ import { ExecutionGate } from "./tools/execution-gate";
 import { loadConfig } from "./config/config";
 import { Logger } from "./logger";
 import { RoundRobinScheduler } from "./scheduler";
+import type { SchedulerLike } from "./scheduler/scheduler"; // ← import the real interface
 import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
 import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
@@ -18,14 +19,14 @@ import { getRecipe } from "./recipes";
 import { installTtyGuard, withCookedTTY } from "./input/tty-guard";
 import { ReviewManager } from "./scheduler/review-manager";
 import { sandboxMangers } from "./sandbox/session";
-import { SchedulerLike, TtyController } from "./input/tty-controller";
+import { TtyController } from "./input/tty-controller";
 import Passthrough from "./input/passthrough";
 
 installTtyGuard();
 
 type InputPort = {
   askUser(fromAgent: string, content: string): Promise<void>;
-  setScheduler(s: unknown): void;
+  setScheduler(s: SchedulerLike): void;
   start(): void;
   close?(graceful?: boolean): Promise<void>;
 };
@@ -189,9 +190,10 @@ async function finalizeOnce(scheduler: SchedulerLike | null, projectDir: string,
 // ---------- main ----------
 async function main() {
   const cfg = loadConfig();
-  const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
+  const argv = R.argv.slice(2);
   const args = parseArgs(argv);
 
+  // tmux handoff
   if (args["ui"] === "tmux" && R.env.ORG_TMUX !== "1") {
     const sandbox = R.env.SANDBOX_BACKEND ?? "podman";
     const tmuxScope: "host" | "container" =
@@ -210,8 +212,7 @@ async function main() {
 
   Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
 
-  const seedDir = R.cwd();
-  const projectDir = resolveProjectDir(seedDir);
+  const projectDir = resolveProjectDir(R.cwd());
 
   const recipeName = (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
   const recipe = getRecipe(recipeName || null);
@@ -224,12 +225,14 @@ async function main() {
   }
   const agents = agentSpecs.map(a => ({
     id: a.id,
-    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => a.model.respond(prompt, budget, peers, cb),
+    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) =>
+      a.model.respond(prompt, budget, peers, cb),
     guardOnIdle: (state: any) => a.model.guardOnIdle?.(state) ?? null,
-    guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null,
+    guardCheck: (route: any, content: string, peers: string[]) =>
+      a.model.guardCheck?.(route, content, peers) ?? null,
   }));
 
-  // ---------- kickoff and scheduler wiring ----------
+  // kickoff FIRST so we can set promptEnabled properly
   const kickoff: string | undefined =
     typeof args["prompt"] === "string" ? String(args["prompt"])
     : typeof recipe?.kickoff === "string" ? recipe!.kickoff
@@ -237,11 +240,13 @@ async function main() {
 
   let input!: InputPort;
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
+
+  // The scheduler type is concrete & typed — use its real API.
   const scheduler: SchedulerLike = new RoundRobinScheduler({
     agents,
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
-    onAskUser: (fromAgent: string, content: string) => {
-      if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] sched.onAskUser`, { fromAgent, content });
+    onAskUser: (fromAgent: string, content: string): Promise<void> => {
+      if (R.env.ORG_TRACE === "1") Logger.info(`[TRACE] sched.onAskUser`, { fromAgent, content });
       return input.askUser(fromAgent, content);
     },
     projectDir,
@@ -253,27 +258,6 @@ async function main() {
       : R.stdin.isTTY,
   });
 
-  // Wrap key scheduler methods to trace message flow (no behavior change).
-  if (process.env.ORG_TRACE === "1") {
-    const wrap = (obj: any, name: string) => {
-      const orig = obj[name]?.bind(obj);
-      obj[name] = async (...a: any[]) => {
-        const head =
-          typeof a[0] === "string" ? a[0].slice(0, 120)
-          : a[0]?.content ? String(a[0].content).slice(0, 120)
-          : a[0];
-        Logger.info(`[TRACE] sched.${name}.call`, head);
-        const r = await orig?.(...a);
-        Logger.info(`[TRACE] sched.${name}.done`);
-        return r;
-      };
-    };
-    wrap(scheduler as any, "enqueueUserText");
-    wrap(scheduler as any, "enqueue");
-    wrap(scheduler as any, "send");
-    wrap(scheduler as any, "start");
-  }
-
   // Build input
   if (R.stdin.isTTY) {
     input = new TtyController({
@@ -281,7 +265,7 @@ async function main() {
       waitSuppressOutput: true,
       stdin: R.stdin,
       stdout: R.stdout,
-      prompt: String(args["banner"] ?? "You: "),
+      prompt: String(args["banner"] ?? "User: "),
       interjectKey: String(args["interject-key"] ?? "i"),
       interjectBanner: String(args["banner"] ?? "You: "),
       finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
@@ -295,28 +279,20 @@ async function main() {
     });
   }
 
-  input.setScheduler(scheduler as any);
+  input.setScheduler(scheduler);
   input.start();
   if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] app.input.started`, { tty: (R.stdin as any).isTTY });
 
-  // Enqueue seed (if any)
+  // Enqueue seed (type-safe, single call)
   if (typeof kickoff === "string" && kickoff.length > 0) {
-    if ((scheduler as any).enqueueUserText) {
-      if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] app.enqueueUserText(kickoff)`, kickoff);
-      await (scheduler as any).enqueueUserText(kickoff);
-    } else if ((scheduler as any).enqueue) {
-      if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] app.enqueue(kickoff)`, kickoff);
-      await (scheduler as any).enqueue({ role: "user", content: kickoff });
-    } else if ((scheduler as any).send) {
-      if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] app.send(kickoff)`, kickoff);
-      await (scheduler as any).send(kickoff);
-    }
+    if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] app.enqueueUserText(kickoff)`, kickoff);
+    await scheduler.enqueueUserText(kickoff);
   } else {
     if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] app.noKickoff`);
   }
 
   // Run the loop; normal finalize path
-  await (scheduler as any).start();
+  await scheduler.start();
 
   const reviewManager = new ReviewManager(projectDir, reviewMode);
   await reviewManager.finalizeAndReview();
