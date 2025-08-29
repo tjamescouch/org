@@ -1,134 +1,123 @@
 /**
- * RandomScheduler (event-loop friendly)
- * ------------------------------------
- * This version avoids busy-spinning when no work is available, so the event
- * loop can process TTY keypress/line events (fixes “typing does nothing”).
+ * RandomScheduler (minimal, type-safe implementation)
+ * ---------------------------------------------------
+ * Implements the IScheduler surface. The loop is event-loop friendly (yields
+ * when idle) so TTY keypress/line events are never starved.
  *
- * It **does not** assume internal properties like `this.inbox`. Instead:
- * - we iterate agents in a randomized order
- * - we ask the existing method (if present) `nextPromptFor(id)` whether
- *   that agent has messages
- * - if a full cycle does *no* work, we yield briefly (sleep 25 ms)
- *
- * Keep your existing agent execution logic; this file only adjusts loop control.
+ * This is intentionally simple and conservative. It maintains a single
+ * FIFO queue for user text and dispatches messages round-robin to agents.
  */
 
 import { Logger } from "../logger";
+import {
+  IScheduler,
+  SchedulerAgent,
+  SchedulerOptions,
+} from "./scheduler";
 
-type Agent = { id: string };
+export class RandomScheduler implements IScheduler {
+  private readonly agents: SchedulerAgent[];
+  private readonly maxTools: number;
+  private readonly onAskUser: SchedulerOptions["onAskUser"];
+  private promptEnabled: boolean;
 
-export class RandomScheduler {
   private running = false;
-  private paused = false;
   private draining = false;
-  private rescheduleNow = false;
 
-  private agents: Agent[] = [];
-  private respondingAgent: Agent | undefined;
-  private activeAgent: Agent | undefined;
-  private maxTools = 20;
+  private q: string[] = [];
+  private rr = 0; // round-robin cursor
 
-  // Optional hooks expected by your existing implementation
-  private isMuted?(id: string): boolean;
-  private nextPromptFor?(id: string): any[];
-  private runAgent?(
-    agent: Agent,
-    messages: any[],
-    budget: { remaining: number; totalToolsUsed: number }
-  ): Promise<void>;
-
-  constructor(opts: {
-    agents: Agent[];
-    maxTools?: number;
-    // any other fields your real scheduler needs can still be passed via opts
-  }) {
+  constructor(opts: SchedulerOptions) {
     this.agents = opts.agents;
-    if (typeof opts.maxTools === "number") this.maxTools = Math.max(0, opts.maxTools);
-    Object.assign(this, opts); // preserve additional fields/hooks
+    this.maxTools = Math.max(0, opts.maxTools ?? 20);
+    this.onAskUser = opts.onAskUser;
+    this.promptEnabled = !!opts.promptEnabled;
+  }
+
+  async enqueueUserText(text: string): Promise<void> {
+    this.q.push(String(text ?? ""));
   }
 
   async start(): Promise<void> {
     this.running = true;
-    await this.startBody();
-  }
 
-  async stop(): Promise<void> { this.running = false; }
-  async drain(): Promise<void> { this.draining = true; }
+    // If the app allowed prompting first and there is no queued work,
+    // request a concrete instruction.
+    if (this.promptEnabled && this.q.length === 0) {
+      await this.safeAskUser(
+        "scheduler",
+        "[scheduler]\nAll agents are idle — no queued work and no actionable outputs.\nPlease provide the next *concrete* instruction."
+      );
+      // Only ask once on entry; user lines go through enqueueUserText.
+      this.promptEnabled = false;
+    }
 
-  // ------------------------------------------------------------------
-  // Core loop
-  // ------------------------------------------------------------------
-  private async startBody(): Promise<void> {
     while (this.running) {
-      this.activeAgent = undefined;
+      if (this.draining && this.q.length === 0) {
+        // Graceful drain complete.
+        this.running = false;
+        break;
+      }
 
-      if (this.paused || this.draining) {
+      if (this.q.length === 0 || this.agents.length === 0) {
         await this.sleep(25);
         continue;
       }
 
-      let didWork = false;
-      this.rescheduleNow = false;
+      const text = this.q.shift()!;
+      const agent = this.pickAgent();
 
-      const order = this.shuffle(this.agents);
+      try {
+        const peers = this.agents.map(a => a.id);
+        const shouldAbort = () => !this.running || this.draining;
+        const out = await agent.respond(text, this.maxTools, peers, shouldAbort);
 
-      // (We keep the same log label for continuity.)
-      for (const agent of order) {
-        if (this.rescheduleNow) break;
-        if (this.isMuted?.(agent.id)) { Logger.debug?.(`muted: ${agent.id}`); continue; }
-
-        const a = (this.respondingAgent ?? agent);
-        this.respondingAgent = undefined;
-
-        // Ask your existing method if this agent has any messages.
-        const messages = this.nextPromptFor?.(a.id) ?? [];
-        if (messages.length === 0) {
-          Logger.debug?.(`no work for ${a.id}`);
-          continue;
+        if (typeof out === "string" && out.trim().length > 0) {
+          // Let the log path surface something visible; the UI prints logs.
+          Logger.info(`${agent.id} ...`);
+          Logger.info(out);
+          Logger.info(`[${agent.id}] wrote. No tools used.`);
         }
-
-        Logger.debug?.(`drained prompt for ${a.id}:`, JSON.stringify(messages));
-        Logger.info("4");
-
-        let remaining = this.maxTools;
-        let totalToolsUsed = 0;
-
-        try {
-          didWork = true;
-          if (this.runAgent) {
-            await this.runAgent(a, messages, { remaining, totalToolsUsed });
-          } else {
-            // Minimal no-op “work” placeholder; replace with your real code.
-            await this.sleep(1);
-          }
-        } catch (e) {
-          Logger.error?.("agent run error:", (e as any)?.message || e);
-        }
+      } catch (e) {
+        Logger.error?.(`Agent '${agent.id}' failed:`, (e as any)?.message || e);
       }
 
-      // >>>>>>>>>>>> CRITICAL BACK-OFF WHEN IDLE <<<<<<<<<<<<<<
-      // If the cycle didn’t do any work, yield so the event loop can process
-      // readline/keypress events (otherwise typing appears “dead”).
-      if (!didWork) {
-        await this.sleep(25);
-      }
+      // Yield a tick so the event loop can service stdin/readline.
+      await this.sleep(1);
     }
   }
 
-  // ------------------------------------------------------------------
-  // Utilities (keep your originals if you have them)
-  // ------------------------------------------------------------------
+  async stop(): Promise<void> {
+    this.running = false;
+  }
 
-  private shuffle<T>(arr: T[]): T[] {
-    const a = arr.slice();
-    for (let i = a.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [a[i], a[j]] = [a[j], a[i]];
+  async drain(): Promise<void> {
+    this.draining = true;
+    // caller will await start() to return
+  }
+
+  // ------------------------ internals ------------------------
+
+  private pickAgent(): SchedulerAgent {
+    if (this.agents.length === 0) {
+      throw new Error("No agents configured");
     }
+    const a = this.agents[this.rr % this.agents.length];
+    this.rr = (this.rr + 1) % Math.max(1, this.agents.length);
     return a;
   }
 
+  private async safeAskUser(fromAgent: string, content: string): Promise<void> {
+    try {
+      await this.onAskUser(fromAgent, content);
+    } catch (e) {
+      Logger.error?.("onAskUser failed, continuing:", (e as any)?.message || e);
+    }
+  }
+
   private sleep(ms: number) {
-    return new Promise<void>((resolve) => setTimeout(resolve, ms));
+    return new Promise<void>(resolve => setTimeout(resolve, ms));
   }
 }
+
+export default RandomScheduler;

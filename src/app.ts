@@ -10,8 +10,8 @@ import { R } from "./runtime/runtime";
 import { ExecutionGate } from "./tools/execution-gate";
 import { loadConfig } from "./config/config";
 import { Logger } from "./logger";
-import { RoundRobinScheduler } from "./scheduler";
-import type { SchedulerLike } from "./scheduler/scheduler"; // ← import the real interface
+import RandomScheduler from "./scheduler/random-scheduler";
+import type { IScheduler, SchedulerLike } from "./scheduler/scheduler";
 import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
 import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
@@ -26,7 +26,7 @@ installTtyGuard();
 
 type InputPort = {
   askUser(fromAgent: string, content: string): Promise<void>;
-  setScheduler(s: SchedulerLike): void;
+  setScheduler(s: IScheduler): void;
   start(): void;
   close?(graceful?: boolean): Promise<void>;
 };
@@ -158,7 +158,7 @@ function applyPatch(projectDir: string, patchPath: string) {
 async function finalizeOnce(scheduler: SchedulerLike | null, projectDir: string, reviewMode: "ask" | "auto" | "never") {
   try { await scheduler?.drain?.(); } catch {}
   try { await (sandboxMangers as any)?.finalizeAll?.(); } catch {}
-  try { scheduler?.stop?.(); } catch {}
+  try { await scheduler?.stop?.(); } catch {}
 
   const patches = await listRecentSessionPatches(projectDir, 120);
   if (patches.length === 0) {
@@ -190,7 +190,7 @@ async function finalizeOnce(scheduler: SchedulerLike | null, projectDir: string,
 // ---------- main ----------
 async function main() {
   const cfg = loadConfig();
-  const argv = R.argv.slice(2);
+  const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
   const args = parseArgs(argv);
 
   // tmux handoff
@@ -213,7 +213,6 @@ async function main() {
   Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
 
   const projectDir = resolveProjectDir(R.cwd());
-
   const recipeName = (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
   const recipe = getRecipe(recipeName || null);
 
@@ -241,17 +240,12 @@ async function main() {
   let input!: InputPort;
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
 
-  // The scheduler type is concrete & typed — use its real API.
-  const scheduler: SchedulerLike = new RoundRobinScheduler({
+  const scheduler: IScheduler = new RandomScheduler({
     agents,
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
-    onAskUser: (fromAgent: string, content: string): Promise<void> => {
-      if (R.env.ORG_TRACE === "1") Logger.info(`[TRACE] sched.onAskUser`, { fromAgent, content });
-      return input.askUser(fromAgent, content);
-    },
+    onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
     projectDir,
     reviewMode,
-    // DO NOT prompt the user first when a string seed is provided
     promptEnabled:
       typeof args["prompt"] === "boolean" ? (args["prompt"] as boolean)
       : kickoff ? false
@@ -281,14 +275,10 @@ async function main() {
 
   input.setScheduler(scheduler);
   input.start();
-  if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] app.input.started`, { tty: (R.stdin as any).isTTY });
 
   // Enqueue seed (type-safe, single call)
   if (typeof kickoff === "string" && kickoff.length > 0) {
-    if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] app.enqueueUserText(kickoff)`, kickoff);
     await scheduler.enqueueUserText(kickoff);
-  } else {
-    if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] app.noKickoff`);
   }
 
   // Run the loop; normal finalize path
