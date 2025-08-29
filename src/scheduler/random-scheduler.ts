@@ -1,16 +1,16 @@
 /**
- * RandomScheduler
- * ----------------
- * This version adds **event-loop friendly back-off** so the scheduler yields
- * when no agent performs work in a cycle. Without this, the while-loop can
- * busy-spin and starve readline/TTY keypress handling, making the prompt
- * appear “dead”.
+ * RandomScheduler (event-loop friendly)
+ * ------------------------------------
+ * This version avoids busy-spinning when no work is available, so the event
+ * loop can process TTY keypress/line events (fixes “typing does nothing”).
  *
- * NOTE: This file deliberately avoids referencing non-existent properties
- * like `this.inbox`. It relies only on the scheduler’s own methods that
- * already exist in your code path (e.g., `nextPromptFor`, `isMuted`,
- * `respondingAgent`, `maxTools`, etc.). Keep those methods as they already
- * are in your project; this file only adjusts the loop control/idle backoff.
+ * It **does not** assume internal properties like `this.inbox`. Instead:
+ * - we iterate agents in a randomized order
+ * - we ask the existing method (if present) `nextPromptFor(id)` whether
+ *   that agent has messages
+ * - if a full cycle does *no* work, we yield briefly (sleep 25 ms)
+ *
+ * Keep your existing agent execution logic; this file only adjusts loop control.
  */
 
 import { Logger } from "../logger";
@@ -18,36 +18,46 @@ import { Logger } from "../logger";
 type Agent = { id: string };
 
 export class RandomScheduler {
-  // lifecycle flags
   private running = false;
   private paused = false;
   private draining = false;
   private rescheduleNow = false;
 
-  // wiring/state you already have in your scheduler
   private agents: Agent[] = [];
   private respondingAgent: Agent | undefined;
   private activeAgent: Agent | undefined;
   private maxTools = 20;
 
+  // Optional hooks expected by your existing implementation
+  private isMuted?(id: string): boolean;
+  private nextPromptFor?(id: string): any[];
+  private runAgent?(
+    agent: Agent,
+    messages: any[],
+    budget: { remaining: number; totalToolsUsed: number }
+  ): Promise<void>;
+
   constructor(opts: {
     agents: Agent[];
     maxTools?: number;
-    // … other options you already use; keep them as-is in your project …
+    // any other fields your real scheduler needs can still be passed via opts
   }) {
     this.agents = opts.agents;
     if (typeof opts.maxTools === "number") this.maxTools = Math.max(0, opts.maxTools);
+    Object.assign(this, opts); // preserve additional fields/hooks
   }
 
-  // Public API — keep your signatures as they are
   async start(): Promise<void> {
     this.running = true;
     await this.startBody();
   }
+
   async stop(): Promise<void> { this.running = false; }
   async drain(): Promise<void> { this.draining = true; }
 
-  // ---------------- core loop ----------------
+  // ------------------------------------------------------------------
+  // Core loop
+  // ------------------------------------------------------------------
   private async startBody(): Promise<void> {
     while (this.running) {
       this.activeAgent = undefined;
@@ -63,12 +73,9 @@ export class RandomScheduler {
       let didWork = false;
       this.rescheduleNow = false;
 
-      // We no longer guess “readiness” up front using an inbox.
-      // Just iterate the agents in random order and see who actually has work
-      // (your existing `nextPromptFor` check below decides that).
       const order = this.shuffle(this.agents);
 
-      // (Keep this line if you want the same log, but we won’t report a bogus list.)
+      // (We keep the same log label for continuity.)
       Logger.info("2.5 – agents with work:", []);
 
       for (const agent of order) {
@@ -78,7 +85,7 @@ export class RandomScheduler {
         const a = (this.respondingAgent ?? agent);
         this.respondingAgent = undefined;
 
-        // Your code already has this:
+        // Ask your existing method if this agent has any messages.
         const messages = this.nextPromptFor?.(a.id) ?? [];
         if (messages.length === 0) {
           Logger.debug?.(`no work for ${a.id}`);
@@ -92,13 +99,13 @@ export class RandomScheduler {
         let totalToolsUsed = 0;
 
         try {
-          // Whatever your existing hop/tool loop is — keep it.
-          // Mark didWork so we don’t back-off immediately after.
           didWork = true;
-
-          // … your actual agent execution goes here …
-          // e.g., await this.runAgent(a, messages, {remaining, totalToolsUsed})
-
+          if (this.runAgent) {
+            await this.runAgent(a, messages, { remaining, totalToolsUsed });
+          } else {
+            // Minimal no-op “work” placeholder; replace with your real code.
+            await this.sleep(1);
+          }
         } catch (e) {
           Logger.error?.("agent run error:", (e as any)?.message || e);
         }
@@ -113,7 +120,9 @@ export class RandomScheduler {
     }
   }
 
-  // ---------------- utilities (keep your originals if you have them) ----------------
+  // ------------------------------------------------------------------
+  // Utilities (keep your originals if you have them)
+  // ------------------------------------------------------------------
 
   private shuffle<T>(arr: T[]): T[] {
     const a = arr.slice();
@@ -127,9 +136,4 @@ export class RandomScheduler {
   private sleep(ms: number) {
     return new Promise<void>((resolve) => setTimeout(resolve, ms));
   }
-
-  // Optional stubs, used above only if your project already defines them.
-  // Remove these if your real class already has concrete implementations.
-  private isMuted?(id: string): boolean;
-  private nextPromptFor?(id: string): any[];
 }
