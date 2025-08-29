@@ -154,15 +154,15 @@ export class TtyController extends EventEmitter {
    * Begin interactive processing. This attaches listeners and transitions
    * the controller to the "reading" state.
    *
-   * EDIT 1: do NOT pause the stream; explicitly resume so keypress events fire.
+   * (We do NOT pause the stream; we explicitly resume stdin after raw mode so
+   * keypress events always fire, even while the model is thinking.)
    */
   public start(): void {
     if (this.state !== "idle") return;
 
     // Keypress support
     readline.emitKeypressEvents(this.stdin as NodeJS.ReadStream);
-
-    // Only set raw mode when we truly have a TTY and resume to ensure keypress events.
+    // Only set raw mode when we truly have a TTY. Also resume to ensure events.
     if ((this.stdin as NodeJS.ReadStream).isTTY?.valueOf?.() || (this.stdin as NodeJS.ReadStream).isTTY === true) {
       try { (this.stdin as NodeJS.ReadStream).setRawMode?.(true); } catch { /* ignore for non-ttys */ }
       try { (this.stdin as NodeJS.ReadStream).resume?.(); } catch { /* ignore */ }
@@ -170,7 +170,7 @@ export class TtyController extends EventEmitter {
 
     (this.stdin as NodeJS.ReadStream).on("keypress", this.onKeypress);
 
-    // Line-reader for normal input (kept active; we'll only process lines during interjection)
+    // Line-reader for normal input (we only consume lines during interjection)
     this.rl = readline.createInterface({
       input: this.stdin as Readable,
       crlfDelay: Infinity,
@@ -288,12 +288,11 @@ export class TtyController extends EventEmitter {
   }
 
   /**
-   * EDIT 3: do NOT pause the interface so Esc remains responsive mid-run.
+   * Do NOT pause rl here — pausing stdin suppresses keypress events.
    */
   private endInterject() {
     if (!this.interjectActive) return;
     this.interjectActive = false;
-    // No rl.pause() here — keeping stdin flowing for keypress events.
     this.interjectDoneResolve?.();   // resolve askUser() promise if any
     this.interjectDoneResolve = null;
     this.renderPrompt();
@@ -317,13 +316,12 @@ export class TtyController extends EventEmitter {
   // ——————————————————————————————————————————————————————————
 
   /**
-   * EDIT 2: Only accept a line while at the prompt (interjectActive).
+   * Only accept a line while at the prompt (interjectActive).
    * Ignore stray input while the model is thinking.
    */
   private onLine = async (line: string) => {
     if (!this.interjectActive) {
-      // Ignore lines entered while not prompting (model busy).
-      return;
+      return; // Ignore lines when not in interjection mode
     }
 
     const s = this.scheduler;
@@ -354,7 +352,7 @@ export class TtyController extends EventEmitter {
       return;
     }
 
-    // Interjection hotkey (default: 'i')
+    // Interjection hotkey (default: 'i') to start a one-line prompt
     if (!key.ctrl && !key.meta) {
       const k = (key.name ?? key.sequence ?? "").toLowerCase();
       if (k === this.interjectKey) {
@@ -363,14 +361,9 @@ export class TtyController extends EventEmitter {
       }
     }
 
-    // Notify scheduler of user interjection for other keys (optional hook)
-    if (this.scheduler?.handleUserInterjection) {
-      try {
-        await this.scheduler.handleUserInterjection(key.sequence ?? key.name ?? "");
-      } catch {
-        /* ignore */
-      }
-    }
+    // NOTE: we intentionally DO NOT forward every other key to the scheduler.
+    // Normal typing is collected by readline and delivered via `onLine` when
+    // the user presses Enter during an interjection.
   };
 
   // ——————————————————————————————————————————————————————————
@@ -384,22 +377,8 @@ export class TtyController extends EventEmitter {
     this.emit("state", next, prev);
   }
 
-  // Typed overloads for EventEmitter
-  override on<U extends keyof TtyControllerEvents>(event: U, listener: TtyControllerEvents[U]): this;
-  override on(event: string, listener: (...args: any[]) => void): this {
-    return super.on(event, listener);
-  }
-  override off<U extends keyof TtyControllerEvents>(event: U, listener: TtyControllerEvents[U]): this;
-  override off(event: string, listener: (...args: any[]) => void): this {
-    return super.off(event, listener);
-  }
-  override emit<U extends keyof TtyControllerEvents>(event: U, ...args: Parameters<TtyControllerEvents[U]>): boolean;
-  override emit(event: string, ...args: any[]): boolean {
-    return super.emit(event, ...args);
-  }
-
   // ——————————————————————————————————————————————————————————
-  // Overlay
+  // “Waiting…” overlay
   // ——————————————————————————————————————————————————————————
 
   private showWaitOverlay() {
