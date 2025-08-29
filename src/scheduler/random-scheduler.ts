@@ -1,12 +1,49 @@
 /**
- * RandomScheduler (type-safe, Inbox-backed)
- * ----------------------------------------
- * Implements IScheduler. Yields when idle so TTY input isn't starved.
+ * RandomScheduler (type-safe, Inbox-backed, with strict validation)
+ * -----------------------------------------------------------------
+ * - Implements IScheduler.
+ * - Uses Inbox (ChatMessage routing).
+ * - Yields when idle so TTY is responsive.
+ * - **Validates** ChatMessage[] before agent.respond() and throws with a
+ *   helpful error if any element is malformed (so we don't mask bugs).
  */
 
 import { Logger } from "../logger";
-import type { IScheduler, SchedulerAgent, SchedulerOptions, ChatMessage } from "./scheduler";
+import type {
+  IScheduler,
+  SchedulerAgent,
+  SchedulerOptions,
+  ChatMessage,
+} from "./scheduler";
 import Inbox from "./inbox";
+
+const VALID_ROLES = new Set(["system", "user", "assistant", "tool"] as const);
+
+function summarizeMessages(msgs: ChatMessage[]): unknown {
+  return msgs.map((m, i) => ({
+    i,
+    role: m?.role,
+    contentLen: typeof m?.content === "string" ? m.content.length : undefined,
+    from: m?.from,
+    to: m?.to,
+  }));
+}
+
+function assertValidMessages(agentId: string, msgs: ChatMessage[]): void {
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i] as Partial<ChatMessage>;
+    const where = `agent='${agentId}' messages[${i}]`;
+    if (!m || typeof m !== "object") {
+      throw new Error(`${where} is not an object`);
+    }
+    if (typeof m.role !== "string" || !VALID_ROLES.has(m.role as any)) {
+      throw new Error(`${where}.role is invalid: ${String(m.role)}`);
+    }
+    if (typeof m.content !== "string") {
+      throw new Error(`${where}.content is not a string`);
+    }
+  }
+}
 
 export default class RandomScheduler implements IScheduler {
   private readonly agents: SchedulerAgent[];
@@ -28,6 +65,7 @@ export default class RandomScheduler implements IScheduler {
   }
 
   async enqueueUserText(text: string, opts?: { to?: string; from?: string }): Promise<void> {
+    // source of truth for user input → ChatMessage
     const msg: ChatMessage = {
       role: "user",
       content: String(text ?? ""),
@@ -40,7 +78,6 @@ export default class RandomScheduler implements IScheduler {
   async start(): Promise<void> {
     this.running = true;
 
-    // Optional initial prompt
     if (this.promptEnabled && this.inbox.size() === 0) {
       await this.safeAskUser(
         "scheduler",
@@ -63,7 +100,7 @@ export default class RandomScheduler implements IScheduler {
       const agent = this.pickAgent();
 
       if (!this.inbox.hasWork(agent.id)) {
-        // try next agent on this tick
+        // try next agent quickly
         this.rr = (this.rr + 1) % this.agents.length;
         await this.sleep(1);
         continue;
@@ -74,6 +111,13 @@ export default class RandomScheduler implements IScheduler {
         await this.sleep(1);
         continue;
       }
+
+      // ---- strict validation & tracing ----
+      if (process.env.ORG_TRACE === "1") {
+        Logger.info(`[TRACE] sched.nextPromptFor -> ${agent.id}`, summarizeMessages(messages));
+      }
+      assertValidMessages(agent.id, messages);
+      // -------------------------------------
 
       try {
         const peers = this.agents.map(a => a.id);
@@ -106,7 +150,6 @@ export default class RandomScheduler implements IScheduler {
   private pickAgent(): SchedulerAgent {
     if (this.agents.length === 0) throw new Error("No agents configured");
     const a = this.agents[this.rr % this.agents.length];
-    // (advance rr lazily as we cycle)
     return a;
   }
 
