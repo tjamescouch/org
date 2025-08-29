@@ -6,7 +6,7 @@ import * as fsp from "fs/promises";
 import * as path from "path";
 import { execFileSync, spawn } from "child_process";
 
-import { R } from './runtime/runtime'
+import { R } from "./runtime/runtime";
 import { ExecutionGate } from "./tools/execution-gate";
 import { loadConfig } from "./config/config";
 import { Logger } from "./logger";
@@ -29,7 +29,6 @@ type InputPort = {
   close?(graceful?: boolean): Promise<void>;
 };
 
-
 installTtyGuard();
 
 /** ---------- CLI parsing ---------- */
@@ -40,9 +39,13 @@ function parseArgs(argv: string[]) {
     if (a.startsWith("--")) {
       const [k, v] = a.slice(2).split("=", 2);
       if (typeof v === "string") out[k] = v;
-      else { key = k; out[k] = true; }
+      else {
+        key = k;
+        out[k] = true;
+      }
     } else if (key) {
-      out[key] = a; key = null;
+      out[key] = a;
+      key = null;
     } else {
       if (!("prompt" in out)) out["prompt"] = a;
       else out[`arg${Object.keys(out).length}`] = a;
@@ -52,12 +55,12 @@ function parseArgs(argv: string[]) {
 }
 
 function resolveProjectDir(seed: string): string {
-  // 1) If inside a git repo, use its toplevel
   try {
-    const out = execFileSync("git", ["-C", seed, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+    const out = execFileSync("git", ["-C", seed, "rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+    }).trim();
     if (out) return out;
-  } catch { /* ignore */ }
-  // 2) Walk up for a .git folder
+  } catch {}
   let d = path.resolve(seed);
   while (true) {
     if (fs.existsSync(path.join(d, ".git"))) return d;
@@ -65,8 +68,9 @@ function resolveProjectDir(seed: string): string {
     if (up === d) break;
     d = up;
   }
-  // 3) Give up
-  throw new Error(`Could not locate project root from ${seed}. Pass --project <dir> or run inside the repo.`);
+  throw new Error(
+    `Could not locate project root from ${seed}. Pass --project <dir> or run inside the repo.`,
+  );
 }
 
 // very small arg parser for -C/--project
@@ -89,10 +93,14 @@ function setupProcessGuards() {
   if (dbgOn) {
     R.on("beforeExit", (code) => {
       Logger.info("[DBG] beforeExit", code, "— scheduler stays alive unless Ctrl+C");
-      setTimeout(() => { /* keep loop alive while idle */ }, 60_000);
+      setTimeout(() => {}, 60_000);
     });
-    R.on("uncaughtException", (e) => { Logger.info("[DBG] uncaughtException:", e); });
-    R.on("unhandledRejection", (e) => { Logger.info("[DBG] unhandledRejection:", e); });
+    R.on("uncaughtException", (e) => {
+      Logger.info("[DBG] uncaughtException:", e);
+    });
+    R.on("unhandledRejection", (e) => {
+      Logger.info("[DBG] unhandledRejection:", e);
+    });
     R.stdin.on("end", () => Logger.info("[DBG] stdin end"));
     R.stdin.on("pause", () => Logger.info("[DBG] stdin paused"));
     R.stdin.on("resume", () => Logger.info("[DBG] stdin resumed"));
@@ -114,9 +122,12 @@ type AgentSpec = { id: string; kind: ModelKind; model: any };
 function parseAgents(
   spec: string | undefined,
   llmDefaults: { model: string; baseUrl: string; protocol: "openai"; apiKey?: string },
-  recipeSystemPrompt?: string | null
+  recipeSystemPrompt?: string | null,
 ): AgentSpec[] {
-  const list = String(spec || "alice:lmstudio").split(",").map(x => x.trim()).filter(Boolean);
+  const list = String(spec || "alice:lmstudio")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
   const out: AgentSpec[] = [];
   for (const item of list) {
     const [id, kindRaw = "mock"] = item.split(":");
@@ -125,11 +136,12 @@ function parseAgents(
       const m = new MockModel(id);
       out.push({ id, kind, model: m });
     } else if (kind === "lmstudio") {
-      if (llmDefaults.protocol !== "openai") throw new Error(`Unsupported protocol: ${llmDefaults.protocol}`);
+      if (llmDefaults.protocol !== "openai")
+        throw new Error(`Unsupported protocol: ${llmDefaults.protocol}`);
       const driver = makeStreamingOpenAiLmStudio({
         baseUrl: llmDefaults.baseUrl,
         model: llmDefaults.model,
-        apiKey: (llmDefaults as any).apiKey
+        apiKey: (llmDefaults as any).apiKey,
       });
       const agentModel = new LlmAgent(id, driver, llmDefaults.model) as any;
       if (recipeSystemPrompt && typeof agentModel.setSystemPrompt === "function") {
@@ -156,10 +168,9 @@ async function listRecentSessionPatches(projectDir: string, minutes = 20): Promi
       try {
         const st = await fsp.stat(patch);
         if (st.isFile() && st.size > 0 && st.mtimeMs >= cutoff) out.push(patch);
-      } catch { /* ignore */ }
+      } catch {}
     }
-  } catch { /* ignore */ }
-  // newest last
+  } catch {}
   return out.sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
 }
 
@@ -191,22 +202,21 @@ function applyPatch(projectDir: string, patchPath: string) {
 
 /**
  * Finalize: drain/stop scheduler, finalize sandboxes, and review/apply session patches.
- * Self-contained so ESC can call it via InputController without any external helper.
  */
 async function finalizeOnce(
   scheduler: SchedulerLike | null,
   projectDir: string,
-  reviewMode: "ask" | "auto" | "never"
+  reviewMode: "ask" | "auto" | "never",
 ) {
   try {
     await scheduler?.drain?.();
-  } catch { /* ignore */ }
+  } catch {}
   try {
     await (sandboxMangers as any)?.finalizeAll?.();
-  } catch { /* ignore */ }
+  } catch {}
   try {
     scheduler?.stop?.();
-  } catch { /* ignore */ }
+  } catch {}
 
   const isTTY = R.stdout.isTTY;
   const patches = await listRecentSessionPatches(projectDir, 120);
@@ -218,9 +228,7 @@ async function finalizeOnce(
   for (const patch of patches) {
     Logger.info(`Patch ready: ${patch}`);
 
-    if (reviewMode === "never") {
-      continue; // leave artifacts only
-    }
+    if (reviewMode === "never") continue;
 
     if (reviewMode === "auto" || !isTTY) {
       try {
@@ -233,7 +241,6 @@ async function finalizeOnce(
       continue;
     }
 
-    // reviewMode === 'ask' and TTY
     await openPager(patch);
     const yes = await askYesNo("Apply this patch? [y/N]");
     if (yes) {
@@ -256,35 +263,28 @@ async function main() {
   const args = parseArgs(argv);
 
   if (args["ui"] === "tmux" && R.env.ORG_TMUX !== "1") {
-    // handoff to tmux UI; run the same argv inside tmux with ORG_TMUX=1
     const sandbox = R.env.SANDBOX_BACKEND ?? "podman"; // "none" = host
     const tmuxScope: "host" | "container" =
       (R.env.ORG_TMUX_SCOPE as any) ?? (sandbox === "none" ? "host" : "container");
 
-    // Only doctor the host when using host tmux
-    if (args["ui"] === "tmux") {
-      const { doctorTmux } = await import("./cli/doctor");
-      if (tmuxScope === "host") {
-        if ((await doctorTmux("host")) !== 0) R.exit(1);
-      }
-
-      const { launchTmuxUI } = await import("./ui/tmux");
-      const code = await launchTmuxUI(R.argv, tmuxScope);
-      R.exit(code);
+    const { doctorTmux } = await import("./cli/doctor");
+    if (tmuxScope === "host") {
+      if ((await doctorTmux("host")) !== 0) R.exit(1);
     }
+    const { launchTmuxUI } = await import("./ui/tmux");
+    const code = await launchTmuxUI(R.argv, tmuxScope);
+    R.exit(code);
   }
 
   enableDebugIfRequested(args);
   setupProcessGuards();
 
-  // ---- main entry ----
   const seed = getProjectFromArgs(R.argv) ?? R.cwd();
   const projectDir = resolveProjectDir(seed);
 
   // ---- Recipe wiring ----
   const recipeName =
-    (typeof args["recipe"] === "string" && args["recipe"]) ||
-    (R.env.ORG_RECIPE || "");
+    (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
   const recipe = getRecipe(recipeName || null);
 
   if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
@@ -298,24 +298,35 @@ async function main() {
   // Mode + (optional) tool allowlist
   computeMode({ allowTools: recipe?.allowTools });
 
-  Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
+  Logger.info(
+    "Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.",
+  );
 
   // Build agents, set recipe system prompt if supported
-  const agentSpecs = parseAgents(String(args["agents"] || "alice:lmstudio"), cfg.llm, recipe?.system ?? null);
+  const agentSpecs = parseAgents(
+    String(args["agents"] || "alice:lmstudio"),
+    cfg.llm,
+    recipe?.system ?? null,
+  );
   if (agentSpecs.length === 0) {
-    Logger.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
+    Logger.error(
+      'No agents. Use --agents "alice:lmstudio,bob:mock" or "alice:mock,bob:mock"',
+    );
     R.exit(1);
   }
 
-  const agents = agentSpecs.map(a => ({
+  const agents = agentSpecs.map((a) => ({
     id: a.id,
-    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => a.model.respond(prompt, budget, peers, cb),
+    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) =>
+      a.model.respond(prompt, budget, peers, cb),
     guardOnIdle: (state: any) => a.model.guardOnIdle?.(state) ?? null,
-    guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null,
+    guardCheck: (route: any, content: string, peers: string[]) =>
+      a.model.guardCheck?.(route, content, peers) ?? null,
   }));
 
-  trace("app", "agents parsed", { agents: agents?.map(a => a.id) });
+  trace("app", "agents parsed", { agents: agents?.map((a) => a.id) });
 
+  // Late-bind input so scheduler can call back
   let input!: InputPort;
 
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
@@ -326,50 +337,81 @@ async function main() {
     projectDir,
     reviewMode,
     // promptEnabled: if --prompt is provided as a string we treat it as non-interactive seed
-    promptEnabled: (typeof args["prompt"] === "boolean" ? args["prompt"] : R.stdin.isTTY),
+    promptEnabled: typeof args["prompt"] === "boolean" ? (args["prompt"] as boolean) : R.stdin.isTTY,
   });
   trace("app", "scheduler constructed");
 
-
-  // Seed initial instruction: CLI --prompt wins; else recipe.kickoff; else ask.
-  let kickoff: string | undefined = args["prompt"] as string ?? recipe?.kickoff ?? '(ask)'
+  // Seed initial instruction: CLI --prompt wins; else recipe.kickoff; else undefined
+  const kickoff: string | undefined =
+    typeof args["prompt"] === "string"
+      ? (args["prompt"] as string)
+      : typeof recipe?.kickoff === "string"
+      ? (recipe!.kickoff as string)
+      : undefined;
 
   if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
-    Logger.info("[DBG] kickoff:", typeof kickoff === "string" ? kickoff : kickoff === true ? "(ask)" : "(none)");
+    Logger.info(
+      "[DBG] kickoff:",
+      typeof kickoff === "string" ? kickoff : "(none)",
+    );
   }
 
+  // ---- Build input (TTY or non-TTY) ----
   if (R.stdin.isTTY) {
     input = new TtyController({
       waitOverlayMessage: "Waiting for agent to finish",
       waitSuppressOutput: true,
       stdin: R.stdin,
       stdout: R.stdout,
-      prompt: typeof args["prompt"] === "string" ? String(args["prompt"]) : undefined,
+      // prompt label (banner), not the seed text
+      prompt: String(args["banner"] ?? "User: "),
       interjectKey: String(args["interject-key"] ?? "i"),
       interjectBanner: String(args["banner"] ?? "You: "),
-      finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
+      finalizer: async () => {
+        await finalizeOnce(scheduler, projectDir, reviewMode);
+      },
     });
-    input.setScheduler(scheduler as any);
-    input.start();
   } else {
-    // Non‑interactive: pipe stdin straight through
-    input.setScheduler(scheduler);
-    input = new Passthrough({ stdin: R.stdin, stdout: R.stdout, scheduler });
-    input.start?.();
+    input = new Passthrough({
+      stdin: R.stdin,
+      stdout: R.stdout,
+      scheduler,
+      finalizer: async () => {
+        await finalizeOnce(scheduler, projectDir, reviewMode);
+      },
+    });
   }
 
+  input.setScheduler(scheduler as any);
+  input.start();
+  trace("app", "input started", { tty: (R.stdin as any).isTTY });
 
+  // ---- Kickoff (seed) ----
+  if (typeof kickoff === "string" && kickoff.length > 0) {
+    const s: any = scheduler;
+    if (s.enqueueUserText) {
+      trace("app", "enqueueUserText(kickoff)");
+      await s.enqueueUserText(kickoff);
+    } else if (s.enqueue) {
+      trace("app", "enqueue(kickoff)");
+      await s.enqueue({ role: "user", content: kickoff });
+    } else if (s.send) {
+      trace("app", "send(kickoff)");
+      await s.send(kickoff);
+    } else {
+      trace("app", "NO ENQUEUE API!");
+    }
+  }
 
   if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
-    Logger.info("[DBG] agents:", agents.map(a => a.id).join(", "));
+    Logger.info("[DBG] agents:", agents.map((a) => a.id).join(", "));
     Logger.info("[DBG] maxTools:", maxTools);
   }
 
-
-  // Give the enqueue a tick to land before starting the loop
+  // Ensure enqueue lands, then start the loop
   await new Promise<void>((r) => setTimeout(r, 0));
 
-  // Run
+  // ---- Run scheduler until stopped ----
   const reviewManager = new ReviewManager(projectDir, reviewMode);
   await scheduler.start();
   await reviewManager.finalizeAndReview();
