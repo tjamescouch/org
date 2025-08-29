@@ -299,6 +299,7 @@ export class TtyController extends EventEmitter {
   };
 
   private onKeypress = async (_: string, key: Keypress) => {
+    Logger.info("key", key);
     if (process.env.ORG_TRACE === "1") {
       Logger.info(`[TRACE] tty.keypress`, key);
     }
