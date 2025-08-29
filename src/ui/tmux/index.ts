@@ -1,9 +1,27 @@
 /* tmux UI launcher — simple, robust, no backslash soup */
 
+  // --- add near your tmux launcher code (src/ui/tmux/index.ts) ---
+import * as fs from "fs";
+import * as path from "path";
 import { Logger } from "../../logger";
 import { shInteractive } from "../../tools/sandboxed-sh";
 
 export type Scope = "sandbox" | "host";
+
+function writeTmuxConf(runRoot: string) {
+  const confDir = path.join(runRoot, ".tmux");
+  const conf    = path.join(confDir, "org-tmux.conf");
+  fs.mkdirSync(confDir, { recursive: true });
+  fs.writeFileSync(conf, [
+    "set -sg escape-time 0",
+    "set -g  assume-paste-time 0",
+    // Keeping the UI snappy; feel free to add other tweaks:
+    // "set -g status off",
+  ].join("\n") + "\n", "utf8");
+  return conf;
+}
+
+
 
 /**
  * Launch the tmux UI inside the sandbox.
@@ -31,6 +49,8 @@ export async function launchTmuxUI(argv: string[], scope: Scope = "sandbox"): Pr
       "tmux not found in the sandbox image. Please add tmux to the image used for the sandbox.",
     );
   }
+
+  const tmuxConf = writeTmuxConf(process.cwd() || '.');
 
   // Build the script without template literals so ${…} stays literal bash.
   const tmuxScript = [
@@ -71,7 +91,7 @@ export async function launchTmuxUI(argv: string[], scope: Scope = "sandbox"): Pr
     "",
     "export TMUX_TMPDIR=/work/.org/logs/tmux-logs",
     "",
-    "exec /usr/bin/tmux -vv new-session -A -s org /work/.org/tmux-inner.sh",
+    `exec /usr/bin/tmux -vv -f ${JSON.stringify(tmuxConf)} new-session -A -s org /work/.org/tmux-inner.sh`,
   ].join("\n");
 
   // Execute interactively inside the sandbox

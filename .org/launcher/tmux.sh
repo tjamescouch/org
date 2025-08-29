@@ -56,5 +56,17 @@ chmod +x "$INNER"
 
 export ORG_TMUX_ENTRY="$ENTRY"
 
+# inside .org/launcher/tmux.sh, before tmux new-session
+TMUXDIR="/work/.org/.tmux"
+TMUXCONF="$TMUXDIR/org-tmux.conf"
+mkdir -p "$TMUXDIR"
+cat > "$TMUXCONF" <<'CONF'
+set -sg escape-time 0
+set -g  assume-paste-time 0
+CONF
+
+exec /usr/bin/tmux -vv -f "$TMUXCONF" new-session -A -s org 'bash -lc "exec bun /work/src/app.ts --ui console"'
+
+
 # ----- Fire up tmux (session name: 'org') -----
-exec /work/bin/.bin/tmux -vv new-session -A -s org "$INNER"
+#exec /work/bin/.bin/tmux -vv new-session -A -s org "$INNER" #Not sure
