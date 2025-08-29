@@ -365,12 +365,14 @@ export class TtyController extends EventEmitter {
       return;
     }
 
-    // Auto-enter interjection on printable characters (so typing "just works").
+    // Auto-enter interjection on first printable char — and **keep** that char.
     if (!this.interjectActive && !key.ctrl && !key.meta) {
       const ch = (key.sequence ?? key.name ?? "");
       if (ch && ch.length === 1 && ch !== "\r" && ch !== "\n") {
         this.beginInterject();
-        return; // rl already has the character
+        // <— critical: push the very first typed character into the rl buffer
+        this.rl?.write(ch);
+        return;
       }
     }
 
