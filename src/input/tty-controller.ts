@@ -6,7 +6,11 @@
  * - normal typing and Enter (no duplicated first char, no stray newline)
  * - explicit interjection only via askUser() or hotkey
  *
- * Enable ORG_TRACE=1 to see [TRACE] tty.data / tty.keypress / tty.onLine.
+ * Enable ORG_TRACE=1 to see:
+ *   [TRACE] tty.data        — raw bytes arriving on stdin
+ *   [TRACE] tty.keypress    — keypress events (readline emitKeypressEvents)
+ *   [TRACE] tty.onLine      — when a line is submitted (Enter)
+ *   [TRACE] tty.askUser     — when the scheduler triggers an interjection
  */
 
 import { EventEmitter } from "node:events";
@@ -128,7 +132,8 @@ export class TtyController extends EventEmitter {
     if (isTrace) {
       this.dataListener = (chunk: Buffer | string) => {
         const b = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
-        const preview = b.length <= 16 ? b.toString("hex") : b.subarray(0, 16).toString("hex") + `…(+${b.length - 16})`;
+        const preview = b.length <= 16 ? b.toString("hex")
+          : b.subarray(0, 16).toString("hex") + `…(+${b.length - 16})`;
         Logger.info(`[TRACE] tty.data len=${b.length} hex=${preview}`);
       };
       rs.on("data", this.dataListener);
@@ -301,7 +306,7 @@ export class TtyController extends EventEmitter {
       return;
     }
 
-    // EXPLICIT interjection hotkey only (no auto-interject on first key)
+    // (No auto-interject on first key.) Explicit hotkey only:
     if (!key.ctrl && !key.meta) {
       const k = (key.name ?? key.sequence ?? "").toLowerCase();
       if (k === this.interjectKey) {
@@ -348,6 +353,9 @@ export class TtyController extends EventEmitter {
   }
 
   public async askUser(fromAgent: string, content: string): Promise<void> {
+    if (process.env.ORG_TRACE === "1") {
+      Logger.info(`[TRACE] tty.askUser`, { fromAgent, content });
+    }
     const header = fromAgent ? `[${fromAgent}] ` : "";
     this.write(`\n${header}${content}\n`);
     return new Promise<void>((resolve) => {

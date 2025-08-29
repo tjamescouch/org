@@ -111,7 +111,6 @@ function parseAgents(
   return out;
 }
 
-// ---------- finalize/review helpers ----------
 async function listRecentSessionPatches(projectDir: string, minutes = 20): Promise<string[]> {
   const root = path.join(projectDir, ".org", "runs");
   const out: string[] = [];
@@ -193,7 +192,6 @@ async function main() {
   const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
   const args = parseArgs(argv);
 
-  // tmux handoff
   if (args["ui"] === "tmux" && R.env.ORG_TMUX !== "1") {
     const sandbox = R.env.SANDBOX_BACKEND ?? "podman";
     const tmuxScope: "host" | "container" =
@@ -218,6 +216,7 @@ async function main() {
   const recipeName = (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
   const recipe = getRecipe(recipeName || null);
 
+  // Build agents
   const agentSpecs = parseAgents(String(args["agents"] || "alice:lmstudio"), cfg.llm, recipe?.system ?? null);
   if (agentSpecs.length === 0) {
     Logger.error('No agents. Use --agents "alice:lmstudio,bob:mock" or "alice:mock,bob:mock"');
@@ -230,7 +229,7 @@ async function main() {
     guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null,
   }));
 
-  // compute kickoff FIRST
+  // ---------- kickoff and scheduler wiring ----------
   const kickoff: string | undefined =
     typeof args["prompt"] === "string" ? String(args["prompt"])
     : typeof recipe?.kickoff === "string" ? recipe!.kickoff
@@ -241,7 +240,10 @@ async function main() {
   const scheduler: SchedulerLike = new RoundRobinScheduler({
     agents,
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
-    onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
+    onAskUser: (fromAgent: string, content: string) => {
+      if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] sched.onAskUser`, { fromAgent, content });
+      return input.askUser(fromAgent, content);
+    },
     projectDir,
     reviewMode,
     // DO NOT prompt the user first when a string seed is provided
@@ -251,7 +253,28 @@ async function main() {
       : R.stdin.isTTY,
   });
 
-  // Build input (TTY or non-TTY)
+  // Wrap key scheduler methods to trace message flow (no behavior change).
+  if (process.env.ORG_TRACE === "1") {
+    const wrap = (obj: any, name: string) => {
+      const orig = obj[name]?.bind(obj);
+      obj[name] = async (...a: any[]) => {
+        const head =
+          typeof a[0] === "string" ? a[0].slice(0, 120)
+          : a[0]?.content ? String(a[0].content).slice(0, 120)
+          : a[0];
+        Logger.info(`[TRACE] sched.${name}.call`, head);
+        const r = await orig?.(...a);
+        Logger.info(`[TRACE] sched.${name}.done`);
+        return r;
+      };
+    };
+    wrap(scheduler as any, "enqueueUserText");
+    wrap(scheduler as any, "enqueue");
+    wrap(scheduler as any, "send");
+    wrap(scheduler as any, "start");
+  }
+
+  // Build input
   if (R.stdin.isTTY) {
     input = new TtyController({
       waitOverlayMessage: "Waiting for agent to finish",
@@ -274,20 +297,27 @@ async function main() {
 
   input.setScheduler(scheduler as any);
   input.start();
+  if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] app.input.started`, { tty: (R.stdin as any).isTTY });
 
-  // seed kickoff (if provided)
+  // Enqueue seed (if any)
   if (typeof kickoff === "string" && kickoff.length > 0) {
     if ((scheduler as any).enqueueUserText) {
+      if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] app.enqueueUserText(kickoff)`, kickoff);
       await (scheduler as any).enqueueUserText(kickoff);
     } else if ((scheduler as any).enqueue) {
+      if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] app.enqueue(kickoff)`, kickoff);
       await (scheduler as any).enqueue({ role: "user", content: kickoff });
     } else if ((scheduler as any).send) {
+      if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] app.send(kickoff)`, kickoff);
       await (scheduler as any).send(kickoff);
     }
+  } else {
+    if (process.env.ORG_TRACE === "1") Logger.info(`[TRACE] app.noKickoff`);
   }
 
-  // start the loop and normal finalize path
+  // Run the loop; normal finalize path
   await (scheduler as any).start();
+
   const reviewManager = new ReviewManager(projectDir, reviewMode);
   await reviewManager.finalizeAndReview();
   await finalizeOnce(scheduler, projectDir, reviewMode);
