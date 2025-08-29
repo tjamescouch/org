@@ -6,12 +6,12 @@ import * as fsp from "fs/promises";
 import * as path from "path";
 import { execFileSync, spawn } from "child_process";
 
-import { R } from "./runtime/runtime";
+import { R } from './runtime/runtime'
 import { ExecutionGate } from "./tools/execution-gate";
 import { loadConfig } from "./config/config";
 import { Logger } from "./logger";
-import RandomScheduler from "./scheduler/random-scheduler";
-import type { IScheduler } from "./scheduler/scheduler";
+import { RoundRobinScheduler } from "./scheduler";
+import { InputController } from "./input/controller";
 import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
 import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
@@ -19,18 +19,11 @@ import { getRecipe } from "./recipes";
 import { installTtyGuard, withCookedTTY } from "./input/tty-guard";
 import { ReviewManager } from "./scheduler/review-manager";
 import { sandboxMangers } from "./sandbox/session";
-import { TtyController } from "./input/tty-controller";
-import Passthrough from "./input/passthrough";
+import { launchTmuxUI } from "./ui/tmux/launcher";
 
 installTtyGuard();
 
-type InputPort = {
-  askUser(fromAgent: string, content: string): Promise<void>;
-  setScheduler(s: IScheduler): void;
-  start(): void;
-  close?(graceful?: boolean): Promise<void>;
-};
-
+/** ---------- CLI parsing ---------- */
 function parseArgs(argv: string[]) {
   const out: Record<string, string | boolean> = {};
   let key: string | null = null;
@@ -50,10 +43,12 @@ function parseArgs(argv: string[]) {
 }
 
 function resolveProjectDir(seed: string): string {
+  // 1) If inside a git repo, use its toplevel
   try {
     const out = execFileSync("git", ["-C", seed, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
     if (out) return out;
-  } catch {}
+  } catch { /* ignore */ }
+  // 2) Walk up for a .git folder
   let d = path.resolve(seed);
   while (true) {
     if (fs.existsSync(path.join(d, ".git"))) return d;
@@ -61,7 +56,16 @@ function resolveProjectDir(seed: string): string {
     if (up === d) break;
     d = up;
   }
+  // 3) Give up
   throw new Error(`Could not locate project root from ${seed}. Pass --project <dir> or run inside the repo.`);
+}
+
+// very small arg parser for -C/--project
+function getProjectFromArgs(argv: string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "-C" || argv[i] === "--project") return argv[i + 1];
+  }
+  return R.env.ORG_PROJECT_DIR;
 }
 
 function enableDebugIfRequested(args: Record<string, string | boolean>) {
@@ -71,11 +75,28 @@ function enableDebugIfRequested(args: Record<string, string | boolean>) {
   }
 }
 
-function computeMode(extra?: { allowTools?: string[] }) {
+function setupProcessGuards() {
+  const dbgOn = !!R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false";
+  if (dbgOn) {
+    R.on("beforeExit", (code) => {
+      Logger.info("[DBG] beforeExit", code, "— scheduler stays alive unless Ctrl+C");
+      setTimeout(() => { /* keep loop alive while idle */ }, 60_000);
+    });
+    R.on("uncaughtException", (e) => { Logger.info("[DBG] uncaughtException:", e); });
+    R.on("unhandledRejection", (e) => { Logger.info("[DBG] unhandledRejection:", e); });
+    R.stdin.on("end", () => Logger.info("[DBG] stdin end"));
+    R.stdin.on("pause", () => Logger.info("[DBG] stdin paused"));
+    R.stdin.on("resume", () => Logger.info("[DBG] stdin resumed"));
+  }
+}
+
+/** ---------- Mode / safety ---------- */
+function computeMode(extra?: { allowTools?: string[] | undefined }) {
   const interactive = true;
   const cfg = loadConfig();
   const safe = !!(cfg as any)?.runtime?.safe;
   ExecutionGate.configure({ safe, interactive, allowTools: extra?.allowTools });
+  return { interactive, safe };
 }
 
 type ModelKind = "mock" | "lmstudio";
@@ -92,7 +113,8 @@ function parseAgents(
     const [id, kindRaw = "mock"] = item.split(":");
     const kind = (kindRaw as ModelKind) || "mock";
     if (kind === "mock") {
-      out.push({ id, kind, model: new MockModel(id) });
+      const m = new MockModel(id);
+      out.push({ id, kind, model: m });
     } else if (kind === "lmstudio") {
       if (llmDefaults.protocol !== "openai") throw new Error(`Unsupported protocol: ${llmDefaults.protocol}`);
       const driver = makeStreamingOpenAiLmStudio({
@@ -112,6 +134,8 @@ function parseAgents(
   return out;
 }
 
+/** ---------- helpers for finalization/review ---------- */
+
 async function listRecentSessionPatches(projectDir: string, minutes = 20): Promise<string[]> {
   const root = path.join(projectDir, ".org", "runs");
   const out: string[] = [];
@@ -123,9 +147,10 @@ async function listRecentSessionPatches(projectDir: string, minutes = 20): Promi
       try {
         const st = await fsp.stat(patch);
         if (st.isFile() && st.size > 0 && st.mtimeMs >= cutoff) out.push(patch);
-      } catch {}
+      } catch { /* ignore */ }
     }
-  } catch {}
+  } catch { /* ignore */ }
+  // newest last
   return out.sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
 }
 
@@ -155,11 +180,26 @@ function applyPatch(projectDir: string, patchPath: string) {
   execFileSync("git", ["-C", projectDir, "apply", "--index", patchPath], { stdio: "inherit" });
 }
 
-async function finalizeOnce(scheduler: IScheduler | null, projectDir: string, reviewMode: "ask" | "auto" | "never") {
-  try { await scheduler?.drain?.(); } catch {}
-  try { await (sandboxMangers as any)?.finalizeAll?.(); } catch {}
-  try { await scheduler?.stop?.(); } catch {}
+/**
+ * Finalize: drain/stop scheduler, finalize sandboxes, and review/apply session patches.
+ * Self-contained so ESC can call it via InputController without any external helper.
+ */
+async function finalizeOnce(
+  scheduler: RoundRobinScheduler | null,
+  projectDir: string,
+  reviewMode: "ask" | "auto" | "never"
+) {
+  try {
+    await scheduler?.drain?.();
+  } catch { /* ignore */ }
+  try {
+    await (sandboxMangers as any)?.finalizeAll?.();
+  } catch { /* ignore */ }
+  try {
+    scheduler?.stop?.();
+  } catch { /* ignore */ }
 
+  const isTTY = R.stdout.isTTY;
   const patches = await listRecentSessionPatches(projectDir, 120);
   if (patches.length === 0) {
     Logger.info("No patch produced.");
@@ -168,126 +208,151 @@ async function finalizeOnce(scheduler: IScheduler | null, projectDir: string, re
 
   for (const patch of patches) {
     Logger.info(`Patch ready: ${patch}`);
-    if (reviewMode === "never") continue;
 
-    if (reviewMode === "auto" || !R.stdout.isTTY) {
-      try { applyPatch(projectDir, patch); Logger.info("Patch auto-applied."); }
-      catch (e: any) { Logger.error("Auto-apply failed:", e?.message || e); Logger.info(`You can apply manually: git -C ${projectDir} apply --index ${patch}`); }
+    if (reviewMode === "never") {
+      continue; // leave artifacts only
+    }
+
+    if (reviewMode === "auto" || !isTTY) {
+      try {
+        applyPatch(projectDir, patch);
+        Logger.info("Patch auto-applied.");
+      } catch (e: any) {
+        Logger.error("Auto-apply failed:", e?.message || e);
+        Logger.info(`You can apply manually: git -C ${projectDir} apply --index ${patch}`);
+      }
       continue;
     }
 
-    await withCookedTTY(async () => {
-      await new Promise<void>((resolve) => {
-        const pager = R.env.ORG_PAGER || "delta -s || less -R || cat";
-        const p = spawn("sh", ["-lc", `${pager} ${JSON.stringify(patch)}`], { stdio: "inherit" });
-        p.on("exit", () => resolve());
-      });
-    });
-
-    const rl = await import("readline");
-    const yes = await new Promise<boolean>((resolve) => {
-      const rli = rl.createInterface({ input: R.stdin, output: R.stdout, terminal: true });
-      rli.question(`Apply this patch? [y/N] `, (ans) => {
-        rli.close();
-        const a = String(ans || "").trim().toLowerCase();
-        resolve(a === "y" || a === "yes");
-      });
-    });
-
+    // reviewMode === 'ask' and TTY
+    await openPager(patch);
+    const yes = await askYesNo("Apply this patch? [y/N]");
     if (yes) {
-      try { applyPatch(projectDir, patch); Logger.info("Patch applied."); }
-      catch (e: any) { Logger.error("Apply failed:", e?.message || e); Logger.info(`You can apply manually: git -C ${projectDir} apply --index ${patch}`); }
+      try {
+        applyPatch(projectDir, patch);
+        Logger.info("Patch applied.");
+      } catch (e: any) {
+        Logger.error("Apply failed:", e?.message || e);
+        Logger.info(`You can apply manually: git -C ${projectDir} apply --index ${patch}`);
+      }
     } else {
       Logger.info("Patch NOT applied.");
     }
   }
 }
 
-// ---------- main ----------
 async function main() {
   const cfg = loadConfig();
   const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
   const args = parseArgs(argv);
 
+  if (args["ui"] === "tmux" && R.env.ORG_TMUX !== "1") {
+    // handoff to tmux UI; run the same argv inside tmux with ORG_TMUX=1
+    const sandbox = R.env.SANDBOX_BACKEND ?? "podman"; // "none" = host
+    const tmuxScope: "host" | "container" =
+      (R.env.ORG_TMUX_SCOPE as any) ?? (sandbox === "none" ? "host" : "container");
+
+    // Only doctor the host when using host tmux
+    if (args["ui"] === "tmux") {
+      const { doctorTmux } = await import("./cli/doctor");
+      if (tmuxScope === "host") {
+        if ((await doctorTmux("host")) !== 0) R.exit(1);
+      }
+
+      const { launchTmuxUI } = await import("./ui/tmux");
+      const code = await launchTmuxUI(R.argv, tmuxScope);
+      R.exit(code);
+    }
+  }
+
   enableDebugIfRequested(args);
-  computeMode({ allowTools: getRecipe(null)?.allowTools });
+  setupProcessGuards();
+
+  // ---- main entry ----
+  const seed = getProjectFromArgs(R.argv) ?? R.cwd();
+  const projectDir = resolveProjectDir(seed);
+
+  // ---- Recipe wiring ----
+  const recipeName =
+    (typeof args["recipe"] === "string" && args["recipe"]) ||
+    (R.env.ORG_RECIPE || "");
+  const recipe = getRecipe(recipeName || null);
+
+  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
+    Logger.info("[DBG] args:", args);
+    if (recipe) Logger.info("[DBG] recipe:", recipe.name);
+  }
+
+  // Budgets
+  let maxTools = Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20)));
+
+  // Mode + (optional) tool allowlist
+  computeMode({ allowTools: recipe?.allowTools });
 
   Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
 
-  const projectDir = resolveProjectDir(R.cwd());
-  const recipeName = (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
-  const recipe = getRecipe(recipeName || null);
-
-  // Build agents
+  // Build agents, set recipe system prompt if supported
   const agentSpecs = parseAgents(String(args["agents"] || "alice:lmstudio"), cfg.llm, recipe?.system ?? null);
   if (agentSpecs.length === 0) {
-    Logger.error('No agents. Use --agents "alice:lmstudio,bob:mock" or "alice:mock,bob:mock"');
+    Logger.error("No agents. Use --agents \"alice:lmstudio,bob:mock\" or \"alice:mock,bob:mock\"");
     R.exit(1);
   }
+
   const agents = agentSpecs.map(a => ({
     id: a.id,
-    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) =>
-      a.model.respond(prompt, budget, peers, cb),
+    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) => a.model.respond(prompt, budget, peers, cb),
     guardOnIdle: (state: any) => a.model.guardOnIdle?.(state) ?? null,
-    guardCheck: (route: any, content: string, peers: string[]) =>
-      a.model.guardCheck?.(route, content, peers) ?? null,
+    guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null,
   }));
 
-  // kickoff FIRST so we can set promptEnabled properly
-  const kickoff: string | undefined =
-    typeof args["prompt"] === "string" ? String(args["prompt"])
-    : typeof recipe?.kickoff === "string" ? recipe!.kickoff
-    : undefined;
+  // IO + scheduler
+  const input = new InputController({
+    interjectKey: String(args["interject-key"] || "i"),
+    interjectBanner: String(args["banner"] || "You: "),
+    // Allow ESC to finalize & exit, and run the same finalization path we use at shutdown:
+    finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
+    // (exitOnEsc defaults to true)
+  });
 
-  let input!: InputPort;
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
-
-  const scheduler: IScheduler = new RandomScheduler({
+  const scheduler = new RoundRobinScheduler({
     agents,
-    maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
+    maxTools,
     onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
     projectDir,
     reviewMode,
-    promptEnabled:
-      typeof args["prompt"] === "boolean" ? (args["prompt"] as boolean)
-      : kickoff ? false
-      : R.stdin.isTTY,
+    // promptEnabled: if --prompt is provided as a string we treat it as non-interactive seed
+    promptEnabled: (typeof args["prompt"] === "boolean" ? args["prompt"] : R.stdin.isTTY),
   });
 
-  // Build input
-  if (R.stdin.isTTY) {
-    input = new TtyController({
-      waitOverlayMessage: "Waiting for agent to finish",
-      waitSuppressOutput: true,
-      stdin: R.stdin,
-      stdout: R.stdout,
-      prompt: String(args["banner"] ?? "User: "),
-      interjectKey: String(args["interject-key"] ?? "i"),
-      interjectBanner: String(args["banner"] ?? "You: "),
-      finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
-    });
-  } else {
-    input = new Passthrough({
-      stdin: R.stdin,
-      stdout: R.stdout,
-      scheduler,
-      finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
-    });
+  input.attachScheduler(scheduler);
+
+  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
+    Logger.info("[DBG] agents:", agents.map(a => a.id).join(", "));
+    Logger.info("[DBG] maxTools:", maxTools);
   }
 
-  input.setScheduler(scheduler);
-  input.start();
+  // Seed initial instruction: CLI --prompt wins; else recipe.kickoff; else ask.
+  let kickoff: string | boolean | undefined;
+  if (args["prompt"] === true) kickoff = true;                   // explicit ask
+  else if (typeof args["prompt"] === "string") kickoff = args["prompt"];
+  else if (recipe?.kickoff) kickoff = recipe.kickoff;
 
-  // Enqueue seed (type-safe, single call)
-  if (typeof kickoff === "string" && kickoff.length > 0) {
-    await scheduler.enqueueUserText(kickoff);
+  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
+    Logger.info("[DBG] kickoff:", typeof kickoff === "string" ? kickoff : kickoff === true ? "(ask)" : "(none)");
   }
 
-  // Run the loop; normal finalize path
-  await scheduler.start();
+  await input.askInitialAndSend(kickoff);
 
+  // Give the enqueue a tick to land before starting the loop
+  await new Promise<void>((r) => setTimeout(r, 0));
+
+  // Run
   const reviewManager = new ReviewManager(projectDir, reviewMode);
+  await scheduler.start();
   await reviewManager.finalizeAndReview();
+
+  // Non-interactive or explicit scheduler stop comes back here.
   await finalizeOnce(scheduler, projectDir, reviewMode);
   R.exit(0);
 }
