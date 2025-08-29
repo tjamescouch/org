@@ -3,7 +3,7 @@
 import { Logger } from "../../logger";
 import { shInteractive } from "../../tools/sandboxed-sh";
 
-export type Scope = "sandbox" | "host";
+export type Scope = "container" | "host";
 
 /**
  * Launch the tmux UI inside the sandbox.
@@ -11,7 +11,7 @@ export type Scope = "sandbox" | "host";
  * - Ensures tmux exists (doctorTmux).
  * - Uses a stable bun path (/usr/local/bin/bun) with sensible fallbacks.
  */
-export async function launchTmuxUI(argv: string[], scope: Scope = "sandbox"): Promise<number> {
+export async function launchTmuxUI(argv: string[], scope: Scope = "container"): Promise<number> {
   const projectDir = process.env.ORG_PROJECT_DIR ?? process.cwd();
   const agentSessionId = process.env.ORG_AGENT_SESSION_ID ?? "default";
 

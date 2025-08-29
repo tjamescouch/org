@@ -6,21 +6,22 @@ import * as fsp from "fs/promises";
 import * as path from "path";
 import { execFileSync, spawn } from "child_process";
 
-import { R } from "./runtime/runtime";
-import { ExecutionGate } from "./tools/execution-gate";
-import { loadConfig } from "./config/config";
-import { Logger } from "./logger";
-import { RoundRobinScheduler } from "./scheduler";
-import { LlmAgent } from "./agents/llm-agent";
-import { MockModel } from "./agents/mock-model";
-import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
-import { getRecipe } from "./recipes";
-import { installTtyGuard, withCookedTTY } from "./input/tty-guard";
-import { ReviewManager } from "./scheduler/review-manager";
-import { sandboxMangers } from "./sandbox/session";
-import { SchedulerLike, TtyController } from "./input/tty-controller";
-import Passthrough from "./input/passthrough";
-import { trace } from "./debug/trace";
+import { R } from "../runtime/runtime";
+import { ExecutionGate } from "../tools/execution-gate";
+import { loadConfig } from "../config/config";
+import { Logger } from "../logger";
+import { RoundRobinScheduler } from "../scheduler";
+import { LlmAgent } from "../agents/llm-agent";
+import { MockModel } from "../agents/mock-model";
+import { makeStreamingOpenAiLmStudio } from "../drivers/streaming-openai-lmstudio";
+import { getRecipe } from "../recipes";
+import { installTtyGuard, withCookedTTY } from "../input/tty-guard";
+import { ReviewManager } from "../scheduler/review-manager";
+import { sandboxMangers } from "../sandbox/session";
+import { TtyController } from "../input/tty-controller";
+import Passthrough from "../input/passthrough";
+import { trace } from "../debug/trace";
+import { SchedulerLike } from "./scheduler";
 
 type InputPort = {
   askUser(fromAgent: string, content: string): Promise<void>;
@@ -60,10 +61,10 @@ function resolveProjectDir(seed: string): string {
       encoding: "utf8",
     }).trim();
     if (out) return out;
-  } catch {}
+  } catch { }
   let d = path.resolve(seed);
   while (true) {
-    if (fs.existsSync(path.join(d, ".git"))) return d;
+    if (fs.existsSync(path.join(d, "..git"))) return d;
     const up = path.dirname(d);
     if (up === d) break;
     d = up;
@@ -93,7 +94,7 @@ function setupProcessGuards() {
   if (dbgOn) {
     R.on("beforeExit", (code) => {
       Logger.info("[DBG] beforeExit", code, "— scheduler stays alive unless Ctrl+C");
-      setTimeout(() => {}, 60_000);
+      setTimeout(() => { }, 60_000);
     });
     R.on("uncaughtException", (e) => {
       Logger.info("[DBG] uncaughtException:", e);
@@ -158,7 +159,7 @@ function parseAgents(
 /** ---------- helpers for finalization/review ---------- */
 
 async function listRecentSessionPatches(projectDir: string, minutes = 20): Promise<string[]> {
-  const root = path.join(projectDir, ".org", "runs");
+  const root = path.join(projectDir, "..org", "runs");
   const out: string[] = [];
   try {
     const entries = await fsp.readdir(root);
@@ -168,9 +169,9 @@ async function listRecentSessionPatches(projectDir: string, minutes = 20): Promi
       try {
         const st = await fsp.stat(patch);
         if (st.isFile() && st.size > 0 && st.mtimeMs >= cutoff) out.push(patch);
-      } catch {}
+      } catch { }
     }
-  } catch {}
+  } catch { }
   return out.sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
 }
 
@@ -210,13 +211,13 @@ async function finalizeOnce(
 ) {
   try {
     await scheduler?.drain?.();
-  } catch {}
+  } catch { }
   try {
     await (sandboxMangers as any)?.finalizeAll?.();
-  } catch {}
+  } catch { }
   try {
     scheduler?.stop?.();
-  } catch {}
+  } catch { }
 
   const isTTY = R.stdout.isTTY;
   const patches = await listRecentSessionPatches(projectDir, 120);
@@ -267,11 +268,11 @@ async function main() {
     const tmuxScope: "host" | "container" =
       (R.env.ORG_TMUX_SCOPE as any) ?? (sandbox === "none" ? "host" : "container");
 
-    const { doctorTmux } = await import("./cli/doctor");
+    const { doctorTmux } = await import("../cli/doctor");
     if (tmuxScope === "host") {
       if ((await doctorTmux("host")) !== 0) R.exit(1);
     }
-    const { launchTmuxUI } = await import("./ui/tmux");
+    const { launchTmuxUI } = await import("../ui/tmux");
     const code = await launchTmuxUI(R.argv, tmuxScope);
     R.exit(code);
   }
@@ -346,8 +347,8 @@ async function main() {
     typeof args["prompt"] === "string"
       ? (args["prompt"] as string)
       : typeof recipe?.kickoff === "string"
-      ? (recipe!.kickoff as string)
-      : undefined;
+        ? (recipe!.kickoff as string)
+        : undefined;
 
   if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
     Logger.info(
