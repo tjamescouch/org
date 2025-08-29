@@ -78,6 +78,7 @@ export class RandomScheduler {
       const ready = this.agents.filter(a => this.inbox.hasWork(a.id));
       const order = this.shuffle(ready);
 
+      Logger.info('2.5 - agents with work:', ready);
       for (const agent of order) {
         Logger.info('3');
         if (this.rescheduleNow) break;
