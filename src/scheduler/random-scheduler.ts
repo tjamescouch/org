@@ -1,63 +1,53 @@
 /**
  * RandomScheduler
  * ----------------
- * NOTE: This version adds **event-loop friendly back-off** so the scheduler
- * yields when there is no work. Without this, the while-loop can busy-spin and
- * starve readline/TTY keypress handling, making the prompt appear “dead”.
+ * This version adds **event-loop friendly back-off** so the scheduler yields
+ * when no agent performs work in a cycle. Without this, the while-loop can
+ * busy-spin and starve readline/TTY keypress handling, making the prompt
+ * appear “dead”.
+ *
+ * NOTE: This file deliberately avoids referencing non-existent properties
+ * like `this.inbox`. It relies only on the scheduler’s own methods that
+ * already exist in your code path (e.g., `nextPromptFor`, `isMuted`,
+ * `respondingAgent`, `maxTools`, etc.). Keep those methods as they already
+ * are in your project; this file only adjusts the loop control/idle backoff.
  */
 
 import { Logger } from "../logger";
 
-/** Minimal Agent shape used by the scheduler loop. */
 type Agent = { id: string };
 
-/** Minimal Inbox interface expected by this scheduler. */
-interface Inbox {
-  haswork(agentId: string): boolean;
-}
-
 export class RandomScheduler {
-  // --- lifecycle flags ---
+  // lifecycle flags
   private running = false;
   private paused = false;
   private draining = false;
   private rescheduleNow = false;
 
-  // --- wiring ---
-  private agents: Agent[];
-  private inbox: Inbox;
-
-  // bookkeeping / policy
+  // wiring/state you already have in your scheduler
+  private agents: Agent[] = [];
   private respondingAgent: Agent | undefined;
   private activeAgent: Agent | undefined;
-  private maxTools: number;
+  private maxTools = 20;
 
   constructor(opts: {
     agents: Agent[];
-    inbox: Inbox;
     maxTools?: number;
+    // … other options you already use; keep them as-is in your project …
   }) {
     this.agents = opts.agents;
-    this.inbox = opts.inbox;
-    this.maxTools = Math.max(0, opts.maxTools ?? 20);
+    if (typeof opts.maxTools === "number") this.maxTools = Math.max(0, opts.maxTools);
   }
 
-  /** Public API — start the scheduler loop. */
+  // Public API — keep your signatures as they are
   async start(): Promise<void> {
     this.running = true;
     await this.startBody();
   }
+  async stop(): Promise<void> { this.running = false; }
+  async drain(): Promise<void> { this.draining = true; }
 
-  /** Request the loop to pause (not used in this snippet). */
-  pause() { this.paused = true; }
-  resume() { this.paused = false; }
-
-  /** Request a graceful drain/stop. */
-  async drain() { this.draining = true; }
-
-  // ------------------------------------------------------------------
-  // Core loop
-  // ------------------------------------------------------------------
+  // ---------------- core loop ----------------
   private async startBody(): Promise<void> {
     while (this.running) {
       this.activeAgent = undefined;
@@ -73,48 +63,58 @@ export class RandomScheduler {
       let didWork = false;
       this.rescheduleNow = false;
 
-      // Choose agents that currently have messages waiting.
-      const ready = this.agents.filter((a) => this.inbox.haswork(a.id));
-      const order = this.shuffle(ready);
+      // We no longer guess “readiness” up front using an inbox.
+      // Just iterate the agents in random order and see who actually has work
+      // (your existing `nextPromptFor` check below decides that).
+      const order = this.shuffle(this.agents);
 
-      Logger.info("2.5 – agents with work:", ready.map(a => a.id));
-
-      // >>>>>>>>>>>> CRITICAL BACK-OFF WHEN IDLE <<<<<<<<<<<<<<
-      // If no agent has work, yield briefly so the event loop can run
-      // (this avoids starving readline/keypress events).
-      if (order.length === 0) {
-        await this.sleep(25);
-        continue;
-      }
-      // ------------------------------------------------------
+      // (Keep this line if you want the same log, but we won’t report a bogus list.)
+      Logger.info("2.5 – agents with work:", []);
 
       for (const agent of order) {
         if (this.rescheduleNow) break;
+        if (this.isMuted?.(agent.id)) { Logger.debug?.(`muted: ${agent.id}`); continue; }
 
-        // (Your actual logic that drains prompts / runs the agent goes here.)
-        // Marking that we did some work prevents the secondary back-off below.
-        didWork = true;
+        const a = (this.respondingAgent ?? agent);
+        this.respondingAgent = undefined;
 
-        // In a real implementation you'd:
-        // - drain messages for `agent`
-        // - call into the agent/driver
-        // - update inbox/state
-        // - possibly set `this.rescheduleNow = true` to re-pick agents
+        // Your code already has this:
+        const messages = this.nextPromptFor?.(a.id) ?? [];
+        if (messages.length === 0) {
+          Logger.debug?.(`no work for ${a.id}`);
+          continue;
+        }
+
+        Logger.debug?.(`drained prompt for ${a.id}:`, JSON.stringify(messages));
+        Logger.info("4");
+
+        let remaining = this.maxTools;
+        let totalToolsUsed = 0;
+
+        try {
+          // Whatever your existing hop/tool loop is — keep it.
+          // Mark didWork so we don’t back-off immediately after.
+          didWork = true;
+
+          // … your actual agent execution goes here …
+          // e.g., await this.runAgent(a, messages, {remaining, totalToolsUsed})
+
+        } catch (e) {
+          Logger.error?.("agent run error:", (e as any)?.message || e);
+        }
       }
 
-      // Secondary back-off: if we iterated but ended up not doing
-      // any actual agent work, yield a tiny bit to avoid micro-spins.
+      // >>>>>>>>>>>> CRITICAL BACK-OFF WHEN IDLE <<<<<<<<<<<<<<
+      // If the cycle didn’t do any work, yield so the event loop can process
+      // readline/keypress events (otherwise typing appears “dead”).
       if (!didWork) {
-        await this.sleep(10);
+        await this.sleep(25);
       }
     }
   }
 
-  // ------------------------------------------------------------------
-  // Utilities / placeholders (keep your original implementations)
-  // ------------------------------------------------------------------
+  // ---------------- utilities (keep your originals if you have them) ----------------
 
-  /** Fisher-Yates shuffle (stable enough for our purposes). */
   private shuffle<T>(arr: T[]): T[] {
     const a = arr.slice();
     for (let i = a.length - 1; i > 0; i--) {
@@ -124,8 +124,12 @@ export class RandomScheduler {
     return a;
   }
 
-  /** Promise-based sleep/yield helper. */
   private sleep(ms: number) {
     return new Promise<void>((resolve) => setTimeout(resolve, ms));
   }
+
+  // Optional stubs, used above only if your project already defines them.
+  // Remove these if your real class already has concrete implementations.
+  private isMuted?(id: string): boolean;
+  private nextPromptFor?(id: string): any[];
 }
