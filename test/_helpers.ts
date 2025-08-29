@@ -1,8 +1,9 @@
-// tests/_helpers.ts
+// tests/helpers.ts
+import { tmpdir } from "os";
+import { rmSync, existsSync, mkdtempSync, writeFileSync, statSync } from "node:fs";
+import path from "path";
 import { execSync, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 
 function resolveCli(): string {
   // allow CI/dev override
@@ -107,4 +108,51 @@ export function runOrg(
     out: r.stdout?.toString("utf8") ?? "",
     err: r.stderr?.toString("utf8") ?? "",
   };
+}
+
+
+
+export function tempDir(prefix = "org-test-") {
+  const p = mkdtempSync(path.join(tmpdir(), prefix));
+  return {
+    path: p,
+    cleanup: () => rmSync(p, { recursive: true, force: true }),
+  };
+}
+
+export function haveCmd(cmd: string): boolean {
+  const r = spawnSync(["bash", "-lc", `command -v ${cmd}`], { stdio: "pipe" });
+  return r.exitCode === 0;
+}
+
+export function runBin(argv: string[], opts?: { cwd?: string; env?: Record<string, string> }) {
+  return spawnSync(["bun", ...argv], {
+    cwd: opts?.cwd,
+    env: { ...process.env, ...(opts?.env || {}) },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+export function captureWrites<T extends (...a: any[]) => any>(
+  target: { write: T },
+  fn: () => Promise<any> | any
+) {
+  const orig = target.write;
+  let buf = "";
+  // @ts-ignore
+  target.write = ((chunk: any) => { buf += String(chunk); }) as T;
+  const done = async () => {
+    // @ts-ignore
+    target.write = orig;
+    return buf;
+  };
+  return { done, run: fn() };
+}
+
+export function touch(p: string, data = "") {
+  writeFileSync(p, data, "utf8");
+}
+
+export function exists(p: string) {
+  return existsSync(p);
 }

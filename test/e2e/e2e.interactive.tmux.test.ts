@@ -1,4 +1,4 @@
-import { runOrgInTmux } from "./helpers/tmux-run";
+import { runOrgInTmux } from "../helpers/tmux-run";
 import * as path from "path";
 
 it.skip("ESC in interactive (tmux) applies patch only on 'y'", async () => {

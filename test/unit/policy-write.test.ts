@@ -2,8 +2,8 @@
 import { describe, it, expect } from "bun:test";
 
 // Adjust imports to your files:
-import { matchAny } from "../src/sandbox/glob";
-import { defaultPolicy } from "../src/sandbox/policy";
+import { matchAny } from "../../src/sandbox/glob";
+import { defaultPolicy } from "../../src/sandbox/policy";
 
 function isAllowed(path: string, allow: string[], deny: string[]) {
   if (deny?.length && matchAny(deny, path)) return false;

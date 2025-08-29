@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { execFileSync } from "child_process";
-import { runOrgWithKeys } from "./helpers/run-org-with-keys";
+import { runOrgWithKeys } from "../helpers/run-org-with-keys";
 
 // ESC key
 const ESC = "\x1b";

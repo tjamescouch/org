@@ -1,6 +1,6 @@
 // test/tag-splitter.test.ts
 import { describe, it, expect } from "bun:test";
-import { TagSplitter } from "../src/utils/tag-splitter";
+import { TagSplitter } from "../../src/utils/tag-splitter";
 
 type Opts = Parameters<typeof TagSplitter.split>[1];
 
