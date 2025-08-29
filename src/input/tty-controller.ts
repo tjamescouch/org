@@ -44,7 +44,7 @@ export interface TtyControllerOptions {
   prompt?: string;
   /** One-shot banner when entering askUser()/interjection. Default: "You: ". */
   interjectBanner?: string;
-  /** Hotkey to enter interjection. Default: "i". */
+  /** Hotkey to enter interjection explicitly. Default: "i". */
   interjectKey?: string;
 }
 
@@ -253,6 +253,7 @@ export class TtyController extends EventEmitter {
     if (this.state === "closed" || this.interjectActive) return;
     this.interjectActive = true;
     if (this.rl) {
+      // NOTE: we do not insert a leading newline unless askUser() requested it.
       this.stdout.write("\n");
       (this.rl as any).setPrompt?.(this.interjectBanner);
       (this.rl as any).prompt?.();
@@ -325,17 +326,7 @@ export class TtyController extends EventEmitter {
       return;
     }
 
-    // Auto-enter interjection on first printable char and keep it
-    if (!this.interjectActive && !key.ctrl && !key.meta) {
-      const ch = (key.sequence ?? key.name ?? "");
-      if (ch && ch.length === 1 && ch !== "\r" && ch !== "\n") {
-        this.beginInterject();
-        this.rl?.write(ch);
-        return;
-      }
-    }
-
-    // Explicit interjection hotkey (default: 'i')
+    // EXPLICIT interjection hotkey only (no auto-interject on first key)
     if (!key.ctrl && !key.meta) {
       const k = (key.name ?? key.sequence ?? "").toLowerCase();
       if (k === this.interjectKey) {
