@@ -1,6 +1,6 @@
 // tests/e2e/cli.anydir.test.ts
 import { describe, it, expect } from "bun:test";
-import { tempDir, runBin } from "../helpers";
+import { tempDir, runBin } from "../_helpers";
 import path from "path";
 import { symlinkSync } from "fs";
 

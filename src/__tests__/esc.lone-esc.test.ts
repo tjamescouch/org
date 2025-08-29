@@ -1,6 +1,6 @@
 // bun test
 import { expect, test } from "bun:test";
-import { InputController } from "../../input/controller";
+import { InputController } from "../input/controller";
 
 function wait(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 

@@ -1,8 +1,8 @@
 // tests/helpers.ts
 import { tmpdir } from "os";
+import { spawnSync, type SpawnSyncOptions, type SpawnSyncReturns, execSync } from "node:child_process";
 import { rmSync, existsSync, mkdtempSync, writeFileSync, statSync } from "node:fs";
 import path from "path";
-import { execSync, spawnSync } from "node:child_process";
 import { join } from "node:path";
 
 function resolveCli(): string {
@@ -125,11 +125,37 @@ export function haveCmd(cmd: string): boolean {
   return r.exitCode === 0;
 }
 
-export function runBin(argv: string[], opts?: { cwd?: string; env?: Record<string, string> }) {
-  return spawnSync(["bun", ...argv], {
-    cwd: opts?.cwd,
-    env: { ...process.env, ...(opts?.env || {}) },
-    stdio: ["ignore", "pipe", "pipe"],
+//Why tho
+export function runBin(cmd: string, args?: readonly string[], opts?: SpawnSyncOptions): SpawnSyncReturns<string>;
+export function runBin(cmd: readonly string[], opts?: SpawnSyncOptions): SpawnSyncReturns<string>;
+export function runBin(
+  cmd: string | readonly string[],
+  argsOrOpts?: readonly string[] | SpawnSyncOptions,
+  maybeOpts?: SpawnSyncOptions
+): SpawnSyncReturns<string> {
+  let file: string;
+  let argv: string[] = [];
+  let options: SpawnSyncOptions | undefined;
+
+  if (Array.isArray(cmd)) {
+    if (cmd.length === 0) throw new Error("runBin: command array cannot be empty");
+    [file, ...argv] = cmd as string[];
+    // second parameter is opts in this overload
+    options = (argsOrOpts as SpawnSyncOptions) ?? maybeOpts;
+  } else {
+    file = cmd;
+    if (Array.isArray(argsOrOpts)) {
+      argv = [...argsOrOpts];
+      options = maybeOpts;
+    } else {
+      options = argsOrOpts;
+    }
+  }
+
+  return spawnSync(file, argv, {
+    encoding: "utf8",
+    stdio: "pipe",
+    ...options,
   });
 }
 
