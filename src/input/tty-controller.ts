@@ -15,6 +15,7 @@
 import { EventEmitter } from "node:events";
 import { Readable, Writable } from "node:stream";
 import * as readline from "node:readline";
+import { SchedulerLike } from "../scheduler/scheduler";
 
 // ————————————————————————————————————————————————————————————————————————————
 // Types
@@ -30,17 +31,7 @@ export interface Keypress {
   shift?: boolean;
 }
 
-export interface SchedulerLike {
-  // Suggested (but optional) methods the application scheduler may expose.
-  enqueue?(item: { role: "user"; content: string }): void | Promise<void>;
-  enqueueUserText?(text: string): void | Promise<void>;
-  send?(text: string): void | Promise<void>;
-  stop?(): void | Promise<void>;
-  drain?(): void | Promise<boolean>;
-  stopDraining?(): void | Promise<void>;
-  isDraining?(): boolean;
-  handleUserInterjection?(text: string): void | Promise<void>;
-}
+
 
 export interface TtyControllerOptions {
   stdin: Readable & Partial<NodeJS.ReadStream>;
@@ -70,6 +61,8 @@ export interface TtyControllerOptions {
    * while in "reading" state.
    */
   prompt?: string;
+  interjectKey?: string;        // default: "i"
+  interjectBanner?: string;     // default: "You: "
 }
 
 export interface TtyControllerEvents {
@@ -102,6 +95,10 @@ export class TtyController extends EventEmitter {
   private outSize = 0;
   private flushTimer: NodeJS.Timeout | null = null;
 
+  private interjectKey: string;
+  private interjectBanner: string;
+  private interjectActive = false;
+
   constructor(opts: TtyControllerOptions) {
     super();
     this.stdin = opts.stdin;
@@ -113,6 +110,9 @@ export class TtyController extends EventEmitter {
     this.ensureTrailingNewline = !!opts.ensureTrailingNewline;
     this.flushIntervalMs = typeof opts.flushIntervalMs === "number" ? opts.flushIntervalMs : 24;
     this.flushHighWaterMark = typeof opts.flushHighWaterMark === "number" ? opts.flushHighWaterMark : 4096;
+
+    this.interjectKey = (opts.interjectKey ?? "i").toLowerCase();
+    this.interjectBanner = opts.interjectBanner ?? "You: ";
   }
 
   // ——————————————————————————————————————————————————————————
@@ -197,7 +197,21 @@ export class TtyController extends EventEmitter {
     this.flush(true);
     this.transition("closed");
     this.emit("close");
+
+    // at the end of start()
+    this.rl = readline.createInterface({
+      input: this.stdin as Readable,
+      crlfDelay: Infinity,
+      terminal: (this.stdin as NodeJS.ReadStream).isTTY ?? false,
+    });
+    this.rl.on("line", this.onLine);
+    this.rl.pause();                // <— important: only read during interjections
+
+    this.transition("reading");
+    this.renderPrompt();
+
   }
+
 
   // ——————————————————————————————————————————————————————————
   // Writing & flushing
@@ -250,6 +264,23 @@ export class TtyController extends EventEmitter {
     }
   }
 
+  private beginInterject() {
+    if (this.state === "closed" || this.interjectActive) return;
+    this.interjectActive = true;
+    this.stdout.write("\n");
+    (this.rl as any)?.setPrompt?.(this.interjectBanner);
+    this.rl?.resume();
+    (this.rl as any)?.prompt?.();
+  }
+
+  private endInterject() {
+    if (!this.interjectActive) return;
+    this.interjectActive = false;
+    this.rl?.pause();
+    this.renderPrompt();
+  }
+
+
   private renderPrompt() {
     if (!this.prompt) return;
     const out = this.stdout as Partial<NodeJS.WriteStream>;
@@ -274,21 +305,45 @@ export class TtyController extends EventEmitter {
     else if (s?.enqueue) await s.enqueue({ role: "user", content: line });
     else if (s?.send) await s.send(line);
     else this.emit("line", line);
+
+    // in onLine()
+    if (this.interjectActive) {
+      const text = line;
+      if (s?.enqueueUserText) await s.enqueueUserText(text);
+      else if (s?.enqueue) await s.enqueue({ role: "user", content: text });
+      else if (s?.send) await s.send(text);
+      else this.emit("line", text);
+
+      this.endInterject();
+      return;
+    }
+
+    // (keep the existing non-interjection path if you want lines to be accepted
+    // even without pressing the interject key; otherwise you can no-op here.)
+
   };
 
   private onKeypress = async (_: string, key: Keypress) => {
     this.emit("key", key);
 
-    // ESC => graceful shutdown
     if (key?.name === "escape") {
       await this.close(true);
       return;
     }
-    // Ctrl+C => fast exit
+
     if (key?.name === "c" && key.ctrl) {
       await this.close(false);
       return;
     }
+
+    if (!key.ctrl && !key.meta) {
+      const k = (key.name ?? key.sequence ?? "").toLowerCase();
+      if (k === this.interjectKey) {
+        this.beginInterject();
+        return;
+      }
+    }
+
 
     // Let the scheduler know that a user intervened (if supported)
     if (this.scheduler?.handleUserInterjection) {

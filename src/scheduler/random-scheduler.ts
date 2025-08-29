@@ -117,7 +117,6 @@ export class RandomScheduler {
                 a,
                 message,
                 this.filters,
-                await (sandboxMangers.get(a.id))?.getOrCreate(a.id)
               );
 
               didWork = true;

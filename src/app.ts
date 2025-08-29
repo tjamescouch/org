@@ -11,7 +11,6 @@ import { ExecutionGate } from "./tools/execution-gate";
 import { loadConfig } from "./config/config";
 import { Logger } from "./logger";
 import { RoundRobinScheduler } from "./scheduler";
-import { InputController } from "./input/controller";
 import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
 import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
@@ -19,7 +18,7 @@ import { getRecipe } from "./recipes";
 import { installTtyGuard, withCookedTTY } from "./input/tty-guard";
 import { ReviewManager } from "./scheduler/review-manager";
 import { sandboxMangers } from "./sandbox/session";
-import { TtyController } from "./input/tty-controller";
+import { SchedulerLike, TtyController } from "./input/tty-controller";
 
 
 installTtyGuard();
@@ -186,7 +185,7 @@ function applyPatch(projectDir: string, patchPath: string) {
  * Self-contained so ESC can call it via InputController without any external helper.
  */
 async function finalizeOnce(
-  scheduler: RoundRobinScheduler | null,
+  scheduler: SchedulerLike | null,
   projectDir: string,
   reviewMode: "ask" | "auto" | "never"
 ) {
@@ -306,23 +305,8 @@ async function main() {
     guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null,
   }));
 
-  // IO + scheduler
-  const input = new TtyController({
-    stdin: process.stdin,
-    stdout: process.stdout,
-    // Use your existing arg for prompt if present; keep it simple for now.
-    prompt: typeof args["prompt"] === "string" ? (args["prompt"] as string) : undefined,
-  });
-  //const input = new InputController({
-  //  interjectKey: String(args["interject-key"] || "i"),
-  //  interjectBanner: String(args["banner"] || "You: "),
-  //  // Allow ESC to finalize & exit, and run the same finalization path we use at shutdown:
-  //  finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
-  //  // (exitOnEsc defaults to true)
-  //});
-
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
-  const scheduler = new RoundRobinScheduler({
+  const scheduler: SchedulerLike = new RoundRobinScheduler({
     agents,
     maxTools,
     onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
@@ -331,6 +315,26 @@ async function main() {
     // promptEnabled: if --prompt is provided as a string we treat it as non-interactive seed
     promptEnabled: (typeof args["prompt"] === "boolean" ? args["prompt"] : R.stdin.isTTY),
   });
+
+
+  if (R.stdin.isTTY) {
+    const input = new TtyController({
+      stdin: R.stdin,
+      stdout: R.stdout,
+      prompt: typeof args["prompt"] === "string" ? String(args["prompt"]) : undefined,
+      interjectKey: String(args["interject-key"] ?? "i"),
+      interjectBanner: String(args["banner"] ?? "You: "),
+      finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
+    });
+    input.setScheduler(scheduler as any);
+    input.start();
+    return input;
+  }
+
+  // Non‑interactive: pipe stdin straight through
+  const input = new Passthrough({ stdin, stdout, scheduler });
+  input.start?.();
+
 
   input.setScheduler(scheduler);
   input.start();

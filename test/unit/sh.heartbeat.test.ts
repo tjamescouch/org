@@ -1,7 +1,7 @@
 // tests/unit/sh.heartbeat.test.ts
 import { describe, it, expect } from "bun:test";
 import { sandboxedSh } from "../../src/tools/sandboxed-sh";
-import { captureWrites } from "../helpers";
+import { captureWrites } from "../_helpers";
 
 describe("heartbeat emits dots on idle", () => {
   it("prints at least one dot for a sleeping command", async () => {
