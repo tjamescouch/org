@@ -326,22 +326,7 @@ async function main() {
 
   trace("app", "agents parsed", { agents: agents?.map((a) => a.id) });
 
-  // Late-bind input so scheduler can call back
-  let input!: InputPort;
-
-  const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
-  const scheduler: SchedulerLike = new RoundRobinScheduler({
-    agents,
-    maxTools,
-    onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
-    projectDir,
-    reviewMode,
-    // promptEnabled: if --prompt is provided as a string we treat it as non-interactive seed
-    promptEnabled: typeof args["prompt"] === "boolean" ? (args["prompt"] as boolean) : R.stdin.isTTY,
-  });
-  trace("app", "scheduler constructed");
-
-  // Seed initial instruction: CLI --prompt wins; else recipe.kickoff; else undefined
+  // Kickoff — compute FIRST so we can set promptEnabled correctly.
   const kickoff: string | undefined =
     typeof args["prompt"] === "string"
       ? (args["prompt"] as string)
@@ -349,12 +334,23 @@ async function main() {
       ? (recipe!.kickoff as string)
       : undefined;
 
-  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
-    Logger.info(
-      "[DBG] kickoff:",
-      typeof kickoff === "string" ? kickoff : "(none)",
-    );
-  }
+  // ---- Build scheduler (fix: promptEnabled must be FALSE when kickoff is a string) ----
+  let input!: InputPort;
+  const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
+  const scheduler: SchedulerLike = new RoundRobinScheduler({
+    agents,
+    maxTools,
+    onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
+    projectDir,
+    reviewMode,
+    promptEnabled:
+      typeof args["prompt"] === "boolean"
+        ? (args["prompt"] as boolean)
+        : kickoff
+        ? false // <— critical: seeded kickoff means do NOT prompt first
+        : R.stdin.isTTY,
+  });
+  trace("app", "scheduler constructed", { promptEnabled: (scheduler as any).promptEnabled });
 
   // ---- Build input (TTY or non-TTY) ----
   if (R.stdin.isTTY) {
@@ -363,7 +359,6 @@ async function main() {
       waitSuppressOutput: true,
       stdin: R.stdin,
       stdout: R.stdout,
-      // prompt label (banner), not the seed text
       prompt: String(args["banner"] ?? "User: "),
       interjectKey: String(args["interject-key"] ?? "i"),
       interjectBanner: String(args["banner"] ?? "You: "),
@@ -386,7 +381,7 @@ async function main() {
   input.start();
   trace("app", "input started", { tty: (R.stdin as any).isTTY });
 
-  // ---- Kickoff (seed) ----
+  // ---- Seed kickoff now (if provided) ----
   if (typeof kickoff === "string" && kickoff.length > 0) {
     const s: any = scheduler;
     if (s.enqueueUserText) {
@@ -403,20 +398,13 @@ async function main() {
     }
   }
 
-  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
-    Logger.info("[DBG] agents:", agents.map((a) => a.id).join(", "));
-    Logger.info("[DBG] maxTools:", maxTools);
-  }
-
-  // Ensure enqueue lands, then start the loop
+  // Let enqueue settle, then run the loop
   await new Promise<void>((r) => setTimeout(r, 0));
 
-  // ---- Run scheduler until stopped ----
   const reviewManager = new ReviewManager(projectDir, reviewMode);
   await scheduler.start();
   await reviewManager.finalizeAndReview();
 
-  // Non-interactive or explicit scheduler stop comes back here.
   await finalizeOnce(scheduler, projectDir, reviewMode);
   R.exit(0);
 }
