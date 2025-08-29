@@ -20,6 +20,7 @@ import { ReviewManager } from "./scheduler/review-manager";
 import { sandboxMangers } from "./sandbox/session";
 import { SchedulerLike, TtyController } from "./input/tty-controller";
 import Passthrough from "./input/passthrough";
+import { trace } from "./debug/trace";
 
 type InputPort = {
   askUser(fromAgent: string, content: string): Promise<void>;
@@ -313,6 +314,8 @@ async function main() {
     guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null,
   }));
 
+  trace("app", "agents parsed", { agents: agents?.map(a => a.id) });
+
   let input!: InputPort;
 
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
@@ -325,6 +328,7 @@ async function main() {
     // promptEnabled: if --prompt is provided as a string we treat it as non-interactive seed
     promptEnabled: (typeof args["prompt"] === "boolean" ? args["prompt"] : R.stdin.isTTY),
   });
+  trace("app", "scheduler constructed");
 
 
   // Seed initial instruction: CLI --prompt wins; else recipe.kickoff; else ask.

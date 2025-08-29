@@ -142,6 +142,7 @@ export class TtyController extends EventEmitter {
   // ——————————————————————————————————————————————————————————
 
   public setScheduler(s: SchedulerLike | undefined) {
+    Logger.info("Scheduler set to", s);
     this.scheduler = s;
   }
 
