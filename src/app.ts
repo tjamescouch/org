@@ -351,13 +351,12 @@ async function main() {
     });
     input.setScheduler(scheduler as any);
     input.start();
-    return input;
+  } else {
+    // Non‑interactive: pipe stdin straight through
+    input.setScheduler(scheduler);
+    input = new Passthrough({ stdin: R.stdin, stdout: R.stdout, scheduler });
+    input.start?.();
   }
-
-  // Non‑interactive: pipe stdin straight through
-  input.setScheduler(scheduler);
-  input = new Passthrough({ stdin: R.stdin, stdout: R.stdout, scheduler });
-  input.start?.();
 
 
 
