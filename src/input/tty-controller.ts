@@ -63,7 +63,7 @@ export interface TtyControllerOptions {
   finalizer?: () => void | Promise<void>;
   /**
    * Optional prompt string. When defined, it is re-rendered after each flush
-   * while in "reading" state.
+   * while in "reading" state. Defaults to "User: ".
    */
   prompt?: string;
   interjectKey?: string;        // default: "i"
@@ -113,13 +113,17 @@ export class TtyController extends EventEmitter {
   private waitSuppressOutput: boolean;
   private waitOverlayIntervalMs: number;
 
+  // Heuristic to detect "busy" output; updated on every write.
+  private lastWriteAt = 0;
+
   constructor(opts: TtyControllerOptions) {
     super();
     this.stdin = opts.stdin;
     this.stdout = opts.stdout;
     this.scheduler = opts.scheduler;
     this.finalizer = opts.finalizer;
-    this.prompt = opts.prompt;
+
+    this.prompt = (opts.prompt ?? "User: ");  // sensible default prompt
 
     this.ensureTrailingNewline = !!opts.ensureTrailingNewline;
     this.flushIntervalMs = typeof opts.flushIntervalMs === "number" ? opts.flushIntervalMs : 24;
@@ -146,7 +150,7 @@ export class TtyController extends EventEmitter {
   }
 
   public setPrompt(prompt: string | undefined) {
-    this.prompt = prompt;
+    this.prompt = prompt ?? "User: ";
     if (this.state === "reading") this.renderPrompt();
   }
 
@@ -226,6 +230,9 @@ export class TtyController extends EventEmitter {
    */
   public write(chunk: string | Buffer): void {
     if (this.state === "closed") return;
+
+    // Track activity for busy/idle heuristic
+    this.lastWriteAt = Date.now();
 
     // Drop output (e.g., CoT stream) while in wait overlay if requested
     if (this.waitOverlayActive && this.waitSuppressOutput) return;
@@ -336,12 +343,18 @@ export class TtyController extends EventEmitter {
   private onKeypress = async (_: string, key: Keypress) => {
     this.emit("key", key);
 
-    // ESC: at prompt => graceful exit; otherwise show waiting overlay.
+    // ESC: at prompt => graceful exit; otherwise show waiting overlay if busy.
     if (key?.name === "escape") {
       if (this.interjectActive) {
         await this.close(true);
       } else {
-        this.showWaitOverlay();
+        const recentlyBusy =
+          (Date.now() - this.lastWriteAt) < 1000 || // output in last second
+          this.outBuf.length > 0 ||                  // buffered output
+          !!this.flushTimer;                         // scheduled flush
+        if (recentlyBusy) {
+          this.showWaitOverlay();
+        } // else: do nothing (Esc only at prompt)
       }
       return;
     }
@@ -352,7 +365,16 @@ export class TtyController extends EventEmitter {
       return;
     }
 
-    // Interjection hotkey (default: 'i') to start a one-line prompt
+    // Auto-enter interjection on printable characters (so typing "just works").
+    if (!this.interjectActive && !key.ctrl && !key.meta) {
+      const ch = (key.sequence ?? key.name ?? "");
+      if (ch && ch.length === 1 && ch !== "\r" && ch !== "\n") {
+        this.beginInterject();
+        return; // rl already has the character
+      }
+    }
+
+    // Explicit interjection hotkey (default: 'i')
     if (!key.ctrl && !key.meta) {
       const k = (key.name ?? key.sequence ?? "").toLowerCase();
       if (k === this.interjectKey) {
