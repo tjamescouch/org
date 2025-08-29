@@ -158,3 +158,54 @@ export function makeControllerForTests(
 export const DefaultInput = new InputController();
 
 export type SchedulerLike = unknown;
+
+// -------------------- Back-compat: askInitialAndSend --------------------
+/**
+ * Historical method used by app.ts to optionally seed the first user message.
+ * - kickoff === false/undefined: do nothing
+ * - kickoff === true: interactive; do nothing (user will type)
+ * - kickoff is string: immediately send that text through available APIs
+ */
+//Why tho
+(InputController as any).prototype.askInitialAndSend = async function (
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  this: any,
+  kickoff: unknown
+): Promise<void> {
+  if (!kickoff || kickoff === true) return;
+
+  const text = String(kickoff);
+
+  // Prefer newer controller APIs if present
+  if (typeof this.send === "function") {
+    await this.send(text);
+    return;
+  }
+  if (typeof this.sendText === "function") {
+    await this.sendText(text);
+    return;
+  }
+
+  // If a scheduler is attached, try common scheduler APIs
+  const s = this.scheduler;
+  if (s) {
+    if (typeof s.enqueueUserText === "function") {
+      await s.enqueueUserText(text);
+      return;
+    }
+    if (typeof s.enqueue === "function") {
+      await s.enqueue({ role: "user", content: text });
+      return;
+    }
+    if (typeof s.send === "function") {
+      await s.send(text);
+      return;
+    }
+  }
+
+  // Last resort: if our stdin is a writable PassThrough (tests), write to it.
+  const w = this.stdin as unknown as { write?: (chunk: string) => unknown };
+  if (w && typeof w.write === "function") {
+    w.write(text + "\n");
+  }
+};
