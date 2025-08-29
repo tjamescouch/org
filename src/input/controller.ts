@@ -170,9 +170,9 @@ export class InputController {
    * Exposed as the scheduler’s `onAskUser` callback. It opens an echoing,
    * line-edited prompt, then restores raw/no-echo.
    */
-  askUser = async (fromAgent: string, content: string): Promise<string | null> => {
-    const promptText = this.promptTemplate(fromAgent, content);
-    const text = await this.runReadlineOnce(promptText);
+  askuser = async (fromagent: string, content: string): promise<string | null> => {
+    const prompttext = this.prompttemplate(fromagent, content);
+    const text = await this.runreadlineonce(prompttext);
     return (text ?? "").trim() || null;
   };
 

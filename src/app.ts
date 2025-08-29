@@ -19,6 +19,14 @@ import { installTtyGuard, withCookedTTY } from "./input/tty-guard";
 import { ReviewManager } from "./scheduler/review-manager";
 import { sandboxMangers } from "./sandbox/session";
 import { SchedulerLike, TtyController } from "./input/tty-controller";
+import Passthrough from "./input/passthrough";
+
+type InputPort = {
+  askUser(fromAgent: string, content: string): Promise<void>;
+  setScheduler(s: unknown): void;
+  start(): void;
+  close?(graceful?: boolean): Promise<void>;
+};
 
 
 installTtyGuard();
@@ -305,6 +313,8 @@ async function main() {
     guardCheck: (route: any, content: string, peers: string[]) => a.model.guardCheck?.(route, content, peers) ?? null,
   }));
 
+  let input!: InputPort;
+
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
   const scheduler: SchedulerLike = new RoundRobinScheduler({
     agents,
@@ -317,8 +327,15 @@ async function main() {
   });
 
 
+  // Seed initial instruction: CLI --prompt wins; else recipe.kickoff; else ask.
+  let kickoff: string | undefined = args["prompt"] as string ?? recipe?.kickoff ?? '(ask)'
+
+  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
+    Logger.info("[DBG] kickoff:", typeof kickoff === "string" ? kickoff : kickoff === true ? "(ask)" : "(none)");
+  }
+
   if (R.stdin.isTTY) {
-    const input = new TtyController({
+    input = new TtyController({
       stdin: R.stdin,
       stdout: R.stdout,
       prompt: typeof args["prompt"] === "string" ? String(args["prompt"]) : undefined,
@@ -332,12 +349,10 @@ async function main() {
   }
 
   // Non‑interactive: pipe stdin straight through
-  const input = new Passthrough({ stdin, stdout, scheduler });
+  input.setScheduler(scheduler);
+  input = new Passthrough({ stdin: R.stdin, stdout: R.stdout, scheduler });
   input.start?.();
 
-
-  input.setScheduler(scheduler);
-  input.start();
 
 
   if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
@@ -345,17 +360,6 @@ async function main() {
     Logger.info("[DBG] maxTools:", maxTools);
   }
 
-  // Seed initial instruction: CLI --prompt wins; else recipe.kickoff; else ask.
-  let kickoff: string | boolean | undefined;
-  if (args["prompt"] === true) kickoff = true;                   // explicit ask
-  else if (typeof args["prompt"] === "string") kickoff = args["prompt"];
-  else if (recipe?.kickoff) kickoff = recipe.kickoff;
-
-  if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
-    Logger.info("[DBG] kickoff:", typeof kickoff === "string" ? kickoff : kickoff === true ? "(ask)" : "(none)");
-  }
-
-  await input.askInitialAndSend(kickoff);
 
   // Give the enqueue a tick to land before starting the loop
   await new Promise<void>((r) => setTimeout(r, 0));

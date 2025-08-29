@@ -366,6 +366,40 @@ export class TtyController extends EventEmitter {
     this.emit("state", next, prev);
   }
 
+
+// TtyController (add a field)
+private interjectActive = false;
+private interjectDoneResolve: (() => void) | null = null;
+
+// begin/end helpers you likely already have
+private beginInterject() {
+  if (this.interjectActive) return;
+  this.interjectActive = true;
+  this.stdout.write("\n");
+  (this.rl as any)?.setPrompt?.(this.interjectBanner);
+  this.rl?.resume();
+  (this.rl as any)?.prompt?.();
+}
+private endInterject() {
+  if (!this.interjectActive) return;
+  this.interjectActive = false;
+  this.rl?.pause();
+  this.interjectDoneResolve?.();   // resolve askUser() promise
+  this.interjectDoneResolve = null;
+  this.renderPrompt();
+}
+
+// 1) Implement askUser: show the question, take one line, resolve.
+public async askUser(fromAgent: string, content: string): Promise<void> {
+  const header = fromAgent ? `[${fromAgent}] ` : "";
+  this.write(`\n${header}${content}\n`);
+  return new Promise<void>((resolve) => {
+    this.interjectDoneResolve = resolve;
+    this.beginInterject();
+  });
+}
+
+
   // Typed overloads for EventEmitter
   override on<U extends keyof TtyControllerEvents>(event: U, listener: TtyControllerEvents[U]): this;
   override on(event: string, listener: (...args: any[]) => void): this {
