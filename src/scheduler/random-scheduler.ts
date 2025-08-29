@@ -11,8 +11,8 @@ export class Inbox {
 
   /** Push a message. If `to` is not set or "@group", it goes to the group queue. */
   enqueue(msg: ChatMessage): void {
-    const to = msg.to ?? "@group";
-    if (to === "@group") {
+    const to = msg.to ?? "group";
+    if (to === "group") {
       this.group.push(msg);
     } else {
       const q = this.perAgent.get(to) ?? [];
