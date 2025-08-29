@@ -228,7 +228,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
    * - Explicit agent tags override everything (we reschedule immediately).
    * - Otherwise DM the default target, else broadcast to group.
    */
-  private async handleUserInterjection(text: string, opts?: { defaultTargetId?: string }) {
+  async handleUserInterjection(text: string, opts?: { defaultTargetId?: string }) {
     const raw = String(text ?? "");
     const parts = TagSplitter.split(raw, {
       allowSingleAt: true,

@@ -19,7 +19,8 @@ import { getRecipe } from "./recipes";
 import { installTtyGuard, withCookedTTY } from "./input/tty-guard";
 import { ReviewManager } from "./scheduler/review-manager";
 import { sandboxMangers } from "./sandbox/session";
-import { launchTmuxUI } from "./ui/tmux/launcher";
+import { TtyController } from "./input/tty-controller";
+
 
 installTtyGuard();
 
@@ -306,13 +307,19 @@ async function main() {
   }));
 
   // IO + scheduler
-  const input = new InputController({
-    interjectKey: String(args["interject-key"] || "i"),
-    interjectBanner: String(args["banner"] || "You: "),
-    // Allow ESC to finalize & exit, and run the same finalization path we use at shutdown:
-    finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
-    // (exitOnEsc defaults to true)
+  const input = new TtyController({
+    stdin: process.stdin,
+    stdout: process.stdout,
+    // Use your existing arg for prompt if present; keep it simple for now.
+    prompt: typeof args["prompt"] === "string" ? (args["prompt"] as string) : undefined,
   });
+  //const input = new InputController({
+  //  interjectKey: String(args["interject-key"] || "i"),
+  //  interjectBanner: String(args["banner"] || "You: "),
+  //  // Allow ESC to finalize & exit, and run the same finalization path we use at shutdown:
+  //  finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
+  //  // (exitOnEsc defaults to true)
+  //});
 
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
   const scheduler = new RoundRobinScheduler({
@@ -325,7 +332,9 @@ async function main() {
     promptEnabled: (typeof args["prompt"] === "boolean" ? args["prompt"] : R.stdin.isTTY),
   });
 
-  input.attachScheduler(scheduler);
+  input.setScheduler(scheduler);
+  input.start();
+
 
   if (R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false") {
     Logger.info("[DBG] agents:", agents.map(a => a.id).join(", "));

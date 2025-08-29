@@ -36,7 +36,7 @@ export interface SchedulerLike {
   enqueueUserText?(text: string): void | Promise<void>;
   send?(text: string): void | Promise<void>;
   stop?(): void | Promise<void>;
-  drain?(): void | Promise<void>;
+  drain?(): void | Promise<boolean>;
   stopDraining?(): void | Promise<void>;
   isDraining?(): boolean;
   handleUserInterjection?(text: string): void | Promise<void>;
