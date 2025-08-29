@@ -209,6 +209,9 @@ async function main() {
   const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
   const args = parseArgs(argv);
 
+  enableDebugIfRequested(args);
+  computeMode({ allowTools: getRecipe(null)?.allowTools });
+
   Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
 
   const projectDir = resolveProjectDir(R.cwd());
