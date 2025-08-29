@@ -55,6 +55,8 @@ export class RandomScheduler {
 
   /** Start the scheduling loop (idempotent). */
   private startBody = async (): Promise<void> => {
+    Logger.info("START BODY", this.agents);
+
     if (this.running) return;
     this.running = true;
     this.keepAlive = setInterval(() => { /* keep event loop alive during idle */ }, 30_000);
