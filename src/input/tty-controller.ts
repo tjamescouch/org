@@ -1,12 +1,12 @@
 /**
  * TTY Controller
  * --------------
- * A small, well-scoped class that owns interactive TTY I/O.
- * - Provides a minimal state machine: "idle" → "reading" → "draining"/"closed".
- * - Buffered output with periodic flush to reduce flicker.
- * - Predictable keys: ESC (graceful), Ctrl+C (fast), normal REPL typing/Enter.
+ * Predictable REPL I/O:
+ * - ESC (graceful), Ctrl+C (fast)
+ * - normal typing and Enter (no duplicated first char, no stray newline)
+ * - explicit interjection only via askUser() or hotkey
  *
- * When ORG_TRACE=1, we emit trace logs for raw data, keypress, and line.
+ * Enable ORG_TRACE=1 to see [TRACE] tty.data / tty.keypress / tty.onLine.
  */
 
 import { EventEmitter } from "node:events";
@@ -29,23 +29,16 @@ export interface TtyControllerOptions {
   waitOverlayMessage?: string;            // default: "Waiting for agent to finish"
   waitSuppressOutput?: boolean;           // default: true
   waitOverlayIntervalMs?: number;         // default: 250
-
   stdin: Readable & Partial<NodeJS.ReadStream>;
   stdout: Writable & Partial<NodeJS.WriteStream>;
   scheduler?: SchedulerLike;
-
   ensureTrailingNewline?: boolean;        // default: false
   flushIntervalMs?: number;               // default: 24
   flushHighWaterMark?: number;            // default: 4096
-
   finalizer?: () => void | Promise<void>;
-
-  /** Prompt label shown by readline during normal REPL mode. Default: "User: ". */
-  prompt?: string;
-  /** One-shot banner when entering askUser()/interjection. Default: "You: ". */
-  interjectBanner?: string;
-  /** Hotkey to enter interjection explicitly. Default: "i". */
-  interjectKey?: string;
+  prompt?: string;                        // label; default "User: "
+  interjectBanner?: string;               // label used during askUser(); default "You: "
+  interjectKey?: string;                  // hotkey to enter interjection explicitly; default "i"
 }
 
 export interface TtyControllerEvents {
@@ -89,7 +82,6 @@ export class TtyController extends EventEmitter {
 
   private lastWriteAt = 0;
 
-  // listeners so we can cleanly detach
   private dataListener?: (chunk: Buffer | string) => void;
 
   constructor(opts: TtyControllerOptions) {
@@ -121,28 +113,18 @@ export class TtyController extends EventEmitter {
     if (this.state === "reading") this.renderPrompt();
   }
 
-  /**
-   * Start interactive I/O. Important details:
-   * - readline is created with both input and output so typed chars echo.
-   * - we set the prompt on the readline interface and call rl.prompt(true).
-   * - we *do not* pause stdin; we resume it so keypress/data fire consistently.
-   */
   public start(): void {
     if (this.state !== "idle") return;
 
     const isTrace = process.env.ORG_TRACE === "1";
     const rs = this.stdin as NodeJS.ReadStream;
 
-    // Keypress events
     readline.emitKeypressEvents(rs);
-
-    // Raw mode and resume so 'data' and 'keypress' actually flow
     if (rs.isTTY?.valueOf?.() || rs.isTTY === true) {
       try { rs.setRawMode?.(true); } catch {}
       try { rs.resume?.(); } catch {}
     }
 
-    // Optional raw byte trace
     if (isTrace) {
       this.dataListener = (chunk: Buffer | string) => {
         const b = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
@@ -154,7 +136,6 @@ export class TtyController extends EventEmitter {
 
     rs.on("keypress", this.onKeypress);
 
-    // Create readline with BOTH input and output so local echo works
     this.rl = readline.createInterface({
       input: this.stdin as Readable,
       output: this.stdout as Writable,
@@ -162,10 +143,7 @@ export class TtyController extends EventEmitter {
       terminal: rs.isTTY ?? false,
     });
 
-    // Now (re)bind keypress to the interface context too
     readline.emitKeypressEvents(rs, this.rl);
-
-    // Show the initial prompt under readline's control
     this.rl.setPrompt(this.prompt);
     (this.rl as any).prompt(true);
 
@@ -203,7 +181,7 @@ export class TtyController extends EventEmitter {
     this.emit("close");
   }
 
-  // ------------------------- output buffering -------------------------
+  // ---------- output buffering ----------
 
   public write(chunk: string | Buffer): void {
     if (this.state === "closed") return;
@@ -236,7 +214,6 @@ export class TtyController extends EventEmitter {
     this.stdout.write(data);
     this.emit("flush");
 
-    // Re-render rl prompt if present
     if (this.state === "reading" && this.rl) (this.rl as any).prompt(true);
   }
 
@@ -246,14 +223,13 @@ export class TtyController extends EventEmitter {
     }
   }
 
-  // ------------------------- interjection/session -------------------------
+  // ---------- interjection ----------
 
   private beginInterject() {
     this.hideWaitOverlay();
     if (this.state === "closed" || this.interjectActive) return;
     this.interjectActive = true;
     if (this.rl) {
-      // NOTE: we do not insert a leading newline unless askUser() requested it.
       this.stdout.write("\n");
       (this.rl as any).setPrompt?.(this.interjectBanner);
       (this.rl as any).prompt?.();
@@ -265,7 +241,6 @@ export class TtyController extends EventEmitter {
     this.interjectActive = false;
     this.interjectDoneResolve?.();
     this.interjectDoneResolve = null;
-    // restore main prompt
     if (this.rl) {
       (this.rl as any).setPrompt?.(this.prompt);
       (this.rl as any).prompt?.(true);
@@ -281,7 +256,7 @@ export class TtyController extends EventEmitter {
     }
   }
 
-  // ------------------------- input handling -------------------------
+  // ---------- input handling ----------
 
   private onLine = async (line: string) => {
     if (process.env.ORG_TRACE === "1") {
@@ -336,7 +311,7 @@ export class TtyController extends EventEmitter {
     }
   };
 
-  // ------------------------- helpers -------------------------
+  // ---------- helpers ----------
 
   private transition(next: TtyState) {
     if (this.state === next) return;
@@ -372,7 +347,6 @@ export class TtyController extends EventEmitter {
     this.stdout.write("\n");
   }
 
-  // Ask user one-off
   public async askUser(fromAgent: string, content: string): Promise<void> {
     const header = fromAgent ? `[${fromAgent}] ` : "";
     this.write(`\n${header}${content}\n`);
