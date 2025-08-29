@@ -30,6 +30,20 @@ export class InputController extends EventEmitter {
     this.passthrough = !!on;
   }
 
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  attachScheduler(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    this: any,
+    scheduler: SchedulerLike
+  ) {
+    this.scheduler = scheduler;
+    if (typeof this.setScheduler === "function") {
+      this.setScheduler(scheduler);
+    }
+    return this;
+  };
+
   /** Entry-point for raw bytes coming from TTY. */
   public feed(buf: Buffer) {
     try {
@@ -142,3 +156,5 @@ export function makeControllerForTests(
 
 // Small default singleton (kept for convenience)
 export const DefaultInput = new InputController();
+
+export type SchedulerLike = unknown;
