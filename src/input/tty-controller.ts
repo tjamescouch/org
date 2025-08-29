@@ -40,7 +40,7 @@ export interface TtyControllerOptions {
   flushIntervalMs?: number;               // default: 24
   flushHighWaterMark?: number;            // default: 4096
   finalizer?: () => void | Promise<void>;
-  prompt?: string;                        // label; default "User: "
+  prompt?: string;                        // label; default "You: "
   interjectBanner?: string;               // label used during askUser(); default "You: "
   interjectKey?: string;                  // hotkey to enter interjection explicitly; default "i"
 }
@@ -95,7 +95,7 @@ export class TtyController extends EventEmitter {
     this.scheduler = opts.scheduler;
     this.finalizer = opts.finalizer;
 
-    this.prompt = opts.prompt ?? "User: ";
+    this.prompt = opts.prompt ?? "You: ";
     this.interjectBanner = opts.interjectBanner ?? "You: ";
     this.interjectKey = (opts.interjectKey ?? "i").toLowerCase();
 
@@ -113,7 +113,7 @@ export class TtyController extends EventEmitter {
   public setFinalizer(f: (() => void | Promise<void>) | undefined) { this.finalizer = f; }
 
   public setPrompt(prompt: string | undefined) {
-    this.prompt = prompt ?? "User: ";
+    this.prompt = prompt ?? "You: ";
     if (this.state === "reading") this.renderPrompt();
   }
 
