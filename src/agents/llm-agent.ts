@@ -121,7 +121,7 @@ export class LlmAgent extends Agent {
    * - Stop after first assistant text with no more tool calls or when budget is hit.
    */
   async respond(messages: ChatMessage[], maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply[]> {
-    Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
+    Logger.info(`${this.id} start`, { messages });
     if (abortCallback?.()) {
       Logger.debug("Aborted turn");
 
