@@ -16,6 +16,7 @@ import { EventEmitter } from "node:events";
 import { Readable, Writable } from "node:stream";
 import * as readline from "node:readline";
 import { SchedulerLike } from "../scheduler/scheduler";
+import { Logger } from "../logger";
 
 // ————————————————————————————————————————————————————————————————————————————
 // Types
@@ -155,19 +156,16 @@ export class TtyController extends EventEmitter {
   }
 
   /**
-   * Begin interactive processing. This attaches listeners and transitions
-   * the controller to the "reading" state.
-   *
-   * We do NOT pause the stream; we explicitly resume stdin after raw mode so
-   * keypress events always fire, even while the model is thinking.
+   * Begin interactive processing. We do NOT pause; we resume stdin so keypress
+   * events always fire, even while the model is thinking.
    */
   public start(): void {
     if (this.state !== "idle") return;
 
     readline.emitKeypressEvents(this.stdin as NodeJS.ReadStream);
     if ((this.stdin as NodeJS.ReadStream).isTTY?.valueOf?.() || (this.stdin as NodeJS.ReadStream).isTTY === true) {
-      try { (this.stdin as NodeJS.ReadStream).setRawMode?.(true); } catch { /* ignore for non-ttys */ }
-      try { (this.stdin as NodeJS.ReadStream).resume?.(); } catch { /* ignore */ }
+      try { (this.stdin as NodeJS.ReadStream).setRawMode?.(true); } catch {}
+      try { (this.stdin as NodeJS.ReadStream).resume?.(); } catch {}
     }
 
     (this.stdin as NodeJS.ReadStream).on("keypress", this.onKeypress);
@@ -183,10 +181,6 @@ export class TtyController extends EventEmitter {
     this.renderPrompt();
   }
 
-  /**
-   * Stop reading and close resources. If `graceful` is true, try to stop and
-   * drain the scheduler before closing and call the finalizer.
-   */
   public async close(graceful = false): Promise<void> {
     this.hideWaitOverlay();
     if (this.state === "closed") return;
@@ -299,20 +293,13 @@ export class TtyController extends EventEmitter {
   // Input handling
   // ——————————————————————————————————————————————————————————
 
-  /**
-   * Always forward a completed line to the scheduler.
-   * If we were in askUser() interjection mode, resolve it; otherwise this
-   * behaves like a normal REPL: pressing Enter sends the line.
-   */
   private onLine = async (line: string) => {
-    // Ignore pure empty lines to reduce accidental noise
-    if (line == null || line.length === 0) {
-      this.renderPrompt();
-      return;
+    // TRACE: prove we captured a line and are about to enqueue it
+    if (process.env.ORG_TRACE === "1") {
+      Logger.info(`[TRACE] tty.onLine`, { line });
     }
 
-    this.hideWaitOverlay();
-
+    // Accept empty lines too — the scheduler policy can decide to ignore them
     const s = this.scheduler;
     try {
       if (s?.enqueueUserText)       await s.enqueueUserText(line);
@@ -320,15 +307,13 @@ export class TtyController extends EventEmitter {
       else if (s?.send)             await s.send(line);
       else                          this.emit("line", line);
     } finally {
-      // If we were in askUser(), end interjection; otherwise this is a no-op.
-      this.endInterject();
+      this.endInterject(); // resolves askUser() if active; no-op otherwise
     }
   };
 
   private onKeypress = async (_: string, key: Keypress) => {
     this.emit("key", key);
 
-    // ESC: at prompt => graceful exit; otherwise show waiting overlay if busy.
     if (key?.name === "escape") {
       if (this.interjectActive) {
         await this.close(true);
@@ -342,13 +327,12 @@ export class TtyController extends EventEmitter {
       return;
     }
 
-    // Ctrl+C => fast exit
     if (key?.name === "c" && key.ctrl) {
       await this.close(false);
       return;
     }
 
-    // Optional: auto-enter interjection on first printable char and keep it
+    // Auto-enter interjection on first printable char and keep it
     if (!this.interjectActive && !key.ctrl && !key.meta) {
       const ch = (key.sequence ?? key.name ?? "");
       if (ch && ch.length === 1 && ch !== "\r" && ch !== "\n") {
@@ -379,10 +363,6 @@ export class TtyController extends EventEmitter {
     this.emit("state", next, prev);
   }
 
-  // ——————————————————————————————————————————————————————————
-  // “Waiting…” overlay
-  // ——————————————————————————————————————————————————————————
-
   private showWaitOverlay() {
     if (this.waitOverlayActive) return;
     this.waitOverlayActive = true;
@@ -411,10 +391,6 @@ export class TtyController extends EventEmitter {
     if (out.clearLine && out.cursorTo) { out.clearLine(0); out.cursorTo(0); }
     this.stdout.write("\n");
   }
-
-  // ——————————————————————————————————————————————————————————
-  // Ask user (used by scheduler callback)
-  // ——————————————————————————————————————————————————————————
 
   public async askUser(fromAgent: string, content: string): Promise<void> {
     const header = fromAgent ? `[${fromAgent}] ` : "";
