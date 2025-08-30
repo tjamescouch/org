@@ -135,3 +135,8 @@ ENV NO_PROXY=localhost,127.0.0.1,::1,host.containers.internal,192.168.56.1
 
 # (Optional) if you want PATH to always contain bun for clean tmux shells:
 ENV PATH="/root/.bun/bin:/home/ollama/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+COPY container/entrypoint.sh /usr/local/bin/org-entrypoint
+RUN chmod +x /usr/local/bin/org-entrypoint
+# ENTRYPOINT ["/usr/local/bin/org-entrypoint"]  # (optional; you can also call it explicitly)
+
