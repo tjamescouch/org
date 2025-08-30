@@ -237,13 +237,15 @@ async function main() {
     : typeof recipe?.kickoff === "string" ? recipe!.kickoff
     : undefined;
 
-  let input!: InputPort;
+  const wrapper: any = {
+    input: undefined
+  }
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
 
   const scheduler: IScheduler = new RandomScheduler({
     agents,
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
-    onAskUser: (fromAgent: string, content: string) => input.askUser(fromAgent, content),
+    onAskUser: (fromAgent: string, content: string) => wrapper.input.askUser(fromAgent, content),
     projectDir,
     reviewMode,
     promptEnabled:
@@ -254,7 +256,7 @@ async function main() {
 
   // Build input
   if (R.stdin.isTTY) {
-    input = new TtyController({
+    wrapper.input = new TtyController({
       waitOverlayMessage: "Waiting for agent to finish",
       waitSuppressOutput: true,
       stdin: R.stdin,
@@ -265,7 +267,7 @@ async function main() {
       finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
     });
   } else {
-    input = new Passthrough({
+    wrapper.input = new Passthrough({
       stdin: R.stdin,
       stdout: R.stdout,
       scheduler,
@@ -273,8 +275,8 @@ async function main() {
     });
   }
 
-  input.setScheduler(scheduler);
-  input.start();
+  wrapper.input.setScheduler(scheduler);
+  wrapper.input.start();
 
   // Enqueue seed (type-safe, single call)
   if (typeof kickoff === "string" && kickoff.length > 0) {
