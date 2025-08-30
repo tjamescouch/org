@@ -240,13 +240,19 @@ async function main() {
 
   Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
 
-  // Host starting directory (where user launched org), and nearest repo root.
-  const hostStartDir = path.resolve(R.cwd());
+  // Host starting directory (prefer an explicit host hint if provided).
+  const hostStartDir =
+    (typeof process.env.ORG_HOST_PWD === "string" && process.env.ORG_HOST_PWD.trim())
+      ? path.resolve(process.env.ORG_HOST_PWD)
+      : path.resolve((process.env.PWD && process.env.PWD.trim()) ? process.env.PWD : R.cwd());
+
+  // Resolve repo root from that frozen starting directory.
   const projectDir = resolveProjectDir(hostStartDir);
 
-  // Helpful banner (mirrors the existing engine/image lines you already print).
+  // Helpful banner (diagnostics)
   Logger.info(`[org] host cwd = ${hostStartDir}`);
   Logger.info(`[org] repo  dir = ${projectDir}`);
+  Logger.info(`[org] process.cwd = ${process.cwd()}  PWD=${process.env.PWD ?? ""}`);
 
   const recipeName = (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
   const recipe = getRecipe(recipeName || null);
