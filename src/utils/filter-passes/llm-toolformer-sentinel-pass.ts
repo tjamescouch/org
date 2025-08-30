@@ -2,129 +2,168 @@
 import type { LLMNoiseFilterPass, PassFeedResult } from "./llm-noise-filter-pass";
 
 /**
- * ToolformerSentinelPass: stream-safe, fence-aware.
- * - Works only outside generic code fences.
- * - Drops: <|tool_call_start|> ... <|tool_call_end|>, <tool_call>...</tool_call>, <tool>...</tool>
- * - Unwraps (keep inner): <|tool_result_start|>...<|tool_result_end|>, <|tool_output_start|>...<|tool_output_end|>, <tool_output>...</tool_output>
- * - Drops singletons like <|tool_call|>, <|tool_result|>, <|tool_output|>, <|tool_invocation|>.
- * - Holds from the earliest unmatched *start* until the corresponding *end* arrives.
+ * ToolformerSentinelPass: buffered + fence‑aware.
+ *
+ * Drops tool scaffolding blocks and unwraps tool results, without ever leaking
+ * partial starts. Generic code fences (```lang … ```) are preserved verbatim.
  */
 export class ToolformerSentinelPass implements LLMNoiseFilterPass {
-  private tail = "";
+  private buf = "";
 
-  private readonly specs: ReadonlyArray<{ start: RegExp; end: RegExp; mode: "drop" | "unwrap" }> = [
-    { start: /<\|tool_call_start\|>/i,       end: /<\|tool_call_end\|>/i,       mode: "drop"   },
-    { start: /<\|tool_invocation_start\|>/i, end: /<\|tool_invocation_end\|>/i, mode: "drop"   },
-    { start: /<\|tool_result_start\|>/i,     end: /<\|tool_result_end\|>/i,     mode: "unwrap" },
-    { start: /<\|tool_output_start\|>/i,     end: /<\|tool_output_end\|>/i,     mode: "unwrap" },
-    { start: /<tool_call>/i,                 end: /<\/tool_call>/i,             mode: "drop"   },
-    { start: /<tool>/i,                      end: /<\/tool>/i,                  mode: "drop"   },
-    { start: /<tool_output>/i,               end: /<\/tool_output>/i,           mode: "unwrap" },
+  // Literal starts for partial-prefix detection at tail:
+  private readonly startLiterals = [
+    "<|tool_call_start|>",
+    "<|tool_invocation_start|>",
+    "<|tool_result_start|>",
+    "<|tool_output_start|>",
+    "<tool_call>",
+    "<tool>",
+    "<tool_output>",
   ];
 
   feed(chunk: string): PassFeedResult {
-    const input = (this.tail ?? "") + (chunk ?? "");
+    this.buf += chunk ?? "";
 
-    // 1) If a generic code fence is open, hold from that start.
-    const holdFenceAt = this.findUnmatchedFenceStart(input);
-    const pre = holdFenceAt === -1 ? input : input.slice(0, holdFenceAt);
-    const post = holdFenceAt === -1 ? "" : input.slice(holdFenceAt);
+    // 1) Protect complete generic fences while transforming closed blocks.
+    const { masked, fences } = this.maskCompleteFences(this.buf);
+    let work = masked;
 
-    // 2) Split `pre` into fence + text segments (absolute offsets).
-    const segs = this.splitCompleteFences(pre);
+    // 2) Resolve all closed pairs repeatedly (drop/unwrap)
+    work = this.resolveClosed(work, /<\|tool_call_start\|>/i, /<\|tool_call_end\|>/i, "drop");
+    work = this.resolveClosed(work, /<\|tool_invocation_start\|>/i, /<\|tool_invocation_end\|>/i, "drop");
+    work = this.resolveClosed(work, /<\|tool_result_start\|>/i, /<\|tool_result_end\|>/i, "unwrap");
+    work = this.resolveClosed(work, /<\|tool_output_start\|>/i, /<\|tool_output_end\|>/i, "unwrap");
+    work = this.resolveClosed(work, /<tool_call>/i, /<\/tool_call>/i, "drop");
+    work = this.resolveClosed(work, /<tool>/i, /<\/tool>/i, "drop");
+    work = this.resolveClosed(work, /<tool_output>/i, /<\/tool_output>/i, "unwrap");
 
-    let cleaned = "";
-    let holdFromAbs: number | null = null;
+    // Drop simple singletons anywhere outside fences
+    work = work.replace(/<\|tool_(?:call|result|output|invocation)\|>/gi, "");
 
-    for (const seg of segs) {
-      if (seg.type === "fence") {
-        cleaned += pre.slice(seg.start, seg.end); // preserve fences verbatim
-        continue;
-      }
-      const res = this.processOutside(pre.slice(seg.start, seg.end));
-      cleaned += res.processed;
-      if (res.holdFrom >= 0) {
-        holdFromAbs = seg.start + res.holdFrom;
-        break;
-      }
+    // Restore fences
+    this.buf = this.unmask(fences, work);
+
+    // 3) Compute earliest hold index
+    let holdAt: number | null = null;
+
+    // 3a) Unmatched generic fence start
+    const fenceStart = this.findUnmatchedFenceStart(this.buf);
+    if (fenceStart !== -1) holdAt = fenceStart;
+
+    // 3b) Any unmatched tool block start (exact start present; end missing)
+    const specs: Array<{ s: RegExp; e: RegExp }> = [
+      { s: /<\|tool_call_start\|>/i,       e: /<\|tool_call_end\|>/i },
+      { s: /<\|tool_invocation_start\|>/i, e: /<\|tool_invocation_end\|>/i },
+      { s: /<\|tool_result_start\|>/i,     e: /<\|tool_result_end\|>/i },
+      { s: /<\|tool_output_start\|>/i,     e: /<\|tool_output_end\|>/i },
+      { s: /<tool_call>/i,                 e: /<\/tool_call>/i },
+      { s: /<tool>/i,                      e: /<\/tool>/i },
+      { s: /<tool_output>/i,               e: /<\/tool_output>/i },
+    ];
+    for (const spec of specs) {
+      const i = this.earliestUnmatchedStart(this.buf, spec.s, spec.e);
+      if (i !== null) holdAt = holdAt === null ? i : Math.min(holdAt, i);
     }
 
-    if (holdFromAbs !== null) {
-      this.tail = pre.slice(holdFromAbs) + post;
-      return { cleaned, removed: input.length - (cleaned.length + this.tail.length) };
-    }
+    // 3c) Partial start literal at tail (e.g., "<", "<|tool", "<|tool_call_sta")
+    const partialIdx = this.partialStartAtTail(this.buf, this.startLiterals);
+    if (partialIdx !== null) holdAt = holdAt === null ? partialIdx : Math.min(holdAt, partialIdx);
 
-    // 3) Hold partial sentinel at end (e.g., "<", "<|tool", "<|tool_call_start|")
-    const partialFrom = this.findPartialSentinelStart(cleaned, /^<\|?tool/i);
-    if (partialFrom !== -1) {
-      this.tail = cleaned.slice(partialFrom) + post;
-      cleaned = cleaned.slice(0, partialFrom);
-      return { cleaned, removed: input.length - (cleaned.length + this.tail.length) };
+    // 4) Emit safe prefix
+    let cleaned: string;
+    if (holdAt === null) {
+      cleaned = this.buf;
+      this.buf = "";
+    } else {
+      cleaned = this.buf.slice(0, holdAt);
+      this.buf = this.buf.slice(holdAt);
     }
-
-    this.tail = post;
-    return { cleaned, removed: input.length - (cleaned.length + this.tail.length) };
+    return { cleaned, removed: 0 };
   }
 
   flush(): string {
-    const out = this.tail;
-    this.tail = "";
+    const out = this.buf;
+    this.buf = "";
     return out;
   }
 
-  // ---- block processing outside fences ----
+  // ---------- transforms ----------
 
-  private processOutside(s: string): { processed: string; holdFrom: number } {
-    let work = s;
-
-    // First, resolve any *closed* blocks repeatedly until stable.
-    let changed = true;
-    while (changed) {
-      const before = work;
-      for (const spec of this.specs) {
-        work = this.resolveClosedBlocks(work, spec.start, spec.end, spec.mode);
-      }
-      changed = work !== before;
-    }
-
-    // Next, if any unmatched start remains, HOLD from the earliest one.
-    let holdFrom = -1;
-    for (const spec of this.specs) {
-      const i = this.indexOfRegex(work, spec.start, 0);
-      if (i !== -1 && this.indexOfRegex(work, spec.end, i + 1) === -1) {
-        holdFrom = holdFrom === -1 ? i : Math.min(holdFrom, i);
-      }
-    }
-    if (holdFrom !== -1) return { processed: work.slice(0, holdFrom), holdFrom };
-
-    // Finally, drop simple singletons.
-    work = work.replace(/<\|tool_(?:call|result|output|invocation)\|>/gi, "");
-
-    return { processed: work, holdFrom: -1 };
-  }
-
-  private resolveClosedBlocks(s: string, start: RegExp, end: RegExp, mode: "drop" | "unwrap"): string {
-    let from = 0;
-    while (true) {
-      const i = this.indexOfRegex(s, start, from);
-      if (i === -1) break;
-      const j = this.indexOfRegex(s, end, i + 1);
-      if (j === -1) break; // leave unmatched for streaming
-      const startLen = s.slice(i).match(start)?.[0].length ?? 0;
-      const endLen = s.slice(j).match(end)?.[0].length ?? 0;
-      if (mode === "drop") {
-        s = s.slice(0, i) + s.slice(j + endLen);
-        from = i;
-      } else {
-        const inner = s.slice(i + startLen, j);
-        s = s.slice(0, i) + inner + s.slice(j + endLen);
-        from = i + inner.length;
-      }
-    }
+  private resolveClosed(s: string, start: RegExp, end: RegExp, mode: "drop" | "unwrap"): string {
+    const pair = new RegExp(`${start.source}([\\s\\S]*?)${end.source}`, "gi");
+    let prev: string;
+    do {
+      prev = s;
+      s = s.replace(pair, (_m, inner: string) => (mode === "drop" ? "" : inner));
+    } while (s !== prev);
     return s;
   }
 
-  // ---- generic fence helpers + partial hold ----
+  // ---------- holds ----------
+
+  private earliestUnmatchedStart(s: string, start: RegExp, end: RegExp): number | null {
+    let from = 0;
+    while (true) {
+      const i = this.indexOfRegex(s, start, from);
+      if (i === -1) return null;
+      const j = this.indexOfRegex(s, end, i + 1);
+      if (j === -1) return i;
+      const endLen = s.slice(j).match(end)?.[0].length ?? 0;
+      from = j + endLen;
+    }
+  }
+
+  private partialStartAtTail(s: string, literals: string[]): number | null {
+    const lower = s.toLowerCase();
+    let best: number | null = null;
+    for (const lit of literals) {
+      const L = lit.toLowerCase();
+      const max = Math.min(L.length - 1, lower.length);
+      for (let k = max; k >= 1; k--) {
+        if (L.startsWith(lower.slice(lower.length - k))) {
+          const idx = lower.length - k;
+          best = best === null ? idx : Math.min(best, idx);
+          break;
+        }
+      }
+    }
+    // also catch a bare '<' at the very end
+    if (lower.endsWith("<")) {
+      const idx = lower.length - 1;
+      best = best === null ? idx : Math.min(best, idx);
+    }
+    return best;
+  }
+
+  // ---------- fences ----------
+
+  private maskCompleteFences(s: string): { masked: string; fences: string[] } {
+    let out = "";
+    let pos = 0;
+    const fences: string[] = [];
+    while (true) {
+      const i = s.indexOf("```", pos);
+      if (i === -1) break;
+      const nl = s.indexOf("\n", i + 3);
+      if (nl === -1) break;
+      const j = s.indexOf("```", nl + 1);
+      if (j === -1) break;
+      fences.push(s.slice(i, j + 3));
+      out += s.slice(pos, i) + this.placeholder(fences.length - 1);
+      pos = j + 3;
+    }
+    out += s.slice(pos);
+    return { masked: out, fences };
+  }
+
+  private unmask(fences: string[], s: string): string {
+    return s.replace(/\u0000F(\d+)\u0000/g, (_m, g1: string) => {
+      const k = Number(g1);
+      return Number.isFinite(k) && fences[k] !== undefined ? fences[k] : _m;
+    });
+  }
+
+  private placeholder(i: number): string { return `\u0000F${i}\u0000`; }
 
   private findUnmatchedFenceStart(s: string): number {
     let pos = 0;
@@ -137,32 +176,6 @@ export class ToolformerSentinelPass implements LLMNoiseFilterPass {
       if (j === -1) return i;
       pos = j + 3;
     }
-  }
-
-  private splitCompleteFences(s: string): Array<{ type: "text" | "fence"; start: number; end: number }> {
-    const segs: Array<{ type: "text" | "fence"; start: number; end: number }> = [];
-    let pos = 0;
-    while (true) {
-      const i = s.indexOf("```", pos);
-      if (i === -1) break;
-      const nl = s.indexOf("\n", i + 3);
-      if (nl === -1) break;
-      const j = s.indexOf("```", nl + 1);
-      if (j === -1) break;
-      if (i > pos) segs.push({ type: "text", start: pos, end: i });
-      segs.push({ type: "fence", start: i, end: j + 3 });
-      pos = j + 3;
-    }
-    if (pos < s.length) segs.push({ type: "text", start: pos, end: s.length });
-    return segs;
-  }
-
-  private findPartialSentinelStart(s: string, prefix: RegExp): number {
-    const lastLt = s.lastIndexOf("<");
-    if (lastLt === -1) return -1;
-    const tail = s.slice(lastLt);
-    if (/^<\|?[A-Za-z0-9:_-]*\|?$/.test(tail) && prefix.test(tail)) return lastLt;
-    return -1;
   }
 
   private indexOfRegex(s: string, re: RegExp, from: number): number {

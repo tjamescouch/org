@@ -110,384 +110,353 @@ fi
 exec /usr/bin/git "$@"
 `;
 
-
 type ShResult = { code: number; stdout: string; stderr: string };
 
+// --- tiny logger for all podman invocations
 function sh(cmd: string, args: string[]): Promise<ShResult> {
-    return new Promise((resolve) => {
-        const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
-        let so = "", se = "";
-        p.stdout.on("data", (d) => (so += String(d)));
-        p.stderr.on("data", (d) => (se += String(d)));
-        p.on("close", (code) => resolve({ code: code ?? -1, stdout: so, stderr: se }));
+  Logger.info("[podman.sh]", cmd, args.join(" "));
+  return new Promise((resolve) => {
+    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let so = "", se = "";
+    p.stdout.on("data", (d) => (so += String(d)));
+    p.stderr.on("data", (d) => (se += String(d)));
+    p.on("close", (code) => {
+      if (code !== 0) Logger.error("[podman.sh:exit]", code, "stdout:", so, "stderr:", se);
+      resolve({ code: code ?? -1, stdout: so, stderr: se });
     });
+  });
 }
 
-
 export class PodmanSession implements ISandboxSession {
-    private readonly tool = "podman" as const;
-    private readonly name: string;
-    private started = false;
-    private stepIdx = 0;
-    private baselineCommit?: string;
-    readonly runDir: string;
+  private readonly tool = "podman" as const;
+  private readonly name: string;
+  private started = false;
+  private stepIdx = 0;
+  private baselineCommit?: string;
+  readonly runDir: string;
 
-    constructor(private spec: ExecSpec, _opts: { containerName?: string } = {}) {
-        this.name = `org-${spec.id}`;
-        this.runDir = spec.runDir;
+  constructor(private spec: ExecSpec, _opts: { containerName?: string } = {}) {
+    this.name = `org-${spec.id}`;
+    this.runDir = spec.runDir;
+    // --- log boot context once
+    Logger.info("[podman] new session", {
+      name: this.name,
+      image: this.spec.image,
+      projectDir: this.spec.projectDir,
+      workHostDir: this.spec.workHostDir,
+      runDir: this.spec.runDir,
+      limits: this.spec.limits,
+      net: this.spec.net
+    });
+    // also log host env of interest (these were missing in the container)
+    const envPick = (k: string) => (process.env[k] ? String(process.env[k]) : undefined);
+    Logger.info("[podman] host env", {
+      ORG_DEFAULT_CWD: envPick("ORG_DEFAULT_CWD"),
+      ORG_PROJECT_DIR: envPick("ORG_PROJECT_DIR"),
+      ORG_INVOCATION_CWD: envPick("ORG_INVOCATION_CWD"),
+      ORG_TRACE: envPick("ORG_TRACE"),
+      DEBUG: envPick("DEBUG"),
+      LOG_LEVEL: envPick("LOG_LEVEL")
+    });
+  }
+
+  getStepsHostDir(): string {
+    return path.join(this.spec.workHostDir, ".org", "steps");
+  }
+
+  // ---------- lifecycle ----------
+
+  async start() {
+    if (this.started) return;
+    await initRunDirs(this.spec.runDir);
+    await fsp.mkdir(this.spec.workHostDir, { recursive: true });
+
+    const uid = (process.getuid && process.getuid()) || 1000;
+    const gid = (process.getgid && process.getgid()) || 1000;
+
+    const netArgs = this.spec.net.mode === "deny" ? ["--network=none"] : ["--network", "slirp4netns"];
+    const caps = ["--read-only", "--cap-drop=ALL", "--security-opt", "no-new-privileges"];
+    const limits = [
+      "--pids-limit", String(this.spec.limits.pidsMax),
+      "--cpus", String(this.spec.limits.cpuCores),
+      "--memory", `${this.spec.limits.memMiB}m`,
+    ];
+    const mounts = [
+      "-v", `${this.spec.projectDir}:/project:ro`,
+      "-v", `${this.spec.workHostDir}:/work:rw`,
+    ];
+
+    Logger.info("[podman] create", { args: ["create", "--pull=never", "--name", this.name, "--userns=keep-id", "--user", `${uid}:${gid}`, ...netArgs, ...caps, ...limits, ...mounts, this.spec.image, "sleep", "infinity"] });
+    const create = await sh(this.tool, [
+      "create",
+      "--pull=never",
+      "--name", this.name,
+      "--userns=keep-id", "--user", `${uid}:${gid}`,
+      ...netArgs, ...caps, ...limits, ...mounts,
+      this.spec.image,
+      "sleep", "infinity",
+    ]);
+    if (create.code !== 0) throw new Error(`podman create failed: ${create.stderr || create.stdout}`);
+
+    Logger.info("[podman] start", { name: this.name });
+    const start = await sh(this.tool, ["start", this.name]);
+    if (start.code !== 0) throw new Error(`podman start failed: ${start.stderr || start.stdout}`);
+
+    // Prime /work from /project; protect /work/.org
+    const primeScript =
+      "mkdir -p /work/.org && " +
+      "rsync -a --delete " +
+      "--exclude '.git/***' --exclude '.org/***' " +
+      "--exclude 'org.bak*/***' --exclude 'org.bak.*/***' " +
+      "--filter='P .org/' " +
+      "/project/ /work/ && " +
+      "mkdir -p /work/.org/steps";
+    Logger.info("[podman] prime /work", { script: primeScript });
+    const prime = await this.execInCmd(primeScript);
+    if (prime.code !== 0) throw new Error(`sandbox prime failed: ${prime.stderr || prime.stdout}`);
+
+    // Runner scripts expected by org-step.sh
+    const hasRunner = await this.execInCmd("test -x /work/.org/org-step.sh");
+    if (hasRunner.code !== 0) throw new Error("runner missing at /work/.org/org-step.sh");
+
+    const hostOrgBin = path.join(this.spec.workHostDir, ".org", "bin");
+    await fsp.mkdir(hostOrgBin, { recursive: true });
+    await fsp.writeFile(path.join(hostOrgBin, "apply_patch"), HARNESSED_APPLY_PATCH_SCRIPT, { mode: 0o755 });
+    await fsp.writeFile(path.join(hostOrgBin, "git"), GIT_WRAPPER_SCRIPT, { mode: 0o755 });
+
+    // Init repo and baseline
+    await this.must(this.execInCmd("git -C /work init"), "git init /work");
+    await this.must(this.execInCmd("git -C /work config user.email noreply@example && git -C /work config user.name org"), "git config identity");
+    await this.execInCmd("mkdir -p /work/.git/info && printf '.org/\\norg.bak*/\\norg.bak.*/\\n*.rej\\n' >> /work/.git/info/exclude");
+
+    await this.must(
+      this.execInCmd(
+        "git -C /work add -A || true; " +
+        "if git -C /work diff --cached --quiet 2>/dev/null; then " +
+        "  git -C /work commit --allow-empty -m baseline >/dev/null 2>&1; " +
+        "else " +
+        "  git -C /work commit -m baseline >/dev/null 2>&1; " +
+        "fi"
+      ),
+      "git baseline commit"
+    );
+    const rev = await this.must(this.execInCmd("git -C /work rev-parse --verify HEAD"), "git rev-parse HEAD");
+    this.baselineCommit = rev.stdout.trim();
+    await this.execInCmd("printf %s " + this.shQ(this.baselineCommit!) + " > /work/.org/baseline.txt");
+
+    this.started = true;
+    Logger.info("[podman] ready", { name: this.name, baseline: this.baselineCommit });
+  }
+
+  async exec(cmd: string): Promise<{ ok: boolean; exit: number; stdoutFile: string; stderrFile: string }> {
+    if (!this.started) throw new Error("session not started");
+    const idx = this.stepIdx++;
+
+    Logger.info("[podman] step", { idx, cmd });
+
+    await this.execInCmd("mkdir -p /work/.org/steps");
+    const env: Record<string, string> = {
+      ORG_STEP_IDX: String(idx),
+      ORG_OUT_DIR: "/work/.org/steps",
+      ORG_TIMEOUT_MS: String(this.spec.limits.timeoutMs),
+      ORG_STDOUT_MAX: String(this.spec.limits.stdoutMax),
+      ORG_PIDS_MAX: String(this.spec.limits.pidsMax),
+    };
+    const run = await this.execInEnv(env, `/work/.org/org-step.sh ${this.shQ(cmd)}`);
+
+    await this.execInCmd("git -C /work add -A");
+    await this.execInCmd("git -C /work reset -q .org || true");
+    await this.execInCmd(
+      "git -C /work ls-files -oi --exclude-standard -z | " +
+      "grep -a -z -v -e '^\\.org/' -e '^\\.git/' -e '^org\\.bak' -e '\\.rej$' | " +
+      "xargs -0 -r git -C /work add -f --"
+    );
+    await this.execInCmd("(git -C /work diff --cached --quiet || git -C /work commit -m " + this.shQ(`step #${idx}: ${cmd}`) + " >/dev/null)");
+
+    const changedAll = (await this.execInCmd("git -C /work diff --name-only HEAD~1..HEAD || true")).stdout
+      .split("\n").map(s => s.trim()).filter(Boolean);
+    const isEphemeral = (p: string) => p.startsWith("org.bak") || p.endsWith(".rej");
+    const changed = changedAll.filter(p => !isEphemeral(p));
+    const violated = changed.filter(p => !this.pathAllowed(p));
+
+    const hostSteps = path.join(this.spec.runDir, "steps");
+    await fsp.mkdir(hostSteps, { recursive: true }).catch(() => { });
+    await fsp.writeFile(path.join(hostSteps, `step-${idx}.changed.txt`), changed.join("\n") + (changed.length ? "\n" : ""), "utf8").catch(() => { });
+    const statusTxt = (await this.execInCmd("git -C /work diff --name-status HEAD~1..HEAD || true")).stdout;
+    await fsp.writeFile(path.join(hostSteps, `step-${idx}.status.txt`), statusTxt, "utf8").catch(() => { });
+
+    const hostOut = path.join(hostSteps, `step-${idx}.out`);
+    const hostErr = path.join(hostSteps, `step-${idx}.err`);
+    const hostMeta = path.join(hostSteps, `step-${idx}.meta.json`);
+
+    try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.out`, hostOut]); } catch { }
+    try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.err`, hostErr]); } catch { }
+    let metaCopied = true;
+    try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.meta.json`, hostMeta]); }
+    catch { metaCopied = false; }
+
+    if (!metaCopied) {
+      const now = new Date().toISOString();
+      const meta = { idx, cmd, startedAt: now, endedAt: now, exitCode: run.code, killedBy: null,
+        stdoutPath: `/work/.org/steps/step-${idx}.out`,
+        stderrPath: `/work/.org/steps/step-${idx}.err`,
+        note: "host-generated meta (copy failed or runner did not write meta)" };
+      await fsp.writeFile(hostMeta, JSON.stringify(meta, null, 2), "utf8").catch(() => { });
     }
 
-    getStepsHostDir(): string {
-        // spec.workHostDir is the host side of /work
-        // .org/steps inside that directory is written live by org-step.sh
-        return path.join(this.spec.workHostDir, ".org", "steps");
+    if (violated.length > 0) {
+      await this.execInCmd("git -C /work reset --hard HEAD~1 >/dev/null");
+      await fsp.writeFile(path.join(hostSteps, `step-${idx}.violation.txt`), violated.join("\n") + "\n", "utf8");
+      return { ok: false, exit: 3, stdoutFile: hostOut, stderrFile: hostErr };
     }
 
-    // ---------- lifecycle ----------
+    return { ok: run.code === 0, exit: run.code, stdoutFile: hostOut, stderrFile: hostErr };
+  }
 
-    async start() {
-        if (this.started) return;
-        await initRunDirs(this.spec.runDir);
-        await fsp.mkdir(this.spec.workHostDir, { recursive: true });
+  async finalize() {
+    if (!this.started) throw new Error("session not started");
 
-        const uid = (process.getuid && process.getuid()) || 1000;
-        const gid = (process.getgid && process.getgid()) || 1000;
+    await withCookedTTY(async () => {
+      await this.execInCmd(
+        "git -C /work -c diff.noprefix=false -c color.ui=false -c core.pager=cat " +
+        "diff --binary --no-ext-diff " + this.shQ(this.baselineCommit!) + " HEAD " +
+        "> /work/.org/session.patch || true"
+      );
+    });
 
-        const netArgs = this.spec.net.mode === "deny" ? ["--network=none"] : ["--network", "slirp4netns"];
-        const caps = ["--read-only", "--cap-drop=ALL", "--security-opt", "no-new-privileges"];
-        const limits = [
-            "--pids-limit", String(this.spec.limits.pidsMax),
-            "--cpus", String(this.spec.limits.cpuCores),
-            "--memory", `${this.spec.limits.memMiB}m`,
-        ];
-        const mounts = [
-            "-v", `${this.spec.projectDir}:/project:ro`,  // project is RO in container
-            "-v", `${this.spec.workHostDir}:/work:rw`,    // working copy is RW
-        ];
-
-        // Create and start container
-        const create = await sh(this.tool, [
-            "create",
-            "--pull=never",
-            "--name", this.name,
-            "--userns=keep-id", "--user", `${uid}:${gid}`,
-            ...netArgs, ...caps, ...limits, ...mounts,
-            this.spec.image,
-            "sleep", "infinity",
-        ]);
-        if (create.code !== 0) throw new Error(`podman create failed: ${create.stderr || create.stdout}`);
-
-        const start = await sh(this.tool, ["start", this.name]);
-        if (start.code !== 0) throw new Error(`podman start failed: ${start.stderr || start.stdout}`);
-
-        // Prime /work from /project; PROTECT .org/ from rsync --delete.
-        // Also exclude ephemeral backups like org.bak.*
-        const prime = await this.execInCmd(
-            "mkdir -p /work/.org && " +
-            "rsync -a --delete " +
-            "--exclude '.git/***' --exclude '.org/***' " +          // never copy repo's .org
-            "--exclude 'org.bak*/***' --exclude 'org.bak.*/***' " + // drop backups
-            "--filter='P .org/' " +                                  // don't delete dest .org
-            "/project/ /work/ && " +
-            "mkdir -p /work/.org/steps"
-        );
-        if (prime.code !== 0) throw new Error(`sandbox prime failed: ${prime.stderr || prime.stdout}`);
-
-        // The runner must already be mounted under /work/.org by the host (ensureOrgStepScript)
-        const hasRunner = await this.execInCmd("test -x /work/.org/org-step.sh");
-        if (hasRunner.code !== 0) throw new Error("runner missing at /work/.org/org-step.sh");
-
-        const hostOrgBin = path.join(this.spec.workHostDir, ".org", "bin");
-        await fsp.mkdir(hostOrgBin, { recursive: true });
-
-        // write /work/.org/bin/apply_patch
-        await fsp.writeFile(
-            path.join(hostOrgBin, "apply_patch"),
-            HARNESSED_APPLY_PATCH_SCRIPT,               // <-- string from earlier answer
-            { mode: 0o755 }
-        );
-
-        // write /work/.org/bin/git (blocks 'git apply')
-        await fsp.writeFile(
-            path.join(hostOrgBin, "git"),
-            GIT_WRAPPER_SCRIPT,                         // <-- string from earlier answer
-            { mode: 0o755 }
-        );
-
-        // Init a repo in /work and configure an identity (baseline/patches are computed here)
-        await this.must(this.execInCmd("git -C /work init"), "git init /work");
-        await this.must(
-            this.execInCmd("git -C /work config user.email noreply@example && git -C /work config user.name org"),
-            "git config identity"
-        );
-
-        // Ignore sandbox internals & ephemeral backups in this working copy
-        await this.execInCmd(
-            "mkdir -p /work/.git/info && " +
-            "printf '.org/\\norg.bak*/\\norg.bak.*/\\n*.rej\\n' >> /work/.git/info/exclude"
-        );
-
-        // ---------------- Baseline commit (guarantee HEAD exists) ----------------
-        await this.must(
-            this.execInCmd(
-                "git -C /work add -A || true; " +
-                "if git -C /work diff --cached --quiet 2>/dev/null; then " +
-                "  git -C /work commit --allow-empty -m baseline >/dev/null 2>&1; " +
-                "else " +
-                "  git -C /work commit -m baseline >/dev/null 2>&1; " +
-                "fi"
-            ),
-            "git baseline commit"
-        );
-
-        const rev = await this.must(
-            this.execInCmd("git -C /work rev-parse --verify HEAD"),
-            "git rev-parse HEAD"
-        );
-        this.baselineCommit = rev.stdout.trim();
-        await this.execInCmd("printf %s " + this.shQ(this.baselineCommit!) + " > /work/.org/baseline.txt");
-
-        this.started = true;
+    const summary = await this.execInCmd("git -C /work diff --name-status " + this.shQ(this.baselineCommit!) + " HEAD");
+    if (summary.stdout.trim()) {
+      Logger.info("=== Accepted file changes ===");
+      for (const line of summary.stdout.trim().split("\n")) Logger.info(line);
+    } else {
+      Logger.info("No accepted file changes.");
     }
 
-    // Always copy step artifacts; never return without creating meta/out/err.
-    async exec(cmd: string): Promise<{ ok: boolean; exit: number; stdoutFile: string; stderrFile: string }> {
-        if (!this.started) throw new Error("session not started");
-        const idx = this.stepIdx++;
-
-        // --- run the step (workdir=/work already enforced by helpers) ---
-        await this.execInCmd("mkdir -p /work/.org/steps");
-        const env: Record<string, string> = {
-            ORG_STEP_IDX: String(idx),
-            ORG_OUT_DIR: "/work/.org/steps",
-            ORG_TIMEOUT_MS: String(this.spec.limits.timeoutMs),
-            ORG_STDOUT_MAX: String(this.spec.limits.stdoutMax),
-            ORG_PIDS_MAX: String(this.spec.limits.pidsMax),
-        };
-        const run = await this.execInEnv(env, `/work/.org/org-step.sh ${this.shQ(cmd)}`);
-
-        // 1) stage normal changes
-        await this.execInCmd("git -C /work add -A");
-
-        // 2) explicitly unstage any .org/ (belt-and-suspenders)
-        await this.execInCmd("git -C /work reset -q .org || true");
-
-        // 3) force-add ignored files, but never anything under .org/, .git/, org.bak*/, or *.rej
-        await this.execInCmd(
-            "git -C /work ls-files -oi --exclude-standard -z | " +
-            "grep -a -z -v -e '^\\.org/' -e '^\\.git/' -e '^org\\.bak' -e '\\.rej$' | " +
-            "xargs -0 -r git -C /work add -f --"
-        );
-
-        // 4) commit if there is anything staged
-        await this.execInCmd(
-            "(git -C /work diff --cached --quiet || " +
-            " git -C /work commit -m " + this.shQ(`step #${idx}: ${cmd}`) + " >/dev/null)"
-        );
-
-        // --- compute changes / violations (but DO NOT return yet) ---
-        const changedAll = (await this.execInCmd("git -C /work diff --name-only HEAD~1..HEAD || true")).stdout
-            .split("\n").map(s => s.trim()).filter(Boolean);
-
-        const isEphemeral = (p: string) => p.startsWith("org.bak") || p.endsWith(".rej");
-        const changed = changedAll.filter(p => !isEphemeral(p));
-
-        const violated = changed.filter(p => !this.pathAllowed(p));
-
-        // Persist step breadcrumbs to host
-        const hostSteps = path.join(this.spec.runDir, "steps");
-        await fsp.mkdir(hostSteps, { recursive: true }).catch(() => { });
-        await fsp.writeFile(path.join(hostSteps, `step-${idx}.changed.txt`), changed.join("\n") + (changed.length ? "\n" : ""), "utf8")
-            .catch(() => { });
-        const statusTxt = (await this.execInCmd("git -C /work diff --name-status HEAD~1..HEAD || true")).stdout;
-        await fsp.writeFile(path.join(hostSteps, `step-${idx}.status.txt`), statusTxt, "utf8").catch(() => { });
-
-        // --- copy artifacts to host (best-effort; create placeholders if needed) ---
-        const hostOut = path.join(hostSteps, `step-${idx}.out`);
-        const hostErr = path.join(hostSteps, `step-${idx}.err`);
-        const hostMeta = path.join(hostSteps, `step-${idx}.meta.json`);
-
-        try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.out`, hostOut]); } catch { }
-        try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.err`, hostErr]); } catch { }
-        let metaCopied = true;
-        try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.meta.json`, hostMeta]); }
-        catch { metaCopied = false; }
-
-        if (!metaCopied) {
-            const now = new Date().toISOString();
-            const meta = {
-                idx,
-                cmd,
-                startedAt: now,
-                endedAt: now,
-                exitCode: run.code,
-                killedBy: null,
-                stdoutPath: `/work/.org/steps/step-${idx}.out`,
-                stderrPath: `/work/.org/steps/step-${idx}.err`,
-                note: "host-generated meta (copy failed or runner did not write meta)",
-            };
-            await fsp.writeFile(hostMeta, JSON.stringify(meta, null, 2), "utf8").catch(() => { });
-        }
-
-        // --- if violated, revert commit and record the violation file, but keep artifacts available ---
-        if (violated.length > 0) {
-            await this.execInCmd("git -C /work reset --hard HEAD~1 >/dev/null");
-            await fsp.writeFile(path.join(hostSteps, `step-${idx}.violation.txt`), violated.join("\n") + "\n", "utf8");
-            return { ok: false, exit: 3, stdoutFile: hostOut, stderrFile: hostErr };
-        }
-
-        return { ok: run.code === 0, exit: run.code, stdoutFile: hostOut, stderrFile: hostErr };
+    const stepDir = path.join(this.spec.runDir, "steps");
+    const violations = (await fsp.readdir(stepDir)).filter(f => f.endsWith(".violation.txt"));
+    if (violations.length) {
+      Logger.info("=== Rejected/violated files ===");
+      for (const vf of violations) {
+        const body = await fsp.readFile(path.join(stepDir, vf), "utf8");
+        for (const line of body.trim().split("\n")) if (line) Logger.info(line);
+      }
     }
 
-    async finalize() {
-        if (!this.started) throw new Error("session not started");
+    const patchDst = path.join(this.spec.runDir, "session.patch");
+    await this.execHost(["cp", `${this.name}:/work/.org/session.patch`, patchDst]).catch(() => Promise.resolve());
+    Logger.info("[podman] patch", patchDst);
+    const newFiles = (await this.execInCmd(
+      "git -C /work diff --name-status " + this.shQ(this.baselineCommit!) + " HEAD | awk '$1 ~ /^A|^AM$/ {print $2}'"
+    )).stdout.split("\n").map(s => s.trim()).filter(Boolean);
+    for (const nf of newFiles) {
+      const dst = path.join(this.spec.runDir, "artifacts", nf);
+      await fsp.mkdir(path.dirname(dst), { recursive: true });
+      await this.execHost(["cp", `${this.name}:/work/${nf}`, dst]).catch(() => Promise.resolve());
+    }
 
-        // Generate the session patch while the terminal is in cooked mode.
-        await withCookedTTY(async () => {
-            await this.execInCmd(
-                "git -C /work " +
-                "-c diff.noprefix=false " +   // force a/b prefixes (consistent headers)
-                "-c color.ui=false" +
-                "-c core.pager=cat " +        // ensure no pager inside the container
-                "diff --binary --no-ext-diff " + this.shQ(this.baselineCommit!) + " HEAD " +
-                "> /work/.org/session.patch || true"
-            );
+    const stepsMeta = await this.collectStepsMeta();
+    const manifest = {
+      spec: this.spec,
+      startedAt: stepsMeta.length
+        ? JSON.parse(await fsp.readFile(path.join(this.spec.runDir, "steps/step-0.meta.json"), "utf8")).startedAt
+        : new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      container: { backend: "podman" as const, name: this.name },
+      baselineCommit: this.baselineCommit,
+      exitSummary: { steps: stepsMeta.length, lastExitCode: stepsMeta.length ? stepsMeta[stepsMeta.length - 1]!.exitCode : 0 },
+      fullPatchRel: path.basename(patchDst),
+      steps: stepsMeta,
+      artifacts: [],
+      host: { platform: process.platform, release: os.release(), arch: process.arch },
+    };
+    const manifestPath = path.join(this.spec.runDir, "manifest.json");
+    await writeJsonPretty(manifestPath, manifest);
+
+    return {
+      manifestPath,
+      patchPath: fs.existsSync(patchDst) && fs.statSync(patchDst).size > 0 ? patchDst : undefined
+    };
+  }
+
+  async destroy({ removeScratch = true }: { removeScratch?: boolean } = {}) {
+    await this.execHost(["rm", "-f", this.name]).catch(() => { });
+    if (removeScratch) await fsp.rm(this.spec.workHostDir, { recursive: true, force: true }).catch(() => { });
+  }
+
+  // ---------- helpers ----------
+
+  private async execHost(args: string[]) {
+    const r = await sh(this.tool, args);
+    if (r.code !== 0) throw new Error(`podman ${args.join(" ")} failed: ${r.stderr || r.stdout}`);
+    return r;
+  }
+
+  /** Pass a small, safe set of host env vars into the container for visibility/toggles. */
+  private pickPassEnv(): Record<string, string> {
+    const keys = ["ORG_DEFAULT_CWD", "ORG_PROJECT_DIR", "ORG_INVOCATION_CWD", "ORG_TRACE", "DEBUG", "LOG_LEVEL"];
+    const out: Record<string, string> = {};
+    for (const k of keys) {
+      const v = process.env[k];
+      if (typeof v === "string" && v.length > 0) out[k] = v;
+    }
+    return out;
+  }
+
+  // Execute a command in the container at /work using bash -lc, capturing output.
+  private async execInCmd(cmdline: string) {
+    // Always forward debug/toggle env so they show up when you print env inside container
+    return this.execInEnv(this.pickPassEnv(), cmdline);
+  }
+
+  // Execute with env vars inside container, capturing output.
+  private async execInEnv(env: Record<string, string>, cmdline: string) {
+    const envArgs = Object.entries(env).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
+    Logger.info("[podman.exec]", { env, cmd: cmdline });
+    return sh(this.tool, ["exec", "--workdir", "/work", ...envArgs, this.name, "bash", "-lc", cmdline]);
+  }
+
+  private shQ(s: string) { return `'${s.replace(/'/g, `'\\''`)}'`; }
+
+  private pathAllowed(p: string): boolean {
+    const deny = this.spec.write.deny ?? [];
+    if (deny.length && matchAny(deny, p)) {
+      Logger.debug("Patch path denied: ", p);
+      return false;
+    }
+    const allow = this.spec.write.allow ?? ["*", "**/*"];
+    const result = matchAny(allow, p);
+    Logger.debug(result ? "Patch path allowed: " : "Patch path denied: ", p);
+    return result;
+  }
+
+  private async must<T extends { code?: number | null; stdout?: string; stderr?: string }>(
+    rp: Promise<T>,
+    context = "podman.exec"
+  ): Promise<T> {
+    const r = await rp;
+    return ensureOk(r, context);
+  }
+
+  private async collectStepsMeta() {
+    const dir = path.join(this.spec.runDir, "steps");
+    const files = await fsp.readdir(dir).catch(() => []);
+    const metas = files.filter(f => f.endsWith(".meta.json")).sort((a, b) => a.localeCompare(b));
+    const out: any[] = [];
+    for (const m of metas) {
+      try {
+        const j = JSON.parse(await fsp.readFile(path.join(dir, m), "utf8"));
+        out.push({
+          idx: j.idx,
+          cmd: j.cmd,
+          startedAt: j.startedAt,
+          endedAt: j.endedAt,
+          exitCode: j.exitCode,
+          killedBy: j.killedBy ?? undefined,
+          stdoutRel: rel(this.spec.runDir, path.join(dir, `step-${j.idx}.out`))!,
+          stderrRel: rel(this.spec.runDir, path.join(dir, `step-${j.idx}.err`))!,
         });
-
-        // Show accepted file changes
-        const summary = await this.execInCmd(
-            "git -C /work diff --name-status " + this.shQ(this.baselineCommit!) + " HEAD"
-        );
-        if (summary.stdout.trim()) {
-            Logger.info("=== Accepted file changes ===");
-            for (const line of summary.stdout.trim().split("\n")) {
-                Logger.info(line);
-            }
-        } else {
-            Logger.info("No accepted file changes.");
-        }
-
-        // Show rejected/violations
-        const stepDir = path.join(this.spec.runDir, "steps");
-        const violations = (await fsp.readdir(stepDir))
-            .filter(f => f.endsWith(".violation.txt"));
-        if (violations.length) {
-            Logger.info("=== Rejected/violated files ===");
-            for (const vf of violations) {
-                const body = await fsp.readFile(path.join(stepDir, vf), "utf8");
-                for (const line of body.trim().split("\n")) {
-                    if (line) Logger.info(line);
-                }
-            }
-        }
-
-
-        const patchDst = path.join(this.spec.runDir, "session.patch");
-        await this.execHost(["cp", `${this.name}:/work/.org/session.patch`, patchDst]).catch(() => Promise.resolve());
-
-        // Copy newly added files (artifacts)
-        const newFiles = (await this.execInCmd(
-            "git -C /work diff --name-status " + this.shQ(this.baselineCommit!) + " HEAD | awk '$1 ~ /^A|^AM$/ {print $2}'"
-        )).stdout.split("\n").map(s => s.trim()).filter(Boolean);
-        for (const nf of newFiles) {
-            const dst = path.join(this.spec.runDir, "artifacts", nf);
-            await fsp.mkdir(path.dirname(dst), { recursive: true });
-            await this.execHost(["cp", `${this.name}:/work/${nf}`, dst]).catch(() => Promise.resolve());
-        }
-
-        // Manifest
-        const stepsMeta = await this.collectStepsMeta();
-        const manifest = {
-            spec: this.spec,
-            startedAt: stepsMeta.length
-                ? JSON.parse(await fsp.readFile(path.join(this.spec.runDir, "steps/step-0.meta.json"), "utf8")).startedAt
-                : new Date().toISOString(),
-            endedAt: new Date().toISOString(),
-            container: { backend: "podman" as const, name: this.name },
-            baselineCommit: this.baselineCommit,
-            exitSummary: { steps: stepsMeta.length, lastExitCode: stepsMeta.length ? stepsMeta[stepsMeta.length - 1]!.exitCode : 0 },
-            fullPatchRel: path.basename(patchDst),
-            steps: stepsMeta,
-            artifacts: [],
-            host: { platform: process.platform, release: os.release(), arch: process.arch },
-        };
-        const manifestPath = path.join(this.spec.runDir, "manifest.json");
-        await writeJsonPretty(manifestPath, manifest);
-
-        return {
-            manifestPath,
-            patchPath: fs.existsSync(patchDst) && fs.statSync(patchDst).size > 0 ? patchDst : undefined
-        };
+      } catch { /* ignore */ }
     }
-
-    async destroy({ removeScratch = true }: { removeScratch?: boolean } = {}) {
-        await this.execHost(["rm", "-f", this.name]).catch(() => { });
-        if (removeScratch) await fsp.rm(this.spec.workHostDir, { recursive: true, force: true }).catch(() => { });
-    }
-
-    // ---------- helpers ----------
-
-    private async execHost(args: string[]) {
-        const r = await sh(this.tool, args);
-        if (r.code !== 0) throw new Error(`podman ${args.join(" ")} failed: ${r.stderr || r.stdout}`);
-        return r;
-    }
-
-    // Execute a command in the container at /work using bash -lc, capturing output.
-    private async execInCmd(cmdline: string) {
-        // IMPORTANT: no "-i" here; keep stdin closed to avoid sporadic exit 1s.
-        return sh(this.tool, ["exec", "--workdir", "/work", this.name, "bash", "-lc", cmdline]);
-    }
-
-    // Execute with env vars inside container, capturing output.
-    private async execInEnv(env: Record<string, string>, cmdline: string) {
-        const envArgs = Object.entries(env).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
-        return sh(this.tool, ["exec", "--workdir", "/work", ...envArgs, this.name, "bash", "-lc", cmdline]);
-    }
-
-    private shQ(s: string) { return `'${s.replace(/'/g, `'\\''`)}'`; }
-
-    private pathAllowed(p: string): boolean {
-        // Deny takes precedence
-        const deny = this.spec.write.deny ?? [];
-        if (deny.length && matchAny(deny, p)) {
-            Logger.debug("Patch path denied: ", p);
-            return false;     // deny takes precedence
-        }
-        const allow = this.spec.write.allow ?? ["*", "**/*"];
-        const result = matchAny(allow, p);
-        Logger.debug(result ? "Patch path allowed: " : "Patch path denied: ", p);
-        return result;
-    }
-
-    private async must<T extends { code?: number | null; stdout?: string; stderr?: string }>(
-        rp: Promise<T>,
-        context = "podman.exec"
-    ): Promise<T> {
-        const r = await rp;
-        return ensureOk(r, context);
-    }
-
-    private async collectStepsMeta() {
-        const dir = path.join(this.spec.runDir, "steps");
-        const files = await fsp.readdir(dir).catch(() => []);
-        const metas = files.filter(f => f.endsWith(".meta.json")).sort((a, b) => a.localeCompare(b));
-        const out: any[] = [];
-        for (const m of metas) {
-            try {
-                const j = JSON.parse(await fsp.readFile(path.join(dir, m), "utf8"));
-                out.push({
-                    idx: j.idx,
-                    cmd: j.cmd,
-                    startedAt: j.startedAt,
-                    endedAt: j.endedAt,
-                    exitCode: j.exitCode,
-                    killedBy: j.killedBy ?? undefined,
-                    stdoutRel: rel(this.spec.runDir, path.join(dir, `step-${j.idx}.out`))!,
-                    stderrRel: rel(this.spec.runDir, path.join(dir, `step-${j.idx}.err`))!,
-                });
-            } catch { /* ignore */ }
-        }
-        return out;
-    }
+    return out;
+  }
 }

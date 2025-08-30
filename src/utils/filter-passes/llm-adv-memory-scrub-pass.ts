@@ -2,111 +2,157 @@
 import type { LLMNoiseFilterPass, PassFeedResult } from "./llm-noise-filter-pass";
 
 /**
- * AdvancedMemoryScrubPass: stream-safe, fence-aware.
- * - Drops memory/system/internal blocks when closed; otherwise holds from start.
- * - Preserves generic code fences (```lang ... ```).
+ * AdvancedMemoryScrubPass: buffered + fence‑aware.
+ *
+ * Drops memory/system/internal dumps when closed; never leaks partial starts.
+ * Generic code fences (```lang … ```) are preserved verbatim.
  */
 export class AdvancedMemoryScrubPass implements LLMNoiseFilterPass {
-  private tail = "";
+  private buf = "";
 
-  private readonly dropSpecs = [
-    { start: /<\|memory_start\|>/i,        end: /<\|memory_end\|>/i },
-    { start: /<memory>/i,                  end: /<\/memory>/i },
-    { start: /<\|internal_start\|>/i,      end: /<\|internal_end\|>/i },
-    { start: /<internal>/i,                end: /<\/internal>/i },
-    { start: /<\|system_prompt_start\|>/i, end: /<\|system_prompt_end\|>/i },
-    { start: /<system_prompt>/i,           end: /<\/system_prompt>/i },
-    { start: /BEGIN\s+MEMORY\b/i,          end: /END\s+MEMORY\b/i },
-    { start: /BEGIN\s+SYSTEM\s+PROMPT\b/i, end: /END\s+SYSTEM\s+PROMPT\b/i },
-    { start: /BEGIN\s+INTERNAL\b/i,        end: /END\s+INTERNAL\b/i },
-    { start: /BEGIN\s+SCRATCHPAD\b/i,      end: /END\s+SCRATCHPAD\b/i },
-  ] as const;
+  private readonly startLiterals = [
+    "<|memory_start|>", "<memory>",
+    "<|internal_start|>", "<internal>",
+    "<|system_prompt_start|>", "<system_prompt>",
+    "begin memory", "begin system prompt", "begin internal", "begin scratchpad",
+  ];
 
   feed(chunk: string): PassFeedResult {
-    const input = (this.tail ?? "") + (chunk ?? "");
+    this.buf += chunk ?? "";
 
-    const holdFenceAt = this.findUnmatchedFenceStart(input);
-    const pre = holdFenceAt === -1 ? input : input.slice(0, holdFenceAt);
-    const post = holdFenceAt === -1 ? "" : input.slice(holdFenceAt);
+    const { masked, fences } = this.maskCompleteFences(this.buf);
+    let work = masked;
 
-    const segs = this.splitCompleteFences(pre);
+    // Drop closed XML-ish regions
+    work = this.resolveClosed(work, /<\|memory_start\|>/i, /<\|memory_end\|>/i);
+    work = this.resolveClosed(work, /<memory>/i, /<\/memory>/i);
+    work = this.resolveClosed(work, /<\|internal_start\|>/i, /<\|internal_end\|>/i);
+    work = this.resolveClosed(work, /<internal>/i, /<\/internal>/i);
+    work = this.resolveClosed(work, /<\|system_prompt_start\|>/i, /<\|system_prompt_end\|>/i);
+    work = this.resolveClosed(work, /<system_prompt>/i, /<\/system_prompt>/i);
 
-    let cleaned = "";
-    let holdFromAbs: number | null = null;
+    // Drop closed BEGIN...END textual regions
+    work = this.resolveClosed(work, /BEGIN\s+MEMORY\b/i, /END\s+MEMORY\b/i);
+    work = this.resolveClosed(work, /BEGIN\s+SYSTEM\s+PROMPT\b/i, /END\s+SYSTEM\s+PROMPT\b/i);
+    work = this.resolveClosed(work, /BEGIN\s+INTERNAL\b/i, /END\s+INTERNAL\b/i);
+    work = this.resolveClosed(work, /BEGIN\s+SCRATCHPAD\b/i, /END\s+SCRATCHPAD\b/i);
 
-    for (const seg of segs) {
-      if (seg.type === "fence") {
-        cleaned += pre.slice(seg.start, seg.end);
-        continue;
-      }
-      const res = this.processOutside(pre.slice(seg.start, seg.end));
-      cleaned += res.processed;
-      if (res.holdFrom >= 0) {
-        holdFromAbs = seg.start + res.holdFrom;
-        break;
-      }
+    this.buf = this.unmask(fences, work);
+
+    // Hold from open fence, unmatched start tags, or partial starts at tail
+    let holdAt: number | null = null;
+    const fenceStart = this.findUnmatchedFenceStart(this.buf);
+    if (fenceStart !== -1) holdAt = fenceStart;
+
+    const specs: Array<{ s: RegExp; e: RegExp }> = [
+      { s: /<\|memory_start\|>/i,        e: /<\|memory_end\|>/i },
+      { s: /<memory>/i,                  e: /<\/memory>/i },
+      { s: /<\|internal_start\|>/i,      e: /<\|internal_end\|>/i },
+      { s: /<internal>/i,                e: /<\/internal>/i },
+      { s: /<\|system_prompt_start\|>/i, e: /<\|system_prompt_end\|>/i },
+      { s: /<system_prompt>/i,           e: /<\/system_prompt>/i },
+      { s: /BEGIN\s+MEMORY\b/i,          e: /END\s+MEMORY\b/i },
+      { s: /BEGIN\s+SYSTEM\s+PROMPT\b/i, e: /END\s+SYSTEM\s+PROMPT\b/i },
+      { s: /BEGIN\s+INTERNAL\b/i,        e: /END\s+INTERNAL\b/i },
+      { s: /BEGIN\s+SCRATCHPAD\b/i,      e: /END\s+SCRATCHPAD\b/i },
+    ];
+    for (const spec of specs) {
+      const i = this.earliestUnmatchedStart(this.buf, spec.s, spec.e);
+      if (i !== null) holdAt = holdAt === null ? i : Math.min(holdAt, i);
     }
 
-    if (holdFromAbs !== null) {
-      this.tail = pre.slice(holdFromAbs) + post;
-      return { cleaned, removed: input.length - (cleaned.length + this.tail.length) };
-    }
+    const partialIdx = this.partialStartAtTail(this.buf, this.startLiterals);
+    if (partialIdx !== null) holdAt = holdAt === null ? partialIdx : Math.min(holdAt, partialIdx);
 
-    // Hold partial sentinel tail for memory/internal/system_prompt prefixes
-    const partialFrom = this.findPartialSentinelStart(cleaned, /^<\|?(?:memory|internal|system_prompt)/i);
-    if (partialFrom !== -1) {
-      this.tail = cleaned.slice(partialFrom) + post;
-      return { cleaned: cleaned.slice(0, partialFrom), removed: input.length - (cleaned.slice(0, partialFrom).length + this.tail.length) };
+    let cleaned: string;
+    if (holdAt === null) {
+      cleaned = this.buf;
+      this.buf = "";
+    } else {
+      cleaned = this.buf.slice(0, holdAt);
+      this.buf = this.buf.slice(holdAt);
     }
-
-    this.tail = post;
-    return { cleaned, removed: input.length - (cleaned.length + this.tail.length) };
+    return { cleaned, removed: 0 };
   }
 
   flush(): string {
-    const out = this.tail;
-    this.tail = "";
+    const out = this.buf;
+    this.buf = "";
     return out;
   }
 
-  // ---- outside-fence block processing ----
+  // ---- helpers ----
 
-  private processOutside(s: string): { processed: string; holdFrom: number } {
-    let work = s;
-
-    // Resolve closed blocks
-    for (const spec of this.dropSpecs) {
-      work = this.resolveClosedBlocks(work, spec.start, spec.end);
-    }
-
-    // Unmatched start -> hold
-    let holdFrom = -1;
-    for (const spec of this.dropSpecs) {
-      const i = this.indexOfRegex(work, spec.start, 0);
-      if (i !== -1 && this.indexOfRegex(work, spec.end, i + 1) === -1) {
-        holdFrom = holdFrom === -1 ? i : Math.min(holdFrom, i);
-      }
-    }
-    if (holdFrom !== -1) return { processed: work.slice(0, holdFrom), holdFrom };
-
-    return { processed: work, holdFrom: -1 };
-  }
-
-  private resolveClosedBlocks(s: string, start: RegExp, end: RegExp): string {
-    let from = 0;
-    while (true) {
-      const i = this.indexOfRegex(s, start, from);
-      if (i === -1) break;
-      const j = this.indexOfRegex(s, end, i + 1);
-      if (j === -1) break;
-      const endLen = s.slice(j).match(end)?.[0].length ?? 0;
-      s = s.slice(0, i) + s.slice(j + endLen); // drop
-      from = i;
-    }
+  private resolveClosed(s: string, start: RegExp, end: RegExp): string {
+    const pair = new RegExp(`${start.source}([\\s\\S]*?)${end.source}`, "gi");
+    let prev: string;
+    do {
+      prev = s;
+      s = s.replace(pair, "");
+    } while (s !== prev);
     return s;
   }
 
-  // ---- fences & helpers ----
+  private earliestUnmatchedStart(s: string, start: RegExp, end: RegExp): number | null {
+    let from = 0;
+    while (true) {
+      const i = this.indexOfRegex(s, start, from);
+      if (i === -1) return null;
+      const j = this.indexOfRegex(s, end, i + 1);
+      if (j === -1) return i;
+      const endLen = s.slice(j).match(end)?.[0].length ?? 0;
+      from = j + endLen;
+    }
+  }
+
+  private partialStartAtTail(s: string, literals: string[]): number | null {
+    const lower = s.toLowerCase();
+    let best: number | null = null;
+    for (const lit of literals) {
+      const L = lit.toLowerCase();
+      const max = Math.min(L.length - 1, lower.length);
+      for (let k = max; k >= 1; k--) {
+        if (L.startsWith(lower.slice(lower.length - k))) {
+          const idx = lower.length - k;
+          best = best === null ? idx : Math.min(best, idx);
+          break;
+        }
+      }
+    }
+    if (lower.endsWith("<")) {
+      const idx = lower.length - 1;
+      best = best === null ? idx : Math.min(best, idx);
+    }
+    return best;
+  }
+
+  private maskCompleteFences(s: string): { masked: string; fences: string[] } {
+    let out = "";
+    let pos = 0;
+    const fences: string[] = [];
+    while (true) {
+      const i = s.indexOf("```", pos);
+      if (i === -1) break;
+      const nl = s.indexOf("\n", i + 3);
+      if (nl === -1) break;
+      const j = s.indexOf("```", nl + 1);
+      if (j === -1) break;
+      fences.push(s.slice(i, j + 3));
+      out += s.slice(pos, i) + this.placeholder(fences.length - 1);
+      pos = j + 3;
+    }
+    out += s.slice(pos);
+    return { masked: out, fences };
+  }
+
+  private unmask(fences: string[], s: string): string {
+    return s.replace(/\u0000F(\d+)\u0000/g, (_m, g1: string) => {
+      const k = Number(g1);
+      return Number.isFinite(k) && fences[k] !== undefined ? fences[k] : _m;
+    });
+  }
+
+  private placeholder(i: number): string { return `\u0000F${i}\u0000`; }
 
   private findUnmatchedFenceStart(s: string): number {
     let pos = 0;
@@ -119,32 +165,6 @@ export class AdvancedMemoryScrubPass implements LLMNoiseFilterPass {
       if (j === -1) return i;
       pos = j + 3;
     }
-  }
-
-  private splitCompleteFences(s: string): Array<{ type: "text" | "fence"; start: number; end: number }> {
-    const segs: Array<{ type: "text" | "fence"; start: number; end: number }> = [];
-    let pos = 0;
-    while (true) {
-      const i = s.indexOf("```", pos);
-      if (i === -1) break;
-      const nl = s.indexOf("\n", i + 3);
-      if (nl === -1) break;
-      const j = s.indexOf("```", nl + 1);
-      if (j === -1) break;
-      if (i > pos) segs.push({ type: "text", start: pos, end: i });
-      segs.push({ type: "fence", start: i, end: j + 3 });
-      pos = j + 3;
-    }
-    if (pos < s.length) segs.push({ type: "text", start: pos, end: s.length });
-    return segs;
-  }
-
-  private findPartialSentinelStart(s: string, prefix: RegExp): number {
-    const lastLt = s.lastIndexOf("<");
-    if (lastLt === -1) return -1;
-    const tail = s.slice(lastLt);
-    if (/^<\|?[A-Za-z0-9:_-]*\|?$/.test(tail) && prefix.test(tail)) return lastLt;
-    return -1;
   }
 
   private indexOfRegex(s: string, re: RegExp, from: number): number {

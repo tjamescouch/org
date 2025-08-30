@@ -2,195 +2,145 @@
 import type { LLMNoiseFilterPass, PassFeedResult } from "./llm-noise-filter-pass";
 
 /**
- * First pass: stream-safe + fence-aware cleanup.
- * - Preserves content inside generic code fences (```lang\n...\n```).
- * - <|channel|><word> (e.g., "final") is removed; word may straddle chunks.
- * - <|message|> becomes a single space.
- * - Other <|token|> singletons are removed (except *_start/*_end) outside fences.
- * - Strips zero-width & control chars (except \t \r \n).
+ * First pass: Buffered, stream-safe, fence-aware cleanup.
+ *
+ * - Preserves content inside generic code fences: ```lang\n ... \n```
+ * - <|channel|><word>  → remove token + word (word may straddle chunks)
+ * - <|message|>        → single space
+ * - Other <|token|>    → removed (except *_start/*_end), OUTSIDE fences only
+ * - Removes zero-width and control chars (except \t \r \n)
  */
 export class LLMNoiseFilterFirstPass implements LLMNoiseFilterPass {
-  private tail = "";
-  private pendingChannelWord = false; // last chunk ended just after <|channel|>
+  private buf = "";
 
   feed(chunk: string): PassFeedResult {
-    const input = (this.tail ?? "") + (chunk ?? "");
+    const before = (chunk ?? "").length;
+    this.buf += chunk ?? "";
 
-    // If waiting to consume the channel word, try now.
-    if (this.pendingChannelWord) {
-      const eaten = this.consumeChannelWord(input, /*allowPartial*/ false);
-      if (eaten === 0) {
-        this.tail = input; // still incomplete
-        return { cleaned: "", removed: 0 };
-      }
-      // Drop the word and continue with the rest in one go.
-      return this.process(input.slice(eaten));
-    }
-
-    return this.process(input);
-  }
-
-  flush(): string {
-    // Finalize the remaining buffer, allowing partial channel word consumption.
-    const out = this.process(this.tail, /*isFlush*/ true);
-    this.tail = "";
-    this.pendingChannelWord = false;
-    return out.cleaned;
-  }
-
-  // ---------- core ----------
-
-  private process(bufIn: string, isFlush = false): PassFeedResult {
-    let buf = bufIn ?? "";
-
-    // Strip zero-width & control chars (except \t \r \n).
-    buf = buf
+    // Strip zero-width & control (safe globally)
+    this.buf = this.buf
       .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, "")
       .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
 
-    // If a generic fence start exists without a closing fence, HOLD from there.
-    const holdFenceAt = this.findUnmatchedFenceStart(buf);
-    const pre = holdFenceAt === -1 ? buf : buf.slice(0, holdFenceAt);
-    const post = holdFenceAt === -1 ? "" : buf.slice(holdFenceAt);
+    // Process the whole buffer but protect COMPLETE generic fences while transforming.
+    const { masked, fences } = this.maskCompleteFences(this.buf);
+    let work = masked;
 
-    // Split `pre` into [text,fence,text,fence,...] with absolute offsets.
-    const segs = this.splitCompleteFences(pre);
+    // <|message|>  -> space (outside fences)
+    work = work.replace(/<\|message\|>/gi, " ");
 
-    let cleaned = "";
-    let heldFromAbs: number | null = null;
+    // <|channel|> + word   (letters/_/-) with optional spaces around
+    //   - Only remove if the WORD is complete; otherwise leave and the stream
+    //     will hold from the start tag (detected below).
+    work = work.replace(
+      /<\|channel\|>\s*[A-Za-z_-]+\s*/gi,
+      ""
+    );
 
-    for (const seg of segs) {
-      if (seg.type === "fence") {
-        cleaned += pre.slice(seg.start, seg.end); // keep fence verbatim
-        continue;
-      }
+    // Remove other single-token sentinels, keep *_start/*_end for later passes.
+    work = work.replace(/<\|([A-Za-z0-9:_-]+)\|>/g, (full: string, name: string) => {
+      return (/_start$/i.test(name) || /_end$/i.test(name)) ? full : "";
+    });
 
-      const text = pre.slice(seg.start, seg.end);
-      const res = this.processOutsideText(text);
-      cleaned += res.processed;
+    // Restore masked fences back to make hold calculations accurate.
+    this.buf = this.unmask(fences, work);
 
-      if (res.holdFrom >= 0) {
-        // Need to buffer from this absolute position onward (channel word incomplete).
-        heldFromAbs = seg.start + res.holdFrom;
-        break;
-      }
+    // ---- determine safe emit point ----
+    const holdAt: number | null = this.earliestHoldIndexFirstPass(this.buf);
+    let cleaned: string;
+    if (holdAt === null) {
+      cleaned = this.buf;
+      this.buf = "";
+    } else {
+      cleaned = this.buf.slice(0, holdAt);
+      this.buf = this.buf.slice(holdAt);
     }
 
-    if (heldFromAbs !== null) {
-      // Buffer from heldFromAbs in `pre`, plus all of `post`.
-      this.tail = pre.slice(heldFromAbs) + post;
-      this.pendingChannelWord = true;
-      return { cleaned, removed: bufIn.length - (cleaned.length + this.tail.length) };
-    }
-
-    // After normal processing, if the very end looks like a partial sentinel, HOLD it too.
-    const partialFrom = this.findPartialSentinelStart(cleaned);
-    if (partialFrom !== -1) {
-      this.tail = cleaned.slice(partialFrom) + post;
-      cleaned = cleaned.slice(0, partialFrom);
-      return { cleaned, removed: bufIn.length - (cleaned.length + this.tail.length) };
-    }
-
-    // If flushing and we were waiting on a channel word, consume what remains.
-    if (isFlush && this.pendingChannelWord) {
-      const eaten = this.consumeChannelWord(post, /*allowPartial*/ true);
-      this.tail = post.slice(eaten);
-      this.pendingChannelWord = false;
-      return { cleaned: cleaned + this.tail, removed: 0 }; // tail is plain text now
-    }
-
-    // Normal case.
-    this.tail = post;
-    return { cleaned, removed: bufIn.length - (cleaned.length + this.tail.length) };
+    const removed = Math.max(0, before - cleaned.length);
+    return { cleaned, removed };
   }
 
-  /**
-   * Process a "non-fence" span:
-   *  - <|message|> -> " "
-   *  - <|channel|>word -> drop token+word (word may span chunks; if incomplete => hold)
-   *  - drop other <|name|> singletons (except *_start/*_end)
-   */
-  private processOutsideText(s: string): { processed: string; holdFrom: number } {
-    let i = 0;
+  flush(): string {
+    // At flush we can safely finalize: any leftover channel word after <|channel|> is removed.
+    // Do one more transform pass without masking (whatever remains is final).
+    this.buf = this.buf.replace(
+      /<\|channel\|>\s*[A-Za-z_-]*\s*/gi,
+      ""
+    ).replace(/<\|message\|>/gi, " ");
+    // Do NOT touch generic code fences on flush (content should remain intact).
+    const out = this.buf;
+    this.buf = "";
+    return out;
+  }
+
+  // ---------- hold logic for first pass ----------
+
+  private earliestHoldIndexFirstPass(s: string): number | null {
+    // 1) If a generic fence is open, hold from that start
+    const fenceStart = this.findUnmatchedFenceStart(s);
+    let holdAt: number | null = fenceStart !== -1 ? fenceStart : null;
+
+    // 2) If there is a <|channel|> with an INCOMPLETE word after it, hold from <|channel|>
+    const chIdx = this.lastIndexOfCI(s, "<|channel|>");
+    if (chIdx !== -1) {
+      const after = s.slice(chIdx + "<|channel|>".length);
+      // Scan for a possibly incomplete word
+      let i = 0;
+      while (i < after.length && /\s/.test(after[i])) i++;
+      let j = i;
+      while (j < after.length && /[A-Za-z_-]/.test(after[j])) j++;
+      const wordLen = j - i;
+      const completed = wordLen > 0 && (j < after.length ? (after[j] === " " || !/[A-Za-z_-]/.test(after[j])) : false);
+      if (!completed) holdAt = (holdAt === null ? chIdx : Math.min(holdAt, chIdx));
+    }
+
+    // 3) Trailing partial singleton sentinel (e.g., "<", "<|", "<|name", "<|name|")
+    const partialStart = this.indexOfTrailingPartialSingleton(s);
+    if (partialStart !== -1) holdAt = (holdAt === null ? partialStart : Math.min(holdAt, partialStart));
+
+    return holdAt;
+  }
+
+  private indexOfTrailingPartialSingleton(s: string): number {
+    const i = s.lastIndexOf("<");
+    if (i === -1) return -1;
+    const tail = s.slice(i);
+    // Very conservative: looks like start of a <...> or <|...|> but not closed yet.
+    return /^<[^>]*$/.test(tail) ? i : -1;
+  }
+
+  // ---------- generic fences (```lang\n ... \n```) ----------
+
+  private maskCompleteFences(s: string): { masked: string; fences: string[] } {
     let out = "";
-
-    while (i < s.length) {
-      // 1) <|message|>
-      if (this.ciStartsWith(s, i, "<|message|>")) {
-        out += " ";
-        i += "<|message|>".length;
-        continue;
-      }
-
-      // 2) <|channel|> + word
-      if (this.ciStartsWith(s, i, "<|channel|>")) {
-        const startLen = "<|channel|>".length;
-        const after = s.slice(i + startLen);
-        const eat = this.computeChannelEat(after);
-        if (eat === -1) {
-          // Need to hold from here (word incomplete).
-          return { processed: out, holdFrom: i };
-        }
-        // Drop token + word
-        i += startLen + eat;
-        continue;
-      }
-
-      // 3) other singletons <|name|> (drop unless *_start/*_end)
-      const m = /^<\|([A-Za-z0-9:_-]+)\|>/.exec(s.slice(i));
-      if (m) {
-        const name = m[1];
-        const len = m[0].length;
-        if (/_start$/i.test(name) || /_end$/i.test(name)) {
-          out += m[0]; // keep for later passes
-        }
-        // else drop
-        i += len;
-        continue;
-      }
-
-      // Default: copy char
-      out += s[i];
-      i++;
+    let pos = 0;
+    const fences: string[] = [];
+    while (true) {
+      const i = s.indexOf("```", pos);
+      if (i === -1) break;
+      const nl = s.indexOf("\n", i + 3);
+      if (nl === -1) break;
+      const j = s.indexOf("```", nl + 1);
+      if (j === -1) break;
+      // [i, j+3)
+      const idx = fences.length;
+      fences.push(s.slice(i, j + 3));
+      out += s.slice(pos, i) + this.placeholder(idx);
+      pos = j + 3;
     }
-
-    return { processed: out, holdFrom: -1 };
+    out += s.slice(pos);
+    return { masked: out, fences };
   }
 
-  // ---------- helpers ----------
-
-  /** Case-insensitive s.startsWith(token, i). */
-  private ciStartsWith(s: string, i: number, token: string): boolean {
-    return s.length - i >= token.length &&
-      s.slice(i, i + token.length).toLowerCase() === token.toLowerCase();
+  private unmask(fences: string[], s: string): string {
+    return s.replace(/\u0000F(\d+)\u0000/g, (_m, g1: string) => {
+      const k = Number(g1);
+      return Number.isFinite(k) && fences[k] !== undefined ? fences[k] : _m;
+    });
   }
 
-  /** For `<|channel|>`: eat optional spaces + [A-Za-z_-]+ + optional single space. -1 if incomplete. */
-  private computeChannelEat(s: string): number {
-    let i = 0;
-    while (i < s.length && /\s/.test(s[i])) i++;
-    let j = i;
-    while (j < s.length && /[A-Za-z_-]/.test(s[j])) j++;
-    if (j === i) return -1;        // no word yet
-    if (j === s.length) return -1; // incomplete
-    let k = j;
-    if (s[k] === " ") k++;         // optional trailing space
-    return k;
-  }
+  private placeholder(i: number): string { return `\u0000F${i}\u0000`; }
 
-  /** Consume a channel word at the very start of s; returns chars eaten. */
-  private consumeChannelWord(s: string, allowPartial: boolean): number {
-    let i = 0;
-    while (i < s.length && /\s/.test(s[i])) i++;
-    let j = i;
-    while (j < s.length && /[A-Za-z_-]/.test(s[j])) j++;
-    if (j === i) return allowPartial ? i : 0;
-    if (!allowPartial && j === s.length) return 0;
-    if (j < s.length && s[j] === " ") j++;
-    return j;
-  }
-
-  /** Return index of first unmatched generic fence start ```... ; -1 if none. */
   private findUnmatchedFenceStart(s: string): number {
     let pos = 0;
     while (true) {
@@ -200,35 +150,12 @@ export class LLMNoiseFilterFirstPass implements LLMNoiseFilterPass {
       if (nl === -1) return i;
       const j = s.indexOf("```", nl + 1);
       if (j === -1) return i;
-      pos = j + 3; // skip closed fence and continue
+      pos = j + 3;
     }
   }
 
-  /** Split into alternating text/fence segments with absolute offsets. */
-  private splitCompleteFences(s: string): Array<{ type: "text" | "fence"; start: number; end: number }> {
-    const segs: Array<{ type: "text" | "fence"; start: number; end: number }> = [];
-    let pos = 0;
-    while (true) {
-      const i = s.indexOf("```", pos);
-      if (i === -1) break;
-      const nl = s.indexOf("\n", i + 3);
-      if (nl === -1) break;
-      const j = s.indexOf("```", nl + 1);
-      if (j === -1) break;
-      if (i > pos) segs.push({ type: "text", start: pos, end: i });
-      segs.push({ type: "fence", start: i, end: j + 3 });
-      pos = j + 3;
-    }
-    if (pos < s.length) segs.push({ type: "text", start: pos, end: s.length });
-    return segs;
-    }
-
-  /** If the end looks like a partial `<|...` sentinel, return index to hold from; else -1. */
-  private findPartialSentinelStart(s: string): number {
-    const lastLt = s.lastIndexOf("<");
-    if (lastLt === -1) return -1;
-    const tail = s.slice(lastLt);
-    return /^<\|?[A-Za-z0-9:_-]*\|?$/.test(tail) ? lastLt : -1;
+  private lastIndexOfCI(s: string, token: string): number {
+    return s.toLowerCase().lastIndexOf(token.toLowerCase());
   }
 }
 
