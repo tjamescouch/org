@@ -417,7 +417,7 @@ export async function shInteractive(
     const child = runInteractive(fullScript);
     return await new Promise<{ code: number }>((resolve) => {
       child.on("close", (code: number | null) => resolve({ code: code ?? 0 }));
-      child on("exit",  (code: number | null) => resolve({ code: code ?? 0 }));
+      child.on("exit",  (code: number | null) => resolve({ code: code ?? 0 }));
     });
   }
 
