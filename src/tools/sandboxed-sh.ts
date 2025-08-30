@@ -252,7 +252,7 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   );
 
   // Run the step inside the sandbox (this writes those files)
-  const step = await (session as any).exec(args.cmd);
+  const step = await session.exec(args.cmd);
 
   // Stop heartbeat + streamers and clean up the line nicely.
   clearInterval(hbTimer);
@@ -317,7 +317,7 @@ export async function shCapture(
   cmd: string,
   opts: { projectDir: string; agentSessionId: string }
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const mgr = await getManager(opts.agentSessionId, opts.projectDir);
+  const mgr = await getManager(opts.agentSessionId, opts.projectDir, R.cwd());
   const session = await mgr.getOrCreate(opts.agentSessionId);
   const r = await (session as any).exec(cmd);
   const stdout = (r && r.stdoutFile && fs.existsSync(r.stdoutFile)) ? fs.readFileSync(r.stdoutFile, "utf8") : (r?.stdout ?? "");
@@ -369,7 +369,7 @@ export async function shInteractive(
     script = cmdOrArgv;
   }
 
-  const mgr = await getManager(opts.agentSessionId, opts.projectDir);
+  const mgr = await getManager(opts.agentSessionId, opts.projectDir, R.cwd());
   const session = await mgr.getOrCreate(opts.agentSessionId);
 
   const runInteractive =
