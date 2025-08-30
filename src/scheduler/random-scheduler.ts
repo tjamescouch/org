@@ -375,22 +375,22 @@ All agents are idle. Provide the next concrete instruction or question.`;
   }
 
   private async applyGuardDecision(agent: Responder, dec: GuardDecision) {
-    if ((dec as any).warnings && (dec as any).warnings.length) {
+    if (dec.warnings && dec.warnings.length) {
       Logger.debug(`[guard][${agent.id}] ` + (dec as any).warnings.join("; "));
     }
-    if ((dec as any).nudge) {
+    if (dec.nudge) {
       this.inbox.push(agent.id, {
-        content: (dec as any).nudge,
+        content: dec.nudge,
         from: "System",
         role: "system",
       });
     }
-    if ((dec as any).muteMs && (dec as any).muteMs > 0) {
-      this.mute(agent.id, (dec as any).muteMs);
+    if (dec.muteMs && dec.muteMs > 0) {
+      this.mute(agent.id, dec.muteMs);
     }
-    if ((dec as any).askUser && this.promptEnabled) {
+    if (dec.askUser && this.promptEnabled) {
       this.lastUserDMTarget = agent.id; // prefer the nudging agent
-      const userText = ((await this.askUser(agent.id, (dec as any).askUser)) ?? "").trim();
+      const userText = ((await this.askUser(agent.id, dec.askUser)) ?? "").trim();
       if (userText) {
         await this.handleUserInterjection(userText, { defaultTargetId: agent.id });
       }
