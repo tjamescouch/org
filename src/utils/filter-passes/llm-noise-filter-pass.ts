@@ -5,5 +5,5 @@ export interface LLMNoiseFilterPass {
   feed(chunk: string): PassFeedResult;
 
   /** Flush any carried state from this pass (e.g., incomplete fences/tags). */
-  flush(): string;
+  flush(): PassFeedResult;
 }

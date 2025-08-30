@@ -3,6 +3,7 @@ import { FinalChannelPass } from "./filter-passes/llm-final-channel-pass";
 import { LLMNoiseFilterFirstPass } from "./filter-passes/llm-noise-filter-first-pass";
 import { AdvancedMemoryScrubPass } from "./filter-passes/llm-adv-memory-scrub-pass";
 import type { LLMNoiseFilterPass, PassFeedResult } from "./filter-passes/llm-noise-filter-pass";
+import PDANoiseFilterPass from "./filter-passes/llm-pda-stream-pass";
 
 export class LLMNoiseFilter {
   private readonly passes: LLMNoiseFilterPass[];
@@ -23,13 +24,13 @@ export class LLMNoiseFilter {
   }
 
   flush(): string {
-    if (this.passes.length === 1) return this.passes[0].flush();
+    if (this.passes.length === 1) return this.passes[0].flush().cleaned;
     let tail = this.passes[0].flush();
     for (let i = 1; i < this.passes.length; i++) {
       const p = this.passes[i];
-      tail = p.feed(tail).cleaned + p.flush();
+      tail.cleaned = p.feed(tail.cleaned).cleaned + p.flush();
     }
-    return tail;
+    return tail.cleaned;
   }
 
   push(chunk: string): string { return this.feed(chunk).cleaned; }
@@ -37,9 +38,7 @@ export class LLMNoiseFilter {
 
   static createDefault(): LLMNoiseFilter {
     return new LLMNoiseFilter([
-  new LLMNoiseFilterFirstPass(),
-  new FinalChannelPass(),
-  new AdvancedMemoryScrubPass(),
+      new PDANoiseFilterPass(),
     ]);
   }
 }
