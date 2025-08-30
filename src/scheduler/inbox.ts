@@ -50,11 +50,12 @@ export class Inbox {
    */
   nextPromptFor(agentId: string): ChatMessage[] {
     const q = this.queues.get(agentId);
+    let r = [];
     if (q && q.length > 0) {
-      const m = q.shift()!;
-      return [{ ...m }];
+      //const m = q.shift()!;
+      r.push(...q);
     }
-    return [];
+    return r;
   }
 
   /** Total messages waiting. */
