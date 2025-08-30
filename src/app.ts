@@ -216,11 +216,6 @@ async function finalizeOnce(scheduler: SchedulerLike | null, projectDir: string,
 
 // ---------------------------------- main ----------------------------------
 
-function toPosix(p: string) {
-  // we only need POSIX form for inside the container
-  return p.split(path.sep).join(path.posix.sep);
-}
-
 async function main() {
   const cfg = loadConfig();
   const argv = ((globalThis as unknown as { Bun?: unknown }).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
@@ -249,24 +244,9 @@ async function main() {
   const hostStartDir = path.resolve(R.cwd());
   const projectDir = resolveProjectDir(hostStartDir);
 
-  // Decide the sandbox *default working directory*:
-  // If the user launched org within the repo tree, keep the same relative subdir.
-  // Otherwise fall back to repo root.
-  let defaultCwd = "/work";
-  const rel = path.relative(projectDir, hostStartDir);
-  if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
-    defaultCwd = path.posix.join("/work", toPosix(rel));
-  }
-
-  // Make these visible both to our own code and (via session env) to the sandbox.
-  R.env.ORG_PROJECT_DIR = "/work";           // where the repo copy lives in the sandbox
-  R.env.ORG_DEFAULT_CWD = defaultCwd;        // where tools should run by default
-  if (args["trace"] && !R.env.ORG_TRACE) R.env.ORG_TRACE = "1";
-
   // Helpful banner (mirrors the existing engine/image lines you already print).
   Logger.info(`[org] host cwd = ${hostStartDir}`);
   Logger.info(`[org] repo  dir = ${projectDir}`);
-  Logger.info(`[org] sandbox default cwd = ${defaultCwd}`);
 
   const recipeName = (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
   const recipe = getRecipe(recipeName || null);
