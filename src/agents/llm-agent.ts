@@ -29,7 +29,7 @@ function buildSystemPrompt(id: string): string {
     "TOOLS",
     "- sh(cmd): run a POSIX command. Args: {cmd:string}. Returns {ok, stdout, stderr, exit_code, cmd}.",
     "  • Use for builds/tests/git/etc. Check exit_code and stderr. Never invent outputs.",
-//    "- vimdiff(left,right[,cwd]): open an interactive vimdiff for human review. Returns {exitCode} when the user quits.",
+    //    "- vimdiff(left,right[,cwd]): open an interactive vimdiff for human review. Returns {exitCode} when the user quits.",
     "",
     "FILES",
     "- Prefer tag-based writes for full files (no code fences):",
@@ -176,8 +176,8 @@ export class LlmAgent extends Agent {
 
     // --- Streaming filter: RAW when DEBUG=1/true/yes; FILTERED otherwise ---
     const dbg = String(R.env.DEBUG ?? "").trim().toLowerCase();
-    const debugStreaming = dbg === "1" || dbg === "true" || dbg === "yes";
-    Logger.info('debugStreaming', debugStreaming);
+    const debugStreaming = (dbg === "1") || (dbg === "true") || (dbg === "yes");
+    Logger.info('debugStreaming', debugStreaming, dbg);
 
     // Same pipeline as post-turn
     const streamFilter = LLMNoiseFilter.createDefault();
@@ -205,8 +205,8 @@ export class LlmAgent extends Agent {
           Logger.streamInfo(C.bold(t));
         } else {
           // FILTERED streaming with tag preservation
-          const masked   = tagProtector.feedProtect(t);
-          const cleaned  = streamFilter.feed(masked).cleaned;
+          const masked = tagProtector.feedProtect(t);
+          const cleaned = streamFilter.feed(masked).cleaned;
           const unmasked = tagProtector.unprotect(cleaned);
           if (unmasked) Logger.streamInfo(C.bold(unmasked));
         }
@@ -218,7 +218,7 @@ export class LlmAgent extends Agent {
     if (!debugStreaming) {
       const protTail = tagProtector.flush();                               // masked remainder
       const filteredTail = streamFilter.feed(protTail).cleaned             // run through filter
-                         + streamFilter.flush();                            // then flush filter
+        + streamFilter.flush();                            // then flush filter
       const unmaskedTail = tagProtector.unprotect(filteredTail);           // finally unmask
       if (unmaskedTail) Logger.streamInfo(C.bold(unmaskedTail));
     }
@@ -266,7 +266,7 @@ export class LlmAgent extends Agent {
         const totalUsed = maxTools; // consume budget → end turn
         forceEndTurn = true;
         if (finalText) await this.memory.add({ role: "system", content: finalText, from: "System" });
-        
+
         return [{ message: finalText, toolsUsed: totalUsed }];
       }
     }
