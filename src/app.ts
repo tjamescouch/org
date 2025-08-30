@@ -221,6 +221,15 @@ async function main() {
   const argv = ((globalThis as unknown as { Bun?: unknown }).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
   const args = parseArgs(argv);
 
+  // Freeze the user’s *invocation CWD* once and propagate it to children/tools.
+  // (Some subsystems may chdir; we want the workspace repo to be where the user ran `org`.)
+  if (!R.env.ORG_INVOCATION_CWD || !String(R.env.ORG_INVOCATION_CWD).trim()) {
+    // Prefer PWD when available (preserves symlinked shells), else real cwd.
+    const seed = (typeof R.env.PWD === "string" && R.env.PWD.trim()) ? R.env.PWD : R.cwd();
+    R.env.ORG_INVOCATION_CWD = seed;
+  }
+  const invocationCwd = String(R.env.ORG_INVOCATION_CWD);
+
   // tmux handoff
   if (args["ui"] === "tmux" && R.env.ORG_TMUX !== "1") {
     const sandbox = R.env.SANDBOX_BACKEND ?? "podman";
@@ -240,7 +249,9 @@ async function main() {
 
   Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
 
-  const projectDir = resolveProjectDir(R.cwd());
+  // IMPORTANT: use the *invocation* cwd to locate the workspace repo
+  const projectDir = resolveProjectDir(invocationCwd);
+
   const recipeName = (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
   const recipe = getRecipe(recipeName || null);
 
@@ -272,7 +283,7 @@ async function main() {
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
     onAskUser: (fromAgent: string, content: string) =>
       controlContainer.controller?.askUser(fromAgent, content) ?? Promise.resolve(undefined),
-    projectDir,
+    projectDir,                   // <<< workspace repo root (from invocation CWD)
     reviewMode,
     promptEnabled:
       typeof args["prompt"] === "boolean" ? (args["prompt"] as boolean)
