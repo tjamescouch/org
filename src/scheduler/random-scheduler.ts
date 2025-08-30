@@ -1,164 +1,448 @@
 // src/scheduler/random-scheduler.ts
-// RandomScheduler with external user-prompt bridge.
-// - If `readUserLine` is provided, the scheduler DOES NOT create its own readline,
-//   and it DOES NOT bind keypress listeners. It awaits the external provider (TTY controller).
-// - Keeps `promptEnabled` semantics so the state machine still "waits for user" after @@user.
-// - Prints Examples + idle banner ONCE per idle cycle to avoid repetition.
-// - Minimal, type-safe surface to satisfy IScheduler usage in app.ts.
+import { shuffle as fisherYatesShuffle } from "../utils/shuffle-array";
+import { C, Logger } from "../logger";
+import { NoiseFilters } from "./filters";
+import { Inbox } from "./inbox";
+import { routeWithSideEffects } from "./router";
+import { ReviewManager } from "./review-manager";
+import { TagSplitter, TagPart } from "../utils/tag-splitter";
+import type { GuardDecision } from "../guardrails/guardrail";
+import type { ChatMessage } from "../types";
+import type { Responder, SchedulerOptions, AskUserFn } from "./types";
+import { sandboxMangers } from "../sandbox/session";
+import { sleep } from "../utils/sleep";
 
-import { setTimeout as sleep } from "node:timers/promises";
-import { Logger } from "../logger";
-
-export type ReviewMode = "ask" | "auto" | "never";
-
-// Shape used by app.ts when it constructs agents.
-export interface AgentShim {
-  id: string;
-  respond: (prompt: string, budget: number, peers: string[], shouldStop: () => boolean) => Promise<unknown> | unknown;
-  guardOnIdle?: (state: unknown) => unknown | null;
-  guardCheck?: (route: unknown, content: string, peers: string[]) => unknown | null;
-}
-
-export interface RandomSchedulerOptions {
-  agents: AgentShim[];
-  maxTools: number;
-  onAskUser: (fromAgent: string, content: string) => Promise<string | undefined>;
-  projectDir: string;
-  reviewMode: ReviewMode;
-  /** When true, the scheduler is allowed to *wait for input* in idle state. */
-  promptEnabled: boolean;
-
+/** Extend options locally to accept the external prompt bridge without changing the global type. */
+type SchedulerOptionsWithBridge = SchedulerOptions & {
   /**
-   * EXTERNAL PROMPT BRIDGE:
-   * If provided, the scheduler will NOT render its own 'user:' banner, and will NOT attach
-   * readline/keypress listeners. Instead it will await this function for exactly one line.
+   * If provided, scheduler will not render its own 'user:' banner or readline.
+   * Instead it awaits this provider and treats the returned line as user input.
+   * This keeps `promptEnabled` semantics (the scheduler still "waits for user"),
+   * but routes I/O through the TTY controller to avoid duplicate listeners.
    */
   readUserLine?: () => Promise<string | undefined>;
-}
+};
 
-// Minimal IScheduler shape expected by app.ts/finalizeOnce.
-export interface IScheduler {
-  start(): Promise<void>;
-  stop(): Promise<void>;
-  drain(): Promise<void>;
-  enqueueUserText(text: string): Promise<void>;
-}
+/**
+ * RandomScheduler
+ * ---------------
+ * Restores the pre-refactor behavior:
+ *  - Uses Inbox for per-agent/group routing
+ *  - Respects explicit @@agent DMs, default DM target, and @group broadcast
+ *  - Applies guardrail decisions (nudge/mute/askUser)
+ *  - Performs multi-hop execution until tool budget exhausted
+ *  - Idle prompting via askUser every few idle ticks when enabled
+ *  - Draining/pause/resume/stop and review integration
+ *
+ * Notes:
+ *  - Added `enqueueUserText(text)` as a typed alias to the interjection path,
+ *    so newer call sites remain compatible without changing the old surface.
+ *  - Added *external prompt bridge* (`readUserLine`) so the UI (TTY controller) can
+ *    own the prompt/echo while the scheduler retains turn/state logic.
+ */
+export class RandomScheduler {
+  /**
+   * If provided, scheduler will not render its own 'user:' banner or readline.
+   * Instead it awaits this provider and treats the returned line as user input.
+   */
+  readUserLine?: () => Promise<string | undefined>;
 
-export default class RandomScheduler implements IScheduler {
-  private readonly opts: RandomSchedulerOptions;
-  private readonly userQueue: string[] = [];
+  private readonly agents: Responder[];
+  private readonly maxTools: number;
+  private readonly shuffle: <T>(arr: T[]) => T[];
+  private readonly review: ReviewManager;
+  private readonly filters = new NoiseFilters();
+  private readonly inbox = new Inbox();
+
   private running = false;
-  private loop?: Promise<void>;
-  private printedExamples = false;
+  private paused = false;
+  private draining = false;
 
-  constructor(opts: RandomSchedulerOptions) {
-    this.opts = opts;
+  private activeAgent: Responder | undefined;
+  private respondingAgent: Responder | undefined;
+
+  private keepAlive: NodeJS.Timeout | null = null;
+
+  private mutedUntil = new Map<string, number>();
+  private lastUserDMTarget: string | null = null;
+
+  private readonly idlePromptEvery = 3;
+
+  private readonly askUser: AskUserFn;
+  private readonly promptEnabled: boolean;
+  private readonly idleSleepMs: number;
+
+  // when true, break the current agent loop and start a new tick immediately
+  private rescheduleNow = false;
+
+  constructor(opts: SchedulerOptionsWithBridge) {
+    this.agents = opts.agents;
+    this.maxTools = opts.maxTools;
+    this.shuffle = opts.shuffle ?? fisherYatesShuffle;
+    this.review = new ReviewManager(opts.projectDir, opts.reviewMode ?? "ask");
+    this.askUser = opts.onAskUser;
+
+    this.promptEnabled = !!opts.promptEnabled;
+    this.idleSleepMs = opts.idleSleepMs ?? 25;
+
+    // NEW: wire the external prompt bridge if provided
+    this.readUserLine = opts.readUserLine;
+
+    for (const a of this.agents) this.inbox.ensure(a.id);
   }
 
-  async start(): Promise<void> {
+  /** Start the scheduling loop (idempotent). */
+  private startBody = async (): Promise<void> => {
     if (this.running) return;
     this.running = true;
-    this.loop = this.mainLoop();
-  }
+    this.keepAlive = setInterval(() => {
+      /* keep event loop alive during long idle */
+    }, 30_000);
 
-  async stop(): Promise<void> {
-    this.running = false;
-    await this.loop?.catch(() => undefined);
-  }
+    let idleTicks = 0;
 
-  async drain(): Promise<void> {
-    // In this simple scheduler, there's no background work once stopped.
-    return;
-  }
-
-  async enqueueUserText(text: string): Promise<void> {
-    if (typeof text === "string" && text.trim().length > 0) {
-      this.userQueue.push(text);
-      // Reset idle banner so it will show once after processing the new item (if we go idle again)
-      this.printedExamples = false;
-    }
-  }
-
-  // ---------------------------- internal helpers ----------------------------
-
-  private printIdleExamplesOnce(): void {
-    if (this.printedExamples) return;
-    this.printedExamples = true;
-
-    Logger.info("Examples:");
-    Logger.info('- "@user Outline the next milestone and first task."');
-    Logger.info('- "@alice" Ask that agent to run a specific command and report back.');
-    Logger.info('- "Switch context to <topic> and set a single success criterion."');
-
-    Logger.info("All agents are idle — no queued work and no actionable outputs.");
-    Logger.info("Please provide the next *concrete* instruction.");
-  }
-
-  private async promptUserOnceViaBridge(): Promise<string | undefined> {
-    if (typeof this.opts.readUserLine === "function") {
-      // External UI (TTY controller) owns echo + cooked input under raw TTY.
-      return await this.opts.readUserLine();
-    }
-
-    // Legacy internal prompt (fallback, rarely used).
-    const { createInterface } = await import("node:readline/promises");
-    const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-    try {
-      const answer = await rl.question("user: (scheduler) ");
-      return answer;
-    } finally {
-      rl.close();
-    }
-  }
-
-  private resetIdleCycle(): void {
-    this.printedExamples = false;
-  }
-
-  // Simulate "no actionable outputs" when we aren't integrating agents deeply.
-  private async processOneUserLine(line: string): Promise<void> {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-
-    // If you later want to route to agents, do it here. For now, we keep the UX stable:
-    // show that no agent took action and return to idle (same behavior your screenshots show).
-    Logger.info("All agents are idle — no queued work and no actionable outputs.");
-    Logger.info("Please provide the next *concrete* instruction.");
-  }
-
-  // ------------------------------- main loop ---------------------------------
-
-  private async mainLoop(): Promise<void> {
     while (this.running) {
-      // 1) Handle queued user messages (from kickoff or interjection)
-      const next = this.userQueue.shift();
-      if (typeof next === "string") {
-        await this.processOneUserLine(next);
-        // after work, next iteration will detect idle again
+      this.activeAgent = undefined;
+
+      if (this.paused || this.draining) {
+        await sleep(25);
         continue;
       }
 
-      // 2) Idle branch
-      if (this.opts.promptEnabled) {
-        // Show Examples + instruction ONCE per idle cycle
-        this.printIdleExamplesOnce();
+      let didWork = false;
+      this.rescheduleNow = false;
 
-        // Block for exactly one user line (via external bridge if provided)
-        const line = await this.promptUserOnceViaBridge();
+      // Choose agents that currently have messages waiting.
+      const ready = this.agents.filter(a => this.inbox.hasWork(a.id));
+      const order = this.shuffle(ready);
 
-        if (typeof line === "string" && line.trim().length > 0) {
-          await this.enqueueUserText(line);
-          // we just queued a line; loop will pick it up immediately
-          this.resetIdleCycle();
+      for (const agent of order) {
+        if (this.rescheduleNow) break;
+        if (this.isMuted(agent.id)) {
+          Logger.debug(`muted: ${agent.id}`);
           continue;
         }
 
-        // No input; loop again (bridge should not attach listeners repeatedly)
-        await sleep(25);
+        const a = this.respondingAgent ?? agent;
+        this.respondingAgent = undefined;
+
+        const messages = this.inbox.nextPromptFor(a.id);
+        if (messages.length === 0) {
+          Logger.debug(`no work for ${a.id}`);
+          continue;
+        }
+        Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(messages));
+
+        let remaining = this.maxTools;
+        let totalToolsUsed = 0;
+
+        try {
+          for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
+            const peers = this.agents.map(x => x.id);
+            Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
+            this.activeAgent = a;
+
+            const replies = await a.respond(
+              messages,
+              Math.max(0, remaining),
+              peers,
+              () => this.draining
+            );
+
+            for (const { message, toolsUsed } of replies) {
+              totalToolsUsed += toolsUsed;
+              this.activeAgent = undefined;
+              Logger.debug(
+                `${a.id} replied toolsUsed=${toolsUsed} message=`,
+                JSON.stringify(message)
+              );
+
+              const askedUser = await routeWithSideEffects(
+                {
+                  agents: this.agents,
+                  enqueue: (toId, msg) => this.inbox.push(toId, msg),
+                  setRespondingAgent: (id) => {
+                    this.respondingAgent = this.agents.find(x => x.id === id);
+                  },
+                  applyGuard: (from, dec) => this.applyGuardDecision(from, dec),
+                  setLastUserDMTarget: (id) => {
+                    this.lastUserDMTarget = id;
+                  },
+                },
+                a,
+                message,
+                this.filters,
+              );
+
+              didWork = true;
+
+              if (askedUser) {
+                if (this.promptEnabled) {
+                  // interactive: open prompt as before
+                  this.lastUserDMTarget = a.id;
+                  const userText = ((await this.askUser(a.id, message)) ?? "").trim();
+                  if (userText) {
+                    await this.handleUserInterjection(userText, {
+                      defaultTargetId: a.id,
+                    });
+                  }
+                  this.rescheduleNow = true;
+                } else {
+                  this.stop();
+                  this.rescheduleNow = true;
+                }
+                break;
+              }
+            }
+
+            if (this.rescheduleNow) break;
+            if (totalToolsUsed > 0) {
+              remaining = Math.max(0, remaining - totalToolsUsed);
+              if (remaining <= 0) break;
+            } else {
+              break;
+            }
+          }
+        } finally {
+          if (totalToolsUsed > 0) this.review.markDirty(agent.id);
+        }
+      }
+
+      if (!didWork) {
+        idleTicks++;
+        const queuesEmpty = !this.inbox.hasAnyWork();
+
+        // ---------- NEW: external prompt bridge owns idle input ----------
+        // If we are idle, prompting is enabled, and a bridge is supplied,
+        // block for exactly one user line via TTY controller (single prompt, no extra listeners).
+        if (queuesEmpty && this.promptEnabled && typeof this.readUserLine === "function") {
+          // Prefer the last DM target or the first agent if we need a default
+          const preferred = this.lastUserDMTarget ?? this.agents[0]?.id ?? undefined;
+          const line = ((await this.readUserLine()) ?? "").trim();
+          if (line) {
+            await this.handleUserInterjection(line, { defaultTargetId: preferred });
+            idleTicks = 0;
+            continue; // next tick will process the enqueued user text
+          }
+          await this.sleep(this.idleSleepMs);
+          continue;
+        }
+        // -----------------------------------------------------------------
+
+        if (queuesEmpty && (idleTicks % this.idlePromptEvery) === 0 && this.promptEnabled) {
+          const peers = this.agents.map(x => x.id);
+          const dec =
+            this.agents[0]?.guardOnIdle?.({ idleTicks, peers, queuesEmpty: true }) || null;
+          const prompt =
+            (dec as any)?.askUser ??
+            `(scheduler)
+All agents are idle. Provide the next concrete instruction or question.`;
+          const preferred = this.agents[0]?.id;
+          if (preferred) this.lastUserDMTarget = preferred;
+          const userText = ((await this.askUser("scheduler", prompt)) ?? "").trim();
+          if (userText) {
+            await this.handleUserInterjection(userText, {
+              defaultTargetId: preferred || undefined,
+            });
+          }
+          idleTicks = 0;
+        } else {
+          await this.sleep(this.idleSleepMs); // cooperative idle
+        }
       } else {
-        // Not prompting in idle: do not spam the banner; sleep.
-        await sleep(50);
+        idleTicks = 0;
+      }
+    }
+
+    if (this.keepAlive) {
+      clearInterval(this.keepAlive);
+      this.keepAlive = null;
+    }
+  };
+
+  // ------------------------------ Public API ------------------------------
+  async start() {
+    try {
+      await this.startBody();
+    } catch (e) {
+      Logger.error("Scheduler start failed.", e);
+    } finally {
+      if (this.keepAlive) {
+        clearInterval(this.keepAlive);
+        this.keepAlive = null;
+      }
+
+      // Finalize any dirty sessions and run review/apply once.
+      // Make ReviewManager.finalizeAndReview() idempotent so double-calls are safe.
+      await this.review.finalizeAndReview();
+      this.running = false;
+    }
+  }
+
+  stop() {
+    this.running = false;
+    Logger.debug("stopped");
+  }
+  pause() {
+    this.paused = true;
+    Logger.debug("paused");
+  }
+  resume() {
+    this.paused = false;
+    Logger.debug("resumed");
+  }
+
+  async drain(): Promise<boolean> {
+    if (this.draining) return false;
+    this.draining = true;
+    while (this.hasActiveAgent()) {
+      Logger.info(C.magenta(`\nWaiting for agent to complete...`));
+      await this.sleep(1000);
+    }
+    return true;
+  }
+
+  stopDraining(): void {
+    this.draining = false;
+  }
+  isDraining(): boolean {
+    return this.draining;
+  }
+  hasActiveAgent(): boolean {
+    return !!this.activeAgent;
+  }
+
+  /** External entry for user interjections (e.g., CLI input). */
+  async interject(text: string) {
+    await this.handleUserInterjection(text, {
+      defaultTargetId: this.lastUserDMTarget || undefined,
+    });
+  }
+
+  /** Alias for compatibility with newer callers; routes to interject(). */
+  async enqueueUserText(text: string): Promise<void> {
+    await this.interject(text);
+  }
+
+  async finalizeAndReviewAll(): Promise<void> {
+    try {
+      await this.review.finalizeAndReview(this.agents.map(a => a.id));
+    } catch (e: any) {
+      Logger.error("finalizeAndReviewAll:", e?.message ?? e);
+    }
+  }
+
+  /**
+   * Enqueue user text.
+   * - Explicit agent tags override everything (we reschedule immediately).
+   * - Otherwise DM the default target, else broadcast to group.
+   */
+  private async handleUserInterjection(
+    text: string,
+    opts?: { defaultTargetId?: string }
+  ) {
+    const raw = String(text ?? "");
+    const parts = TagSplitter.split(raw, {
+      allowSingleAt: true,
+      allowSingleHash: false,
+      userTokens: ["user"],
+      groupTokens: ["group"],
+      agentTokens: this.agents.map(a => a.id), // allowlist
+      fileTokens: ["file"],
+      allowFileShorthand: false,
+    });
+
+    // Explicit @@agent tags
+    const agentParts = parts.filter(p => p.kind === "agent") as Array<
+      TagPart & { kind: "agent" }
+    >;
+    if (agentParts.length > 0) {
+      const targets: Responder[] = [];
+      for (const ap of agentParts) {
+        const ag = this.findAgentByIdExact(ap.tag);
+        if (ag && !targets.some(t => t.id === ag.id)) targets.push(ag);
+      }
+      if (targets.length > 0) {
+        this.respondingAgent = targets[0];
+        this.lastUserDMTarget = targets[0].id;
+        for (const ap of agentParts) {
+          const ag = this.findAgentByIdExact(ap.tag);
+          if (!ag) continue;
+          const msg: ChatMessage = { content: ap.content, role: "user", from: "User" };
+          this.inbox.push(ag.id, msg);
+          Logger.info(`[user → @@${ag.id}] ${raw}`);
+        }
+        this.rescheduleNow = true;
+        return;
+      }
+    }
+
+    // No explicit tags -> DM default if provided
+    if (opts?.defaultTargetId) {
+      const ag = this.findAgentByIdExact(opts.defaultTargetId);
+      if (ag) {
+        const msg: ChatMessage = { content: raw.trim(), role: "user", from: "User" };
+        this.respondingAgent = ag;
+        this.lastUserDMTarget = ag.id;
+        this.inbox.push(ag.id, msg);
+        Logger.info(`[user → @@${ag.id}] ${raw}`);
+        this.rescheduleNow = true;
+        return;
+      }
+    }
+
+    // Fallback: broadcast to group
+    for (const a of this.agents) {
+      this.inbox.push(a.id, { content: raw, role: "user", from: "User" });
+    }
+
+    Logger.debug("End of interjection");
+    Logger.info(`[user → @@group] ${raw}`);
+  }
+
+  // ------------------------------ Internals ------------------------------
+
+  private isMuted(id: string): boolean {
+    const until = this.mutedUntil.get(id) ?? 0;
+    return Date.now() < until;
+  }
+
+  private mute(id: string, ms: number) {
+    this.mutedUntil.set(id, Date.now() + Math.max(250, ms));
+  }
+
+  private async applyGuardDecision(agent: Responder, dec: GuardDecision) {
+    if (dec.warnings && dec.warnings.length) {
+      Logger.debug(`[guard][${agent.id}] ` + (dec as any).warnings.join("; "));
+    }
+    if (dec.nudge) {
+      this.inbox.push(agent.id, {
+        content: dec.nudge,
+        from: "System",
+        role: "system",
+      });
+    }
+    if (dec.muteMs && dec.muteMs > 0) {
+      this.mute(agent.id, dec.muteMs);
+    }
+    if (dec.askUser && this.promptEnabled) {
+      this.lastUserDMTarget = agent.id; // prefer the nudging agent
+      const userText = ((await this.askUser(agent.id, dec.askUser)) ?? "").trim();
+      if (userText) {
+        await this.handleUserInterjection(userText, { defaultTargetId: agent.id });
       }
     }
   }
+
+  /** Exact id match, case-insensitive. */
+  private findAgentByIdExact(key: string): Responder | undefined {
+    const t = key.toLowerCase();
+    return this.agents.find(a => a.id.toLowerCase() === t);
+  }
+
+  private sleep(ms: number) {
+    return new Promise<void>(r => setTimeout(r, ms));
+  }
 }
+
+export default RandomScheduler;
