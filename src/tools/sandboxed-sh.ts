@@ -33,20 +33,6 @@ export function resolveStepsHostDir(session: StepsDirCarrier, fallbackRoot?: str
   return path.resolve(".org", "runs", "current", "steps");
 }
 
-// ---------- small trace helper ----------
-const TRACE = (() => {
-  const v = String(R.env.ORG_TRACE ?? "").toLowerCase().trim();
-  return !!v && v !== "0" && v !== "false" && v !== "off";
-})();
-
-function t(msg: string) {
-  if (TRACE) {
-    // keep trace on stderr so it never contaminates stdout
-    R.stderr.write(`[trace] ${msg}\n`);
-  }
-}
-// ---------------------------------------
-
 export type ToolArgs = { cmd: string };
 export type ToolResult = { ok: boolean; stdout: string; stderr: string; exit_code: number; cmd: string };
 
@@ -75,16 +61,30 @@ export async function withMutedShHeartbeat<T>(fn: () => Promise<T>): Promise<T> 
 }
 
 /* -----------------------------------------------------------------------------
+ * Small helpers
+ * ---------------------------------------------------------------------------*/
+
+function trace(...a: any[]) {
+  if (R.env.DEBUG || R.env.ORG_TRACE) Logger.info("[sandboxed-sh]", ...a);
+}
+
+/** If `child` is inside `parent`, return the relative; otherwise return "" */
+function relIfInside(parent: string, child: string): string {
+  const p = path.resolve(parent);
+  const c = path.resolve(child);
+  if (c === p) return "";
+  if (!c.startsWith(p + path.sep)) return "";
+  return path.relative(p, c);
+}
+
+/* -----------------------------------------------------------------------------
  * Sandbox manager lookup/creation (one per {projectDir, runRoot})
  * ---------------------------------------------------------------------------*/
 async function getManager(key: string, projectDir: string, runRoot?: string) {
   let m = sandboxMangers.get(key);
   if (!m) {
-    t(`SandboxManager<create> key=${JSON.stringify(key)} projectDir=${JSON.stringify(projectDir)} runRoot=${JSON.stringify(runRoot)}`);
     m = new SandboxManager(projectDir, runRoot, { backend: "auto" });
     sandboxMangers.set(key, m);
-  } else {
-    t(`SandboxManager<reuse> key=${JSON.stringify(key)} projectDir=${JSON.stringify(projectDir)} runRoot=${JSON.stringify(runRoot)}`);
   }
   return m;
 }
@@ -161,15 +161,14 @@ function tailStepsDir(
 
   const attachTailer = async (fullPath: string, kind: "out" | "err") => {
     if (tracked.has(fullPath)) return;
-    t(`tail<attach> file=${fullPath} kind=${kind}`);
-    // Start tailing from the beginning so we capture early bytes too.
-    const tfile = tailFile(
+    trace("attach tailer:", fullPath, kind);
+    const t = tailFile(
       fullPath,
       (s) => (kind === "out" ? onOut(s) : onErr(s)),
       onSeenOutput,
       { pollMs }
     );
-    tracked.set(fullPath, { stop: tfile.stop, kind });
+    tracked.set(fullPath, { stop: t.stop, kind });
   };
 
   const tick = async () => {
@@ -199,12 +198,10 @@ function tailStepsDir(
     setTimeout(tick, pollMs);
   };
 
-  t(`tailStepsDir<start> dir=${stepsDir}`);
+  trace("tail steps dir:", stepsDir);
   tick();
-
   return {
     stop: () => {
-      t(`tailStepsDir<stop> dir=${stepsDir}`);
       stopped = true;
       for (const [, v] of tracked) {
         try { v.stop(); } catch { }
@@ -220,18 +217,24 @@ function tailStepsDir(
 
 export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
   const sessionKey = ctx.agentSessionId ?? "default";
-  const projectDir = ctx.projectDir ?? R.cwd();
-  const runRoot = ctx.runRoot ?? path.join(projectDir, ".org");
+  const projectDir = path.resolve(ctx.projectDir ?? R.cwd());
+  const runRoot = path.resolve(ctx.runRoot ?? path.join(projectDir, ".org"));
+  const userCwd = path.resolve(R.cwd());
+  const cwdRel = relIfInside(projectDir, userCwd);
   const idleHeartbeatMsRaw = ctx?.idleHeartbeatMs ?? 1000;
   const idleHeartbeatMs = HEARTBEAT_MUTED ? 0 : Math.max(250, idleHeartbeatMsRaw);
 
-  t(`sh<begin> key=${JSON.stringify(sessionKey)} projectDir=${JSON.stringify(projectDir)} runRoot=${JSON.stringify(runRoot)} idleHb=${idleHeartbeatMs}`);
+  trace("exec begin", { projectDir, runRoot, userCwd, cwdRel, cmd: args.cmd });
 
   const mgr = await getManager(sessionKey, projectDir, runRoot);
   const session = await mgr.getOrCreate(sessionKey, ctx.policy);
 
   const stepsHostDir = resolveStepsHostDir(session as unknown as StepsDirCarrier, runRoot);
-  t(`stepsDir=${stepsHostDir}`);
+
+  // Prefix the command with `cd <rel>` if we’re in a subdirectory of the project
+  const prefix = cwdRel ? `cd ${JSON.stringify(cwdRel)} && ` : "";
+  const fullCmd = `${prefix}${args.cmd}`;
+  trace("exec command:", fullCmd);
 
   // Baseline: make sure the directory exists; streaming handler tolerates absence.
   try { await fsp.mkdir(stepsHostDir, { recursive: true }); } catch { }
@@ -268,16 +271,13 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   );
 
   // Run the step inside the sandbox (this writes those files)
-  t(`exec<call> ${JSON.stringify(args.cmd)}`);
-  const step = await session.exec(args.cmd);
+  const step = await (session as any).exec(fullCmd);
 
   // Stop heartbeat + streamers and clean up the line nicely.
   clearInterval(hbTimer);
   dirTail.stop();
   if (printedHeartbeat && !brokeLineAfterHeartbeat) R.stderr.write("\n");
 
-  // If absolutely nothing appeared and the step succeeded with no files,
-  // end the line to avoid a dangling prompt.
   try {
     const hasOut = step?.stdoutFile && fs.existsSync(step.stdoutFile);
     const hasErr = step?.stderrFile && fs.existsSync(step.stderrFile);
@@ -292,10 +292,13 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   const out = (step?.stdoutFile && fs.existsSync(step.stdoutFile)) ? fs.readFileSync(step.stdoutFile, "utf8") : (step?.stdout ?? "");
   const err = (step?.stderrFile && fs.existsSync(step.stderrFile)) ? fs.readFileSync(step.stderrFile, "utf8") : (step?.stderr ?? "");
 
-  t(`exec<done> ok=${!!step?.ok} exit=${step?.exit ?? 0} stdoutFile=${JSON.stringify(step?.stdoutFile ?? null)} stderrFile=${JSON.stringify(step?.stderrFile ?? null)}`);
-
+  trace("exec end", { ok: !!step?.ok, exit: step?.exit ?? 0 });
   return { ok: !!step?.ok, stdout: out, stderr: err, exit_code: step?.exit ?? 0, cmd: args.cmd };
 }
+
+/* -----------------------------------------------------------------------------
+ * Finalization helpers
+ * ---------------------------------------------------------------------------*/
 
 export async function finalizeSandbox(ctx: ToolCtx) {
   const sessionKey = ctx.agentSessionId ?? "default";
@@ -336,13 +339,19 @@ export async function shCapture(
   cmd: string,
   opts: { projectDir: string; agentSessionId: string }
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  t(`shCapture<begin> cmd=${JSON.stringify(cmd)} key=${JSON.stringify(opts.agentSessionId)} projectDir=${JSON.stringify(opts.projectDir)}`);
-  const mgr = await getManager(opts.agentSessionId, opts.projectDir, R.cwd());
+  const projectDir = path.resolve(opts.projectDir);
+  const userCwd = path.resolve(R.cwd());
+  const cwdRel = relIfInside(projectDir, userCwd);
+  const prefix = cwdRel ? `cd ${JSON.stringify(cwdRel)} && ` : "";
+  const fullCmd = `${prefix}${cmd}`;
+  trace("shCapture", { projectDir, userCwd, cwdRel, fullCmd });
+
+  const mgr = await getManager(opts.agentSessionId, projectDir, R.cwd());
   const session = await mgr.getOrCreate(opts.agentSessionId);
-  const r = await (session as any).exec(cmd);
+  const r = await (session as any).exec(fullCmd);
+
   const stdout = (r && r.stdoutFile && fs.existsSync(r.stdoutFile)) ? fs.readFileSync(r.stdoutFile, "utf8") : (r?.stdout ?? "");
   const stderr = (r && r.stderrFile && fs.existsSync(r.stderrFile)) ? fs.readFileSync(r.stderrFile, "utf8") : (r?.stderr ?? "");
-  t(`shCapture<done> exit=${r?.exit ?? 0}`);
   return { code: r?.exit ?? 0, stdout, stderr };
 }
 
@@ -388,9 +397,14 @@ export async function shInteractive(
     script = cmdOrArgv;
   }
 
-  t(`shInteractive<begin> key=${JSON.stringify(opts.agentSessionId)} projectDir=${JSON.stringify(opts.projectDir)} script=${JSON.stringify(script)}`);
+  const projectDir = path.resolve(opts.projectDir);
+  const userCwd = path.resolve(R.cwd());
+  const cwdRel = relIfInside(projectDir, userCwd);
+  const prefix = cwdRel ? `cd ${JSON.stringify(cwdRel)} && ` : "";
+  const fullScript = `${prefix}${script}`;
+  trace("shInteractive", { projectDir, userCwd, cwdRel, fullScript });
 
-  const mgr = await getManager(opts.agentSessionId, opts.projectDir, R.cwd());
+  const mgr = await getManager(opts.agentSessionId, projectDir, R.cwd());
   const session = await mgr.getOrCreate(opts.agentSessionId);
 
   const runInteractive =
@@ -399,10 +413,10 @@ export async function shInteractive(
       : null;
 
   if (runInteractive) {
-    const child = runInteractive(script);
+    const child = runInteractive(fullScript);
     return await new Promise<{ code: number }>((resolve) => {
       child.on("close", (code: number | null) => resolve({ code: code ?? 0 }));
-      child.on("exit",  (code: number | null) => resolve({ code: code ?? 0 }));
+      child.on("exit", (code: number | null) => resolve({ code: code ?? 0 }));
     });
   }
 
@@ -419,12 +433,12 @@ export async function shInteractive(
     );
   }
 
-  const argv = ["exec", "-it", cname, "bash", "-lc", script];
-  t(`shInteractive<fallback> ${engine} ${argv.join(" ")}`);
+  const argv = ["exec", "-it", cname, "bash", "-lc", fullScript];
+  Logger.info(`[sandboxed-sh] fallback interactive via ${engine}: ${argv.join(" ")}`);
 
   const child = spawn(engine, argv, { stdio: "inherit" });
   return await new Promise<{ code: number }>((resolve) => {
     child.on("close", (code) => resolve({ code: code ?? 0 }));
-    child.on("exit",  (code) => resolve({ code: code ?? 0 }));
+    child.on("exit", (code) => resolve({ code: code ?? 0 }));
   });
 }
