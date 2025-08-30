@@ -76,7 +76,7 @@ export class Passthrough {
    */
   public write(chunk: string | Buffer): void {
     if (this.state === "closed") return;
-    //this.stdout.write(chunk);
+    this.stdout.write(chunk);
   }
 
   /**
