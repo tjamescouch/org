@@ -175,7 +175,7 @@ export class LlmAgent extends Agent {
     }
 
     // --- Streaming filter: RAW when DEBUG=1/true/yes; FILTERED otherwise ---
-    const dbg = String(R.env.DEBUG ?? "").trim().toLowerCase();
+    const dbg = (R.env.DEBUG ?? "").trim().toLowerCase();
     const debugStreaming = (dbg === "1") || (dbg === "true") || (dbg === "yes");
     Logger.info('debugStreaming', debugStreaming, dbg);
 
