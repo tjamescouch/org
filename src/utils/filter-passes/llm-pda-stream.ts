@@ -1,109 +1,81 @@
 import { LLMNoiseFilterPass } from "./llm-noise-filter-pass";
 
-/** Ensure exactly one space between a mention tag and the message body. */
+/** Utility: ensure exactly one space between a mention tag and the message body. */
 function joinTagAndMessage(tag: string, body: string): string {
-  const t = tag.trim();
-  if (!t) return body;
-  if (t.startsWith("@")) {
-    if (!body) return t;
-    return t + (body.startsWith(" ") ? "" : " ") + body;
+  if (!tag) return body;
+  if (tag.startsWith('@@') || tag.startsWith('@')) {
+    if (body.length === 0) return tag;
+    const needsSpace = !/^\s/.test(body);
+    return tag + (needsSpace ? ' ' : '') + body;
   }
-  // Non-mention metadata: simple concat.
-  return t + body;
+  return tag + body;
 }
 
-type DropKind = "memory" | "analysis" | "tool_call";
-type ChanPolicy =
-  | "FINAL_MENTION"
-  | "FINAL_JSON"
-  | "COMMENTARY_STDOUT"
-  | "DROP_TO_EOL";
+type Chan = 'final' | 'commentary' | 'analysis' | 'tool_call' | 'tool_result' | 'memory' | 'other';
 
-const T = {
-  channel: "<|channel|>",
-  constrain: "<|constrain|>",
-  message: "<|message|>",
+const TOK = {
+  CHAN: '<|channel|>',
+  CONSTRAIN: '<|constrain|>',
+  MSG: '<|message|>',
+  FINAL_S: '<|final_start|>',
+  FINAL_E: '<|final_end|>',
+  MEM_S: '<|memory_start|>',
+  MEM_E: '<|memory_end|>',
+  ANA_S: '<|analysis_start|>',
+  ANA_E: '<|analysis_end|>',
+  TCALL_S: '<|tool_call_start|>',
+  TCALL_E: '<|tool_call_end|>',
+  TRES_S: '<|tool_result_start|>',
+  TRES_E: '<|tool_result_end|>',
+};
 
-  memoryStart: "<|memory_start|>",
-  memoryEnd: "<|memory_end|>",
+function firstWord(s: string): string {
+  const m = s.trim().match(/^([^\s]+)/);
+  return (m?.[1] || '').toLowerCase();
+}
 
-  analysisStart: "<|analysis_start|>",
-  analysisEnd: "<|analysis_end|>",
-
-  callStart: "<|tool_call_start|>",
-  callEnd: "<|tool_call_end|>",
-
-  resultStart: "<|tool_result_start|>",
-  resultEnd: "<|tool_result_end|>",
-
-  finalStart: "<|final_start|>",
-  finalEnd: "<|final_end|>",
-} as const;
-
-function earliest(haystack: string, from: number, needles: string[]) {
-  let best = -1;
-  let which = -1;
-  for (let i = 0; i < needles.length; i++) {
-    const k = haystack.indexOf(needles[i], from);
-    if (k !== -1 && (best === -1 || k < best)) {
-      best = k;
-      which = i;
+function indexOfEarliest(haystack: string, from: number, needles: string[]) {
+  let at = -1;
+  let which = '';
+  for (const n of needles) {
+    const i = haystack.indexOf(n, from);
+    if (i !== -1 && (at === -1 || i < at)) {
+      at = i; which = n;
     }
   }
-  return { index: best, which };
+  return { index: at, token: which };
 }
 
-function unwrapEchoFromJson(s: string): string {
-  try {
-    const obj = JSON.parse(s.trim());
-    const cmd = typeof obj?.cmd === "string" ? obj.cmd : "";
-    if (cmd.startsWith("echo ")) {
-      let rest = cmd.slice(5).trim();
-      // Strip balanced quotes if present.
-      if ((rest.startsWith('"') && rest.endsWith('"')) || (rest.startsWith("'") && rest.endsWith("'"))) {
-        rest = rest.slice(1, -1);
-      }
-      return rest;
+function tryParseJsonSlice(s: string): { text: string; end: number; obj: any } | null {
+  // Greedy: find the earliest slice ending with a '}' that parses.
+  let i = s.indexOf('}');
+  while (i !== -1) {
+    const slice = s.slice(0, i + 1);
+    try {
+      const obj = JSON.parse(slice);
+      return { text: slice, end: i + 1, obj };
+    } catch {
+      // keep searching
     }
-  } catch {
-    /* ignore */
+    i = s.indexOf('}', i + 1);
   }
-  return "";
+  return null;
 }
 
-function stdoutFromCommentaryJson(s: string): string {
-  try {
-    const obj = JSON.parse(s.trim());
-    if (obj && typeof obj.stdout === "string") return obj.stdout;
-  } catch {
-    /* ignore */
-  }
-  return "";
-}
-
-interface ChannelState {
-  /** Raw text between <|channel|> and either <|constrain|> or <|message|>. */
-  meta: string;
-  /** Text after <|constrain|> and before <|message|>. */
-  constrain: string;
-  /** Text after <|message|> (until end-of-line or EOF). */
-  message: string;
-  stage: "meta" | "constrain" | "message";
-  policy?: ChanPolicy;
+/** Extract a JSON echo payload ("echo ...") into its string. */
+function jsonEchoToText(obj: any): string | null {
+  if (!obj || typeof obj !== 'object') return null;
+  const cmd = obj.cmd;
+  if (typeof cmd !== 'string') return null;
+  // echo "text" | echo 'text' | echo text   (allow trailing spaces)
+  const m = cmd.match(/^\s*echo\s+(?:"([^"]*)"|'([^']*)'|(.+))\s*$/s);
+  if (!m) return null;
+  return (m[1] ?? m[2] ?? m[3]) ?? '';
 }
 
 export class LLMNoisePDAStream implements LLMNoiseFilterPass {
-  private buf = "";
-
-  // Code-fence state (```).
-  private inFence = false;
-
-  // Paired spans
-  private drop: DropKind | null = null;
-  private inToolResult = false;
-
-  // Channel state
-  private ch: ChannelState | null = null;
+  private buf = '';
+  private inFence = false; // ``` fences
 
   feed(chunk: string): string {
     this.buf += chunk;
@@ -114,330 +86,252 @@ export class LLMNoisePDAStream implements LLMNoiseFilterPass {
     return this.consumeAvailable(true);
   }
 
-  private consumeAvailable(atEOF: boolean): string {
-    let out = "";
-    let p = 0;
+  /** Streaming parse; only emits content that is safe to show now. */
+  private consumeAvailable(atEOF = false): string {
+    let out = '';
+    let pos = 0;
 
-    const B = () => this.buf; // alias to keep code short
+    const emit = (s: string) => { out += s; };
 
-    const take = (n: number) => {
-      const s = this.buf.slice(p, n);
-      p = n;
-      return s;
-    };
-
-    const commit = () => {
-      // Drop processed part from buffer.
-      this.buf = this.buf.slice(p);
-      p = 0;
-    };
-
-    // MAIN LOOP – keep consuming while we can make progress
-    let progressed = true;
-    while (progressed) {
-      progressed = false;
-
-      // 1) Inside a code fence → pass-through until closing fence ``` .
+    while (true) {
+      // If we are inside a code fence, only look for the closing fence.
       if (this.inFence) {
-        const k = B().indexOf("```", p);
-        if (k !== -1) {
-          out += take(k + 3);
-          this.inFence = false;
-          progressed = true;
-          commit();
-          continue;
-        } else {
-          // No terminator yet → emit everything and keep waiting.
-          out += take(B().length);
-          commit();
-          continue;
+        const endFence = this.buf.indexOf('```', pos);
+        if (endFence === -1) {
+          // still fenced; everything up to current buffer end is literal
+          emit(this.buf.slice(pos));
+          this.buf = '';
+          return out;
         }
+        // emit literal up to and including the closing fence
+        emit(this.buf.slice(pos, endFence + 3));
+        pos = endFence + 3;
+        this.inFence = false;
+        // continue the scan after the fence
       }
 
-      // 2) Inside a dropped span (memory/analysis/tool_call)
-      if (this.drop) {
-        const endTok =
-          this.drop === "memory"
-            ? T.memoryEnd
-            : this.drop === "analysis"
-            ? T.analysisEnd
-            : T.callEnd;
-        const k = B().indexOf(endTok, p);
-        if (k !== -1) {
-          // Skip thru end token.
-          take(k + endTok.length);
-          this.drop = null;
-          progressed = true;
-          commit();
-          continue;
+      // Find next interesting token or code fence
+      const { index: nextI, token: nextTok } = indexOfEarliest(
+        this.buf,
+        pos,
+        [
+          '```',
+          TOK.CHAN,
+          TOK.FINAL_S, TOK.MEM_S, TOK.ANA_S, TOK.TCALL_S, TOK.TRES_S,
+        ]
+      );
+
+      if (nextI === -1) {
+        // Nothing special ahead. If EOF, flush all; otherwise, it's safe to emit
+        // everything *except* we must not emit the tail if it looks like a partial token.
+        if (atEOF) {
+          emit(this.buf.slice(pos));
+          this.buf = '';
         } else {
-          // Consume everything (we’re dropping), keep waiting for end.
-          take(B().length);
-          commit();
-          continue;
-        }
-      }
-
-      // 3) Inside <|tool_result_start|> … <|tool_result_end|> → pass-through.
-      if (this.inToolResult) {
-        const k = B().indexOf(T.resultEnd, p);
-        if (k !== -1) {
-          out += take(k) /* body */; // do NOT include end token
-          take(k + T.resultEnd.length); // swallow end token
-          this.inToolResult = false;
-          progressed = true;
-          commit();
-          continue;
-        } else {
-          out += take(B().length);
-          commit();
-          continue;
-        }
-      }
-
-      // 4) Inside a channel block
-      if (this.ch) {
-        // Establish policy when we first enter the message stage.
-        const ensurePolicy = () => {
-          if (!this.ch) return;
-          if (this.ch.stage !== "message" || this.ch.policy) return;
-          const meta = this.ch.meta.trim();
-          const head = meta.split(/\s+/)[0] || "";
-          const rest = meta.slice(head.length).trim();
-
-          if (head === "final") {
-            if (/\|json\b/.test(rest)) {
-              this.ch.policy = "FINAL_JSON";
-            } else {
-              this.ch.policy = "FINAL_MENTION";
-            }
-          } else if (head === "commentary") {
-            if (/to=/.test(rest)) {
-              this.ch.policy = "DROP_TO_EOL";
-            } else {
-              this.ch.policy = "COMMENTARY_STDOUT";
-            }
+          // Keep a small tail if it could start a token (avoid splitting "<|" etc.).
+          const tail = this.buf.slice(pos);
+          const keep = tail.endsWith('<') || tail.endsWith('<|') || tail.endsWith('<|c') || tail.endsWith('<|ch') ||
+                       tail.endsWith('<|f') || tail.endsWith('<|fi') || tail.endsWith('<|fin');
+          if (keep) {
+            emit(tail.slice(0, -1));
+            this.buf = tail.slice(-1);
           } else {
-            this.ch.policy = "DROP_TO_EOL";
+            emit(tail);
+            this.buf = '';
           }
-        };
-
-        if (this.ch.stage === "meta") {
-          const { index: k, which } = earliest(B(), p, [T.constrain, T.message]);
-          if (k === -1) {
-            this.ch.meta += take(B().length); // buffer meta
-            commit();
-            continue;
-          }
-          // Accumulate meta up to token
-          this.ch.meta += take(k);
-          // Advance past token
-          take(k + (which === 0 ? T.constrain.length : T.message.length));
-          this.ch.stage = which === 0 ? "constrain" : "message";
-          progressed = true;
-          commit();
-          continue;
         }
-
-        if (this.ch.stage === "constrain") {
-          const k = B().indexOf(T.message, p);
-          if (k === -1) {
-            this.ch.constrain += take(B().length);
-            commit();
-            continue;
-          }
-          this.ch.constrain += take(k);
-          take(k + T.message.length);
-          this.ch.stage = "message";
-          progressed = true;
-          commit();
-          continue;
-        }
-
-        // stage === 'message'
-        ensurePolicy();
-        const policy = this.ch.policy as ChanPolicy;
-
-        if (policy === "DROP_TO_EOL") {
-          // Drop message to end-of-line (inclusive). If no newline yet, wait.
-          const k = B().indexOf("\n", p);
-          if (k === -1) {
-            // Buffer (but throw away) until we see newline or EOF.
-            take(B().length);
-            commit();
-            if (atEOF) {
-              // finalize drop
-              this.ch = null;
-            }
-            continue;
-          }
-          // consume up to and including newline, then finalize (emit nothing)
-          take(k + 1);
-          this.ch = null;
-          progressed = true;
-          commit();
-          continue;
-        }
-
-        // For FINAL_* and COMMENTARY_STDOUT we buffer until newline or EOF.
-        const k = B().indexOf("\n", p);
-        if (k === -1) {
-          // Buffer all we have for the message, wait for more.
-          this.ch.message += take(B().length);
-          commit();
-          if (atEOF) {
-            out += this.finalizeChannel(this.ch);
-            this.ch = null;
-          }
-          continue;
-        } else {
-          // We have a complete line; do not include newline in message
-          this.ch.message += take(k);
-          // swallow newline
-          take(k + 1);
-          out += this.finalizeChannel(this.ch);
-          this.ch = null;
-          progressed = true;
-          commit();
-          continue;
-        }
+        return out;
       }
 
-      // 5) We’re at top-level: look for the next interesting marker.
-      const { index: k, which } = earliest(B(), p, [
-        "```",
-        T.memoryStart,
-        T.analysisStart,
-        T.callStart,
-        T.resultStart,
-        T.finalStart,
-        T.channel,
-      ]);
+      // Emit literal text before the token.
+      emit(this.buf.slice(pos, nextI));
+      pos = nextI;
 
-      if (k === -1) {
-        // Nothing special → emit remainder and stop.
-        out += take(B().length);
-        commit();
-        break;
+      // Handle code fence
+      if (nextTok === '```') {
+        // start fence, emit it and flag fenced mode
+        emit('```');
+        pos += 3;
+        this.inFence = true;
+        continue;
       }
 
-      // Emit prefix text before the token.
-      out += take(k);
+      // Now we are at one of our sentinel tokens.
+      if (nextTok === TOK.FINAL_S || nextTok === TOK.MEM_S || nextTok === TOK.ANA_S || nextTok === TOK.TCALL_S || nextTok === TOK.TRES_S) {
+        const startTok = nextTok;
+        const endTok = startTok === TOK.FINAL_S ? TOK.FINAL_E
+                    : startTok === TOK.MEM_S   ? TOK.MEM_E
+                    : startTok === TOK.ANA_S   ? TOK.ANA_E
+                    : startTok === TOK.TCALL_S ? TOK.TCALL_E
+                    : /* TRES_S */                TOK.TRES_E;
+        const keepBody = startTok === TOK.FINAL_S || startTok === TOK.TRES_S;
 
-      // Handle the token we found.
-      switch (which) {
-        case 0: // ```
-          out += take(k + 3); // include the fence itself
-          this.inFence = !this.inFence;
-          progressed = true;
-          commit();
-          break;
-
-        case 1: // <|memory_start|>
-          take(k + T.memoryStart.length);
-          this.drop = "memory";
-          progressed = true;
-          commit();
-          break;
-
-        case 2: // <|analysis_start|>
-          take(k + T.analysisStart.length);
-          this.drop = "analysis";
-          progressed = true;
-          commit();
-          break;
-
-        case 3: // <|tool_call_start|>
-          take(k + T.callStart.length);
-          this.drop = "tool_call";
-          progressed = true;
-          commit();
-          break;
-
-        case 4: // <|tool_result_start|>
-          take(k + T.resultStart.length);
-          this.inToolResult = true;
-          progressed = true;
-          commit();
-          break;
-
-        case 5: { // <|final_start|> … <|final_end|>
-          const end = B().indexOf(T.finalEnd, p);
-          if (end === -1) {
-            // We don't have a full pair yet → keep token in buffer.
-            // Roll back the emitted token text (we didn't actually consume it).
-            // Put it back by rewinding p to the position where it started.
-            // (Out already has text up to 'k', so we leave it; keep token in buffer.)
-            p = k; // leave token in buffer for next round
-            out = out.slice(0, out.length - (k - (p - k))); // no-op; just clarity
-            // Stop now; await more input.
-            commit();
+        const bodyStart = pos + startTok.length;
+        const endAt = this.buf.indexOf(endTok, bodyStart);
+        if (endAt === -1) {
+          // incomplete; wait unless EOF, in which case treat remainder literally.
+          if (!atEOF) {
+            // keep the remainder for later
+            this.buf = this.buf.slice(pos);
             return out;
           }
-          // Emit the content inside the pair.
-          take(k + T.finalStart.length); // skip start
-          out += take(end); // content between start and end
-          take(end + T.finalEnd.length); // skip end
-          progressed = true;
-          commit();
-          break;
+          // EOF: if it's a "keep" section, emit its body; else drop it.
+          const body = this.buf.slice(bodyStart);
+          if (keepBody) emit(body);
+          this.buf = '';
+          return out;
+        }
+        const body = this.buf.slice(bodyStart, endAt);
+        if (keepBody) emit(body); // unwrap final/tool_result
+        // drop or keep done; advance past end token
+        pos = endAt + endTok.length;
+        continue;
+      }
+
+      // Handle <|channel|>… blocks
+      if (nextTok === TOK.CHAN) {
+        // Structure: <|channel|>channelName [extras] [<|constrain|>X] <|message|> BODY [terminator]
+        const afterChan = pos + TOK.CHAN.length;
+
+        const msgAt = this.buf.indexOf(TOK.MSG, afterChan);
+        if (msgAt === -1) {
+          // need more
+          if (!atEOF) {
+            this.buf = this.buf.slice(pos);
+            return out;
+          }
+          // EOF with no <|message|>: drop the tail (better safe)
+          this.buf = '';
+          return out;
         }
 
-        case 6: // <|channel|>
-          take(k + T.channel.length);
-          this.ch = { meta: "", constrain: "", message: "", stage: "meta" };
-          progressed = true;
-          commit();
-          break;
+        const maybeConstrainAt = this.buf.indexOf(TOK.CONSTRAIN, afterChan);
+        const hasConstrain = (maybeConstrainAt !== -1 && maybeConstrainAt < msgAt);
+
+        const headerSegment = this.buf.slice(afterChan, hasConstrain ? maybeConstrainAt : msgAt);
+        const channelName = firstWord(headerSegment);
+        const constrain = hasConstrain ? this.buf.slice(maybeConstrainAt + TOK.CONSTRAIN.length, msgAt) : '';
+
+        const bodyStart = msgAt + TOK.MSG.length;
+        const rest = this.buf.slice(bodyStart);
+
+        // Decide how to find the end of this channel line
+        let consumed = 0;
+        let payload = '';
+
+        if (channelName === 'commentary') {
+          // Special: drop toolformer "to=functions sh" commentary lines entirely.
+          if (/\bto=functions\s+sh\b/.test(headerSegment)) {
+            // Find a JSON object (if complete) just to know where to cut;
+            // otherwise cut at newline or EOF.
+            const j = tryParseJsonSlice(rest);
+            if (j) {
+              consumed = j.end;
+            } else {
+              const nl = rest.indexOf('\n');
+              consumed = nl === -1 ? rest.length : nl + 1;
+            }
+            // Emit nothing (drop), advance, continue.
+            pos = bodyStart + consumed;
+            continue;
+          }
+
+          const j = tryParseJsonSlice(rest);
+          if (!j) {
+            // wait for more unless at newline
+            const nl = rest.indexOf('\n');
+            if (nl === -1 && !atEOF) {
+              this.buf = this.buf.slice(pos);
+              return out;
+            }
+            // drop commentary when not JSON (spec says: drop the line)
+            consumed = nl === -1 ? rest.length : nl + 1;
+            payload = '';
+          } else {
+            consumed = j.end;
+            // commentary emits stdout when present
+            try {
+              const obj = j.obj;
+              if (obj && typeof obj.stdout === 'string') payload = obj.stdout;
+            } catch {
+              payload = '';
+            }
+          }
+        } else if (channelName === 'final') {
+          // final: either |json (echo unwrap) or tag + free text until we hit a terminator
+          if (constrain.trim() === '|json') {
+            const j = tryParseJsonSlice(rest);
+            if (!j) {
+              if (!atEOF) {
+                this.buf = this.buf.slice(pos);
+                return out;
+              }
+              consumed = rest.length;
+              payload = '';
+            } else {
+              consumed = j.end;
+              const echoed = jsonEchoToText(j.obj);
+              payload = echoed ?? '';
+            }
+          } else {
+            // normal final: join mention-like constrain (tag) + message
+            // The "line" ends at next sentinel or newline or EOF.
+            const nextSentinel = indexOfEarliest(rest, 0, [
+              TOK.CHAN, TOK.FINAL_S, TOK.MEM_S, TOK.ANA_S, TOK.TCALL_S, TOK.TRES_S, '```'
+            ]).index;
+            const nlAt = rest.indexOf('\n');
+            const endLocal = [
+              nlAt === -1 ? Infinity : nlAt + 1,
+              nextSentinel === -1 ? Infinity : nextSentinel,
+              atEOF ? rest.length : Infinity,
+            ].reduce((a, b) => Math.min(a, b), Infinity);
+
+            if (endLocal === Infinity) {
+              // need more
+              this.buf = this.buf.slice(pos);
+              return out;
+            }
+            consumed = endLocal;
+            payload = joinTagAndMessage(constrain.trim(), rest.slice(0, consumed));
+          }
+        } else if (channelName === 'tool_result') {
+          // tool_result emits its body; try to take up to end of JSON if it looks like JSON,
+          // else cut at newline or EOF
+          const j = tryParseJsonSlice(rest);
+          if (j) {
+            consumed = j.end;
+            payload = this.buf.slice(bodyStart, bodyStart + consumed);
+          } else {
+            const nl = rest.indexOf('\n');
+            if (nl === -1 && !atEOF) {
+              this.buf = this.buf.slice(pos);
+              return out;
+            }
+            consumed = nl === -1 ? rest.length : nl + 1;
+            payload = rest.slice(0, consumed);
+          }
+        } else {
+          // Unknown/other channel → drop up to newline (spec test: "XY")
+          const nl = rest.indexOf('\n');
+          if (nl === -1 && !atEOF) {
+            this.buf = this.buf.slice(pos);
+            return out;
+          }
+          consumed = nl === -1 ? rest.length : nl + 1;
+          payload = ''; // drop
+        }
+
+        // Emit payload (if any) and advance cursor
+        emit(payload);
+        pos = bodyStart + consumed;
+        continue;
       }
-    }
 
-    // If EOF and we’re still inside a channel waiting for more, finalize.
-    if (atEOF && this.ch) {
-      out += this.finalizeChannel(this.ch);
-      this.ch = null;
-      this.buf = ""; // everything consumed at EOF
-    }
-
-    // If EOF and we’re inside dropping spans, just drop remainder silently.
-    if (atEOF) {
-      this.drop = null;
-      this.inToolResult = false;
-      this.inFence = false;
-    }
-
-    return out;
-  }
-
-  private finalizeChannel(ch: ChannelState): string {
-    const policy = ch.policy as ChanPolicy | undefined;
-    if (!policy) {
-      // Determine on finalize if not yet decided.
-      const meta = ch.meta.trim();
-      const head = meta.split(/\s+/)[0] || "";
-      const rest = meta.slice(head.length).trim();
-      if (head === "final") {
-        ch.policy = /\|json\b/.test(rest) ? "FINAL_JSON" : "FINAL_MENTION";
-      } else if (head === "commentary") {
-        ch.policy = /to=/.test(rest) ? "DROP_TO_EOL" : "COMMENTARY_STDOUT";
-      } else {
-        ch.policy = "DROP_TO_EOL";
-      }
-    }
-
-    switch (ch.policy) {
-      case "FINAL_JSON":
-        return unwrapEchoFromJson(ch.message);
-
-      case "FINAL_MENTION":
-        return joinTagAndMessage(ch.constrain, ch.message);
-
-      case "COMMENTARY_STDOUT":
-        return stdoutFromCommentaryJson(ch.message);
-
-      case "DROP_TO_EOL":
-      default:
-        return "";
-    }
+      // Unreachable safeguard: if we get here, move forward by 1 to avoid loops.
+      emit(this.buf[pos]);
+      pos += 1;
+    } // while
   }
 }
+
+export default LLMNoisePDAStream;
