@@ -12,6 +12,7 @@ import { AdvancedMemory } from "../memory/advanced-memory";
 import { ToolExecutor } from "../executors/tool-executor";
 import { StandardToolExecutor } from "../executors/standard-tool-executor";
 import { SANDBOXED_SH_TOOL_SCHEMA } from "../tools/sandboxed-sh";
+import { PDAStreamFilter } from "../utils/filter-passes/llm-pda-stream";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -86,7 +87,7 @@ export class LlmAgent extends Agent {
 
   // New: polymorphic tool executor (pure refactor)
   private readonly toolExecutor: ToolExecutor;
-  private streamFilter = new LLMNoiseFilter();
+  private streamFilter = new PDAStreamFilter();
 
   constructor(id: string, driver: ChatDriver, model: string, guard?: GuardRail) {
     super(id, guard);
