@@ -1,7 +1,7 @@
 // src/utils/llm-noise-filter.ts
-import { FinalChannelPass } from "./filter-passes/claude/llm-final-channel-pass";
-import { LLMNoiseFilterFirstPass } from "./filter-passes/claude/llm-noise-filter-first-pass";
-import { ToolformerSentinelPass } from "./filter-passes/claude/llm-toolformer-sentinel-pass";
+import { FinalChannelPass } from "./filter-passes/llm-final-channel-pass";
+import { LLMNoiseFilterFirstPass } from "./filter-passes/llm-noise-filter-first-pass";
+import { ToolformerSentinelPass } from "./filter-passes/llm-toolformer-sentinel-pass";
 import { AdvancedMemoryScrubPass } from "./filter-passes/llm-adv-memory-scrub-pass";
 import type { LLMNoiseFilterPass, PassFeedResult } from "./filter-passes/llm-noise-filter-pass";
 

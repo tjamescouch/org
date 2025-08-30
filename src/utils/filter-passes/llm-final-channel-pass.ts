@@ -1,139 +1,201 @@
-import { tracePass } from "../llm-filter-trace";
+// src/utils/filter-passes/llm-final-channel-pass.ts
+import type { LLMNoiseFilterPass, PassFeedResult } from "./llm-noise-filter-pass";
 
 /**
- * Unwrap <|channel|>final…<|message|> payloads (JSON or non‑JSON),
- * preserving @@user/##file (and any [TAG:…] protected tokens) that
- * appear between <|channel|> and <|message|>. Fences are preserved
- * verbatim. Non‑JSON with no newline consumes to end‑of‑buffer.
+ * FinalChannelPass
+ *
+ * Goal: prevent leaking non-final channels (analysis/system/tools) and prefer
+ * emitting "final" channel content if explicitly marked.
+ *
+ * Behaviors:
+ *  - DROP CONTENT for known analysis/scratchpad channels:
+ *      <|analysis_start|> ... <|analysis_end|>
+ *      <analysis> ... </analysis>
+ *      ```analysis ... ```
+ *      ```chain_of_thought / thoughts / scratchpad ... ```
+ *
+ *  - UNWRAP "final" channel markers:
+ *      <|final_start|> ... <|final_end|>
+ *      <final> ... </final>
+ *      ```final ... ```
+ *
+ * Stream-safe: buffers incomplete starts without ends.
  */
-export class FinalChannelPass {
+export class FinalChannelPass implements LLMNoiseFilterPass {
   private tail = "";
 
-  feed(chunk: string) {
-    tracePass("FinalChannelPass", "in", { chunk });
-    if (!chunk) return { cleaned: "" };
+  private readonly dropBlocks: ReadonlyArray<{ start: RegExp; end: RegExp }> = [
+    { start: /<\|analysis_start\|>/i,                end: /<\|analysis_end\|>/i },
+    { start: /<analysis>/i,                          end: /<\/analysis>/i },
+    { start: /<\|scratchpad_start\|>/i,              end: /<\|scratchpad_end\|>/i },
+    { start: /<scratchpad>/i,                        end: /<\/scratchpad>/i },
+  ];
 
-    let s = this.tail + chunk;
-    this.tail = "";
-    let out = "";
-    let i = 0;
+  private readonly unwrapBlocks: ReadonlyArray<{ start: RegExp; end: RegExp }> = [
+    { start: /<\|final_start\|>/i,                   end: /<\|final_end\|>/i },
+    { start: /<final>/i,                             end: /<\/final>/i },
+  ];
 
-    while (i < s.length) {
-      // 1) Preserve fenced code verbatim
-      if (s.startsWith("```", i)) {
-        const j = s.indexOf("```", i + 3);
-        if (j < 0) {
-          this.tail = s.slice(i);
-          tracePass("FinalChannelPass", "out", { cleaned: out, tail: this.tail, note: "carry fence" });
-          return { cleaned: out };
-        }
-        out += s.slice(i, j + 3);
-        i = j + 3;
-        continue;
-      }
+  private readonly fencedDropStart = /```(?:analysis|chain[_-]?of[_-]?thought|thoughts?|scratchpad)[^\n]*\n/i;
+  private readonly fencedFinalStart = /```final[^\n]*\n/i;
+  private readonly fencedEnd = /```/i;
 
-      const nextFence = s.indexOf("```", i);
-      const start     = s.indexOf("<|channel|>", i);
-      const next = start < 0 ? -1 : (nextFence >= 0 ? Math.min(start, nextFence) : start);
+  feed(chunk: string): PassFeedResult {
+    const incoming = (chunk ?? "");
+    let buf = this.tail + incoming;
+    const beforeLen = buf.length;
 
-      if (next < 0) {
-        const carryStart = strictPrefixStart(s, i);
-        out += s.slice(i, carryStart);
-        this.tail = s.slice(carryStart);
-        tracePass("FinalChannelPass", "out", { cleaned: out, tail: this.tail, note: "no token" });
-        return { cleaned: out };
-      }
+    // 1) Remove fenced analysis/scratchpad blocks
+    buf = this.removeAllFencedBlocks(buf, this.fencedDropStart, "drop");
 
-      if (next > i) { out += s.slice(i, next); i = next; }
-      if (s.startsWith("```", i)) continue;
+    // 2) Unwrap fenced final blocks
+    buf = this.removeAllFencedBlocks(buf, this.fencedFinalStart, "unwrap");
 
-      // We have a channel; require message
-      const afterChan = i + 11;
-      const msgIdx = s.indexOf("<|message|>", afterChan);
-      if (msgIdx < 0) {
-        this.tail = s.slice(i);
-        tracePass("FinalChannelPass", "out", { cleaned: out, tail: this.tail, note: "carry channel w/o message" });
-        return { cleaned: out };
-      }
-
-      const meta          = s.slice(afterChan, msgIdx);
-      const payloadStart  = msgIdx + 11;
-
-      // Try JSON first
-      const probe = scanJSONObject(s, payloadStart);
-      if (probe.ok) {
-        const raw = s.slice(payloadStart, probe.end);
-        const prefix = collectTags(meta);
-        const unwrapped = extractFromJsonOrEcho(raw) ?? raw;
-        out += prefix + unwrapped;
-        i = probe.end;
-        continue;
-      }
-
-      // Non‑JSON → newline or end‑of‑buffer
-      const nl = s.indexOf("\n", payloadStart);
-      const end = nl >= 0 ? nl : s.length;
-      const raw = s.slice(payloadStart, end);
-      out += collectTags(meta) + raw;
-      i = end + (nl >= 0 ? 1 : 0);
+    // 3) Drop structured analysis-like blocks
+    for (const spec of this.dropBlocks) {
+      buf = this.processBlock(buf, spec.start, spec.end, "drop");
     }
 
-    tracePass("FinalChannelPass", "out", { cleaned: out });
-    return { cleaned: out };
+    // 4) Unwrap structured final blocks
+    for (const spec of this.unwrapBlocks) {
+      buf = this.processBlock(buf, spec.start, spec.end, "unwrap");
+    }
+
+    // Safe emit point: if any unmatched start remains, hold from earliest
+    const holdFrom = this.findEarliestUnmatchedStart(buf);
+    const emitUpto = holdFrom ?? buf.length;
+
+    const cleaned = buf.slice(0, emitUpto);
+    this.tail = buf.slice(emitUpto);
+    const removed = beforeLen - (cleaned.length + this.tail.length);
+    return { cleaned, removed: removed > 0 ? removed : 0 };
   }
 
-  flush() { const t = this.tail; this.tail = ""; tracePass("FinalChannelPass", "out", { cleaned: "", tail: t, note: "flush" }); return t; }
-}
+  flush(): string {
+    let buf = this.tail;
+    this.tail = "";
 
-// ---------- helpers (unchanged) ----------
+    // If a fenced drop block start remains without end, drop it entirely
+    const dropIdx = this.indexOfRegex(buf, this.fencedDropStart, 0);
+    if (dropIdx !== -1) {
+      buf = buf.slice(0, dropIdx);
+    }
+    // If a fenced final block start remains without end, unwrap by dropping the start fence
+    const finalIdx = this.indexOfRegex(buf, this.fencedFinalStart, 0);
+    if (finalIdx !== -1) {
+      const m = buf.slice(finalIdx).match(this.fencedFinalStart);
+      const len = m?.[0]?.length ?? 0;
+      buf = buf.slice(0, finalIdx) + buf.slice(finalIdx + len);
+    }
 
-function collectTags(meta: string): string {
-  const masked = meta.match(/\[TAG:[^\]]+\]/g) || [];
-  const raw    = meta.match(/@@[A-Za-z0-9_-]+|##[A-Za-z0-9_.\/-]+/g) || [];
-  const tags = [...masked, ...raw];
-  return tags.length ? tags.join(" ") + " " : "";
-}
-
-function extractFromJsonOrEcho(text: string): string | null {
-  const t = String(text ?? "").trim();
-  if (t.startsWith("{")) {
-    try {
-      const j = JSON.parse(t);
-      if (typeof j?.stdout === "string") return j.stdout;
-      if (typeof j?.output === "string") return j.output;
-      if (typeof j?.message === "string") return j.message;
-      if (typeof j?.result === "string") return j.result;
-      if (typeof j?.cmd === "string") {
-        const m = j.cmd.match(/echo\s+(?:"([^"]+)"|'([^']+)'|(@@?[^\s"'].*?))(?:\s|$)/i);
-        if (m) return m[1] ?? m[2] ?? m[3] ?? "";
+    // Structured blocks on flush
+    for (const spec of this.dropBlocks) {
+      const idxStart = this.indexOfRegex(buf, spec.start, 0);
+      if (idxStart !== -1) {
+        // drop from start
+        buf = buf.slice(0, idxStart);
       }
-    } catch { /* ignore */ }
+    }
+    for (const spec of this.unwrapBlocks) {
+      let idxStart = this.indexOfRegex(buf, spec.start, 0);
+      while (idxStart !== -1) {
+        const m = buf.slice(idxStart).match(spec.start);
+        const len = m?.[0]?.length ?? 0;
+        buf = buf.slice(0, idxStart) + buf.slice(idxStart + len);
+        idxStart = this.indexOfRegex(buf, spec.start, idxStart);
+      }
+    }
+
+    return buf;
   }
-  const m = t.match(/echo\s+(?:"([^"]+)"|'([^']+)'|(@@?[^\s"'].*?))(?:\s|$)/i);
-  if (m) return m[1] ?? m[2] ?? m[3] ?? "";
-  return null;
+
+  // ---- helpers ----
+
+  private processBlock(s: string, start: RegExp, end: RegExp, mode: "drop" | "unwrap"): string {
+    let searchFrom = 0;
+    while (true) {
+      const idxStart = this.indexOfRegex(s, start, searchFrom);
+      if (idxStart === -1) break;
+      const idxEnd = this.indexOfRegex(s, end, idxStart + 1);
+      if (idxEnd === -1) {
+        // streaming: hold unmatched start
+        break;
+      }
+      const startLen = s.slice(idxStart).match(start)?.[0]?.length ?? 0;
+      const endLen = s.slice(idxEnd).match(end)?.[0]?.length ?? 0;
+      if (mode === "drop") {
+        s = s.slice(0, idxStart) + s.slice(idxEnd + endLen);
+        searchFrom = idxStart;
+      } else {
+        const inner = s.slice(idxStart + startLen, idxEnd);
+        s = s.slice(0, idxStart) + inner + s.slice(idxEnd + endLen);
+        searchFrom = idxStart + inner.length;
+      }
+    }
+    return s;
+  }
+
+  private removeAllFencedBlocks(s: string, start: RegExp, mode: "drop" | "unwrap"): string {
+    let searchFrom = 0;
+    while (true) {
+      const idxStart = this.indexOfRegex(s, start, searchFrom);
+      if (idxStart === -1) break;
+      const sm = s.slice(idxStart).match(start);
+      const sLen = sm?.[0]?.length ?? 0;
+
+      const idxEnd = this.indexOfRegex(s, this.fencedEnd, idxStart + sLen);
+      if (idxEnd === -1) {
+        // hold unmatched
+        break;
+      }
+      const eLen = s.slice(idxEnd).match(this.fencedEnd)?.[0]?.length ?? 0;
+
+      if (mode === "drop") {
+        s = s.slice(0, idxStart) + s.slice(idxEnd + eLen);
+        searchFrom = idxStart;
+      } else {
+        const inner = s.slice(idxStart + sLen, idxEnd);
+        s = s.slice(0, idxStart) + inner + s.slice(idxEnd + eLen);
+        searchFrom = idxStart + inner.length;
+      }
+    }
+    return s;
+  }
+
+  private findEarliestUnmatchedStart(s: string): number | null {
+    let h: number | null = null;
+
+    for (const spec of this.dropBlocks) {
+      const i = this.indexOfRegex(s, spec.start, 0);
+      if (i !== -1 && this.indexOfRegex(s, spec.end, i + 1) === -1) {
+        h = h === null ? i : Math.min(h, i);
+      }
+    }
+    for (const spec of this.unwrapBlocks) {
+      const i = this.indexOfRegex(s, spec.start, 0);
+      if (i !== -1 && this.indexOfRegex(s, spec.end, i + 1) === -1) {
+        h = h === null ? i : Math.min(h, i);
+      }
+    }
+
+    const fDrop = this.indexOfRegex(s, this.fencedDropStart, 0);
+    if (fDrop !== -1 && this.indexOfRegex(s, this.fencedEnd, fDrop + 1) === -1) {
+      h = h === null ? fDrop : Math.min(h, fDrop);
+    }
+    const fFin = this.indexOfRegex(s, this.fencedFinalStart, 0);
+    if (fFin !== -1 && this.indexOfRegex(s, this.fencedEnd, fFin + 1) === -1) {
+      h = h === null ? fFin : Math.min(h, fFin);
+    }
+
+    return h;
+  }
+
+  private indexOfRegex(s: string, re: RegExp, from: number): number {
+    const r = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
+    r.lastIndex = from;
+    const m = r.exec(s);
+    return m ? m.index : -1;
+  }
 }
 
-function strictPrefixStart(s: string, i: number): number {
-  const toks = ["```", "<|channel|>", "<|message|>"];
-  const n = s.length, maxLen = Math.max(...toks.map(t => t.length)) - 1;
-  const win = Math.max(i, n - maxLen);
-  for (let t = win; t < n; t++) {
-    const suf = s.slice(t);
-    if (toks.some(tok => suf.length < tok.length && tok.startsWith(suf))) return t;
-  }
-  return n;
-}
-
-function scanJSONObject(s: string, i: number): { ok: boolean; end: number } {
-  const n = s.length;
-  while (i < n && /\s/.test(s[i]!)) i++;
-  if (s[i] !== "{") return { ok: false, end: i };
-  let depth = 0, inStr = false, esc = false;
-  for (let k = i; k < n; k++) {
-    const ch = s[k]!;
-    if (inStr) { if (esc) esc = false; else if (ch === "\\") esc = true; else if (ch === "\"") inStr = false; }
-    else { if (ch === "\"") inStr = true; else if (ch === "{") depth++; else if (ch === "}") { depth--; if (depth === 0) return { ok: true, end: k + 1 }; } }
-  }
-  return { ok: false, end: n };
-}
+export default FinalChannelPass;
