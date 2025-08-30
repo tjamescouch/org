@@ -1,152 +1,97 @@
 // src/utils/filter-passes/llm-noise-filter-first-pass.ts
 //
-// First pass: historical sentinel & fence logic with ONE intentional change:
-// **final** channel blocks are NOT removed here; they flow to FinalChannelPass.
-//
+// First pass: fence-aware text pass-through.
+// Goal: never duplicate normal text, never emit stray carry for normal text,
+// and preserve fenced blocks verbatim. We do NOT unwrap channel/message here;
+// that happens in FinalChannelPass.
 
 import type { LLMNoiseFilterPass, PassFeedResult } from "./llm-noise-filter-pass";
 
-const TAIL_WINDOW = 128;
-const CH_TOKEN = "<|channel|>";
-const MSG_TOKEN = "<|message|>";
+const CHAN  = "<|channel|>";
+const MSG   = "<|message|>";
 const FENCE = "```";
 
 export class LLMNoiseFilterFirstPass implements LLMNoiseFilterPass {
   private tail = "";
 
   feed(chunk: string): PassFeedResult {
-    const s = this.tail + (chunk ?? "");
-    const { cleaned, carry, removed } = stripSentinelsPreservingFences(s);
-    this.tail = carry;
-    return { cleaned, removed };
+    if (!chunk) return { cleaned: "" };
+
+    let s = this.tail + chunk;
+    this.tail = "";
+    let out = "";
+
+    let i = 0;
+    while (i < s.length) {
+      // Preserve fenced code verbatim (or keep remainder if closing fence missing)
+      if (s.startsWith(FENCE, i)) {
+        const j = s.indexOf(FENCE, i + FENCE.length);
+        if (j < 0) { this.tail = s.slice(i); return { cleaned: out }; }
+        out += s.slice(i, j + FENCE.length);
+        i = j + FENCE.length;
+        continue;
+      }
+
+      // Find earliest of channel/message/fence from current index
+      const nextFence = s.indexOf(FENCE, i);
+      const nextChan  = s.indexOf(CHAN, i);
+      const nextMsg   = s.indexOf(MSG, i);
+
+      let next = Number.MAX_SAFE_INTEGER;
+      if (nextFence >= 0) next = Math.min(next, nextFence);
+      if (nextChan  >= 0) next = Math.min(next, nextChan);
+      if (nextMsg   >= 0) next = Math.min(next, nextMsg);
+      if (next === Number.MAX_SAFE_INTEGER) {
+        // Nothing ahead; keep only a strict prefix as carry
+        const carryStart = strictPrefixStart(s, i);
+        out += s.slice(i, carryStart);
+        this.tail = s.slice(carryStart);
+        return { cleaned: out };
+      }
+
+      // Emit plain text before the next token; let downstream passes handle it
+      if (next > i) {
+        out += s.slice(i, next);
+        i = next;
+        continue;
+      }
+
+      // If we hit a fence, loop will copy it at the top on next iteration
+      if (s.startsWith(FENCE, i)) continue;
+
+      // For channel/message tokens: we do not modify them here; just move past 1 char
+      // so outer loop can progress; downstream pass will process.
+      out += s[i]!;
+      i += 1;
+    }
+
+    return { cleaned: out };
   }
 
   flush(): string {
-    const out = this.tail;
+    const t = this.tail;
     this.tail = "";
-    return out;
+    return t;
   }
 }
 
-function stripSentinelsPreservingFences(
-  s: string
-): { cleaned: string; carry: string; removed: number } {
-  const parts: string[] = [];
-  const n = s.length;
-  let i = 0;
-  let removed = 0;
+// Return earliest index t ≥ i such that s.slice(t) is a STRICT prefix of one of
+// our tokens (not whole token; not empty).
+function strictPrefixStart(s: string, i: number): number {
+  const n  = s.length;
+  const maxLen = Math.max(CHAN.length, MSG.length, FENCE.length) - 1;
+  const windowStart = Math.max(i, n - maxLen);
 
-  while (i < n) {
-    if (s.startsWith(FENCE, i)) {
-      const j = s.indexOf(FENCE, i + FENCE.length);
-      if (j < 0) break;
-      parts.push(s.slice(i, j + FENCE.length));
-      i = j + FENCE.length;
-      continue;
-    }
-
-    const start = s.indexOf(CH_TOKEN, i);
-    if (start < 0) {
-      const carryStart = findPossiblePrefixStart(s, i, n);
-      parts.push(s.slice(i, carryStart));
-      i = carryStart;
-      break;
-    }
-
-    if (start > i) parts.push(s.slice(i, start));
-
-    const metaStart = start + CH_TOKEN.length;
-    const msgTag = s.indexOf(MSG_TOKEN, metaStart);
-    if (msgTag < 0) {
-      i = start;
-      break;
-    }
-
-    // DO NOT remove final blocks here
-    const meta = s.slice(metaStart, msgTag);
-    if (/^\s*final\b/i.test(meta)) {
-      parts.push(s[start]!);
-      i = start + 1;
-      continue;
-    }
-
-    const p = msgTag + MSG_TOKEN.length;
-
-    const scan = scanJSONObject(s, p);
-    if (scan.ok) {
-      i = scan.end;
-      removed++;
-      continue;
-    }
-
-    const nl = s.indexOf("\n", p);
-    if (nl < 0) {
-      i = start;
-      break;
-    }
-
-    i = nl + 1;
-    removed++;
-  }
-
-  const cleaned = parts.join("");
-  const carry = s.slice(i);
-  return { cleaned, carry, removed };
-}
-
-function findPossiblePrefixStart(s: string, i: number, n: number): number {
-  const windowStart = Math.max(i, n - TAIL_WINDOW);
   for (let t = windowStart; t < n; t++) {
     const suf = s.slice(t);
-    if (
-      "<|channel|>".startsWith(suf) ||
-      "<|message|>".startsWith(suf) ||
-      "```".startsWith(suf)
-    ) {
+    if (!suf) continue;
+    if (isStrictPrefix(suf, CHAN) || isStrictPrefix(suf, MSG) || isStrictPrefix(suf, FENCE)) {
       return t;
     }
   }
   return n;
 }
 
-function scanJSONObject(s: string, i: number): { ok: boolean; end: number } {
-  const n = s.length;
-  while (i < n && /\s/.test(s[i]!)) i++;
-  if (s[i] !== "{") return { ok: false, end: i };
-
-  let depth = 0,
-    inStr = false,
-    esc = false;
-
-  for (; i < n; i++) {
-    const ch = s[i]!;
-    if (inStr) {
-      if (esc) {
-        esc = false;
-        continue;
-      }
-      if (ch === "\\") {
-        esc = true;
-        continue;
-      }
-      if (ch === '"') {
-        inStr = false;
-        continue;
-      }
-    } else {
-      if (ch === '"') {
-        inStr = true;
-        continue;
-      }
-      if (ch === "{") {
-        depth++;
-        continue;
-      }
-      if (ch === "}") {
-        depth--;
-        if (depth === 0) return { ok: true, end: i + 1 };
-      }
-    }
-  }
-  return { ok: false, end: n };
+function isStrictPrefix(suf: string, tok: string): boolean {
+  return suf.length < tok.length && tok.startsWith(suf);
 }
