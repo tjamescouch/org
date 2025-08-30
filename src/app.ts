@@ -25,9 +25,7 @@ import Passthrough from "./input/passthrough";
 let installed = false;
 const controlContainer: { controller: TtyController | undefined } = { controller: undefined };
 
-/**
- * Hook signals and ensure the controller finalizer runs once.
- */
+/** Hook signals; ensure finalizer runs once. */
 export function installTtyGuard(): void {
   if (installed) return;
   installed = true;
@@ -44,7 +42,7 @@ export function installTtyGuard(): void {
   R.on("unhandledRejection", (reason: unknown) => { unwind(); Logger.error?.(reason); R.exit(1); });
 }
 
-/** Scoped cooked/raw helpers that return promises (safe to `await`). */
+/** Scoped helpers that return promises (safe to `await`). */
 export async function withCookedTTY<T>(f: () => Promise<T> | T): Promise<T> {
   const ctl = controlContainer.controller;
   if (!ctl) return await Promise.resolve(f());
@@ -269,21 +267,22 @@ async function main() {
 
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
 
-// After constructing scheduler, add the bridge:
-const scheduler: IScheduler = new RandomScheduler({
-  agents,
-  maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
-  onAskUser: (fromAgent: string, content: string) => { controlContainer.controller?.askUser(fromAgent, content ) },
-  projectDir,
-  reviewMode,
-  promptEnabled:
-    typeof args["prompt"] === "boolean" ? (args["prompt"] as boolean)
-      : kickoff ? false
-        : R.stdin.isTTY,
-  readUserLine: () => controlContainer.controller!.readUserLine(), // <-- new
-});
+  const scheduler: IScheduler = new RandomScheduler({
+    agents,
+    maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
+    onAskUser: (fromAgent: string, content: string) =>
+      controlContainer.controller?.askUser(fromAgent, content) ?? Promise.resolve(undefined),
+    projectDir,
+    reviewMode,
+    promptEnabled:
+      typeof args["prompt"] === "boolean" ? (args["prompt"] as boolean)
+        : kickoff ? false
+          : R.stdin.isTTY,
+    // Bridge: scheduler keeps the logic; controller renders & collects the line.
+    readUserLine: () => controlContainer.controller!.readUserLine(),
+  });
 
-  // Build input
+  // Build input (controller binds raw mode & keys; loop owned by scheduler)
   if (R.stdin.isTTY) {
     controlContainer.controller = new TtyController({
       waitOverlayMessage: "Waiting for agent to finish",
@@ -294,7 +293,7 @@ const scheduler: IScheduler = new RandomScheduler({
       interjectKey: String(args["interject-key"] ?? "i"),
       interjectBanner: String(args["banner"] ?? "user: "),
       finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
-      loopMode: "external",          // <-- new: bind keys & raw mode, but do NOT spawn the controller’s idle loop
+      loopMode: "external", // <<< do not spawn controller's idle loop
     });
   } else {
     new Passthrough({
