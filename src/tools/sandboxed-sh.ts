@@ -8,7 +8,6 @@ import { detectBackend } from "../sandbox/detect";
 import { Logger } from "../logger";
 import { R } from "../runtime/runtime";
 
-
 export interface StepsDirCarrier {
   getStepsHostDir?: () => string;
   stepsHostDir?: string;
@@ -30,18 +29,30 @@ export function resolveStepsHostDir(session: StepsDirCarrier, fallbackRoot?: str
   if (typeof fallbackRoot === "string" && fallbackRoot.length > 0) {
     return path.join(fallbackRoot, "steps");
   }
-  // Last resort: a deterministic path under the CWD (keeps tests deterministic).
+  // Last resort: deterministic path under the CWD (keeps tests deterministic).
   return path.resolve(".org", "runs", "current", "steps");
 }
-// --- end helper ---
 
+// --- small utility so we never collide sessions across directories ---
+function makeMgrKey(agent: string, workDir: string, runRoot: string) {
+  return `${agent}::${path.resolve(workDir)}::${path.resolve(runRoot)}`;
+}
+
+/* -----------------------------------------------------------------------------
+ * Public shapes
+ * ---------------------------------------------------------------------------*/
 
 export type ToolArgs = { cmd: string };
 export type ToolResult = { ok: boolean; stdout: string; stderr: string; exit_code: number; cmd: string };
 
 export interface ToolCtx {
+  /**
+   * Project root (git root). We’ll keep run artifacts under `${projectDir}/.org`.
+   * The *working directory* bound inside the sandbox is always the *current*
+   * process cwd (R.cwd()) so `sh()` behaves where the user is.
+   */
   projectDir: string;
-  runRoot?: string;
+  runRoot?: string;                // optional override for .org root
   agentSessionId?: string;
   policy?: Partial<ExecPolicy>;
   logger?: { info: (...a: any[]) => void; error: (...a: any[]) => void };
@@ -64,26 +75,16 @@ export async function withMutedShHeartbeat<T>(fn: () => Promise<T>): Promise<T> 
 }
 
 /* -----------------------------------------------------------------------------
- * Sandbox manager lookup/creation (one per {sessionKey, projectDir, runRoot})
+ * Sandbox manager lookup/creation
+ *   – one per {agentSessionId, workDir, runRoot}
+ *   – ensures the *work directory* is the actual R.cwd()
  * ---------------------------------------------------------------------------*/
-function compositeKey(key: string, projectDir: string, runRoot?: string) {
-  return `${key}::${projectDir}::${runRoot ?? ""}`;
-}
-
-async function getManager(key: string, projectDir: string, runRoot?: string) {
-  const ckey = compositeKey(key, projectDir, runRoot);
-  let m = sandboxMangers.get(ckey) as SandboxManager | undefined;
-
+async function getManager(managerKey: string, workDir: string, runRoot: string) {
+  let m = sandboxMangers.get(managerKey);
   if (!m) {
-    m = new SandboxManager(projectDir, runRoot, { backend: "auto" });
-    // Store under the composite key (true identity) …
-    sandboxMangers.set(ckey, m);
-    // …and also keep a bare alias so older lookups by session id still work.
-    // If multiple runRoots/projectDirs share the same bare key, the most
-    // recent wins for that alias, but each composite remains distinct.
-    sandboxMangers.set(key, m);
+    m = new SandboxManager(workDir, runRoot, { backend: "auto" });
+    sandboxMangers.set(managerKey, m);
   }
-
   return m;
 }
 
@@ -216,19 +217,23 @@ function tailStepsDir(
  * ---------------------------------------------------------------------------*/
 
 export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
-  const sessionKey = ctx.agentSessionId ?? "default";
-  const projectDir = ctx.projectDir ?? R.cwd();
-  // IMPORTANT: default runRoot to the actual invocation CWD, not <projectDir>/.org
-  const runRoot = ctx.runRoot ?? R.cwd();
-  const idleHeartbeatMsRaw = ctx?.idleHeartbeatMs ?? 1000;
-  const idleHeartbeatMs = HEARTBEAT_MUTED ? 0 : Math.max(250, idleHeartbeatMsRaw);
+  const agentSessionId = ctx.agentSessionId ?? "default";
 
-  const mgr = await getManager(sessionKey, projectDir, runRoot);
-  const session = await mgr.getOrCreate(sessionKey, ctx.policy);
+  // IMPORTANT:
+  //   - workDir (what we bind/run in the sandbox) = *actual* process cwd
+  //   - runRoot (where .org artifacts live)       = projectDir/.org by default
+  const workDir = R.cwd();
+  const runRoot = ctx.runRoot ?? path.join(ctx.projectDir ?? workDir, ".org");
+
+  // Composite key ensures we don’t accidentally reuse a manager pinned to a
+  // different directory.
+  const mgrKey = makeMgrKey(agentSessionId, workDir, runRoot);
+  const mgr = await getManager(mgrKey, workDir, runRoot);
+  const session = await mgr.getOrCreate(agentSessionId, ctx.policy);
 
   const stepsHostDir = resolveStepsHostDir(session as unknown as StepsDirCarrier, runRoot);
 
-  // Baseline: make sure the directory exists; streaming handler tolerates absence.
+  // Ensure the directory exists; streaming handler tolerates absence.
   try { await fsp.mkdir(stepsHostDir, { recursive: true }); } catch { }
 
   // Streaming banner + heartbeat
@@ -244,6 +249,8 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
     }
   };
 
+  const idleHeartbeatMsRaw = ctx?.idleHeartbeatMs ?? 1000;
+  const idleHeartbeatMs = HEARTBEAT_MUTED ? 0 : Math.max(250, idleHeartbeatMsRaw);
   const hbTimer = setInterval(() => {
     if (idleHeartbeatMs > 0 && Date.now() - lastOutputAt >= idleHeartbeatMs) {
       R.stderr.write(".");
@@ -251,8 +258,7 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
     }
   }, Math.max(250, Math.floor(Math.max(1, idleHeartbeatMs) / 2)));
 
-  // Start a directory-wide streamer that will tail any new step-*.out/.err files
-  // created by this exec. This handles both index-based and stamp-based filenames.
+  // Start a directory‑wide streamer that will tail any new step-*.out/.err files.
   const startMs = Date.now();
   const dirTail = tailStepsDir(
     stepsHostDir,
@@ -264,7 +270,7 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   );
 
   // Run the step inside the sandbox (this writes those files)
-  const step = await session.exec(args.cmd);
+  const step = await (session as any).exec(args.cmd);
 
   // Stop heartbeat + streamers and clean up the line nicely.
   clearInterval(hbTimer);
@@ -291,20 +297,14 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
 }
 
 export async function finalizeSandbox(ctx: ToolCtx) {
-  const sessionKey = ctx.agentSessionId ?? "default";
-  Logger.info("Finalizing sandbox", sessionKey);
-
-  // Try exact match first (older code paths may have stored the bare key)
-  let m = sandboxMangers.get(sessionKey) as SandboxManager | undefined;
-  if (!m) {
-    // Fallback: locate by any composite that starts with "<sessionKey>::"
-    const prefix = `${sessionKey}::`;
-    for (const [k, v] of sandboxMangers.entries()) {
-      if (k.startsWith(prefix)) { m = v as SandboxManager; break; }
-    }
-  }
+  // Match the same manager key we used for creation
+  const agentSessionId = ctx.agentSessionId ?? "default";
+  const workDir = R.cwd();
+  const runRoot = ctx.runRoot ?? path.join(ctx.projectDir ?? workDir, ".org");
+  const key = makeMgrKey(agentSessionId, workDir, runRoot);
+  const m = sandboxMangers.get(key);
   if (!m) return;
-  return m.finalize(sessionKey);
+  return m.finalize(agentSessionId);
 }
 
 export async function finalizeAllSandboxes() {
@@ -338,7 +338,11 @@ export async function shCapture(
   cmd: string,
   opts: { projectDir: string; agentSessionId: string }
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const mgr = await getManager(opts.agentSessionId, opts.projectDir, R.cwd());
+  const workDir = R.cwd();
+  const runRoot = path.join(opts.projectDir ?? workDir, ".org");
+  const mgrKey = makeMgrKey(opts.agentSessionId, workDir, runRoot);
+
+  const mgr = await getManager(mgrKey, workDir, runRoot);
   const session = await mgr.getOrCreate(opts.agentSessionId);
   const r = await (session as any).exec(cmd);
   const stdout = (r && r.stdoutFile && fs.existsSync(r.stdoutFile)) ? fs.readFileSync(r.stdoutFile, "utf8") : (r?.stdout ?? "");
@@ -390,7 +394,11 @@ export async function shInteractive(
     script = cmdOrArgv;
   }
 
-  const mgr = await getManager(opts.agentSessionId, opts.projectDir, R.cwd());
+  const workDir = R.cwd();
+  const runRoot = path.join(opts.projectDir ?? workDir, ".org");
+  const mgrKey = makeMgrKey(opts.agentSessionId, workDir, runRoot);
+
+  const mgr = await getManager(mgrKey, workDir, runRoot);
   const session = await mgr.getOrCreate(opts.agentSessionId);
 
   const runInteractive =
