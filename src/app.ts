@@ -276,7 +276,8 @@ async function main() {
       controlContainer.controller?.askUser(fromAgent, content) ?? Promise.resolve(undefined),
     projectDir,
     reviewMode,
-    promptEnabled: typeof args["prompt"] === "boolean" ? args["prompt"] : kickoff ? false : R.stdin.isTTY,
+    promptEnabled: false
+    //promptEnabled: typeof args["prompt"] === "boolean" ? args["prompt"] : kickoff ? false : R.stdin.isTTY,
   });
 
   // Build input

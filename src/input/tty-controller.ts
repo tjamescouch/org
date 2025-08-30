@@ -117,7 +117,7 @@ export class TtyController {
 
   /** One-off question from an agent (printed text + a quick prompt). */
   async askUser(_fromAgent: string, content: string): Promise<string | undefined> {
-    //await this.writeLine(content.trim());
+    await this.writeLine(content.trim());
     const ans = await this.promptOnce(this.opts.interjectBanner);
     return ans.trim() === "" ? undefined : ans;
   }
