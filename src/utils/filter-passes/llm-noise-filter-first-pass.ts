@@ -1,6 +1,9 @@
 // src/utils/llm-noise-filter-first-pass.ts
 //
-// First pass: historical sentinel & fence logic (unchanged behavior).
+// First pass: historical sentinel & fence logic (unchanged behavior),
+// with one important change: **do not remove FINAL channel blocks**.
+// Those must flow to FinalChannelPass.
+//
 // - Removes non-final toolformer sentinels
 // - Preserves fenced code blocks verbatim
 // - Streaming-friendly carry for partial tokens and incomplete fences
@@ -11,18 +14,17 @@ export class LLMNoiseFilterFirstPass {
   feed(chunk: string): { cleaned: string; removed: number } {
     const s = this.tail + (chunk ?? "");
     const { cleaned, carry, removed } = stripSentinelsPreservingFences(s);
-    this.tail = carry;        // keep only bytes we did NOT emit
+    this.tail = carry;
     return { cleaned, removed };
   }
 
   flush(): string {
-    const out = this.tail;    // final un-emitted tail (e.g., incomplete fence)
+    const out = this.tail;
     this.tail = "";
     return out;
   }
 }
 
-/** Maximum bytes we scan for a possible prefix at the end of a chunk. */
 const TAIL_WINDOW = 128;
 const CH_TOKEN = "<|channel|>";
 const MSG_TOKEN = "<|message|>";
@@ -50,7 +52,7 @@ function stripSentinelsPreservingFences(
     const start = s.indexOf(CH_TOKEN, i);
     if (start < 0) {
       // No sentinel ahead. Emit all except a tiny suffix that *might* be
-      // the beginning of CH_TOKEN or FENCE split across chunks.
+      // the beginning of CH_TOKEN, MSG_TOKEN or FENCE split across chunks.
       const carryStart = findPossiblePrefixStart(s, i, n);
       parts.push(s.slice(i, carryStart));
       i = carryStart; // everything from i is carry
@@ -61,9 +63,18 @@ function stripSentinelsPreservingFences(
     if (start > i) parts.push(s.slice(i, start));
 
     // We have "<|channel|>", require "<|message|>" after it.
-    let k = start + CH_TOKEN.length;
-    const msgTag = s.indexOf(MSG_TOKEN, k);
+    const metaStart = start + CH_TOKEN.length;
+    const msgTag = s.indexOf(MSG_TOKEN, metaStart);
     if (msgTag < 0) { i = start; break; } // keep from sentinel start as carry
+
+    // NEW: do NOT treat "final …" as a toolformer sentinel — let later pass handle it.
+    const meta = s.slice(metaStart, msgTag);
+    if (/^\s*final\b/i.test(meta)) {
+      // Emit one char to avoid infinite loop; leave the block for FinalChannelPass.
+      parts.push(s[start]!);
+      i = start + 1;
+      continue;
+    }
 
     const p = msgTag + MSG_TOKEN.length;
 
@@ -91,14 +102,14 @@ function stripSentinelsPreservingFences(
 
 /**
  * Returns the earliest index t in [i, n] such that s.slice(t) is a prefix
- * of a token we care about (`<|channel|>` or "```"). If none is found, n.
+ * of a token we care about (`<|channel|>`, `<|message|>`, or "```").
  * We only search the last TAIL_WINDOW bytes to bound work.
  */
 function findPossiblePrefixStart(s: string, i: number, n: number): number {
   const windowStart = Math.max(i, n - TAIL_WINDOW);
   for (let t = windowStart; t < n; t++) {
     const suf = s.slice(t);
-    if (CH_TOKEN.startsWith(suf) || FENCE.startsWith(suf)) {
+    if (CH_TOKEN.startsWith(suf) || MSG_TOKEN.startsWith(suf) || FENCE.startsWith(suf)) {
       return t; // keep from here as carry
     }
   }
