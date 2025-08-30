@@ -2,139 +2,152 @@
 import type { LLMNoiseFilterPass, PassFeedResult } from "./llm-noise-filter-pass";
 
 /**
- * AdvancedMemoryScrubPass (conservative, stream-safe).
- *
- * Removes memory/system/internal dumps when clearly delimited.
- * Does not normalize whitespace or otherwise modify text.
+ * AdvancedMemoryScrubPass: stream-safe, fence-aware.
+ * - Drops memory/system/internal blocks when closed; otherwise holds from start.
+ * - Preserves generic code fences (```lang ... ```).
  */
 export class AdvancedMemoryScrubPass implements LLMNoiseFilterPass {
   private tail = "";
 
+  private readonly dropSpecs = [
+    { start: /<\|memory_start\|>/i,        end: /<\|memory_end\|>/i },
+    { start: /<memory>/i,                  end: /<\/memory>/i },
+    { start: /<\|internal_start\|>/i,      end: /<\|internal_end\|>/i },
+    { start: /<internal>/i,                end: /<\/internal>/i },
+    { start: /<\|system_prompt_start\|>/i, end: /<\|system_prompt_end\|>/i },
+    { start: /<system_prompt>/i,           end: /<\/system_prompt>/i },
+    { start: /BEGIN\s+MEMORY\b/i,          end: /END\s+MEMORY\b/i },
+    { start: /BEGIN\s+SYSTEM\s+PROMPT\b/i, end: /END\s+SYSTEM\s+PROMPT\b/i },
+    { start: /BEGIN\s+INTERNAL\b/i,        end: /END\s+INTERNAL\b/i },
+    { start: /BEGIN\s+SCRATCHPAD\b/i,      end: /END\s+SCRATCHPAD\b/i },
+  ] as const;
+
   feed(chunk: string): PassFeedResult {
-    let buf = (this.tail ?? "") + (chunk ?? "");
-    const before = buf.length;
+    const input = (this.tail ?? "") + (chunk ?? "");
 
-    // Fenced memory-like blocks
-    buf = this.processFenced(buf, /```(?:memory|system|internal|policy|config|instructions?)[^\n]*\n/i, /```/i, "drop");
+    const holdFenceAt = this.findUnmatchedFenceStart(input);
+    const pre = holdFenceAt === -1 ? input : input.slice(0, holdFenceAt);
+    const post = holdFenceAt === -1 ? "" : input.slice(holdFenceAt);
 
-    // Structured "BEGIN ... END ..." sections
-    buf = this.processBlocks(buf, /BEGIN\s+MEMORY\b/i, /END\s+MEMORY\b/i, "drop");
-    buf = this.processBlocks(buf, /BEGIN\s+SYSTEM\s+PROMPT\b/i, /END\s+SYSTEM\s+PROMPT\b/i, "drop");
-    buf = this.processBlocks(buf, /BEGIN\s+INTERNAL\b/i, /END\s+INTERNAL\b/i, "drop");
-    buf = this.processBlocks(buf, /BEGIN\s+SCRATCHPAD\b/i, /END\s+SCRATCHPAD\b/i, "drop");
+    const segs = this.splitCompleteFences(pre);
 
-    // XML-ish variants
-    buf = this.processBlocks(buf, /<\|memory_start\|>/i, /<\|memory_end\|>/i, "drop");
-    buf = this.processBlocks(buf, /<memory>/i, /<\/memory>/i, "drop");
-    buf = this.processBlocks(buf, /<\|internal_start\|>/i, /<\|internal_end\|>/i, "drop");
-    buf = this.processBlocks(buf, /<internal>/i, /<\/internal>/i, "drop");
-    buf = this.processBlocks(buf, /<\|system_prompt_start\|>/i, /<\|system_prompt_end\|>/i, "drop");
-    buf = this.processBlocks(buf, /<system_prompt>/i, /<\/system_prompt>/i, "drop");
+    let cleaned = "";
+    let holdFromAbs: number | null = null;
 
-    // Streaming safety: hold if tail looks like the start of any of these.
-    const holdFrom = this.findHoldStart(buf);
-    const cleaned = holdFrom === -1 ? buf : buf.slice(0, holdFrom);
-    this.tail = holdFrom === -1 ? "" : buf.slice(holdFrom);
+    for (const seg of segs) {
+      if (seg.type === "fence") {
+        cleaned += pre.slice(seg.start, seg.end);
+        continue;
+      }
+      const res = this.processOutside(pre.slice(seg.start, seg.end));
+      cleaned += res.processed;
+      if (res.holdFrom >= 0) {
+        holdFromAbs = seg.start + res.holdFrom;
+        break;
+      }
+    }
 
-    const removed = before - (cleaned.length + this.tail.length);
-    return { cleaned, removed: removed > 0 ? removed : 0 };
+    if (holdFromAbs !== null) {
+      this.tail = pre.slice(holdFromAbs) + post;
+      return { cleaned, removed: input.length - (cleaned.length + this.tail.length) };
+    }
+
+    // Hold partial sentinel tail for memory/internal/system_prompt prefixes
+    const partialFrom = this.findPartialSentinelStart(cleaned, /^<\|?(?:memory|internal|system_prompt)/i);
+    if (partialFrom !== -1) {
+      this.tail = cleaned.slice(partialFrom) + post;
+      return { cleaned: cleaned.slice(0, partialFrom), removed: input.length - (cleaned.slice(0, partialFrom).length + this.tail.length) };
+    }
+
+    this.tail = post;
+    return { cleaned, removed: input.length - (cleaned.length + this.tail.length) };
   }
 
   flush(): string {
-    let buf = this.tail;
+    const out = this.tail;
     this.tail = "";
-
-    // If any fenced-memory start remains, drop from that start.
-    const fenceIdx = this.findIndexOf(buf, /```(?:memory|system|internal|policy|config|instructions?)[^\n]*\n/i, 0);
-    if (fenceIdx !== -1) buf = buf.slice(0, fenceIdx);
-
-    // For structured sections, drop from unmatched start
-    const specs: Array<{ s: RegExp; e: RegExp }> = [
-      { s: /BEGIN\s+MEMORY\b/i,          e: /END\s+MEMORY\b/i },
-      { s: /BEGIN\s+SYSTEM\s+PROMPT\b/i, e: /END\s+SYSTEM\s+PROMPT\b/i },
-      { s: /BEGIN\s+INTERNAL\b/i,        e: /END\s+INTERNAL\b/i },
-      { s: /BEGIN\s+SCRATCHPAD\b/i,      e: /END\s+SCRATCHPAD\b/i },
-      { s: /<\|memory_start\|>/i,        e: /<\|memory_end\|>/i },
-      { s: /<memory>/i,                  e: /<\/memory>/i },
-      { s: /<\|internal_start\|>/i,      e: /<\|internal_end\|>/i },
-      { s: /<internal>/i,                e: /<\/internal>/i },
-      { s: /<\|system_prompt_start\|>/i, e: /<\|system_prompt_end\|>/i },
-      { s: /<system_prompt>/i,           e: /<\/system_prompt>/i },
-    ];
-    for (const spec of specs) {
-      const i = this.findIndexOf(buf, spec.s, 0);
-      if (i !== -1 && this.findIndexOf(buf, spec.e, i + 1) === -1) {
-        buf = buf.slice(0, i);
-      }
-    }
-
-    return buf;
+    return out;
   }
 
-  // ---- helpers ----
+  // ---- outside-fence block processing ----
 
-  private processBlocks(s: string, start: RegExp, end: RegExp, mode: "drop" | "unwrap"): string {
+  private processOutside(s: string): { processed: string; holdFrom: number } {
+    let work = s;
+
+    // Resolve closed blocks
+    for (const spec of this.dropSpecs) {
+      work = this.resolveClosedBlocks(work, spec.start, spec.end);
+    }
+
+    // Unmatched start -> hold
+    let holdFrom = -1;
+    for (const spec of this.dropSpecs) {
+      const i = this.indexOfRegex(work, spec.start, 0);
+      if (i !== -1 && this.indexOfRegex(work, spec.end, i + 1) === -1) {
+        holdFrom = holdFrom === -1 ? i : Math.min(holdFrom, i);
+      }
+    }
+    if (holdFrom !== -1) return { processed: work.slice(0, holdFrom), holdFrom };
+
+    return { processed: work, holdFrom: -1 };
+  }
+
+  private resolveClosedBlocks(s: string, start: RegExp, end: RegExp): string {
     let from = 0;
     while (true) {
-      const i = this.findIndexOf(s, start, from);
+      const i = this.indexOfRegex(s, start, from);
       if (i === -1) break;
-      const j = this.findIndexOf(s, end, i + 1);
+      const j = this.indexOfRegex(s, end, i + 1);
       if (j === -1) break;
-      const startLen = (s.slice(i).match(start)?.[0]?.length) ?? 0;
-      const endLen = (s.slice(j).match(end)?.[0]?.length) ?? 0;
-      if (mode === "drop") {
-        s = s.slice(0, i) + s.slice(j + endLen);
-        from = i;
-      } else {
-        const inner = s.slice(i + startLen, j);
-        s = s.slice(0, i) + inner + s.slice(j + endLen);
-        from = i + inner.length;
-      }
+      const endLen = s.slice(j).match(end)?.[0].length ?? 0;
+      s = s.slice(0, i) + s.slice(j + endLen); // drop
+      from = i;
     }
     return s;
   }
 
-  private processFenced(s: string, start: RegExp, end: RegExp, mode: "drop" | "unwrap"): string {
-    let from = 0;
+  // ---- fences & helpers ----
+
+  private findUnmatchedFenceStart(s: string): number {
+    let pos = 0;
     while (true) {
-      const i = this.findIndexOf(s, start, from);
-      if (i === -1) break;
-      const startLen = (s.slice(i).match(start)?.[0]?.length) ?? 0;
-      const j = this.findIndexOf(s, end, i + startLen);
-      if (j === -1) break;
-      const endLen = (s.slice(j).match(end)?.[0]?.length) ?? 0;
-      if (mode === "drop") {
-        s = s.slice(0, i) + s.slice(j + endLen);
-        from = i;
-      } else {
-        const inner = s.slice(i + startLen, j);
-        s = s.slice(0, i) + inner + s.slice(j + endLen);
-        from = i + inner.length;
-      }
+      const i = s.indexOf("```", pos);
+      if (i === -1) return -1;
+      const nl = s.indexOf("\n", i + 3);
+      if (nl === -1) return i;
+      const j = s.indexOf("```", nl + 1);
+      if (j === -1) return i;
+      pos = j + 3;
     }
-    return s;
   }
 
-  private findHoldStart(s: string): number {
+  private splitCompleteFences(s: string): Array<{ type: "text" | "fence"; start: number; end: number }> {
+    const segs: Array<{ type: "text" | "fence"; start: number; end: number }> = [];
+    let pos = 0;
+    while (true) {
+      const i = s.indexOf("```", pos);
+      if (i === -1) break;
+      const nl = s.indexOf("\n", i + 3);
+      if (nl === -1) break;
+      const j = s.indexOf("```", nl + 1);
+      if (j === -1) break;
+      if (i > pos) segs.push({ type: "text", start: pos, end: i });
+      segs.push({ type: "fence", start: i, end: j + 3 });
+      pos = j + 3;
+    }
+    if (pos < s.length) segs.push({ type: "text", start: pos, end: s.length });
+    return segs;
+  }
+
+  private findPartialSentinelStart(s: string, prefix: RegExp): number {
     const lastLt = s.lastIndexOf("<");
-    if (lastLt !== -1) {
-      const tail = s.slice(lastLt);
-      if (/^<\|?(?:memory|internal|system_prompt)/i.test(tail) && !/[>]/.test(tail)) return lastLt;
-    }
-    const lastTicks = s.lastIndexOf("```");
-    if (lastTicks !== -1) {
-      const tail = s.slice(lastTicks);
-      if (/^```(?:memory|system|internal|policy|config|instructions?)/i.test(tail) &&
-          !/```/.test(tail.slice(3))) return lastTicks;
-    }
-    if (/BEGIN\s+(?:MEMORY|SYSTEM\s+PROMPT|INTERNAL|SCRATCHPAD)\s*$/i.test(s)) {
-      const m = s.match(/BEGIN\s+(MEMORY|SYSTEM\s+PROMPT|INTERNAL|SCRATCHPAD)\s*$/i);
-      if (m && m.index !== undefined) return m.index;
-    }
+    if (lastLt === -1) return -1;
+    const tail = s.slice(lastLt);
+    if (/^<\|?[A-Za-z0-9:_-]*\|?$/.test(tail) && prefix.test(tail)) return lastLt;
     return -1;
   }
 
-  private findIndexOf(s: string, re: RegExp, from: number): number {
+  private indexOfRegex(s: string, re: RegExp, from: number): number {
     const r = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
     r.lastIndex = from;
     const m = r.exec(s);
