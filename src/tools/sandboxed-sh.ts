@@ -14,8 +14,6 @@ export interface StepsDirCarrier {
   runRootHostDir?: string; // optional hint if available
 }
 
-function toPosix(p: string) { return p.split(path.sep).join(path.posix.sep); }
-
 /** Resolve a usable steps directory path even if the session lacks a helper. */
 export function resolveStepsHostDir(session: StepsDirCarrier, fallbackRoot?: string): string {
   if (typeof session.getStepsHostDir === "function") {
@@ -393,6 +391,7 @@ export async function shInteractive(
     if (cmdOrArgv.length >= 2 && cmdOrArgv[0] === "bash" && cmdOrArgv[1] === "-lc") {
       script = cmdOrArgv.slice(2).join(" ");
     } else {
+      // Best-effort for other shapes; assume caller handled quoting.
       script = cmdOrArgv.join(" ");
     }
   } else {
