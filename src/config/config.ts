@@ -1,5 +1,6 @@
 // src/config/config.ts
 import { getRecipe } from "../recipes";
+import { R } from "../runtime/runtime";
 
 export interface LlmConfig {
   driver: "lmstudio";
@@ -65,6 +66,11 @@ function parseBool(s: string | undefined, def = false): boolean {
 }
 
 export function loadConfig(): AppConfig {
+
+  console.log("R.env", R.env)
+  console.log("process.env", process?.env)
+  console.log("Bun.env", Bun?.env)
+
   const argv = (globalThis as any).Bun ? Bun.argv.slice(2) : process.argv.slice(2);
   const cli = parseArgs(argv);
 
