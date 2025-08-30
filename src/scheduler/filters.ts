@@ -16,14 +16,14 @@ export class NoiseFilters {
   }
 
   cleanAgent(s: string): string {
-    return this.agentFilter.feed(s).cleaned + this.agentFilter.flush();
+    return s;//this.agentFilter.feed(s).cleaned + this.agentFilter.flush();
   }
 
   cleanGroup(s: string): string {
-    return this.groupFilter.feed(s).cleaned + this.groupFilter.flush();
+    return s;//this.groupFilter.feed(s).cleaned + this.groupFilter.flush();
   }
 
   cleanFile(s: string): string {
-    return this.fileFilter.feed(s).cleaned + this.fileFilter.flush();
+    return s;//this.fileFilter.feed(s).cleaned + this.fileFilter.flush();
   }
 }

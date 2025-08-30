@@ -3,15 +3,15 @@ import type { LLMNoiseFilterPass } from "./filter-passes/llm-noise-filter-pass";
 import { LLMNoisePDAStream } from "./filter-passes/llm-pda-stream";
 
 export class LLMNoiseFilter {
-  private readonly passes: LLMNoiseFilterPass[] = [new LLMNoisePDAStream()];
+  private readonly passes: LLMNoiseFilterPass[] = [];
 
-  feed(chunk: string): { cleaned: string; removed: number } {
+  feed(chunk: string): string {
     let cleaned = chunk ?? "";
     for (const pass of this.passes) {
       const r = pass.feed(cleaned) ?? "";
       cleaned = r ?? cleaned;
     }
-    return { cleaned, removed: 0 };
+    return cleaned;
   }
 
   flush(): string {
@@ -24,7 +24,7 @@ export class LLMNoiseFilter {
     return tail;
   }
 
-  push(chunk: string): string { return this.feed(chunk).cleaned; }
+  push(chunk: string): string { return this.feed(chunk); }
   end(): string { return this.flush(); }
 }
 
