@@ -176,7 +176,8 @@ export class LlmAgent extends Agent {
     }
 
     // --- NEW: streaming filter setup (raw in DEBUG=1; filtered otherwise) ---
-    const debugStreaming = String(R.env.DEBUG || "").trim() !== "" && R.env.DEBUG !== "0";
+    const dbg = String(R.env.DEBUG ?? "").trim().toLowerCase();
+    const debugStreaming = dbg === "1" || dbg === "true" || dbg === "yes";
     // Build a streaming pipeline identical to the post-turn cleaner
     const streamFilter = LLMNoiseFilter.createDefault ? LLMNoiseFilter.createDefault() : new LLMNoiseFilter([] as any);
     const tagProtector = new StreamingTagProtector();
