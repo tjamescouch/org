@@ -64,14 +64,26 @@ export async function withMutedShHeartbeat<T>(fn: () => Promise<T>): Promise<T> 
 }
 
 /* -----------------------------------------------------------------------------
- * Sandbox manager lookup/creation (one per {projectDir, runRoot})
+ * Sandbox manager lookup/creation (one per {sessionKey, projectDir, runRoot})
  * ---------------------------------------------------------------------------*/
+function compositeKey(key: string, projectDir: string, runRoot?: string) {
+  return `${key}::${projectDir}::${runRoot ?? ""}`;
+}
+
 async function getManager(key: string, projectDir: string, runRoot?: string) {
-  let m = sandboxMangers.get(key);
+  const ckey = compositeKey(key, projectDir, runRoot);
+  let m = sandboxMangers.get(ckey) as SandboxManager | undefined;
+
   if (!m) {
     m = new SandboxManager(projectDir, runRoot, { backend: "auto" });
+    // Store under the composite key (true identity) …
+    sandboxMangers.set(ckey, m);
+    // …and also keep a bare alias so older lookups by session id still work.
+    // If multiple runRoots/projectDirs share the same bare key, the most
+    // recent wins for that alias, but each composite remains distinct.
     sandboxMangers.set(key, m);
   }
+
   return m;
 }
 
@@ -206,7 +218,8 @@ function tailStepsDir(
 export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
   const sessionKey = ctx.agentSessionId ?? "default";
   const projectDir = ctx.projectDir ?? R.cwd();
-  const runRoot = ctx.runRoot ?? path.join(projectDir, ".org");
+  // IMPORTANT: default runRoot to the actual invocation CWD, not <projectDir>/.org
+  const runRoot = ctx.runRoot ?? R.cwd();
   const idleHeartbeatMsRaw = ctx?.idleHeartbeatMs ?? 1000;
   const idleHeartbeatMs = HEARTBEAT_MUTED ? 0 : Math.max(250, idleHeartbeatMsRaw);
 
@@ -214,7 +227,6 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   const session = await mgr.getOrCreate(sessionKey, ctx.policy);
 
   const stepsHostDir = resolveStepsHostDir(session as unknown as StepsDirCarrier, runRoot);
-
 
   // Baseline: make sure the directory exists; streaming handler tolerates absence.
   try { await fsp.mkdir(stepsHostDir, { recursive: true }); } catch { }
@@ -281,7 +293,16 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
 export async function finalizeSandbox(ctx: ToolCtx) {
   const sessionKey = ctx.agentSessionId ?? "default";
   Logger.info("Finalizing sandbox", sessionKey);
-  const m = sandboxMangers.get(sessionKey);
+
+  // Try exact match first (older code paths may have stored the bare key)
+  let m = sandboxMangers.get(sessionKey) as SandboxManager | undefined;
+  if (!m) {
+    // Fallback: locate by any composite that starts with "<sessionKey>::"
+    const prefix = `${sessionKey}::`;
+    for (const [k, v] of sandboxMangers.entries()) {
+      if (k.startsWith(prefix)) { m = v as SandboxManager; break; }
+    }
+  }
   if (!m) return;
   return m.finalize(sessionKey);
 }
@@ -407,4 +428,3 @@ export async function shInteractive(
     child.on("exit", (code) => resolve({ code: code ?? 0 }));
   });
 }
-
