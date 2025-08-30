@@ -176,7 +176,11 @@ export class LlmAgent extends Agent {
 
     // --- Streaming filter: RAW when DEBUG=1/true/yes; FILTERED otherwise ---
     const dbg = (R.env.DEBUG ?? "").trim().toLowerCase();
-    const debugStreaming = (dbg === "1") || (dbg === "true") || (dbg === "yes");
+    const dbg2 = (process.env.LOG_LEVEL||'').toUpperCase()==='DEBUG';
+    let debugStreaming = (dbg === "1") || (dbg === "true") || (dbg === "yes");
+    if (dbg2) {
+      debugStreaming = true;
+    }
     Logger.info('debugStreaming', debugStreaming, dbg);
 
     // Same pipeline as post-turn
@@ -208,7 +212,7 @@ export class LlmAgent extends Agent {
           const masked = tagProtector.feedProtect(t);
           const cleaned = streamFilter.feed(masked).cleaned;
           const unmasked = tagProtector.unprotect(cleaned);
-          if (unmasked) Logger.streamInfo(C.bold(unmasked));
+          if (unmasked) Logger.streamInfo(C.bold(t));
         }
       },
       onToolCallDelta
