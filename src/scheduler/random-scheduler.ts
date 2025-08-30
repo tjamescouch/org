@@ -1,178 +1,413 @@
+// src/scheduler/random-scheduler.ts
+import { shuffle as fisherYatesShuffle } from "../utils/shuffle-array";
+import { C, Logger } from "../logger";
+import { NoiseFilters } from "./filters";
+import { Inbox } from "./inbox";
+import { routeWithSideEffects } from "./router";
+import { ReviewManager } from "./review-manager";
+import { TagSplitter, TagPart } from "../utils/tag-splitter";
+import type { GuardDecision } from "../guardrails/guardrail";
+import type { ChatMessage } from "../types";
+import type { Responder, SchedulerOptions, AskUserFn } from "./types";
+import { sandboxMangers } from "../sandbox/session";
+import { sleep } from "../utils/sleep";
+
 /**
- * RandomScheduler (type-safe, Inbox-backed, fail-fast)
- * ---------------------------------------------------
- * Implements IScheduler.
- * - Uses Inbox (ChatMessage routing).
- * - Yields when idle so TTY input isn't starved.
- * - **Validates** ChatMessage[] before agent.respond() and throws with a
- *   precise error if any element is malformed. Nothing is “fixed silently”.
+ * RandomScheduler
+ * ---------------
+ * Restores the pre-refactor behavior:
+ *  - Uses Inbox for per-agent/group routing
+ *  - Respects explicit @@agent DMs, default DM target, and @group broadcast
+ *  - Applies guardrail decisions (nudge/mute/askUser)
+ *  - Performs multi-hop execution until tool budget exhausted
+ *  - Idle prompting via askUser every few idle ticks when enabled
+ *  - Draining/pause/resume/stop and review integration
+ *
+ * Notes:
+ *  - Added `enqueueUserText(text)` as a typed alias to the interjection path,
+ *    so newer call sites remain compatible without changing the old surface.
  */
-
-import { Logger } from "../logger";
-import type {
-  IScheduler,
-  SchedulerAgent,
-  SchedulerOptions,
-  ChatMessage,
-} from "./scheduler";
-import Inbox from "./inbox";
-
-const VALID_ROLES = new Set(["system", "user", "assistant", "tool"] as const);
-
-function assertChatMessages(agentId: string, msgs: ChatMessage[]): void {
-  if (!Array.isArray(msgs)) {
-    throw new Error(`agent='${agentId}': messages must be an array`);
-  }
-  msgs.forEach((m, i) => {
-    const where = `agent='${agentId}' messages[${i}]`;
-    if (!m || typeof m !== "object") {
-      throw new Error(`${where} is not an object`);
-    }
-    if (!VALID_ROLES.has(m.role as any)) {
-      throw new Error(`${where}.role invalid: ${String(m.role)}`);
-    }
-    if (typeof m.content !== "string" || !m.content.trim()) {
-      throw new Error(`${where}.content missing/empty`);
-    }
-    if (/^\s*undefined\s*:/i.test(m.content)) {
-      throw new Error(`${where}.content corrupted (starts with 'undefined:')`);
-    }
-    if (m.from !== undefined && (typeof m.from !== "string" || !m.from.trim())) {
-      throw new Error(`${where}.from invalid`);
-    }
-    if (m.to !== undefined && (typeof m.to !== "string" || !m.to.trim())) {
-      throw new Error(`${where}.to invalid`);
-    }
-  });
-}
-
-function summarizeMessages(msgs: ChatMessage[]) {
-  return msgs.map((m, i) => ({
-    i,
-    role: m.role,
-    contentLen: m.content.length,
-    from: m.from,
-    to: m.to,
-  }));
-}
-
-export default class RandomScheduler implements IScheduler {
-  private readonly agents: SchedulerAgent[];
+export class RandomScheduler {
+  private readonly agents: Responder[];
   private readonly maxTools: number;
-  private readonly onAskUser: SchedulerOptions["onAskUser"];
-  private promptEnabled: boolean;
+  private readonly shuffle: <T>(arr: T[]) => T[];
+  private readonly review: ReviewManager;
+  private readonly filters = new NoiseFilters();
+  private readonly inbox = new Inbox();
 
   private running = false;
+  private paused = false;
   private draining = false;
 
-  private rr = 0; // round-robin cursor
-  private inbox = new Inbox();
+  private activeAgent: Responder | undefined;
+  private respondingAgent: Responder | undefined;
+
+  private keepAlive: NodeJS.Timeout | null = null;
+
+  private mutedUntil = new Map<string, number>();
+  private lastUserDMTarget: string | null = null;
+
+  private readonly idlePromptEvery = 3;
+
+  private readonly askUser: AskUserFn;
+  private readonly promptEnabled: boolean;
+  private readonly idleSleepMs: number;
+
+  // when true, break the current agent loop and start a new tick immediately
+  private rescheduleNow = false;
 
   constructor(opts: SchedulerOptions) {
     this.agents = opts.agents;
-    this.maxTools = Math.max(0, opts.maxTools ?? 20);
-    this.onAskUser = opts.onAskUser;
+    this.maxTools = opts.maxTools;
+    this.shuffle = opts.shuffle ?? fisherYatesShuffle;
+    this.review = new ReviewManager(opts.projectDir, opts.reviewMode ?? "ask");
+    this.askUser = opts.onAskUser;
+
     this.promptEnabled = !!opts.promptEnabled;
+    this.idleSleepMs = opts.idleSleepMs ?? 25;
+
+    for (const a of this.agents) this.inbox.ensure(a.id);
   }
 
-  /** Convert text to a valid ChatMessage or throw; enqueue it. */
-  async enqueueUserText(text: string, opts?: { to?: string; from?: string }): Promise<void> {
-    if (typeof text !== "string") {
-      throw new Error(`enqueueUserText: text must be string; got ${typeof text}`);
-    }
-    const trimmed = text.trim();
-    if (!trimmed) {
-      throw new Error("enqueueUserText: refusing to enqueue empty text");
-    }
-    if (/^\s*undefined\s*:/i.test(trimmed)) {
-      throw new Error("enqueueUserText: input appears corrupted (starts with 'undefined:')");
+
+
+  /** Start the scheduling loop (idempotent). */
+  private startBody = async (): Promise<void> => {
+    if (this.running) return;
+    this.running = true;
+    this.keepAlive = setInterval(() => {
+      /* keep event loop alive during long idle */
+    }, 30_000);
+
+    let idleTicks = 0;
+
+    while (this.running) {
+      this.activeAgent = undefined;
+
+      if (this.paused || this.draining) {
+        await sleep(25);
+        continue;
+      }
+
+      let didWork = false;
+      this.rescheduleNow = false;
+
+      // Choose agents that currently have messages waiting.
+      const ready = this.agents.filter(a => this.inbox.hasWork(a.id));
+      const order = this.shuffle(ready);
+
+      for (const agent of order) {
+        if (this.rescheduleNow) break;
+        if (this.isMuted(agent.id)) {
+          Logger.debug(`muted: ${agent.id}`);
+          continue;
+        }
+
+        const a = this.respondingAgent ?? agent;
+        this.respondingAgent = undefined;
+
+        const messages = this.inbox.nextPromptFor(a.id);
+        if (messages.length === 0) {
+          Logger.debug(`no work for ${a.id}`);
+          continue;
+        }
+        Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(messages));
+
+        let remaining = this.maxTools;
+        let totalToolsUsed = 0;
+
+        try {
+          for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
+            const peers = this.agents.map(x => x.id);
+            Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
+            this.activeAgent = a;
+
+            const replies = await a.respond(
+              messages,
+              Math.max(0, remaining),
+              peers,
+              () => this.draining
+            );
+
+            for (const { message, toolsUsed } of replies) {
+              totalToolsUsed += toolsUsed;
+              this.activeAgent = undefined;
+              Logger.debug(
+                `${a.id} replied toolsUsed=${toolsUsed} message=`,
+                JSON.stringify(message)
+              );
+
+              const askedUser = await routeWithSideEffects(
+                {
+                  agents: this.agents,
+                  enqueue: (toId, msg) => this.inbox.push(toId, msg),
+                  setRespondingAgent: (id) => {
+                    this.respondingAgent = this.agents.find(x => x.id === id);
+                  },
+                  applyGuard: (from, dec) => this.applyGuardDecision(from, dec),
+                  setLastUserDMTarget: (id) => {
+                    this.lastUserDMTarget = id;
+                  },
+                },
+                a,
+                message,
+                this.filters,
+              );
+
+              didWork = true;
+
+              if (askedUser) {
+                if (this.promptEnabled) {
+                  // interactive: open prompt as before
+                  this.lastUserDMTarget = a.id;
+                  const userText = ((await this.askUser(a.id, message)) ?? "").trim();
+                  if (userText) {
+                    await this.handleUserInterjection(userText, {
+                      defaultTargetId: a.id,
+                    });
+                  }
+                  this.rescheduleNow = true;
+                } else {
+                  // non-interactive: end the loop; finalization happens in CLI shutdown
+                  Logger.info(`(${a.id}) requested @@user; ending run (non-interactive).`);
+                  this.stop();
+                  this.rescheduleNow = true;
+                }
+                break;
+              }
+            }
+
+            if (this.rescheduleNow) break;
+            if (totalToolsUsed > 0) {
+              remaining = Math.max(0, remaining - totalToolsUsed);
+              if (remaining <= 0) break;
+            } else {
+              break;
+            }
+          }
+        } finally {
+          if (totalToolsUsed > 0) this.review.markDirty(agent.id);
+        }
+      }
+
+      if (!didWork) {
+        idleTicks++;
+        const queuesEmpty = !this.inbox.hasAnyWork();
+
+        if (queuesEmpty && (idleTicks % this.idlePromptEvery) === 0 && this.promptEnabled) {
+          const peers = this.agents.map(x => x.id);
+          const dec =
+            this.agents[0]?.guardOnIdle?.({ idleTicks, peers, queuesEmpty: true }) || null;
+          const prompt =
+            (dec as any)?.askUser ??
+            `(scheduler)
+All agents are idle. Provide the next concrete instruction or question.`;
+          const preferred = this.agents[0]?.id;
+          if (preferred) this.lastUserDMTarget = preferred;
+          const userText = ((await this.askUser("scheduler", prompt)) ?? "").trim();
+          if (userText) {
+            await this.handleUserInterjection(userText, {
+              defaultTargetId: preferred || undefined,
+            });
+          }
+          idleTicks = 0;
+        } else {
+          await this.sleep(this.idleSleepMs); // cooperative idle
+        }
+      } else {
+        idleTicks = 0;
+      }
     }
 
-    this.inbox.enqueue({
-      role: "user",
-      content: trimmed,
-      from: opts?.from,
-      to: opts?.to ?? "@group",
+    if (this.keepAlive) {
+      clearInterval(this.keepAlive);
+      this.keepAlive = null;
+    }
+  };
+
+  // ------------------------------ Public API ------------------------------
+  async start() {
+    try {
+      await this.startBody();
+    } catch (e) {
+      Logger.error("Scheduler start failed.", e);
+    } finally {
+      if (this.keepAlive) {
+        clearInterval(this.keepAlive);
+        this.keepAlive = null;
+      }
+
+      // Finalize any dirty sessions and run review/apply once.
+      // Make ReviewManager.finalizeAndReview() idempotent so double-calls are safe.
+      await this.review.finalizeAndReview();
+      this.running = false;
+    }
+  }
+
+  stop() {
+    this.running = false;
+    Logger.debug("stopped");
+  }
+  pause() {
+    this.paused = true;
+    Logger.debug("paused");
+  }
+  resume() {
+    this.paused = false;
+    Logger.debug("resumed");
+  }
+
+  async drain(): Promise<boolean> {
+    if (this.draining) return false;
+    this.draining = true;
+    while (this.hasActiveAgent()) {
+      Logger.info(C.magenta(`\nWaiting for agent to complete...`));
+      await this.sleep(1000);
+    }
+    return true;
+  }
+
+  stopDraining(): void {
+    this.draining = false;
+  }
+  isDraining(): boolean {
+    return this.draining;
+  }
+  hasActiveAgent(): boolean {
+    return !!this.activeAgent;
+  }
+
+  /** External entry for user interjections (e.g., CLI input). */
+  async interject(text: string) {
+    await this.handleUserInterjection(text, {
+      defaultTargetId: this.lastUserDMTarget || undefined,
     });
   }
 
-  async start(): Promise<void> {
-    this.running = true;
+  /** Alias for compatibility with newer callers; routes to interject(). */
+  async enqueueUserText(text: string): Promise<void> {
+    await this.interject(text);
+  }
 
-    if (this.promptEnabled && this.inbox.size() === 0) {
-      await this.safeAskUser(
-        "scheduler",
-        "[scheduler]\nAll agents are idle — no queued work and no actionable outputs.\nPlease provide the next *concrete* instruction."
-      );
-      this.promptEnabled = false;
+  async finalizeAndReviewAll(): Promise<void> {
+    try {
+      await this.review.finalizeAndReview(this.agents.map(a => a.id));
+    } catch (e: any) {
+      Logger.error("finalizeAndReviewAll:", e?.message ?? e);
     }
+  }
 
-    while (this.running) {
-      if (this.draining && this.inbox.size() === 0) {
-        this.running = false;
-        break;
+  /**
+   * Enqueue user text.
+   * - Explicit agent tags override everything (we reschedule immediately).
+   * - Otherwise DM the default target, else broadcast to group.
+   */
+  private async handleUserInterjection(
+    text: string,
+    opts?: { defaultTargetId?: string }
+  ) {
+    const raw = String(text ?? "");
+    const parts = TagSplitter.split(raw, {
+      allowSingleAt: true,
+      allowSingleHash: false,
+      userTokens: ["user"],
+      groupTokens: ["group"],
+      agentTokens: this.agents.map(a => a.id), // allowlist
+      fileTokens: ["file"],
+      allowFileShorthand: false,
+    });
+
+    // Explicit @@agent tags
+    const agentParts = parts.filter(p => p.kind === "agent") as Array<
+      TagPart & { kind: "agent" }
+    >;
+    if (agentParts.length > 0) {
+      const targets: Responder[] = [];
+      for (const ap of agentParts) {
+        const ag = this.findAgentByIdExact(ap.tag);
+        if (ag && !targets.some(t => t.id === ag.id)) targets.push(ag);
       }
-
-      if (this.agents.length === 0 || this.inbox.size() === 0) {
-        await this.sleep(25);
-        continue;
-      }
-
-      const agent = this.pickAgent();
-
-      if (!this.inbox.hasWork(agent.id)) {
-        // try next agent quickly
-        this.rr = (this.rr + 1) % this.agents.length;
-        await this.sleep(1);
-        continue;
-      }
-
-      const messages = this.inbox.nextPromptFor(agent.id);
-      // Fail fast on bad shape instead of masking
-      assertChatMessages(agent.id, messages);
-
-      if (process.env.ORG_TRACE === "1") {
-        Logger.info(`[TRACE] sched.nextPromptFor -> ${agent.id}`, summarizeMessages(messages));
-      }
-
-      try {
-        const peers = this.agents.map(a => a.id);
-        const shouldAbort = () => !this.running || this.draining;
-
-        Logger.debug?.(`${agent.id} start {`, {
-          promptChars: messages.reduce((n, m) => n + m.content.length, 0),
-          maxTools: this.maxTools,
-        }, "}");
-
-        const out = await agent.respond(messages, this.maxTools, peers, shouldAbort);
-
-        if (typeof out === "string" && out.trim().length > 0) {
-          Logger.info(`${agent.id} ...`);
-          Logger.info(out);
-          Logger.info(`[${agent.id}] wrote. No tools used.`);
+      if (targets.length > 0) {
+        this.respondingAgent = targets[0];
+        this.lastUserDMTarget = targets[0].id;
+        for (const ap of agentParts) {
+          const ag = this.findAgentByIdExact(ap.tag);
+          if (!ag) continue;
+          const msg: ChatMessage = { content: ap.content, role: "user", from: "User" };
+          this.inbox.push(ag.id, msg);
+          Logger.info(`[user → @@${ag.id}] ${raw}`);
         }
-      } catch (e) {
-        Logger.error?.(`Agent '${agent.id}' failed:`, (e as any)?.message || e);
+        this.rescheduleNow = true;
+        return;
       }
+    }
 
-      await this.sleep(1);
+    // No explicit tags -> DM default if provided
+    if (opts?.defaultTargetId) {
+      const ag = this.findAgentByIdExact(opts.defaultTargetId);
+      if (ag) {
+        const msg: ChatMessage = { content: raw.trim(), role: "user", from: "User" };
+        this.respondingAgent = ag;
+        this.lastUserDMTarget = ag.id;
+        this.inbox.push(ag.id, msg);
+        Logger.info(`[user → @@${ag.id}] ${raw}`);
+        this.rescheduleNow = true;
+        return;
+      }
+    }
+
+    // Fallback: broadcast to group
+    for (const a of this.agents) {
+      this.inbox.push(a.id, { content: raw, role: "user", from: "User" });
+    }
+
+    Logger.debug("End of interjection");
+    Logger.info(`[user → @@group] ${raw}`);
+  }
+
+  // ------------------------------ Internals ------------------------------
+
+  private isMuted(id: string): boolean {
+    const until = this.mutedUntil.get(id) ?? 0;
+    return Date.now() < until;
+  }
+
+  private mute(id: string, ms: number) {
+    this.mutedUntil.set(id, Date.now() + Math.max(250, ms));
+  }
+
+  private async applyGuardDecision(agent: Responder, dec: GuardDecision) {
+    if ((dec as any).warnings && (dec as any).warnings.length) {
+      Logger.debug(`[guard][${agent.id}] ` + (dec as any).warnings.join("; "));
+    }
+    if ((dec as any).nudge) {
+      this.inbox.push(agent.id, {
+        content: (dec as any).nudge,
+        from: "System",
+        role: "system",
+      });
+    }
+    if ((dec as any).muteMs && (dec as any).muteMs > 0) {
+      this.mute(agent.id, (dec as any).muteMs);
+    }
+    if ((dec as any).askUser && this.promptEnabled) {
+      this.lastUserDMTarget = agent.id; // prefer the nudging agent
+      const userText = ((await this.askUser(agent.id, (dec as any).askUser)) ?? "").trim();
+      if (userText) {
+        await this.handleUserInterjection(userText, { defaultTargetId: agent.id });
+      }
     }
   }
 
-  async stop(): Promise<void> { this.running = false; }
-  async drain(): Promise<void> { this.draining = true; }
-
-  // -------------- internals --------------
-  private pickAgent(): SchedulerAgent {
-    if (this.agents.length === 0) throw new Error("No agents configured");
-    const a = this.agents[this.rr % this.agents.length];
-    return a;
+  /** Exact id match, case-insensitive. */
+  private findAgentByIdExact(key: string): Responder | undefined {
+    const t = key.toLowerCase();
+    return this.agents.find(a => a.id.toLowerCase() === t);
   }
 
-  private async safeAskUser(fromAgent: string, content: string): Promise<void> {
-    try { await this.onAskUser(fromAgent, content); }
-    catch (e) { Logger.error?.("onAskUser failed, continuing:", (e as any)?.message || e); }
+  private sleep(ms: number) {
+    return new Promise<void>(r => setTimeout(r, ms));
   }
-
-  private sleep(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }
 }
+
+export default RandomScheduler;
