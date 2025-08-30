@@ -1,12 +1,12 @@
 // src/utils/llm-noise-filter-first-pass.ts
 //
-// First pass: historical sentinel & fence logic (unchanged behavior),
-// with one important change: **do not remove FINAL channel blocks**.
-// Those must flow to FinalChannelPass.
+// First pass: historical sentinel & fence logic, with ONE key change:
+// **Do not remove `<|channel|>final … <|message|>…` blocks**.
+// Those are forwarded to FinalChannelPass.
 //
 // - Removes non-final toolformer sentinels
 // - Preserves fenced code blocks verbatim
-// - Streaming-friendly carry for partial tokens and incomplete fences
+// - Streaming carry for partial tokens and incomplete fences
 
 export class LLMNoiseFilterFirstPass {
   private tail = "";
@@ -52,7 +52,7 @@ function stripSentinelsPreservingFences(
     const start = s.indexOf(CH_TOKEN, i);
     if (start < 0) {
       // No sentinel ahead. Emit all except a tiny suffix that *might* be
-      // the beginning of CH_TOKEN, MSG_TOKEN or FENCE split across chunks.
+      // the beginning of CH_TOKEN, MSG_TOKEN, or FENCE split across chunks.
       const carryStart = findPossiblePrefixStart(s, i, n);
       parts.push(s.slice(i, carryStart));
       i = carryStart; // everything from i is carry
@@ -67,10 +67,10 @@ function stripSentinelsPreservingFences(
     const msgTag = s.indexOf(MSG_TOKEN, metaStart);
     if (msgTag < 0) { i = start; break; } // keep from sentinel start as carry
 
-    // NEW: do NOT treat "final …" as a toolformer sentinel — let later pass handle it.
+    // **NEW**: skip final; let FinalChannelPass handle it
     const meta = s.slice(metaStart, msgTag);
     if (/^\s*final\b/i.test(meta)) {
-      // Emit one char to avoid infinite loop; leave the block for FinalChannelPass.
+      // Emit a byte to avoid infinite loop; leave the block intact for later pass
       parts.push(s[start]!);
       i = start + 1;
       continue;
@@ -81,7 +81,7 @@ function stripSentinelsPreservingFences(
     // Try to consume a following JSON object (balanced, string-aware).
     const scan = scanJSONObject(s, p);
     if (scan.ok) {
-      i = scan.end;    // drop the whole block
+      i = scan.end;    // drop entire sentinel
       removed++;
       continue;
     }
@@ -100,16 +100,16 @@ function stripSentinelsPreservingFences(
   return { cleaned, carry, removed };
 }
 
-/**
- * Returns the earliest index t in [i, n] such that s.slice(t) is a prefix
- * of a token we care about (`<|channel|>`, `<|message|>`, or "```").
- * We only search the last TAIL_WINDOW bytes to bound work.
- */
+/** Find earliest index t in [i, n] such that s.slice(t) could start a token. */
 function findPossiblePrefixStart(s: string, i: number, n: number): number {
   const windowStart = Math.max(i, n - TAIL_WINDOW);
   for (let t = windowStart; t < n; t++) {
     const suf = s.slice(t);
-    if (CH_TOKEN.startsWith(suf) || MSG_TOKEN.startsWith(suf) || FENCE.startsWith(suf)) {
+    if (
+      CH_TOKEN.startsWith(suf) ||
+      MSG_TOKEN.startsWith(suf) ||
+      FENCE.startsWith(suf)
+    ) {
       return t; // keep from here as carry
     }
   }
@@ -138,6 +138,5 @@ function scanJSONObject(s: string, i: number): { ok: boolean; end: number } {
       }
     }
   }
-  // Incomplete object.
-  return { ok: false, end: n };
+  return { ok: false, end: n }; // incomplete object
 }
