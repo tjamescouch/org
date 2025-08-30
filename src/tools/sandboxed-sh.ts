@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
-import { spawn, spawnSync } from "child_process";
+import { spawn, spawnSync, execFileSync } from "child_process";
 import { SandboxManager, sandboxMangers } from "../sandbox/session";
 import { ExecPolicy } from "../sandbox/policy";
 import { detectBackend } from "../sandbox/detect";
@@ -29,30 +29,38 @@ export function resolveStepsHostDir(session: StepsDirCarrier, fallbackRoot?: str
   if (typeof fallbackRoot === "string" && fallbackRoot.length > 0) {
     return path.join(fallbackRoot, "steps");
   }
-  // Last resort: deterministic path under the CWD (keeps tests deterministic).
+  // Last resort: a deterministic path under the CWD (keeps tests deterministic).
   return path.resolve(".org", "runs", "current", "steps");
 }
 
-// --- small utility so we never collide sessions across directories ---
 function makeMgrKey(agent: string, workDir: string, runRoot: string) {
   return `${agent}::${path.resolve(workDir)}::${path.resolve(runRoot)}`;
 }
 
 /* -----------------------------------------------------------------------------
- * Public shapes
+ * Helper: resolve the repository enclosing a seed directory (or the seed itself)
  * ---------------------------------------------------------------------------*/
+function resolveRepoRootOrSelf(seed: string): string {
+  try {
+    const out = execFileSync("git", ["-C", seed, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+    if (out) return out;
+  } catch {
+    // not a git repo; fall through
+  }
+  return path.resolve(seed);
+}
 
+/* -----------------------------------------------------------------------------
+ * Types
+ * ---------------------------------------------------------------------------*/
 export type ToolArgs = { cmd: string };
 export type ToolResult = { ok: boolean; stdout: string; stderr: string; exit_code: number; cmd: string };
 
 export interface ToolCtx {
-  /**
-   * Project root (git root). We’ll keep run artifacts under `${projectDir}/.org`.
-   * The *working directory* bound inside the sandbox is always the *current*
-   * process cwd (R.cwd()) so `sh()` behaves where the user is.
-   */
+  /** Historical field; ignored for sandbox copy source in sandboxedSh (we use the host CWD repo). */
   projectDir: string;
-  runRoot?: string;                // optional override for .org root
+
+  runRoot?: string;
   agentSessionId?: string;
   policy?: Partial<ExecPolicy>;
   logger?: { info: (...a: any[]) => void; error: (...a: any[]) => void };
@@ -75,15 +83,13 @@ export async function withMutedShHeartbeat<T>(fn: () => Promise<T>): Promise<T> 
 }
 
 /* -----------------------------------------------------------------------------
- * Sandbox manager lookup/creation
- *   – one per {agentSessionId, workDir, runRoot}
- *   – ensures the *work directory* is the actual R.cwd()
+ * Sandbox manager lookup/creation (one per {projectDir, runRoot})
  * ---------------------------------------------------------------------------*/
-async function getManager(managerKey: string, workDir: string, runRoot: string) {
-  let m = sandboxMangers.get(managerKey);
+async function getManager(key: string, projectDir: string, runRoot?: string) {
+  let m = sandboxMangers.get(key);
   if (!m) {
-    m = new SandboxManager(workDir, runRoot, { backend: "auto" });
-    sandboxMangers.set(managerKey, m);
+    m = new SandboxManager(projectDir, runRoot, { backend: "auto" });
+    sandboxMangers.set(key, m);
   }
   return m;
 }
@@ -216,24 +222,24 @@ function tailStepsDir(
  * Public API — non-interactive with heartbeat + live streaming
  * ---------------------------------------------------------------------------*/
 
-export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
-  const agentSessionId = ctx.agentSessionId ?? "default";
+export async function sandboxedSh(args: ToolArgs, _ctx: ToolCtx): Promise<ToolResult> {
+  const sessionKey = _ctx.agentSessionId ?? "default";
 
-  // IMPORTANT:
-  //   - workDir (what we bind/run in the sandbox) = *actual* process cwd
-  //   - runRoot (where .org artifacts live)       = projectDir/.org by default
-  const workDir = R.cwd();
-  const runRoot = ctx.runRoot ?? path.join(ctx.projectDir ?? workDir, ".org");
+  // >>> IMPORTANT: choose the repository enclosing the host CWD as the copy source
+  // This ensures the agent works on the user's *actual* project, not the org repo.
+  const hostRepoRoot = resolveRepoRootOrSelf(R.cwd());
 
-  // Composite key ensures we don’t accidentally reuse a manager pinned to a
-  // different directory.
-  const mgrKey = makeMgrKey(agentSessionId, workDir, runRoot);
-  const mgr = await getManager(mgrKey, workDir, runRoot);
-  const session = await mgr.getOrCreate(agentSessionId, ctx.policy);
+  // Keep runRoot scoped under that repo (default .org)
+  const runRoot = _ctx.runRoot ?? path.join(hostRepoRoot, ".org");
+  const idleHeartbeatMsRaw = _ctx?.idleHeartbeatMs ?? 1000;
+  const idleHeartbeatMs = HEARTBEAT_MUTED ? 0 : Math.max(250, idleHeartbeatMsRaw);
+
+  const mgr = await getManager(sessionKey, hostRepoRoot, runRoot);
+  const session = await mgr.getOrCreate(sessionKey, _ctx.policy);
 
   const stepsHostDir = resolveStepsHostDir(session as unknown as StepsDirCarrier, runRoot);
 
-  // Ensure the directory exists; streaming handler tolerates absence.
+  // Baseline: make sure the directory exists; streaming handler tolerates absence.
   try { await fsp.mkdir(stepsHostDir, { recursive: true }); } catch { }
 
   // Streaming banner + heartbeat
@@ -249,8 +255,6 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
     }
   };
 
-  const idleHeartbeatMsRaw = ctx?.idleHeartbeatMs ?? 1000;
-  const idleHeartbeatMs = HEARTBEAT_MUTED ? 0 : Math.max(250, idleHeartbeatMsRaw);
   const hbTimer = setInterval(() => {
     if (idleHeartbeatMs > 0 && Date.now() - lastOutputAt >= idleHeartbeatMs) {
       R.stderr.write(".");
@@ -258,7 +262,8 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
     }
   }, Math.max(250, Math.floor(Math.max(1, idleHeartbeatMs) / 2)));
 
-  // Start a directory‑wide streamer that will tail any new step-*.out/.err files.
+  // Start a directory-wide streamer that will tail any new step-*.out/.err files
+  // created by this exec. This handles both index-based and stamp-based filenames.
   const startMs = Date.now();
   const dirTail = tailStepsDir(
     stepsHostDir,
@@ -270,7 +275,7 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   );
 
   // Run the step inside the sandbox (this writes those files)
-  const step = await (session as any).exec(args.cmd);
+  const step = await session.exec(args.cmd);
 
   // Stop heartbeat + streamers and clean up the line nicely.
   clearInterval(hbTimer);
@@ -338,11 +343,8 @@ export async function shCapture(
   cmd: string,
   opts: { projectDir: string; agentSessionId: string }
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const workDir = R.cwd();
-  const runRoot = path.join(opts.projectDir ?? workDir, ".org");
-  const mgrKey = makeMgrKey(opts.agentSessionId, workDir, runRoot);
-
-  const mgr = await getManager(mgrKey, workDir, runRoot);
+  // For programmatic capture, prefer explicit projectDir (callers know what they want).
+  const mgr = await getManager(opts.agentSessionId, opts.projectDir, R.cwd());
   const session = await mgr.getOrCreate(opts.agentSessionId);
   const r = await (session as any).exec(cmd);
   const stdout = (r && r.stdoutFile && fs.existsSync(r.stdoutFile)) ? fs.readFileSync(r.stdoutFile, "utf8") : (r?.stdout ?? "");
@@ -394,11 +396,7 @@ export async function shInteractive(
     script = cmdOrArgv;
   }
 
-  const workDir = R.cwd();
-  const runRoot = path.join(opts.projectDir ?? workDir, ".org");
-  const mgrKey = makeMgrKey(opts.agentSessionId, workDir, runRoot);
-
-  const mgr = await getManager(mgrKey, workDir, runRoot);
+  const mgr = await getManager(opts.agentSessionId, opts.projectDir, R.cwd());
   const session = await mgr.getOrCreate(opts.agentSessionId);
 
   const runInteractive =
