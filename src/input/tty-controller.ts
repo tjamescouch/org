@@ -1,18 +1,10 @@
 // src/input/tty-controller.ts
-// Interactive TTY controller with raw-mode key monitoring.
-// - Fixes duplicate echo by keeping the stream in raw mode
-// - Esc: graceful finalize + exit
-// - 'i': interject prompt while the loop is idle (no prompt in progress)
-// - Public API kept: start(), askUser(), setScheduler(), unwind(),
-//   withCookedTTY(), withRawTTY()
-
 import { createInterface } from "node:readline/promises";
 import { emitKeypressEvents, Key } from "node:readline";
 import type { ReadStream as TtyReadStream } from "node:tty";
 import type { IScheduler } from "../scheduler/scheduler";
 
 export type TtyMode = "raw" | "cooked";
-
 export type TtyIn = Pick<NodeJS.ReadStream, "isTTY"> &
   Partial<Pick<NodeJS.ReadStream, "setRawMode" | "isRaw">>;
 
@@ -22,7 +14,6 @@ function hasSetRawMode(s: NodeJS.ReadStream): s is TtyReadStream {
 function hasIsRaw(s: NodeJS.ReadStream): s is TtyReadStream & { isRaw: boolean } {
   return typeof (s as { isRaw?: unknown }).isRaw === "boolean";
 }
-
 export function toTtyIn(stream: NodeJS.ReadStream): TtyIn {
   const base: TtyIn = { isTTY: stream.isTTY === true };
   if (hasIsRaw(stream)) base.isRaw = stream.isRaw;
@@ -32,131 +23,91 @@ export function toTtyIn(stream: NodeJS.ReadStream): TtyIn {
 export function stdinTty(): TtyIn { return toTtyIn(process.stdin); }
 
 class ModeController {
-  private readonly tty: TtyIn;
-  private current: TtyMode;
-
-  constructor(tty: TtyIn) {
-    this.tty = tty;
-    this.current = !tty.isTTY ? "cooked" : tty.isRaw ? "raw" : "cooked";
-  }
+  constructor(private readonly tty: TtyIn, private current: TtyMode = (!tty.isTTY ? "cooked" : tty.isRaw ? "raw" : "cooked")) {}
   get mode(): TtyMode { return this.current; }
-
-  /** Force raw mode for the lifetime of the controller to avoid OS echo. */
-  forceRaw(): void {
-    if (this.tty.isTTY && this.tty.setRawMode) {
-      this.tty.setRawMode(true);
-      this.current = "raw";
-    }
-  }
-  /** Best-effort return to cooked on unwind. */
-  toCooked(): void {
-    if (this.tty.isTTY && this.tty.setRawMode) {
-      this.tty.setRawMode(false);
-      this.current = "cooked";
-    }
-  }
+  forceRaw(): void { if (this.tty.isTTY && this.tty.setRawMode) { this.tty.setRawMode(true); this.current = "raw"; } }
+  toCooked(): void { if (this.tty.isTTY && this.tty.setRawMode) { this.tty.setRawMode(false); this.current = "cooked"; } }
 }
 
 export interface TtyControllerOptions {
   stdin: NodeJS.ReadStream;
   stdout: NodeJS.WriteStream;
-  prompt: string;           // e.g., "user: "
-  interjectKey: string;     // default "i"
-  interjectBanner: string;  // e.g., "user: "
+  prompt: string;              // e.g., "user: "
+  interjectKey: string;        // default "i"
+  interjectBanner: string;     // e.g., "user: "
   waitOverlayMessage?: string;
   waitSuppressOutput?: boolean;
   finalizer?: () => Promise<void> | void;
+  /** Who owns the idle input loop? default "controller". */
+  loopMode?: "controller" | "external";
 }
 
 export class TtyController {
-  private readonly opts: TtyControllerOptions;
   private readonly mode: ModeController;
   private scheduler: IScheduler | undefined;
   private running = false;
   private reading = false;
   private interjecting = false;
   private keyBound = false;
+  private readonly loopMode: "controller" | "external";
 
-  constructor(opts: TtyControllerOptions) {
-    this.opts = opts;
+  constructor(private readonly opts: TtyControllerOptions) {
     if (!this.opts.prompt.endsWith(" ")) this.opts.prompt += " ";
     if (!this.opts.interjectBanner.endsWith(" ")) this.opts.interjectBanner += " ";
     this.mode = new ModeController(toTtyIn(opts.stdin));
+    this.loopMode = opts.loopMode ?? "controller";
   }
 
   setScheduler(s: IScheduler): void { this.scheduler = s; }
 
-  /** Start key monitoring and the interactive loop. */
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
 
-    // Enable raw and keypress events once, globally.
     emitKeypressEvents(this.opts.stdin);
     this.mode.forceRaw();
     if (!this.keyBound) {
       this.keyBound = true;
       this.opts.stdin.on("keypress", this.onKeypress);
     }
-
-    // Main loop
-    void this.readLoop();
+    if (this.loopMode === "controller") {
+      void this.readLoop();
+    }
   }
 
   async unwind(): Promise<void> {
     this.running = false;
-    // detach key handler
-    if (this.keyBound) {
-      this.opts.stdin.off("keypress", this.onKeypress);
-      this.keyBound = false;
-    }
-    // best-effort cooked on exit
+    if (this.keyBound) { this.opts.stdin.off("keypress", this.onKeypress); this.keyBound = false; }
     this.mode.toCooked();
     await Promise.resolve(this.opts.finalizer?.());
   }
 
-  /** One-off question from an agent (printed text + a quick prompt). */
+  /** Public: let external owners (e.g., scheduler) read one line using our cooked prompt. */
+  async readUserLine(label?: string): Promise<string> {
+    return this.promptOnce(label ?? this.opts.prompt);
+  }
+
+  /** Agent asks the user a question. */
   async askUser(_fromAgent: string, content: string): Promise<string | undefined> {
     await this.writeLine(content.trim());
     const ans = await this.promptOnce(this.opts.interjectBanner);
     return ans.trim() === "" ? undefined : ans;
   }
 
-  withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> {
-    // We keep raw enabled; readline handles echo. Just call the fn.
-    return Promise.resolve(fn());
-  }
-  withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> {
-    return Promise.resolve(fn());
-  }
+  withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return Promise.resolve(fn()); }
+  withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return Promise.resolve(fn()); }
 
-  // ----------------------- internals -----------------------
-
-  private onKeypress = async (_str: string, key: Key) => {
-    // ESC (graceful exit)
-    if (key.name === "escape" || key.sequence === "\u001b") {
-      await this.handleGracefulExit();
-      return;
-    }
-    // Interject key (default 'i') only when not in the middle of a prompt
+  // ---- internals ----
+  private onKeypress = async (_: string, key: import("node:readline").Key) => {
+    if (key.name === "escape" || key.sequence === "\u001b") { await this.unwind(); process.exit(0); }
     if (!this.reading && !this.interjecting && key.name === (this.opts.interjectKey || "i")) {
       try {
         this.interjecting = true;
         const text = await this.promptOnce(this.opts.interjectBanner);
-        if (text.trim().length > 0) {
-          await this.scheduler?.enqueueUserText(text);
-        }
-      } finally {
-        this.interjecting = false;
-      }
+        if (text.trim().length > 0) await this.scheduler?.enqueueUserText(text);
+      } finally { this.interjecting = false; }
     }
   };
-
-  private async handleGracefulExit(): Promise<void> {
-    await this.unwind();
-    // Exit after finalizer runs (saves patches)
-    process.exit(0);
-  }
 
   private async writeLine(s: string): Promise<void> {
     if (s.length === 0) return;
@@ -166,16 +117,9 @@ export class TtyController {
   private async promptOnce(label: string): Promise<string> {
     this.reading = true;
     try {
-      // With raw enabled globally, readline still provides canonical editing.
       const rl = createInterface({ input: this.opts.stdin, output: this.opts.stdout, terminal: true });
-      try {
-        return await rl.question(label);
-      } finally {
-        rl.close();
-      }
-    } finally {
-      this.reading = false;
-    }
+      try { return await rl.question(label); } finally { rl.close(); }
+    } finally { this.reading = false; }
   }
 
   private async readLoop(): Promise<void> {
@@ -188,20 +132,10 @@ export class TtyController {
   }
 }
 
-// --------- module-level convenience (kept for callers that import helpers) -----
-
-const _default = new TtyController({
-  stdin: process.stdin,
-  stdout: process.stdout,
-  prompt: "user: ",
-  interjectKey: "i",
-  interjectBanner: "user: ",
-});
-
+// module-level helpers (unchanged)
+const _default = new TtyController({ stdin: process.stdin, stdout: process.stdout, prompt: "user: ", interjectKey: "i", interjectBanner: "user: " });
 export function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return _default.withCookedTTY(fn); }
 export function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return _default.withRawTTY(fn); }
-
-// Optional compatibility: global scheduler hooks if some legacy code uses them.
 let _scheduler: unknown | undefined;
 export function setScheduler(s: unknown): void { _scheduler = s; }
 export function getScheduler(): unknown | undefined { return _scheduler; }

@@ -269,16 +269,19 @@ async function main() {
 
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
 
-  const scheduler: IScheduler = new RandomScheduler({
-    agents,
-    maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
-    onAskUser: (fromAgent: string, content: string) =>
-      controlContainer.controller?.askUser(fromAgent, content) ?? Promise.resolve(undefined),
-    projectDir,
-    reviewMode,
-    promptEnabled: true
-    //promptEnabled: typeof args["prompt"] === "boolean" ? args["prompt"] : kickoff ? false : R.stdin.isTTY,
-  });
+// After constructing scheduler, add the bridge:
+const scheduler: IScheduler = new RandomScheduler({
+  agents,
+  maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
+  onAskUser: (fromAgent: string, content: string) => { controlContainer.controller?.askUser(fromAgent, content ) },
+  projectDir,
+  reviewMode,
+  promptEnabled:
+    typeof args["prompt"] === "boolean" ? (args["prompt"] as boolean)
+      : kickoff ? false
+        : R.stdin.isTTY,
+  readUserLine: () => controlContainer.controller!.readUserLine(), // <-- new
+});
 
   // Build input
   if (R.stdin.isTTY) {
@@ -291,6 +294,7 @@ async function main() {
       interjectKey: String(args["interject-key"] ?? "i"),
       interjectBanner: String(args["banner"] ?? "user: "),
       finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
+      loopMode: "external",          // <-- new: bind keys & raw mode, but do NOT spawn the controller’s idle loop
     });
   } else {
     new Passthrough({

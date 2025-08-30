@@ -28,6 +28,12 @@ import { sleep } from "../utils/sleep";
  *    so newer call sites remain compatible without changing the old surface.
  */
 export class RandomScheduler {
+  /**
+   * If provided, scheduler will not render its own 'user:' banner or readline.
+   * Instead it awaits this provider and treats the returned line as user input.
+   */
+  readUserLine?: () => Promise<string | undefined>;
+
   private readonly agents: Responder[];
   private readonly maxTools: number;
   private readonly shuffle: <T>(arr: T[]) => T[];
@@ -192,7 +198,7 @@ export class RandomScheduler {
         idleTicks++;
         const queuesEmpty = !this.inbox.hasAnyWork();
 
-        if (queuesEmpty && (idleTicks % this.idlePromptEvery) === 0 && false /* this.promptEnabled */) {
+        if (queuesEmpty && (idleTicks % this.idlePromptEvery) === 0 && this.promptEnabled) {
           const peers = this.agents.map(x => x.id);
           const dec =
             this.agents[0]?.guardOnIdle?.({ idleTicks, peers, queuesEmpty: true }) || null;
