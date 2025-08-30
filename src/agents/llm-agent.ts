@@ -221,13 +221,13 @@ export class LlmAgent extends Agent {
     });
 
     // --- Correct flush order: protector → filter → unprotect ---
-    if (!debugStreaming) {
+    //if (!debugStreaming) {
       const protTail = tagProtector.flush();                               // masked remainder
       const filteredTail = this.streamFilter.feed(protTail).cleaned             // run through filter 
         + this.streamFilter.flush();                            // then flush filter
       const unmaskedTail = tagProtector.unprotect(filteredTail);           // finally unmask
       if (unmaskedTail) Logger.streamInfo(C.bold(unmaskedTail));
-    }
+    //}
     // -----------------------------------------------------------
 
     Logger.info('');
