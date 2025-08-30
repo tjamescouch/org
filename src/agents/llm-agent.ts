@@ -211,9 +211,9 @@ export class LlmAgent extends Agent {
         //  Logger.streamInfo(C.bold(t));
         //} else {
           // FILTERED streaming with tag preservation
-          //if(t) Logger.streamInfo(C.gray(t));
-          const cleaned = this.streamFilter.feed(t);
-          if (cleaned) Logger.streamInfo(C.bold(cleaned));
+          if(t) Logger.streamInfo(C.gray(t));
+          //const cleaned = this.streamFilter.feed(t);
+          //if (cleaned) Logger.streamInfo(C.bold(cleaned));
         //}
       },
       onToolCallDelta
