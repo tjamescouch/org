@@ -168,8 +168,6 @@ export class RandomScheduler {
                   }
                   this.rescheduleNow = true;
                 } else {
-                  // non-interactive: end the loop; finalization happens in CLI shutdown
-                  Logger.info(`(${a.id}) requested @@user; ending run (non-interactive).`);
                   this.stop();
                   this.rescheduleNow = true;
                 }
