@@ -31,6 +31,7 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
 
   async function chat(messages: ChatMessage[], opts?: any): Promise<ChatOutput> {
     await rateLimiter.limit("llm-ask", 1);
+    Logger.debug('streamining messages out', messages);
 
     const controller = new AbortController();
     const userSignal: AbortSignal | undefined = opts?.signal;

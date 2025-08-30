@@ -7,6 +7,7 @@
 
 import { promptLine } from "../utils/prompt-line";
 import { ExecutionGuard, NoDangerousRm, NoGitAdd, NoGitCommit, NoGitPush, NoRm } from "./execution-guards";
+import { withCookedTTY } from "../input/tty-controller";
 
 
 type GateConfig = { safe: boolean; interactive: boolean; guards?: ExecutionGuard[] };
@@ -36,10 +37,12 @@ export class ExecutionGate {
     if (!this._safe) return;
 
     // SAFE requires interactive (validated in configure); prompt the user
-    const question = `Run: ${hint}? [y/N] `;
-    const answer = await promptLine(question);
-    const yes = typeof answer === "string" && /^y(es)?$/i.test(answer.trim());
-    if (!yes) throw new Error(`User denied: ${hint}`);
+    await withCookedTTY(async ()=>{
+      const question = `Run: ${hint}? [y/N] `;
+      const answer = await promptLine(question);
+      const yes = typeof answer === "string" && /^y(es)?$/i.test(answer.trim());
+      if (!yes) throw new Error(`User denied: ${hint}`);
+    });
   }
 
   static async allow(hint: string): Promise<boolean> {

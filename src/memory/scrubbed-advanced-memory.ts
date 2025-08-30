@@ -27,7 +27,7 @@ export class ScrubbedAdvancedMemory extends AgentMemory {
   // --- Scrubber utilities to wipe tool-call artifacts and meta tags ---
   // Matches artifacts like: <|channel|>analysis to=functions code<|message|>{"cmd":"..."}
   private readonly _toolCallRe = /<\|channel\|>\s*[a-z-]+\s+to=\S+\s+code<\|message\|>[\s\S]*?(?=(?:\n{2,}|<\|channel\|>|$))/gi;
-  private readonly _metaTagRe  = /<\|(?:channel|message|tool_result|assistant|system|user|function)\|>/gi;
+  private readonly _metaTagRe  = /<\|(?:channel|message|tool_result|assistant|system|constrain|user|function)\|>/gi;
 
   private _scrub(text: string): string {
     if (!text) return text ?? "";

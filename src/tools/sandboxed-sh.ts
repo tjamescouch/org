@@ -6,8 +6,37 @@ import { SandboxManager, sandboxMangers } from "../sandbox/session";
 import { ExecPolicy } from "../sandbox/policy";
 import { detectBackend } from "../sandbox/detect";
 import { Logger } from "../logger";
+import { R } from "../runtime/runtime";
 
-export type ToolArgs   = { cmd: string };
+
+export interface StepsDirCarrier {
+  getStepsHostDir?: () => string;
+  stepsHostDir?: string;
+  runRootHostDir?: string; // optional hint if available
+}
+
+/** Resolve a usable steps directory path even if the session lacks a helper. */
+export function resolveStepsHostDir(session: StepsDirCarrier, fallbackRoot?: string): string {
+  if (typeof session.getStepsHostDir === "function") {
+    const p = session.getStepsHostDir();
+    if (typeof p === "string" && p.length > 0) return p;
+  }
+  if (typeof session.stepsHostDir === "string" && session.stepsHostDir.length > 0) {
+    return session.stepsHostDir;
+  }
+  if (typeof session.runRootHostDir === "string" && session.runRootHostDir.length > 0) {
+    return path.join(session.runRootHostDir, "steps");
+  }
+  if (typeof fallbackRoot === "string" && fallbackRoot.length > 0) {
+    return path.join(fallbackRoot, "steps");
+  }
+  // Last resort: a deterministic path under the CWD (keeps tests deterministic).
+  return path.resolve(".org", "runs", "current", "steps");
+}
+// --- end helper ---
+
+
+export type ToolArgs = { cmd: string };
 export type ToolResult = { ok: boolean; stdout: string; stderr: string; exit_code: number; cmd: string };
 
 export interface ToolCtx {
@@ -163,7 +192,7 @@ function tailStepsDir(
     stop: () => {
       stopped = true;
       for (const [, v] of tracked) {
-        try { v.stop(); } catch {}
+        try { v.stop(); } catch { }
       }
       tracked.clear();
     }
@@ -176,38 +205,36 @@ function tailStepsDir(
 
 export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
   const sessionKey = ctx.agentSessionId ?? "default";
-  const projectDir = ctx.projectDir ?? process.cwd();
-  const runRoot    = ctx.runRoot ?? path.join(projectDir, ".org");
+  const projectDir = ctx.projectDir ?? R.cwd();
+  const runRoot = ctx.runRoot ?? path.join(projectDir, ".org");
   const idleHeartbeatMsRaw = ctx?.idleHeartbeatMs ?? 1000;
   const idleHeartbeatMs = HEARTBEAT_MUTED ? 0 : Math.max(250, idleHeartbeatMsRaw);
 
   const mgr = await getManager(sessionKey, projectDir, runRoot);
   const session = await mgr.getOrCreate(sessionKey, ctx.policy);
 
-  const stepsHostDir: string =
-    (typeof (session as any).getStepsHostDir === "function")
-      ? (session as any).getStepsHostDir()
-      : path.join(runRoot, "tmp", "unknown-steps"); // fallback (should exist or be creatable)
+  const stepsHostDir = resolveStepsHostDir(session as unknown as StepsDirCarrier, runRoot);
+
 
   // Baseline: make sure the directory exists; streaming handler tolerates absence.
-  try { await fsp.mkdir(stepsHostDir, { recursive: true }); } catch {}
+  try { await fsp.mkdir(stepsHostDir, { recursive: true }); } catch { }
 
   // Streaming banner + heartbeat
-  process.stderr.write(`sh: ${args.cmd} -> `);
+  R.stderr.write(`sh: ${args.cmd} -> `);
   let lastOutputAt = Date.now();
   let printedHeartbeat = false;
   let brokeLineAfterHeartbeat = false;
 
   const breakHeartbeatLineOnce = () => {
     if (printedHeartbeat && !brokeLineAfterHeartbeat) {
-      process.stderr.write("\n");
+      R.stderr.write("\n");
       brokeLineAfterHeartbeat = true;
     }
   };
 
   const hbTimer = setInterval(() => {
     if (idleHeartbeatMs > 0 && Date.now() - lastOutputAt >= idleHeartbeatMs) {
-      process.stderr.write(".");
+      R.stderr.write(".");
       printedHeartbeat = true;
     }
   }, Math.max(250, Math.floor(Math.max(1, idleHeartbeatMs) / 2)));
@@ -218,8 +245,8 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   const dirTail = tailStepsDir(
     stepsHostDir,
     startMs,
-    (s) => { process.stdout.write(s); },
-    (s) => { process.stderr.write(s); },
+    (s) => { R.stdout.write(s); },
+    (s) => { R.stderr.write(s); },
     () => { lastOutputAt = Date.now(); breakHeartbeatLineOnce(); },
     { pollMs: 150 }
   );
@@ -230,7 +257,7 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   // Stop heartbeat + streamers and clean up the line nicely.
   clearInterval(hbTimer);
   dirTail.stop();
-  if (printedHeartbeat && !brokeLineAfterHeartbeat) process.stderr.write("\n");
+  if (printedHeartbeat && !brokeLineAfterHeartbeat) R.stderr.write("\n");
 
   // If absolutely nothing appeared and the step succeeded with no files,
   // end the line to avoid a dangling prompt.
@@ -238,7 +265,7 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
     const hasOut = step?.stdoutFile && fs.existsSync(step.stdoutFile);
     const hasErr = step?.stderrFile && fs.existsSync(step.stderrFile);
     if (!printedHeartbeat && step?.ok && !hasOut && !hasErr) {
-      process.stderr.write("\n");
+      R.stderr.write("\n");
     }
   } catch {
     // ignore
@@ -300,7 +327,7 @@ export async function shCapture(
 
 function findEngine(): "podman" | "docker" | null {
   for (const e of ["podman", "docker"] as const) {
-    try { const r = spawnSync(e, ["--version"], { stdio: "ignore" }); if (r.status === 0) return e; } catch {}
+    try { const r = spawnSync(e, ["--version"], { stdio: "ignore" }); if (r.status === 0) return e; } catch { }
   }
   return null;
 }
@@ -354,13 +381,13 @@ export async function shInteractive(
     const child = runInteractive(script);
     return await new Promise<{ code: number }>((resolve) => {
       child.on("close", (code: number | null) => resolve({ code: code ?? 0 }));
-      child.on("exit",  (code: number | null) => resolve({ code: code ?? 0 }));
+      child.on("exit", (code: number | null) => resolve({ code: code ?? 0 }));
     });
   }
 
   // Fallback to container engine.
   const engine = findEngine();
-  const cname  = getContainerName(session);
+  const cname = getContainerName(session);
   if (!engine || !cname) {
     const keys = Object.keys(session ?? {}).sort();
     throw new Error(
@@ -377,7 +404,7 @@ export async function shInteractive(
   const child = spawn(engine, argv, { stdio: "inherit" });
   return await new Promise<{ code: number }>((resolve) => {
     child.on("close", (code) => resolve({ code: code ?? 0 }));
-    child.on("exit",  (code) => resolve({ code: code ?? 0 }));
+    child.on("exit", (code) => resolve({ code: code ?? 0 }));
   });
 }
 

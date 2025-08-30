@@ -22,6 +22,7 @@ function buildSystemPrompt(id: string): string {
     `You are agent "${id}". Work autonomously in the caller's current directory inside a Debian VM.`,
     "- DO NOT LIE",
     "- Do not pretend or hallucinate tool call results. Do not misrepresent the facts.",
+    "- Do the reasonable thing. Interpret things like a normal human would.",
     "",
     "TOOLS",
     "- sh(cmd): run a POSIX command. Args: {cmd:string}. Returns {ok, stdout, stderr, exit_code, cmd}.",
@@ -37,6 +38,7 @@ function buildSystemPrompt(id: string): string {
     "",
     "MESSAGING",
     "- @@user to talk to the human.",
+    "- All messages intended for the user must be prefixed with @@user. No other tags are permitted for direct user communication. The user does not see group chat.",
     "- @@<agent> to DM a peer.",
     "-  @@group to address everyone.",
     "- **Only insert a tag when a reply from that participant is required.** If I can keep working on the task without waiting for input, I should proceed silently.",
@@ -121,7 +123,7 @@ export class LlmAgent extends Agent {
    * - Stop after first assistant text with no more tool calls or when budget is hit.
    */
   async respond(messages: ChatMessage[], maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply[]> {
-    Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
+    Logger.info(`${this.id} start`, { promptChars: prompt.length, maxTools });
     if (abortCallback?.()) {
       Logger.debug("Aborted turn");
 

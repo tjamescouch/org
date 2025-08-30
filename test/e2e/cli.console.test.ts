@@ -1,6 +1,6 @@
 // tests/e2e/cli.console.test.ts
 import { describe, it, expect } from "bun:test";
-import { haveCmd, runBin } from "../helpers";
+import { haveCmd, runBin } from "../_helpers";
 
 describe("org --ui console basic", () => {
   it("starts and exits cleanly with a trivial prompt", () => {

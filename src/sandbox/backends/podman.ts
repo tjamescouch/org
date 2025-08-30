@@ -10,7 +10,7 @@ import { matchAny } from "../glob";
 import { ISandboxSession } from "../types";
 import { Logger } from "../../logger";
 import { ensureOk } from "../sh-result";
-import { withCookedTTY } from "../../input/tty-guard";
+import { withCookedTTY } from "../../input/tty-controller";
 
 export const HARNESSED_APPLY_PATCH_SCRIPT = `#!/usr/bin/env bash
 set -euo pipefail
