@@ -12,13 +12,13 @@ export class LLMNoiseFilterFirstPass {
   private buf = "";
 
   /** Accumulate chunks; cleaning is performed on end() to keep fence integrity. */
-  push(chunk: string): string {
+  feed(chunk: string): string {
     this.buf += chunk;
     return "";
   }
 
   /** Finish the stream and return the cleaned text. */
-  end(): string {
+  flush(): string {
     const out = this.stripOutsideFences(this.buf);
     this.buf = "";
     return out;
