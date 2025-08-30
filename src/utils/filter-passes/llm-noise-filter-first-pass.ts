@@ -8,13 +8,15 @@
 //    would otherwise glue two non‑whitespace characters together.
 // The class is intentionally streaming-safe (buffers input and emits on end()).
 
-export class LLMNoiseFilterFirstPass {
+import { LLMNoiseFilterPass, PassFeedResult } from "./llm-noise-filter-pass";
+
+export class LLMNoiseFilterFirstPass implements LLMNoiseFilterPass {
   private buf = "";
 
   /** Accumulate chunks; cleaning is performed on end() to keep fence integrity. */
-  feed(chunk: string): string {
+  feed(chunk: string): PassFeedResult {
     this.buf += chunk;
-    return "";
+    return { cleaned: "", :emoved: 0 };
   }
 
   /** Finish the stream and return the cleaned text. */

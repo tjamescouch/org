@@ -86,6 +86,7 @@ export class LlmAgent extends Agent {
 
   // New: polymorphic tool executor (pure refactor)
   private readonly toolExecutor: ToolExecutor;
+  private streamFilter = LLMNoiseFilter.createDefault();
 
   constructor(id: string, driver: ChatDriver, model: string, guard?: GuardRail) {
     super(id, guard);
@@ -184,7 +185,6 @@ export class LlmAgent extends Agent {
     Logger.info('debugStreaming', debugStreaming, dbg);
 
     // Same pipeline as post-turn
-    const streamFilter = LLMNoiseFilter.createDefault();
     const tagProtector = new StreamingTagProtector();
     // -----------------------------------------------------------------------
 
@@ -211,7 +211,7 @@ export class LlmAgent extends Agent {
           // FILTERED streaming with tag preservation
           if(t) Logger.streamInfo(C.gray(t));
           //const masked = tagProtector.feedProtect(t);
-          //const cleaned = streamFilter.feed(masked).cleaned;
+          //const cleaned = this.streamFilter.feed(masked).cleaned;
           //const unmasked = tagProtector.unprotect(cleaned);
           //if (unmasked) Logger.streamInfo(C.bold(t));
         }
@@ -222,8 +222,8 @@ export class LlmAgent extends Agent {
     // --- Correct flush order: protector → filter → unprotect ---
     if (!debugStreaming) {
       const protTail = tagProtector.flush();                               // masked remainder
-      const filteredTail = streamFilter.feed(protTail).cleaned             // run through filter
-        + streamFilter.flush();                            // then flush filter
+      const filteredTail = this.streamFilter.feed(protTail).cleaned             // run through filter
+        + this.streamFilter.flush();                            // then flush filter
       const unmaskedTail = tagProtector.unprotect(filteredTail);           // finally unmask
       if (unmaskedTail) Logger.streamInfo(C.bold(unmaskedTail));
     }
