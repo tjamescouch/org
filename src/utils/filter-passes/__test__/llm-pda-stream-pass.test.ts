@@ -1,13 +1,13 @@
 
 import { describe, it, expect } from "bun:test";
-import { PDANoiseFilterPass } from "../llm-pda-stream-pass";
+import LLMPdaStreamPass from "../llm-pda-stream-pass";
 
 function* chunk(input: string, n: number): Generator<string> {
   for (let i = 0; i < input.length; i += n) yield input.slice(i, i + n);
 }
 
 function runAtChunkSize(input: string, size: number): string {
-  const f = new PDANoiseFilterPass();
+  const f = new LLMPdaStreamPass();
   let out = "";
   for (const ch of chunk(input, size)) {
     out += f.feed(ch).cleaned;
