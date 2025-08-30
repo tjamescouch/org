@@ -339,8 +339,6 @@ All agents are idle. Provide the next concrete instruction or question.`;
   ) {
     const raw = String(text ?? "");
     const parts = TagSplitter.split(raw, {
-      allowSingleAt: true,
-      allowSingleHash: false,
       userTokens: ["user"],
       groupTokens: ["group"],
       agentTokens: this.agents.map(a => a.id), // allowlist

@@ -6,7 +6,7 @@ import { GuardRail } from "../guardrails/guardrail";
 import { Agent } from "./agent";
 import { sanitizeContent } from "../utils/sanitize-content";
 import { sanitizeAndRepairAssistantReply } from "../guard/sanitizer";
-import { ScrubbedAdvancedMemory } from "../memory/scrubbed-advanced-memory";
+import { AdvancedMemory } from "../memory/advanced-memory";
 import { ToolExecutor } from "../executors/tool-executor";
 import { StandardToolExecutor } from "../executors/standard-tool-executor";
 import { SANDBOXED_SH_TOOL_SCHEMA } from "../tools/sandboxed-sh";
@@ -95,7 +95,7 @@ export class LlmAgent extends Agent {
     this.systemPrompt = buildSystemPrompt(this.id);
 
     // Attach a hysteresis-based memory that summarizes overflow.
-    this.memory = new ScrubbedAdvancedMemory({
+    this.memory = new AdvancedMemory({
       driver: this.driver,
       model: this.model,
       systemPrompt: this.systemPrompt,
@@ -123,7 +123,7 @@ export class LlmAgent extends Agent {
    * - Stop after first assistant text with no more tool calls or when budget is hit.
    */
   async respond(messages: ChatMessage[], maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply[]> {
-    Logger.info(`${this.id} start`, { promptChars: prompt.length, maxTools });
+    Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
     if (abortCallback?.()) {
       Logger.debug("Aborted turn");
 
