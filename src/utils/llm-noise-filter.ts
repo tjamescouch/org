@@ -15,7 +15,7 @@ export class LLMNoiseFilter {
     if (!Array.isArray(passes) || passes.length === 0) {
       throw new Error("LLMNoiseFilter requires at least one filter pass");
     }
-    // IMPORTANT: never mutate caller’s array (no .pop/.shift).
+    // IMPORTANT: do not mutate caller’s array (no .pop/.shift)!
     this.passes = passes.slice();
   }
 
@@ -25,9 +25,15 @@ export class LLMNoiseFilter {
 
     for (const pass of this.passes) {
       const res: PassFeedResult = pass.feed(cleaned) ?? { cleaned };
-      cleaned = res.cleaned;
-      if (typeof res.removed === "number") removedTotal += res.removed;
+      // Defensive: if a pass has a bug and returns falsy/empty string, keep pipeline stable.
+      if (res && typeof res.cleaned === "string") {
+        cleaned = res.cleaned;
+      }
+      if (typeof res?.removed === "number") {
+        removedTotal += res.removed;
+      }
     }
+
     return { cleaned, removed: removedTotal };
   }
 
@@ -36,7 +42,7 @@ export class LLMNoiseFilter {
       return this.passes[0].flush();
     }
 
-    // Flush first pass (lowest-level carry), then pipe via feed+flush through the rest.
+    // Flush the first pass (lowest-level carry), then pipe via feed+flush through the rest.
     let tail = this.passes[0].flush();
     for (let i = 1; i < this.passes.length; i++) {
       const p = this.passes[i];

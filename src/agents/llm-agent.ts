@@ -128,7 +128,6 @@ export class LlmAgent extends Agent {
     Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
     if (abortCallback?.()) {
       Logger.debug("Aborted turn");
-
       return [{ message: "Turn aborted.", toolsUsed: 0 }];
     }
 
@@ -175,13 +174,14 @@ export class LlmAgent extends Agent {
       Logger.streamInfo(C.red(deltaText));
     }
 
-    // --- NEW: streaming filter setup (raw in DEBUG=1; filtered otherwise) ---
+    // --- Streaming filter setup (RAW when DEBUG=1/true/yes; FILTERED otherwise) ---
     const dbg = String(R.env.DEBUG ?? "").trim().toLowerCase();
     const debugStreaming = dbg === "1" || dbg === "true" || dbg === "yes";
+
     // Build a streaming pipeline identical to the post-turn cleaner
-    const streamFilter = LLMNoiseFilter.createDefault ? LLMNoiseFilter.createDefault() : new LLMNoiseFilter([] as any);
+    const streamFilter = LLMNoiseFilter.createDefault();
     const tagProtector = new StreamingTagProtector();
-    // ------------------------------------------------------------------------
+    // ------------------------------------------------------------------------------
 
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
@@ -189,10 +189,8 @@ export class LlmAgent extends Agent {
       onReasoningToken: t => {
         if (process.env.HIDE_COT) {
           Logger.streamInfo(C.cyan('.'));
-
           return;
         }
-
         Logger.streamInfo(C.cyan(t))
       },
       onToken: t => {
@@ -201,19 +199,21 @@ export class LlmAgent extends Agent {
           streamState = "content";
         }
 
-        // DEBUG=1 -> raw model tokens; otherwise filter the stream
         if (debugStreaming) {
+          // RAW streaming (debug)
           Logger.streamInfo(C.bold(t));
         } else {
-          const masked = tagProtector.feedProtect(t);
-          const cleaned = streamFilter.feed(masked).cleaned;
+          // FILTERED streaming (same pipeline as post-turn), with tag protection
+          const masked   = tagProtector.feedProtect(t);
+          const cleaned  = streamFilter.feed(masked).cleaned;
           const unmasked = tagProtector.unprotect(cleaned);
           if (unmasked) Logger.streamInfo(C.bold(unmasked));
         }
       },
       onToolCallDelta
     });
-    // After streaming completes, flush any buffered filter/protector state (non-debug only)
+
+    // Flush any remaining buffered text (non-debug path only)
     if (!debugStreaming) {
       const tail = streamFilter.flush() + tagProtector.flush();
       const unmaskedTail = tagProtector.unprotect(tail);
@@ -228,7 +228,6 @@ export class LlmAgent extends Agent {
     }
 
     const finalText = sanitizeContent((out.text || "").trim());
-
     const allReasoning = out?.reasoning || "";
 
     // Inform guard rail about this assistant turn (before routing)
@@ -268,7 +267,7 @@ export class LlmAgent extends Agent {
       }
     }
 
-    // --- Refactored: delegate to executor (pure behavior) ---
+    // Delegate to executor (pure behavior)
     const execResult = await this.toolExecutor.execute({
       calls: sanitizedCalls,
       maxTools,
@@ -280,7 +279,6 @@ export class LlmAgent extends Agent {
     });
     const toolsUsed = execResult.toolsUsed;
     forceEndTurn = execResult.forceEndTurn;
-    // --------------------------------------------------------
 
     if (toolsUsed >= maxTools) {
       if (finalText) {
@@ -291,7 +289,6 @@ export class LlmAgent extends Agent {
         await this.memory.add({ role: "assistant", content: allReasoning, from: "Me" });
       }
     }
-    // Loop: the assistant will see tool outputs (role:"tool") now in memory.
 
     Logger.info(C.blue(`\n[${this.id}] wrote. [${calls.length}] tools requested. [${toolsUsed}] tools used.`));
 
