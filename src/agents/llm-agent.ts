@@ -196,7 +196,8 @@ export class LlmAgent extends Agent {
           Logger.streamInfo(C.cyan('.'));
           return;
         }
-        Logger.streamInfo(C.cyan(t))
+        //Logger.streamInfo(C.cyan(t))
+        Logger.streamInfo(C.cyan('.'));
       },
       onToken: t => {
         if (streamState !== "content") {
