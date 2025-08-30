@@ -192,7 +192,7 @@ export class RandomScheduler {
         idleTicks++;
         const queuesEmpty = !this.inbox.hasAnyWork();
 
-        if (queuesEmpty && (idleTicks % this.idlePromptEvery) === 0 && this.promptEnabled) {
+        if (queuesEmpty && (idleTicks % this.idlePromptEvery) === 0 && false /* this.promptEnabled */) {
           const peers = this.agents.map(x => x.id);
           const dec =
             this.agents[0]?.guardOnIdle?.({ idleTicks, peers, queuesEmpty: true }) || null;
