@@ -16,7 +16,7 @@ export class LLMNoiseFilterFirstPass implements LLMNoiseFilterPass {
   /** Accumulate chunks; cleaning is performed on end() to keep fence integrity. */
   feed(chunk: string): PassFeedResult {
     this.buf += chunk;
-    return { cleaned: "", :emoved: 0 };
+    return { cleaned: "", removed: 0 };
   }
 
   /** Finish the stream and return the cleaned text. */
