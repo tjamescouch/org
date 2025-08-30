@@ -1,18 +1,16 @@
-// src/utils/filter-passes/__test__/llm-pda-stream.test.ts
 import { describe, it, expect } from "bun:test";
-import { PDAStreamFilter } from "../llm-pda-stream";
+import { LLMNoisePDAStream } from "../llm-pda-stream";
 
 const SIZES = [1, 2, 3, 5, 7];
 
 function runAtChunkSize(s: string, n: number): string {
-  const f = new PDAStreamFilter();
-  let out = "";
+  const f = new LLMNoisePDAStream();
+  let r = "";
   for (let i = 0; i < s.length; i += n) {
-    const chunk = s.slice(i, Math.min(i + n, s.length));
-    out += f.feed(chunk).cleaned;
+    const chunk = s.slice(i, i + n);
+    r += f.feed(chunk);
   }
-  out += f.flush();
-  return out;
+  return r + f.flush();
 }
 
 describe("PDA stream filter — streaming (parameterized)", () => {
@@ -58,8 +56,8 @@ describe("PDA stream filter — streaming (parameterized)", () => {
     });
 
     it(`unwrap <|final_start|>…<|final_end|> (chunk size = ${n})`, () => {
-      const s = "A<|final_start|>hi<|final_end|>B";
-      expect(runAtChunkSize(s, n)).toBe("AhiB");
+      const s = "before<|final_start|>OK<|final_end|>after";
+      expect(runAtChunkSize(s, n)).toBe("beforeOKafter");
     });
   }
 });

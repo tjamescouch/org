@@ -1,525 +1,269 @@
-// src/utils/filter-passes/llm-pda-stream.ts
-// Single-pass streaming cleaner based on a simple push‑down automaton.
-//
-// This class intentionally **does not** depend on any "tag protector".
-// It directly preserves fenced code blocks and ignores sentinels found inside them.
-//
-// Contract: implements the minimal shape used by the runtime:
-//    feed(chunk: string): { cleaned: string }
-//    end(): string
-//
-// Notes
-//  - It recognizes paired blocks: memory/analysis/tool_call (drop), tool_result/final (unwrap content).
-//  - It understands toolformer-style single-line "<|channel|>…<|message|>…" records:
-//      * final + optional <|constrain|>… prefix  → emit "<constrain> + payload"
-//      * final|json                             → parse JSON and echo
-//      * commentary                             → if JSON has a string "stdout", emit that, else drop
-//      * anything else                          → drop until end-of-line
-//  - It preserves fenced blocks ```…``` verbatim.
-//  - It is robust to arbitrarily small chunk sizes (it keeps enough carry to complete tokens).
-//
-// This is intentionally conservative: if we are unsure (incomplete token),
-// we keep bytes in the carry and emit nothing until we are certain.
-//
-// The implementation is deliberately straightforward rather than micro‑optimized;
-// simplicity/clarity is more important in this safety‑critical path.
-
 import { LLMNoiseFilterPass } from "./llm-noise-filter-pass";
 
-
-type Mode =
-  | "TEXT"
-  | "FENCE"
-  | "DROP_UNTIL"
-  | "EMIT_UNTIL"
-  | "CHAN_NAME"
-  | "CHAN_PAYLOAD_JSON"
-  | "CHAN_PAYLOAD_DROP_EOL"
-  | "CHAN_PAYLOAD_PLAIN";
-
-const START = {
-  memory: "<|memory_start|>",
-  analysis: "<|analysis_start|>",
-  toolCall: "<|tool_call_start|>",
-  toolResult: "<|tool_result_start|>",
-  final: "<|final_start|>",
-  channel: "<|channel|>",
-  message: "<|message|>",
-  constrain: "<|constrain|>",
-} as const;
-
-const END = {
-  memory: "<|memory_end|>",
-  analysis: "<|analysis_end|>",
-  toolCall: "<|tool_call_end|>",
-  toolResult: "<|tool_result_end|>",
-  final: "<|final_end|>",
-} as const;
-
-const ALL_TAGS = [
-  START.memory,
-  END.memory,
-  START.analysis,
-  END.analysis,
-  START.toolCall,
-  END.toolCall,
-  START.toolResult,
-  END.toolResult,
-  START.final,
-  END.final,
-  START.channel,
-  START.message,
-  START.constrain,
-];
-
-const MAX_HOLD = 24; // carry at most this many trailing characters to avoid cutting tokens
-
-function isPartialPrefixOfAnyTag(s: string): boolean {
-  for (const t of ALL_TAGS) {
-    if (t.startsWith(s)) return true;
-  }
-  // also treat backtick fences as "tags"
-  if ("```".startsWith(s)) return true;
-  return false;
-}
-
-function trimRightMax(s: string, max: number): [string, string] {
-  if (s.length <= max) return ["", s];
-  return [s.slice(0, s.length - max), s.slice(s.length - max)];
-}
-
-function normalizeChannelName(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
-}
-
-function extractEcho(cmd: unknown): string | null {
-  if (typeof cmd !== "string") return null;
-  const m = cmd.match(/^echo\s+(["'])([\s\S]*?)\1\s*$/);
-  return m ? m[2] : null;
-}
-
-export class PDAStreamFilter implements LLMNoiseFilterPass {
+/**
+ * Single-pass streaming PDA for LLM noise filtering.
+ *
+ * Design goals:
+ * - Preserve fenced code blocks verbatim, including language tags: ```ts ... ```
+ * - Remove analysis/memory/tool_call blocks; unwrap tool_result and <|final_start|>…<|final_end|>.
+ * - Handle <|channel|> blocks:
+ *   - final: keep @@mentions that appear before <|message|>, drop sentinels (e.g. <|constrain|>), emit mention + " " + message
+ *   - final|json: unwrap echo commands
+ *   - commentary to=functions sh: drop whole block (incl JSON)
+ *   - unknown / non-JSON commentary: drop to newline
+ */
+export class LLMNoisePDAStream implements LLMNoiseFilterPass {
   private buf = "";
-  private mode: Mode = "TEXT";
+  private removed = 0;
+  private inFence = false; // inside ``` ... ```
+  private readonly HOLD_BACK = 48; // protect against cutting tags across chunk boundaries
 
-  private dropEndTag: string | null = null;
-  private emitEndTag: string | null = null;
+  // Common sentinels
+  private static readonly TOK = {
+    fence: "```",
+    channel: "<|channel|>",
+    message: "<|message|>",
+    analysisStart: "<|analysis_start|>",
+    analysisEnd: "<|analysis_end|>",
+    memoryStart: "<|memory_start|>",
+    memoryEnd: "<|memory_end|>",
+    toolCallStart: "<|tool_call_start|>",
+    toolCallEnd: "<|tool_call_end|>",
+    toolResultStart: "<|tool_result_start|>",
+    toolResultEnd: "<|tool_result_end|>",
+    finalStart: "<|final_start|>",
+    finalEnd: "<|final_end|>",
+    constrain: "<|constrain|>",
+  } as const;
 
-  // channel transient state
-  private chanName = "";
-  private chanPrefix = ""; // concatenated <|constrain|> payload(s)
-  private chanEmitPrefixed = false;
-
-  feed(chunk: string): { cleaned: string } {
+  feed(chunk: string): string {
     this.buf += chunk;
-    const cleaned = this.process(false);
-    return { cleaned };
+    const out = this.process();
+    return out;
   }
 
   flush(): string {
-    const cleaned = this.process(true);
-    // reset internal buffers so this instance can be reused if desired
+    // If we're still in a fence, it's safest to emit whatever is left verbatim.
+    const tail = this.buf;
     this.buf = "";
-    this.mode = "TEXT";
-    this.dropEndTag = null;
-    this.emitEndTag = null;
-    this.chanName = "";
-    this.chanPrefix = "";
-    this.chanEmitPrefixed = false;
-    return cleaned;
+    this.inFence = false;
+    return tail;
   }
 
-  // Core state machine
-  private process(flush: boolean): string {
-    let out = "";
-    let i = 0;
+  /** Main driver that repeatedly consumes from this.buf and emits cleaned text. */
+  private process(): string {
+    let emitted = "";
 
-    while (true) {
-      if (this.mode === "TEXT") {
-        // inside normal text: look for the next interesting construct
-        const nextFence = this.buf.indexOf("```", i);
-        const nextTag = this.buf.indexOf("<|", i);
-        let next = -1;
-        if (nextFence !== -1 && nextTag !== -1) next = Math.min(nextFence, nextTag);
-        else next = nextFence !== -1 ? nextFence : nextTag;
-
-        if (next === -1) {
-          // nothing special visible; emit safe prefix but keep a small tail in case a token straddles a boundary
-          if (!flush) {
-            const [emit, hold] = trimRightMax(this.buf.slice(i), MAX_HOLD);
-            out += emit;
-            this.buf = hold;
-            return out;
-          } else {
-            out += this.buf.slice(i);
-            this.buf = "";
-            return out;
-          }
-        }
-
-        // emit up to the next construct
-        out += this.buf.slice(i, next);
-        i = next;
-
-        // handle fences
-        if (this.buf.startsWith("```", i)) {
-          const close = this.buf.indexOf("```", i + 3);
-          if (close === -1) {
-            if (flush) {
-              // no closing fence; just emit remainder and finish
-              out += this.buf.slice(i);
-              this.buf = "";
-              return out;
-            }
-            // wait for more
-            const [emit, hold] = trimRightMax(this.buf.slice(i), 2);
-            out += emit;
-            this.buf = hold;
-            return out;
-          } else {
-            // whole fenced block available – copy verbatim
-            out += this.buf.slice(i, close + 3);
-            i = close + 3;
-            if (i >= this.buf.length) {
-              this.buf = "";
-              return out;
-            }
-            continue;
-          }
-        }
-
-        // handle tags
-        const tagMatch = this.matchAnyTagAt(i);
-        if (tagMatch === "partial") {
-          if (!flush) {
-            const [emit, hold] = trimRightMax(this.buf.slice(i), MAX_HOLD);
-            out += emit;
-            this.buf = hold;
-            return out;
-          } else {
-            // treat any leftovers as plain text on flush
-            out += this.buf.slice(i);
-            this.buf = "";
-            return out;
-          }
-        }
-        if (!tagMatch) {
-          // not a known tag; just emit "<|" and continue
-          out += this.buf.slice(i, i + 2);
-          i += 2;
-          if (i >= this.buf.length) {
-            this.buf = "";
-            return out;
-          }
-          continue;
-        }
-
-        const { tag, len } = tagMatch;
-        // advance over the tag and update state
-        i += len;
-
-        switch (tag) {
-          case START.memory:
-            this.mode = "DROP_UNTIL";
-            this.dropEndTag = END.memory;
-            // remove consumed prefix
-            this.buf = this.buf.slice(i);
-            i = 0;
-            break;
-          case START.analysis:
-            this.mode = "DROP_UNTIL";
-            this.dropEndTag = END.analysis;
-            this.buf = this.buf.slice(i);
-            i = 0;
-            break;
-          case START.toolCall:
-            this.mode = "DROP_UNTIL";
-            this.dropEndTag = END.toolCall;
-            this.buf = this.buf.slice(i);
-            i = 0;
-            break;
-          case START.toolResult:
-            this.mode = "EMIT_UNTIL";
-            this.emitEndTag = END.toolResult;
-            this.buf = this.buf.slice(i);
-            i = 0;
-            break;
-          case START.final:
-            this.mode = "EMIT_UNTIL";
-            this.emitEndTag = END.final;
-            this.buf = this.buf.slice(i);
-            i = 0;
-            break;
-          case START.channel:
-            // Start of a single-line sentinel record
-            this.mode = "CHAN_NAME";
-            this.chanName = "";
-            this.chanPrefix = "";
-            this.chanEmitPrefixed = false;
-            this.buf = this.buf.slice(i);
-            i = 0;
-            break;
-          default:
-            // unexpected tag (shouldn't happen)
-            // emit the raw tag to avoid data loss
-            out += tag;
-            this.buf = this.buf.slice(i);
-            i = 0;
-            break;
-        }
-      } else if (this.mode === "DROP_UNTIL") {
-        if (!this.dropEndTag) {
-          // safety
-          this.mode = "TEXT";
-          continue;
-        }
-        const endi = this.buf.indexOf(this.dropEndTag);
-        if (endi === -1) {
-          if (flush) {
-            // drop everything
-            this.buf = "";
-            this.mode = "TEXT";
-            continue;
-          }
-          // keep a small tail to catch the end tag
-          const holdN = Math.min(this.dropEndTag.length - 1, MAX_HOLD);
-          const cut = Math.max(0, this.buf.length - holdN);
-          this.buf = this.buf.slice(cut);
-          return out;
-        } else {
-          // drop up to and including the end tag
-          this.buf = this.buf.slice(endi + this.dropEndTag.length);
-          this.mode = "TEXT";
-          i = 0;
-          continue;
-        }
-      } else if (this.mode === "EMIT_UNTIL") {
-        if (!this.emitEndTag) {
-          this.mode = "TEXT";
-          continue;
-        }
-        const endi = this.buf.indexOf(this.emitEndTag);
-        if (endi === -1) {
-          if (flush) {
-            out += this.buf;
-            this.buf = "";
-            this.mode = "TEXT";
-            continue;
-          }
-          // emit most of it but keep a tail in case the end tag starts at the boundary
-          const holdN = Math.min(this.emitEndTag.length - 1, MAX_HOLD);
-          const cut = Math.max(0, this.buf.length - holdN);
-          out += this.buf.slice(0, cut);
-          this.buf = this.buf.slice(cut);
-          return out;
-        } else {
-          // emit content up to the end tag, then consume the tag
-          out += this.buf.slice(0, endi);
-          this.buf = this.buf.slice(endi + this.emitEndTag.length);
-          this.mode = "TEXT";
-          i = 0;
-          continue;
-        }
-      } else if (this.mode === "CHAN_NAME") {
-        // read channel name text until we encounter either <|constrain|> or <|message|>
-        const k = this.buf.indexOf("<|");
-        if (k === -1) {
-          // no further tag visible
-          if (flush) {
-            // no message → nothing to do, emit nothing
-            this.buf = "";
-            this.mode = "TEXT";
-            continue;
-          }
-          // wait for more input
-          const [emit, hold] = trimRightMax(this.buf, MAX_HOLD);
-          // channel name isn't emitted; drop the safe prefix
-          this.chanName += emit;
-          this.buf = hold;
-          return out;
-        }
-        // accumulate channel name up to next tag
-        this.chanName += this.buf.slice(0, k);
-        // decide which tag
-        const tm = this.matchAnyTagAt(k);
-        if (tm === "partial") {
-          if (flush) {
-            // treat as plain text (malformed)
-            this.chanName += this.buf.slice(k);
-            this.buf = "";
-            this.mode = "TEXT";
-            continue;
-          }
-          // wait for more
-          const [emit, hold] = trimRightMax(this.buf.slice(k), MAX_HOLD);
-          // drop; we only keep hold for next feed
-          this.buf = hold;
-          return out;
-        }
-        if (!tm) {
-          // shouldn't happen; just skip "<|" and continue
-          this.chanName += this.buf.slice(k, k + 2);
-          this.buf = this.buf.slice(k + 2);
-          continue;
-        }
-        const { tag, len } = tm;
-        this.buf = this.buf.slice(k + len);
-        if (tag === START.constrain) {
-          // collect prefix until the next tag; we don't emit tags themselves
-          const next = this.buf.indexOf("<|");
-          if (next === -1) {
-            if (flush) {
-              // nothing else; treat remainder as prefix
-              this.chanPrefix += this.buf;
-              this.buf = "";
-              this.mode = "TEXT";
-              continue;
-            }
-            // wait for more
-            const [emit, hold] = trimRightMax(this.buf, MAX_HOLD);
-            this.chanPrefix += emit;
-            this.buf = hold;
-            return out;
-          } else {
-            this.chanPrefix += this.buf.slice(0, next);
-            // and continue parsing more tags (could be another constrain or message)
-            continue;
-          }
-        } else if (tag === START.message) {
-          // decide how to treat the payload
-          const name = normalizeChannelName(this.chanName);
-          if (name.startsWith("final") && name.includes("json")) {
-            this.mode = "CHAN_PAYLOAD_JSON";
-            continue;
-          } else if (name === "commentary" || name.startsWith("commentary ")) {
-            this.mode = "CHAN_PAYLOAD_JSON";
-            continue;
-          } else if (name === "final") {
-            this.mode = "CHAN_PAYLOAD_PLAIN";
-            this.chanEmitPrefixed = false;
-            continue;
-          } else {
-            // unknown channel → drop until EOL
-            this.mode = "CHAN_PAYLOAD_DROP_EOL";
-            continue;
-          }
-        } else {
-          // Any other tag following the channel name is unexpected; ignore it in name
-          this.chanName += tag;
-          continue;
-        }
-      } else if (this.mode === "CHAN_PAYLOAD_PLAIN") {
-        // Emit constrained prefix once, then pass through until the next "<|" (start of a new record) or end.
-        if (!this.chanEmitPrefixed) {
-          out += this.chanPrefix;
-          this.chanEmitPrefixed = true;
-        }
-        const next = this.buf.indexOf("<|");
-        if (next === -1) {
-          if (flush) {
-            out += this.buf;
-            this.buf = "";
-            this.mode = "TEXT";
-            continue;
-          }
-          // emit all but a small hold to detect a following tag across chunks
-          const [emit, hold] = trimRightMax(this.buf, MAX_HOLD);
-          out += emit;
-          this.buf = hold;
-          return out;
-        } else {
-          out += this.buf.slice(0, next);
-          this.buf = this.buf.slice(next);
-          this.mode = "TEXT";
-          continue;
-        }
-      } else if (this.mode === "CHAN_PAYLOAD_DROP_EOL") {
-        const nl = this.buf.indexOf("\n");
-        if (nl === -1) {
-          if (flush) {
-            // drop remainder
-            this.buf = "";
-            this.mode = "TEXT";
-            continue;
-          }
-          // keep at most MAX_HOLD to watch for newline later
-          const [_, hold] = trimRightMax(this.buf, MAX_HOLD);
-          this.buf = hold;
-          return out;
-        } else {
-          // consume up to and including newline, emit nothing
-          this.buf = this.buf.slice(nl + 1);
-          this.mode = "TEXT";
-          continue;
-        }
-      } else if (this.mode === "CHAN_PAYLOAD_JSON") {
-        // Accumulate a full JSON object and then decide what to emit.
-        const [jsonStr, consumed] = this.tryTakeJSONObject(this.buf, flush);
-        if (jsonStr == null) {
-          // need more
-          return out;
-        }
-        // consume from buffer
-        this.buf = this.buf.slice(consumed);
-        // decide based on channel name
-        const name = normalizeChannelName(this.chanName);
-        try {
-          const obj = JSON.parse(jsonStr);
-          let text: string | null = null;
-          if (name.startsWith("final") && name.includes("json")) {
-            text = extractEcho(obj?.cmd) ?? (typeof obj?.stdout === "string" ? obj.stdout : null);
-          } else if (name === "commentary" || name.startsWith("commentary ")) {
-            text = typeof obj?.stdout === "string" ? obj.stdout : null;
-          }
-          if (text) out += text;
-        } catch {
-          // malformed JSON → drop
-        }
-        // done with this line
-        this.mode = "TEXT";
+    // Loop until we can't make more progress this call
+    while (this.buf.length) {
+      if (this.inFence) {
+        const close = this.indexAfterFenceClose(this.buf);
+        if (close === -1) break; // need more data to close fence
+        // emit whole fence
+        emitted += this.buf.slice(0, close);
+        this.buf = this.buf.slice(close);
+        this.inFence = false;
         continue;
-      } else {
-        // unreachable
-        this.mode = "TEXT";
       }
+
+      // Find the next interesting boundary (fence start or sentinel)
+      const iFence = this.buf.indexOf(LLMNoisePDAStream.TOK.fence);
+      const iTag = this.buf.indexOf("<|");
+      const iNext =
+        iFence === -1 ? iTag : iTag === -1 ? iFence : Math.min(iFence, iTag);
+
+      if (iNext === -1) {
+        // No special token; emit safe portion, keep a small holdback
+        if (this.buf.length <= this.HOLD_BACK) break;
+        const safeLen = this.buf.length - this.HOLD_BACK;
+        emitted += this.buf.slice(0, safeLen);
+        this.buf = this.buf.slice(safeLen);
+        break;
+      }
+
+      // Emit plain text before the boundary
+      if (iNext > 0) {
+        emitted += this.buf.slice(0, iNext);
+        this.buf = this.buf.slice(iNext);
+      }
+
+      // Boundary handling
+      if (this.buf.startsWith(LLMNoisePDAStream.TOK.fence)) {
+        // Fence may have a language tag, e.g. ```ts\n ... ```
+        const close = this.indexAfterFenceClose(this.buf);
+        if (close === -1) {
+          // Hold from the start of the fence
+          this.inFence = true;
+          break;
+        } else {
+          emitted += this.buf.slice(0, close);
+          this.buf = this.buf.slice(close);
+          continue;
+        }
+      }
+
+      // Sentinels
+      const s = LLMNoisePDAStream.TOK;
+      if (this.buf.startsWith(s.analysisStart)) {
+        const end = this.buf.indexOf(s.analysisEnd, s.analysisStart.length);
+        if (end === -1) break; // wait
+        // drop whole block
+        this.removed += end + s.analysisEnd.length;
+        this.buf = this.buf.slice(end + s.analysisEnd.length);
+        continue;
+      }
+
+      if (this.buf.startsWith(s.memoryStart)) {
+        const end = this.buf.indexOf(s.memoryEnd, s.memoryStart.length);
+        if (end === -1) break;
+        this.removed += end + s.memoryEnd.length;
+        this.buf = this.buf.slice(end + s.memoryEnd.length);
+        continue;
+      }
+
+      if (this.buf.startsWith(s.toolCallStart)) {
+        const end = this.buf.indexOf(s.toolCallEnd, s.toolCallStart.length);
+        if (end === -1) break;
+        this.removed += end + s.toolCallEnd.length;
+        this.buf = this.buf.slice(end + s.toolCallEnd.length);
+        continue;
+      }
+
+      if (this.buf.startsWith(s.toolResultStart)) {
+        const end = this.buf.indexOf(s.toolResultEnd, s.toolResultStart.length);
+        if (end === -1) break;
+        const inner = this.buf.slice(
+          s.toolResultStart.length,
+          end,
+        );
+        emitted += inner;
+        this.buf = this.buf.slice(end + s.toolResultEnd.length);
+        continue;
+      }
+
+      if (this.buf.startsWith(s.finalStart)) {
+        const end = this.buf.indexOf(s.finalEnd, s.finalStart.length);
+        if (end === -1) break;
+        const inner = this.buf.slice(s.finalStart.length, end);
+        emitted += inner;
+        this.buf = this.buf.slice(end + s.finalEnd.length);
+        continue;
+      }
+
+      if (this.buf.startsWith(s.channel)) {
+        const out = this.handleChannelBlock();
+        if (out === null) break; // need more data
+        emitted += out;
+        continue;
+      }
+
+      // Unknown '<|' sequence — safest is to hold a bit (avoid tearing a tag)
+      if (this.buf.length <= this.HOLD_BACK) break;
+      emitted += this.buf.slice(0, this.buf.length - this.HOLD_BACK);
+      this.buf = this.buf.slice(this.buf.length - this.HOLD_BACK);
+      break;
     }
+
+    return emitted;
   }
 
-  private matchAnyTagAt(i: number): { tag: string; len: number } | "partial" | null {
-    const slice = this.buf.slice(i);
-    // quick check for "<|"
-    if (!slice.startsWith("<|")) return null;
-    for (const t of ALL_TAGS) {
-      if (slice.startsWith(t)) return { tag: t, len: t.length };
-      if (t.startsWith(slice)) return "partial";
+  /**
+   * Handles <|channel|>… blocks.
+   * Returns emitted text (possibly empty string), or null if we need more data.
+   */
+  private handleChannelBlock(): string | null {
+    const s = LLMNoisePDAStream.TOK;
+    // We expect: <|channel|>HEADER<|message|>PAYLOAD...
+    const after = this.buf.slice(s.channel.length);
+    const iMsg = after.indexOf(s.message);
+    if (iMsg === -1) return null; // wait for <|message|>
+
+    const header = after.slice(0, iMsg).trim(); // e.g. 'final', 'final |json', 'commentary to=functions sh'
+    const afterMsg = after.slice(iMsg + s.message.length);
+
+    // FINAL | JSON
+    if (/^final\s*\|?\s*json\b/i.test(header)) {
+      const startTrim = afterMsg.match(/^\s*/)?.[0].length ?? 0;
+      const jsonCandidate = afterMsg.slice(startTrim);
+      const j = this.extractJSONObject(jsonCandidate);
+      if (!j) return null; // wait for complete JSON
+      let out = "";
+      try {
+        const obj = JSON.parse(j.text);
+        const cmd = typeof obj?.cmd === "string" ? obj.cmd.trim() : "";
+        const echoed = this.extractEchoText(cmd);
+        if (echoed != null) out = echoed;
+      } catch {
+        // If it isn't valid JSON, emit nothing (conservative).
+      }
+      // consume whole block
+      this.buf = jsonCandidate.slice(j.end) + afterMsg.slice(0, startTrim) /* nothing */; // remainder after JSON
+      this.buf = this.buf; // (no-op clarity)
+      return out;
     }
-    return null;
+
+    // COMMENTARY to=functions sh — drop whole block including JSON payload
+    if (/^commentary\b/i.test(header) && /\bto=functions\b/i.test(header)) {
+      const startTrim = afterMsg.match(/^\s*/)?.[0].length ?? 0;
+      const jsonCandidate = afterMsg.slice(startTrim);
+      const j = this.extractJSONObject(jsonCandidate);
+      if (!j) return null; // wait for complete JSON
+      // drop block
+      this.removed += s.channel.length + iMsg + s.message.length + startTrim + j.end;
+      this.buf = jsonCandidate.slice(j.end); // remainder after JSON
+      return "";
+    }
+
+    // COMMENTARY (unknown / not JSON) or unknown channel — drop up to newline
+    if (/^commentary\b/i.test(header) || header.length > 0 && !/^final\b/i.test(header)) {
+      const iNL = afterMsg.indexOf("\n");
+      if (iNL === -1) return null; // wait for a newline to safely drop
+      // drop <|channel|> + header + <|message|> + line
+      this.removed += s.channel.length + iMsg + s.message.length + iNL + 1;
+      this.buf = afterMsg.slice(iNL + 1);
+      return "";
+    }
+
+    // FINAL (plain text). Keep @@mentions that appear before <|message|> and drop sentinels.
+    if (/^final\b/i.test(header)) {
+      const mentionPrefix = this.extractMentions(
+        // keep only the region between 'final' and <|message|>
+        after.slice(0, iMsg).replace(/^final\b/i, ""),
+      );
+      // Emit message text until the next sentinel boundary (or all we have)
+      const stop = this.findFirstBoundary(afterMsg);
+      const msg = stop === -1 ? afterMsg : afterMsg.slice(0, stop);
+      const rest = stop === -1 ? "" : afterMsg.slice(stop);
+      // consume entire <|channel|>...<|message|> + msg we emitted
+      this.buf = rest;
+      return (mentionPrefix ? mentionPrefix + (msg ? " " : "") : "") + msg;
+    }
+
+    // Fallback: unknown header treated like drop-to-newline
+    const iNL = afterMsg.indexOf("\n");
+    if (iNL === -1) return null;
+    this.removed += s.channel.length + iMsg + s.message.length + iNL + 1;
+    this.buf = afterMsg.slice(iNL + 1);
+    return "";
   }
 
-  // Attempts to slice a complete JSON object from `s`, starting at the first "{"
-  // after any whitespace. Returns [jsonString, consumedChars] or [null, 0] if incomplete.
-  private tryTakeJSONObject(s: string, flush: boolean): [string | null, number] {
-    let i = 0;
-    while (i < s.length && /\s/.test(s[i])) i++;
-    if (i >= s.length) return [null, 0];
-    // If it isn't a JSON object, drop up to newline (this covers "<|channel|>foo<|message|>not-json...").
-    if (s[i] !== "{") {
-      const nl = s.indexOf("\n", i);
-      if (nl === -1) {
-        if (flush) return ["", s.length]; // drop all
-        // keep a little to detect newline in the next chunk
-        const holdN = Math.min(MAX_HOLD, s.length - i);
-        return [null, s.length - holdN];
-      }
-      return ["", nl + 1]; // drop to end of line
-    }
+  /** First boundary after text: either a fence start "```" or any "<|" sequence. */
+  private findFirstBoundary(s: string): number {
+    const iFence = s.indexOf(LLMNoisePDAStream.TOK.fence);
+    const iTag = s.indexOf("<|");
+    if (iFence === -1) return iTag;
+    if (iTag === -1) return iFence;
+    return Math.min(iFence, iTag);
+  }
 
+  /** Extract a completed JSON object starting at s[0] (balanced braces). */
+  private extractJSONObject(s: string): { text: string; end: number } | null {
+    if (!s || s[0] !== "{") return null;
     let depth = 0;
     let inStr = false;
     let esc = false;
-    let start = i;
-    for (let p = i; p < s.length; p++) {
-      const c = s[p];
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
       if (inStr) {
         if (esc) {
           esc = false;
@@ -529,25 +273,46 @@ export class PDAStreamFilter implements LLMNoiseFilterPass {
           inStr = false;
         }
       } else {
-        if (c === '"') {
-          inStr = true;
-        } else if (c === "{") {
-          depth++;
-        } else if (c === "}") {
+        if (c === '"') inStr = true;
+        else if (c === "{") depth++;
+        else if (c === "}") {
           depth--;
-          if (depth === 0) {
-            const json = s.slice(start, p + 1);
-            return [json, p + 1];
-          }
+          if (depth === 0) return { text: s.slice(0, i + 1), end: i + 1 };
         }
       }
     }
-    // need more data
-    if (flush) {
-      // best effort: attempt to parse what we have
-      const json = s.slice(start);
-      return [json, s.length];
-    }
-    return [null, 0];
+    return null; // incomplete
+  }
+
+  /** Parse echo commands: echo "text", echo 'text', or echo text */
+  private extractEchoText(cmd: string): string | null {
+    const m = cmd.match(/^echo\s+(?:"([^"]*)"|'([^']*)'|(.*))\s*$/s);
+    if (!m) return null;
+    return (m[1] ?? m[2] ?? m[3] ?? "").trim();
+  }
+
+  /** From pre-message header text, extract any @@mentions, ignoring sentinels (e.g. <|constrain|>). */
+  private extractMentions(s: string): string {
+    // Drop any <|...|> tokens in this prefix
+    const noSentinels = s.replace(/<\|[^|>]+?\|>/g, " ").replace(/\s+/g, " ").trim();
+    // Keep only @@mention tokens
+    const mentions = noSentinels.match(/@@[A-Za-z0-9_-]+/g) ?? [];
+    return mentions.join(" ");
+  }
+
+  /** Return index just after the closing ``` of a fenced block, or -1 if incomplete. */
+  private indexAfterFenceClose(s: string): number {
+    // s starts at some position (maybe the fence start). We accept language tags after opening ``` (until end-of-line).
+    if (!s.startsWith(LLMNoisePDAStream.TOK.fence)) return -1;
+    // Find the next closing ```
+    // Skip the opening ```
+    let i = LLMNoisePDAStream.TOK.fence.length;
+    // Optionally skip language tag to end of line
+    while (i < s.length && s[i] !== "\n") i++;
+    if (i < s.length) i++; // consume the newline after opening fence line, if present
+    // Search for the closing ```
+    const close = s.indexOf(LLMNoisePDAStream.TOK.fence, i);
+    if (close === -1) return -1;
+    return close + LLMNoisePDAStream.TOK.fence.length;
   }
 }

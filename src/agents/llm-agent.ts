@@ -212,7 +212,7 @@ export class LlmAgent extends Agent {
         //} else {
           // FILTERED streaming with tag preservation
           //if(t) Logger.streamInfo(C.gray(t));
-          const cleaned = this.streamFilter.feed(t).cleaned;
+          const cleaned = this.streamFilter.feed(t);
           if (cleaned) Logger.streamInfo(C.bold(cleaned));
         //}
       },

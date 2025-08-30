@@ -1,4 +1,4 @@
 export interface LLMNoiseFilterPass {
-  feed(chunk: string): { cleaned: string };
+  feed(chunk: string):  string;
   flush(): string;
 }
