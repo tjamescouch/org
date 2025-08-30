@@ -2,12 +2,19 @@
 //
 // FinalChannelPass: replace outside-fence
 //   <|channel|>final ... <|message|>PAYLOAD
-// with just PAYLOAD. Unwraps commentary JSON/echo. Preserves trailing \n.
+// with just PAYLOAD, unwrapping both "commentary" and "json" styles.
+//
+// Handles:
+// - commentary JSON with stdout/output/message/result
+// - commentary echo (echo "...")   -> extracts quoted text
+// - json blocks { "cmd": "echo \"...\"" } -> extracts quoted text
+//
+// Preserves fenced code blocks verbatim.
 
 import type { LLMNoiseFilterPass, PassFeedResult } from "./llm-noise-filter-pass";
 
 const CHAN = "<|channel|>";
-const MSG = "<|message|>";
+const MSG  = "<|message|>";
 const FENCE = "```";
 
 export class FinalChannelPass implements LLMNoiseFilterPass {
@@ -19,13 +26,12 @@ export class FinalChannelPass implements LLMNoiseFilterPass {
     this.tail = "";
 
     let out = "";
+
     while (s.length > 0) {
+      // Preserve fenced blocks
       if (s.startsWith(FENCE)) {
         const j = s.indexOf(FENCE, FENCE.length);
-        if (j < 0) {
-          this.tail = s;
-          return { cleaned: out };
-        }
+        if (j < 0) { this.tail = s; return { cleaned: out }; }
         out += s.slice(0, j + FENCE.length);
         s = s.slice(j + FENCE.length);
         continue;
@@ -39,35 +45,37 @@ export class FinalChannelPass implements LLMNoiseFilterPass {
         return { cleaned: out };
       }
 
+      // Emit preface up to channel
       if (start > 0) {
         out += s.slice(0, start);
         s = s.slice(start);
       }
 
-      const metaStart = CHAN.length;
-      const msgIdx = s.indexOf(MSG, metaStart);
-      if (msgIdx < 0) {
-        this.tail = s;
-        return { cleaned: out };
-      }
+      // We are at "<|channel|>"
+      const afterChan = CHAN.length;
+      const msgIdx = s.indexOf(MSG, afterChan);
+      if (msgIdx < 0) { this.tail = s; return { cleaned: out }; }
 
-      const meta = s.slice(metaStart, msgIdx).trim();
+      // Meta is content between channel and message
+      const meta = s.slice(afterChan, msgIdx).toLowerCase();
       const payloadStart = msgIdx + MSG.length;
 
-      if (!/^final\b/i.test(meta)) {
+      // Only unwrap "final" meta; otherwise print the token and advance
+      if (!/final/.test(meta)) {
         out += s[0]!;
         s = s.slice(1);
         continue;
       }
 
-      const nextTag = s.indexOf(CHAN, payloadStart);
-      const payloadEnd = nextTag >= 0 ? nextTag : s.length;
+      // Grab payload up to the next <|channel|> or end
+      const nextChan = s.indexOf(CHAN, payloadStart);
+      const payloadEnd = nextChan >= 0 ? nextChan : s.length;
       const raw = s.slice(payloadStart, payloadEnd);
 
-      out += unwrapCommentary(meta, raw);
+      // Unwrap commentary/json payload
+      out += unwrapFinalPayload(meta, raw);
       s = s.slice(payloadEnd);
     }
-
     return { cleaned: out };
   }
 
@@ -78,26 +86,57 @@ export class FinalChannelPass implements LLMNoiseFilterPass {
   }
 }
 
-function unwrapCommentary(meta: string, raw: string): string {
-  const looksCommentary =
-    /<\|constrain\|\>\s*:?\/commentary\b/i.test(meta) || /commentary\b/i.test(meta);
+// ---- helpers ----
 
-  if (!looksCommentary) return raw;
+function unwrapFinalPayload(meta: string, raw: string): string {
+  const looksCommentary = /commentary/.test(meta);
+  const looksJSON       = /\bjson\b/.test(meta);
 
-  const text = raw.trimStart();
-  try {
-    const j = JSON.parse(text);
-    if (j && typeof j === "object") {
-      const v = pickFirstString(j, ["stdout", "output", "message", "result"]);
-      if (typeof v === "string") return v; // keep trailing \n if present
-    }
-  } catch {
-    /* not JSON */
+  // Try commentary JSON fields first if meta says commentary
+  if (looksCommentary) {
+    const text = raw.trimStart();
+    const extracted = extractFromJsonOrEcho(text);
+    if (extracted != null) return extracted;
+    return raw;
   }
 
-  const m = text.match(/echo\s+(?:"([^"]+)"|'([^']+)'|(@@?[^\s"'].*?))(?:\s|$)/i);
-  if (m) return (m[1] ?? m[2] ?? m[3]) ?? raw;
+  // The model often sends final→json with {"cmd":"echo \"…\""}
+  if (looksJSON) {
+    const text = raw.trimStart();
+    const extracted = extractFromJsonOrEcho(text);
+    if (extracted != null) return extracted;
+    return raw;
+  }
+
+  // Fallback: leave raw payload if neither commentary nor json obvious
   return raw;
+}
+
+function extractFromJsonOrEcho(text: string): string | null {
+  // 1) JSON object with stdout/output/message/result OR {"cmd": "..."}
+  const t = text.trim();
+  if (t.startsWith("{")) {
+    try {
+      const j = JSON.parse(t);
+      // Prefer stdout-like fields, then message-like
+      const v = pickFirstString(j, ["stdout", "output", "message", "result"]);
+      if (typeof v === "string") return v;
+
+      // Or a shell echo string
+      if (typeof j?.cmd === "string") {
+        const m = j.cmd.match(/echo\s+(?:"([^"]+)"|'([^']+)'|(@@?[^\s"'].*?))(?:\s|$)/i);
+        if (m) return (m[1] ?? m[2] ?? m[3]) ?? "";
+      }
+    } catch {
+      // fall through to regex echo
+    }
+  }
+
+  // 2) Non-JSON echo "..."/'...'/bare
+  const m = t.match(/echo\s+(?:"([^"]+)"|'([^']+)'|(@@?[^\s"'].*?))(?:\s|$)/i);
+  if (m) return (m[1] ?? m[2] ?? m[3]) ?? "";
+
+  return null;
 }
 
 function pickFirstString(obj: any, keys: string[]): string | null {
