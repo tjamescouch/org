@@ -2,7 +2,7 @@
 //
 // First pass: fence-aware pass-through.
 // Guarantee: no stray carry for normal text; preserve fences verbatim.
-// Does NOT unwrap channel/message; just prepares safe text for later passes.
+// Does NOT unwrap channel/message; prepares safe text for later passes.
 
 import type { LLMNoiseFilterPass, PassFeedResult } from "./llm-noise-filter-pass";
 
@@ -30,7 +30,6 @@ export class LLMNoiseFilterFirstPass implements LLMNoiseFilterPass {
         continue;
       }
 
-      // Find earliest of channel/message/fence
       const nextFence = s.indexOf(FENCE, i);
       const nextChan  = s.indexOf(CHAN, i);
       const nextMsg   = s.indexOf(MSG, i);
@@ -47,13 +46,13 @@ export class LLMNoiseFilterFirstPass implements LLMNoiseFilterPass {
         return { cleaned: out };
       }
 
-      if (next > i) {
-        out += s.slice(i, next);
-        i = next;
-        continue;
-      }
+      if (next > i) { out += s.slice(i, next); i = next; continue; }
 
-      // We encountered a token; do not modify, just copy one char to advance.
+      // At a token start; if token is complete, emit it intact and advance.
+      if (s.startsWith(CHAN, i)) { out += CHAN; i += CHAN.length; continue; }
+      if (s.startsWith(MSG,  i)) { out += MSG;  i += MSG.length;  continue; }
+
+      // Shouldn't get here, but advance safely if we do.
       out += s[i]!;
       i += 1;
     }
@@ -72,7 +71,6 @@ function strictPrefixStart(s: string, i: number): number {
   const n  = s.length;
   const maxLen = Math.max(CHAN.length, MSG.length, FENCE.length) - 1;
   const windowStart = Math.max(i, n - maxLen);
-
   for (let t = windowStart; t < n; t++) {
     const suf = s.slice(t);
     if (!suf) continue;
@@ -82,7 +80,6 @@ function strictPrefixStart(s: string, i: number): number {
   }
   return n;
 }
-
 function isStrictPrefix(suf: string, tok: string): boolean {
   return suf.length < tok.length && tok.startsWith(suf);
 }

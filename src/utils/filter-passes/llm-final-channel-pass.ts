@@ -13,10 +13,8 @@ const CHAN  = "<|channel|>";
 const MSG   = "<|message|>";
 const FENCE = "```";
 
-// [TAG:…] ASCII markers from tag-protect – stream & post-turn share the same form.
-const META_TAG_RE = /\[TAG:[^\]]+\]/g;
-// Fallback: if the protector missed (split across chunks), accept raw tags too.
-const RAW_TAG_RE  = /@@[A-Za-z0-9_-]+|##[A-Za-z0-9_.\/-]+/g;
+const META_TAG_RE = /\[TAG:[^\]]+\]/g;                         // masked tags (ASCII form)
+const RAW_TAG_RE  = /@@[A-Za-z0-9_-]+|##[A-Za-z0-9_.\/-]+/g;  // safety net if unprotected
 
 export class FinalChannelPass implements LLMNoiseFilterPass {
   private tail = "";
@@ -30,7 +28,7 @@ export class FinalChannelPass implements LLMNoiseFilterPass {
 
     let i = 0;
     while (i < s.length) {
-      // If current position starts a fence, copy fenced block verbatim.
+      // Preserve fenced blocks verbatim
       if (s.startsWith(FENCE, i)) {
         const j = s.indexOf(FENCE, i + FENCE.length);
         if (j < 0) { this.tail = s.slice(i); return { cleaned: out }; }
@@ -39,50 +37,69 @@ export class FinalChannelPass implements LLMNoiseFilterPass {
         continue;
       }
 
-      // Find next interesting token (earliest of fence or channel)
+      // Find earliest of fence or channel from current index
       const nextChan  = s.indexOf(CHAN, i);
       const nextFence = s.indexOf(FENCE, i);
-
       let next = -1;
       if (nextChan >= 0 && nextFence >= 0) next = Math.min(nextChan, nextFence);
       else next = Math.max(nextChan, nextFence);
 
       if (next < 0) {
-        // No more tokens; keep only a STRICT prefix of a token as carry.
+        // No more tokens. Keep only a STRICT token prefix as carry.
         const carryStart = strictPrefixStart(s, i);
         out += s.slice(i, carryStart);
         this.tail = s.slice(carryStart);
         return { cleaned: out };
       }
 
-      // Emit plain text before the next token.
-      if (next > i) {
-        out += s.slice(i, next);
-        i = next;
-      }
+      if (next > i) { out += s.slice(i, next); i = next; }
 
-      // Handle fence case at 'i' (loop head will copy it).
+      // Fence case is handled at loop top next iteration
       if (s.startsWith(FENCE, i)) continue;
 
-      // We're at <|channel|>. Require a <|message|> ahead; else keep from here.
+      // We are at <|channel|>
       const afterChan = i + CHAN.length;
       const msgIdx = s.indexOf(MSG, afterChan);
       if (msgIdx < 0) { this.tail = s.slice(i); return { cleaned: out }; }
 
-      // meta: between channel and message
       const meta = s.slice(afterChan, msgIdx);
       const payloadStart = msgIdx + MSG.length;
-
-      // Payload ends at next channel or end of chunk.
       const nextChan2 = s.indexOf(CHAN, payloadStart);
       const payloadEnd = nextChan2 >= 0 ? nextChan2 : s.length;
       const raw = s.slice(payloadStart, payloadEnd);
 
-      // Preserve any tags from meta (masked or raw).
-      const prefix = collectMetaTags(meta);
-      const cleaned = unwrapFinalPayload(meta, raw);
+      // If it's a JSON payload and it's incomplete across chunks → carry from <|channel|>
+      if (/\bjson\b/.test(meta)) {
+        const probe = scanJSONObject(s, payloadStart);
+        if (!probe.ok) { this.tail = s.slice(i); return { cleaned: out }; }
+        // If JSON completes before any next channel, shrink payloadEnd accordingly
+        const rawComplete = s.slice(payloadStart, probe.end);
+        const prefix = collectMetaTags(meta);
+        const unwrapped = extractFromJsonOrEcho(rawComplete) ?? rawComplete;
+        out += prefix + unwrapped;
+        i = probe.end;  // continue after json object
+        continue;
+      }
 
-      out += prefix + cleaned;
+      // commentary payload may also be JSON/echo-like
+      if (/commentary/.test(meta)) {
+        // Try JSON first; if incomplete, carry
+        const probe = scanJSONObject(s, payloadStart);
+        if (probe.ok) {
+          const rawComplete = s.slice(payloadStart, probe.end);
+          const prefix = collectMetaTags(meta);
+          const unwrapped = extractFromJsonOrEcho(rawComplete) ?? rawComplete;
+          out += prefix + unwrapped;
+          i = probe.end;
+          continue;
+        }
+        // Not JSON (or incomplete) → do NOT emit partial commentary; carry
+        if (probe.end === s.length) { this.tail = s.slice(i); return { cleaned: out }; }
+      }
+
+      // Plain final (no explicit json/commentary) → unwrap immediately
+      const prefix = collectMetaTags(meta);
+      out += prefix + raw;
       i = payloadEnd;
     }
 
@@ -102,63 +119,33 @@ function collectMetaTags(meta: string): string {
   const masked = meta.match(META_TAG_RE) || [];
   const raw    = meta.match(RAW_TAG_RE)  || [];
   const tags = [...masked, ...raw];
-  if (!tags.length) return "";
-  return tags.join(" ") + " ";
-}
-
-function unwrapFinalPayload(meta: string, raw: string): string {
-  const looksCommentary = /commentary/.test(meta);
-  const looksJSON       = /\bjson\b/.test(meta);
-
-  // commentary JSON → stdout/output/message/result OR echo "..."/'...'
-  if (looksCommentary) {
-    const text = raw.trimStart();
-    const extracted = extractFromJsonOrEcho(text);
-    if (extracted != null) return extracted;
-    return raw;
-  }
-
-  // final→json → {"cmd":"echo \"...\""} or single quotes
-  if (looksJSON) {
-    const text = raw.trimStart();
-    const extracted = extractFromJsonOrEcho(text);
-    if (extracted != null) return extracted;
-    return raw;
-  }
-
-  // Plain final – return message body (meta tags are added by caller).
-  return raw;
+  return tags.length ? tags.join(" ") + " " : "";
 }
 
 function extractFromJsonOrEcho(text: string): string | null {
-  const t = text.trim();
+  const t = String(text ?? "").trim();
 
-  // 1) JSON – pick stdout/output/message/result; fallback to cmd:echo
+  // JSON first
   if (t.startsWith("{")) {
     try {
       const j = JSON.parse(t);
       const v = pickFirstString(j, ["stdout", "output", "message", "result"]);
       if (typeof v === "string") return v;
-
       if (typeof j?.cmd === "string") {
         const m = j.cmd.match(/echo\s+(?:"([^"]+)"|'([^']+)'|(@@?[^\s"'].*?))(?:\s|$)/i);
         if (m) return (m[1] ?? m[2] ?? m[3]) ?? "";
       }
-    } catch {
-      // fall through
-    }
+    } catch {}
   }
-
-  // 2) Non-JSON echo "..."/'...'/bare
+  // Non-JSON echo
   const m = t.match(/echo\s+(?:"([^"]+)"|'([^']+)'|(@@?[^\s"'].*?))(?:\s|$)/i);
   if (m) return (m[1] ?? m[2] ?? m[3]) ?? "";
-
   return null;
 }
 
 function pickFirstString(obj: any, keys: string[]): string | null {
   for (const k of keys) {
-    if (typeof obj?.[k] === "string") return obj[k] as string;
+    if (typeof obj?.[k] === "string") return obj[k];
     if (obj && typeof obj[k] === "object") {
       const deep = pickFirstString(obj[k], keys);
       if (deep) return deep;
@@ -167,13 +154,11 @@ function pickFirstString(obj: any, keys: string[]): string | null {
   return null;
 }
 
-// Return earliest index t ≥ i such that s.slice(t) is a STRICT prefix of
-// <|channel|>, <|message|>, or fence ``` (not whole token; not empty).
+// Earliest index t ≥ i such that s.slice(t) is a STRICT prefix of one token
 function strictPrefixStart(s: string, i: number): number {
   const n  = s.length;
   const maxLen = Math.max(CHAN.length, MSG.length, FENCE.length) - 1;
   const windowStart = Math.max(i, n - maxLen);
-
   for (let t = windowStart; t < n; t++) {
     const suf = s.slice(t);
     if (!suf) continue;
@@ -183,7 +168,28 @@ function strictPrefixStart(s: string, i: number): number {
   }
   return n;
 }
-
 function isStrictPrefix(suf: string, tok: string): boolean {
   return suf.length < tok.length && tok.startsWith(suf);
+}
+
+// Balanced, string-aware JSON scan (used for cross-chunk detection)
+function scanJSONObject(s: string, i: number): { ok: boolean; end: number } {
+  const n = s.length;
+  while (i < n && /\s/.test(s[i]!)) i++;
+  if (s[i] !== "{") return { ok: false, end: i };
+
+  let depth = 0, inStr = false, esc = false;
+  for (; i < n; i++) {
+    const ch = s[i]!;
+    if (inStr) {
+      if (esc) { esc = false; continue; }
+      if (ch === "\\") { esc = true; continue; }
+      if (ch === "\"") { inStr = false; continue; }
+    } else {
+      if (ch === "\"") { inStr = true; continue; }
+      if (ch === "{")  { depth++; continue; }
+      if (ch === "}")  { depth--; if (depth === 0) return { ok: true, end: i + 1 }; }
+    }
+  }
+  return { ok: false, end: n };
 }
