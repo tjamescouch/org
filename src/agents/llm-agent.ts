@@ -22,6 +22,7 @@ function buildSystemPrompt(id: string): string {
     `You are agent "${id}". Work autonomously in the caller's current directory inside a Debian VM.`,
     "- DO NOT LIE",
     "- Do not pretend or hallucinate tool call results. Do not misrepresent the facts.",
+    "- Do the reasonable thing. Interpret things like a normal human would.",
     "",
     "TOOLS",
     "- sh(cmd): run a POSIX command. Args: {cmd:string}. Returns {ok, stdout, stderr, exit_code, cmd}.",
