@@ -211,13 +211,13 @@ export class LlmAgent extends Agent {
         //} else {
           // FILTERED streaming with tag preservation
           //if(t) Logger.streamInfo(C.gray(t));
-          const masked = tagProtector.feedProtect(t);
-          const cleaned = this.streamFilter.feed(masked).cleaned;
-          const unmasked = tagProtector.unprotect(cleaned);
-          if (t) Logger.info(C.bold("t"), t);
-          if (masked) Logger.info(C.bold("masked"), masked);
-          if (cleaned) Logger.info(C.bold("cleaned"), cleaned);
-          if (unmasked) Logger.info(C.bold("unmasked"), unmasked);
+          //const masked = tagProtector.feedProtect(t);
+          const cleaned = this.streamFilter.feed(t).cleaned;
+          //const unmasked = tagProtector.unprotect(cleaned);
+          //if (t) Logger.info(C.bold("t"), t);
+          if (cleaned) Logger.streamInfo(C.bold(cleaned));
+          //if (cleaned) Logger.info(C.bold("cleaned"), cleaned);
+          //if (unmasked) Logger.info(C.bold("unmasked"), unmasked);
         //}
       },
       onToolCallDelta
