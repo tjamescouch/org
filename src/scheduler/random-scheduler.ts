@@ -135,7 +135,7 @@ export class RandomScheduler {
 
         let remaining = this.maxTools;
         let totalToolsUsed = 0;
-        const reversedMessages = [...messages].reverse();
+        const messagesIn = [...messages];
 
         try {
           for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
@@ -143,7 +143,7 @@ export class RandomScheduler {
             Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
             this.activeAgent = a;
 
-            const replies = await a.respond(reversedMessages, Math.max(0, remaining), peers, () => this.draining);
+            const replies = await a.respond(messagesIn, Math.max(0, remaining), peers, () => this.draining);
 
             for (const { message, toolsUsed } of replies) {
               totalToolsUsed += toolsUsed;
