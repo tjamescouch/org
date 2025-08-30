@@ -1,81 +1,70 @@
-// src/utils/filter-passes/llm-final-channel-pass.ts
+// src/utils/filter-passes/llm-noise-filter-first-pass.ts
 //
-// FinalChannelPass: replace outside-fence
-//   <|channel|>final ... <|message|>PAYLOAD
-// with just PAYLOAD, unwrapping both "commentary" and "json" styles.
-//
-// Handles:
-// - commentary JSON with stdout/output/message/result
-// - commentary echo (echo "...")   -> extracts quoted text
-// - json blocks { "cmd": "echo \"...\"" } -> extracts quoted text
-//
-// Preserves fenced code blocks verbatim.
+// First pass: fence-aware text pass-through.
+// Goal: never duplicate normal text, never emit stray carry for normal text,
+// and preserve fenced blocks verbatim. We do NOT unwrap channel/message here;
+// that happens in FinalChannelPass.
 
 import type { LLMNoiseFilterPass, PassFeedResult } from "./llm-noise-filter-pass";
 
-const CHAN = "<|channel|>";
-const MSG  = "<|message|>";
+const CHAN  = "<|channel|>";
+const MSG   = "<|message|>";
 const FENCE = "```";
 
-export class FinalChannelPass implements LLMNoiseFilterPass {
+export class LLMNoiseFilterFirstPass implements LLMNoiseFilterPass {
   private tail = "";
 
   feed(chunk: string): PassFeedResult {
     if (!chunk) return { cleaned: "" };
+
     let s = this.tail + chunk;
     this.tail = "";
-
     let out = "";
 
-    while (s.length > 0) {
-      // Preserve fenced blocks
-      if (s.startsWith(FENCE)) {
-        const j = s.indexOf(FENCE, FENCE.length);
-        if (j < 0) { this.tail = s; return { cleaned: out }; }
-        out += s.slice(0, j + FENCE.length);
-        s = s.slice(j + FENCE.length);
+    let i = 0;
+    while (i < s.length) {
+      // Preserve fenced code verbatim (or keep remainder if closing fence missing)
+      if (s.startsWith(FENCE, i)) {
+        const j = s.indexOf(FENCE, i + FENCE.length);
+        if (j < 0) { this.tail = s.slice(i); return { cleaned: out }; }
+        out += s.slice(i, j + FENCE.length);
+        i = j + FENCE.length;
         continue;
       }
 
-      const start = s.indexOf(CHAN);
-      if (start < 0) {
-        const carryStart = possiblePrefixStart(s);
-        out += s.slice(0, carryStart);
+      // Find earliest of channel/message/fence from current index
+      const nextFence = s.indexOf(FENCE, i);
+      const nextChan  = s.indexOf(CHAN, i);
+      const nextMsg   = s.indexOf(MSG, i);
+
+      let next = Number.MAX_SAFE_INTEGER;
+      if (nextFence >= 0) next = Math.min(next, nextFence);
+      if (nextChan  >= 0) next = Math.min(next, nextChan);
+      if (nextMsg   >= 0) next = Math.min(next, nextMsg);
+      if (next === Number.MAX_SAFE_INTEGER) {
+        // Nothing ahead; keep only a strict prefix as carry
+        const carryStart = strictPrefixStart(s, i);
+        out += s.slice(i, carryStart);
         this.tail = s.slice(carryStart);
         return { cleaned: out };
       }
 
-      // Emit preface up to channel
-      if (start > 0) {
-        out += s.slice(0, start);
-        s = s.slice(start);
-      }
-
-      // We are at "<|channel|>"
-      const afterChan = CHAN.length;
-      const msgIdx = s.indexOf(MSG, afterChan);
-      if (msgIdx < 0) { this.tail = s; return { cleaned: out }; }
-
-      // Meta is content between channel and message
-      const meta = s.slice(afterChan, msgIdx).toLowerCase();
-      const payloadStart = msgIdx + MSG.length;
-
-      // Only unwrap "final" meta; otherwise print the token and advance
-      if (!/final/.test(meta)) {
-        out += s[0]!;
-        s = s.slice(1);
+      // Emit plain text before the next token; let downstream passes handle it
+      if (next > i) {
+        out += s.slice(i, next);
+        i = next;
         continue;
       }
 
-      // Grab payload up to the next <|channel|> or end
-      const nextChan = s.indexOf(CHAN, payloadStart);
-      const payloadEnd = nextChan >= 0 ? nextChan : s.length;
-      const raw = s.slice(payloadStart, payloadEnd);
+      // If we hit a fence, loop will copy it at the top on next iteration
+      if (s.startsWith(FENCE, i)) continue;
 
-      // Unwrap commentary/json payload
-      out += unwrapFinalPayload(meta, raw);
-      s = s.slice(payloadEnd);
+      // For channel/message tokens: we do not modify them here; just move past 1 char
+      // so outer loop can progress; downstream pass will process.
+      out += s[i]!;
+      i += 1;
     }
+
     return { cleaned: out };
   }
 
@@ -86,75 +75,23 @@ export class FinalChannelPass implements LLMNoiseFilterPass {
   }
 }
 
-// ---- helpers ----
+// Return earliest index t ≥ i such that s.slice(t) is a STRICT prefix of one of
+// our tokens (not whole token; not empty).
+function strictPrefixStart(s: string, i: number): number {
+  const n  = s.length;
+  const maxLen = Math.max(CHAN.length, MSG.length, FENCE.length) - 1;
+  const windowStart = Math.max(i, n - maxLen);
 
-function unwrapFinalPayload(meta: string, raw: string): string {
-  const looksCommentary = /commentary/.test(meta);
-  const looksJSON       = /\bjson\b/.test(meta);
-
-  // Try commentary JSON fields first if meta says commentary
-  if (looksCommentary) {
-    const text = raw.trimStart();
-    const extracted = extractFromJsonOrEcho(text);
-    if (extracted != null) return extracted;
-    return raw;
-  }
-
-  // The model often sends final→json with {"cmd":"echo \"…\""}
-  if (looksJSON) {
-    const text = raw.trimStart();
-    const extracted = extractFromJsonOrEcho(text);
-    if (extracted != null) return extracted;
-    return raw;
-  }
-
-  // Fallback: leave raw payload if neither commentary nor json obvious
-  return raw;
-}
-
-function extractFromJsonOrEcho(text: string): string | null {
-  // 1) JSON object with stdout/output/message/result OR {"cmd": "..."}
-  const t = text.trim();
-  if (t.startsWith("{")) {
-    try {
-      const j = JSON.parse(t);
-      // Prefer stdout-like fields, then message-like
-      const v = pickFirstString(j, ["stdout", "output", "message", "result"]);
-      if (typeof v === "string") return v;
-
-      // Or a shell echo string
-      if (typeof j?.cmd === "string") {
-        const m = j.cmd.match(/echo\s+(?:"([^"]+)"|'([^']+)'|(@@?[^\s"'].*?))(?:\s|$)/i);
-        if (m) return (m[1] ?? m[2] ?? m[3]) ?? "";
-      }
-    } catch {
-      // fall through to regex echo
-    }
-  }
-
-  // 2) Non-JSON echo "..."/'...'/bare
-  const m = t.match(/echo\s+(?:"([^"]+)"|'([^']+)'|(@@?[^\s"'].*?))(?:\s|$)/i);
-  if (m) return (m[1] ?? m[2] ?? m[3]) ?? "";
-
-  return null;
-}
-
-function pickFirstString(obj: any, keys: string[]): string | null {
-  for (const k of keys) {
-    if (typeof obj?.[k] === "string") return obj[k] as string;
-    if (obj && typeof obj[k] === "object") {
-      const deep = pickFirstString(obj[k], keys);
-      if (deep) return deep;
-    }
-  }
-  return null;
-}
-
-function possiblePrefixStart(s: string): number {
-  const windowStart = Math.max(0, s.length - 128);
-  for (let t = windowStart; t < s.length; t++) {
+  for (let t = windowStart; t < n; t++) {
     const suf = s.slice(t);
-    if (CHAN.startsWith(suf) || MSG.startsWith(suf) || FENCE.startsWith(suf)) return t;
+    if (!suf) continue;
+    if (isStrictPrefix(suf, CHAN) || isStrictPrefix(suf, MSG) || isStrictPrefix(suf, FENCE)) {
+      return t;
+    }
   }
-  return s.length;
+  return n;
+}
+
+function isStrictPrefix(suf: string, tok: string): boolean {
+  return suf.length < tok.length && tok.startsWith(suf);
 }

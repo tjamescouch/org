@@ -1,54 +1,92 @@
-import { describe, test, expect } from "bun:test";
-import { TtyScopes, type TtyIn } from "../../input/tty-scopes";
-import { confirmAllowed } from "../../tools/execution-gate";
+// tests/execution-gate.test.ts
+import { describe, it, expect, mock, beforeEach } from "bun:test";
+import { ExecutionGate } from "../../tools/execution-gate";
 
-// Test double: minimal TTY impl.
-class FakeTty implements TtyIn {
-  isTTY: boolean = true;
-  isRaw?: boolean = false;
-  setRawMode(mode: boolean) { this.isRaw = mode; }
-}
 
-describe("ExecutionGate confirmation runs in cooked TTY", () => {
-  test("restores prior mode after prompt even on success", async () => {
-    const tty = new FakeTty();
-    const scopes = new TtyScopes(tty);
+// Mock out external dependencies
+import * as promptLineModule from "../../../src/utils/prompt-line";
+import * as ttyModule from "../../../src/input/tty-controller";
+import type { ExecutionGuard } from "../../../src/tools/execution-guards";
 
-    // Simulate outer raw context
-    scopes.setMode("raw");
-    expect(tty.isRaw).toBe(true);
+describe("ExecutionGate", () => {
+  let promptLineMock: ReturnType<typeof mock>;
+  let withCookedTTYMock: ReturnType<typeof mock>;
 
-    const yes = await scopes.withRawTTY(async () => {
-      // call the gate; it should flip to cooked for the prompt
-      const answer = await confirmAllowed("ok?", {
-        defaultYes: false,
-        promptYesNo: async (_msg, _def) => {
-          expect(tty.isRaw).toBe(false); // cooked within the prompt
-          return true;
-        }
-      });
-      return answer;
-    });
+  beforeEach(() => {
+    // Reset mocks before every test
+    promptLineMock = mock(async (_q: string) => "y");
+    withCookedTTYMock = mock(async (fn: () => Promise<void>) => fn());
 
-    expect(yes).toBe(true);
-    expect(tty.isRaw).toBe(true); // restored to raw after prompt
+    (promptLineModule as any).promptLine = promptLineMock;
+    (ttyModule as any).withCookedTTY = withCookedTTYMock;
+
+    // Reset to defaults before each test
+    ExecutionGate.configure({ safe: false, interactive: true });
   });
 
-  test("restores prior mode after prompt even on error", async () => {
-    const tty = new FakeTty();
-    const scopes = new TtyScopes(tty);
-    scopes.setMode("raw");
+  it("should allow execution when safe=false regardless of interactive", async () => {
+    ExecutionGate.configure({ safe: false, interactive: false });
+    await expect(ExecutionGate.gate("echo ok")).resolves.toBeUndefined();
+    expect(promptLineMock).not.toHaveBeenCalled();
+  });
 
-    await expect(scopes.withRawTTY(async () => {
-      await confirmAllowed("throw?", {
-        defaultYes: false,
-        promptYesNo: async () => {
-          expect(tty.isRaw).toBe(false);
-          throw new Error("boom");
-        }
-      });
-    })).rejects.toThrow("boom");
+  it("should throw if safe=true and interactive=false", () => {
+    expect(() =>
+      ExecutionGate.configure({ safe: true, interactive: false })
+    ).toThrow(/SAFE mode requires interactive/);
+  });
 
-    expect(tty.isRaw).toBe(true); // restored after exception
+  it("should prompt the user when safe=true and interactive=true", async () => {
+    ExecutionGate.configure({ safe: true, interactive: true });
+    promptLineMock.mockResolvedValueOnce("y");
+    await expect(ExecutionGate.gate("ls")).resolves.toBeUndefined();
+    expect(promptLineMock).toHaveBeenCalledWith("Run: ls? [y/N] ");
+  });
+
+  it("should throw if user denies prompt", async () => {
+    ExecutionGate.configure({ safe: true, interactive: true });
+    promptLineMock.mockResolvedValueOnce("n");
+    await expect(ExecutionGate.gate("rm -rf /")).rejects.toThrow(/User denied/);
+  });
+
+  it("should pass guard chain if all allow", async () => {
+    const guard: ExecutionGuard = { allow: mock(() => true) };
+    ExecutionGate.configure({ safe: false, interactive: true, guards: [guard] });
+    await expect(ExecutionGate.gate("ls")).resolves.toBeUndefined();
+    expect((guard.allow as any)).toHaveBeenCalledWith("ls");
+  });
+
+  it("should block if any guard denies", async () => {
+    const guard: ExecutionGuard = { allow: mock(() => false) };
+    ExecutionGate.configure({ safe: false, interactive: true, guards: [guard] });
+    await expect(ExecutionGate.gate("rm -rf /")).rejects.toThrow(/Execution blocked by guard/);
+  });
+
+  it("allow() should return true if gate passes", async () => {
+    ExecutionGate.configure({ safe: false, interactive: true });
+    const result = await ExecutionGate.allow("echo ok");
+    expect(result).toBe(true);
+  });
+
+  it("allow() should return false if gate throws", async () => {
+    const guard: ExecutionGuard = { allow: mock(() => false) };
+    ExecutionGate.configure({ safe: false, interactive: true, guards: [guard] });
+    const result = await ExecutionGate.allow("blocked");
+    expect(result).toBe(false);
+  });
+
+  it("should treat 'yes' (case-insensitive) as confirmation", async () => {
+    ExecutionGate.configure({ safe: true, interactive: true });
+    promptLineMock.mockResolvedValueOnce("Yes");
+    await expect(ExecutionGate.gate("ls")).resolves.toBeUndefined();
+
+    promptLineMock.mockResolvedValueOnce("  y  ");
+    await expect(ExecutionGate.gate("ls")).resolves.toBeUndefined();
+  });
+
+  it("should reject anything except explicit yes/y", async () => {
+    ExecutionGate.configure({ safe: true, interactive: true });
+    promptLineMock.mockResolvedValueOnce("nope");
+    await expect(ExecutionGate.gate("ls")).rejects.toThrow(/User denied/);
   });
 });
