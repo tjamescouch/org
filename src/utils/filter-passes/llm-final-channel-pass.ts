@@ -1,6 +1,11 @@
-import { LLMNoiseFilterPass } from "./llm-noise-filter-pass";
+// src/utils/filter-passes/llm-final-channel-pass.ts
+//
+// FinalChannelPass: replace outside-fence
+//   <|channel|>final ... <|message|>PAYLOAD
+// with just PAYLOAD. Unwraps commentary JSON/echo. Preserves trailing \n.
 
-// src/utils/llm-final-channel-pass.ts
+import type { LLMNoiseFilterPass, PassFeedResult } from "./llm-noise-filter-pass";
+
 const CHAN = "<|channel|>";
 const MSG = "<|message|>";
 const FENCE = "```";
@@ -8,8 +13,8 @@ const FENCE = "```";
 export class FinalChannelPass implements LLMNoiseFilterPass {
   private tail = "";
 
-  feed(chunk: string): { cleaned: string, removed: number } {
-    if (!chunk) return { cleaned: "", removed: 0 };
+  feed(chunk: string): PassFeedResult {
+    if (!chunk) return { cleaned: "" };
     let s = this.tail + chunk;
     this.tail = "";
 
@@ -19,7 +24,7 @@ export class FinalChannelPass implements LLMNoiseFilterPass {
         const j = s.indexOf(FENCE, FENCE.length);
         if (j < 0) {
           this.tail = s;
-          return { cleaned: "", removed: 0 }
+          return { cleaned: out };
         }
         out += s.slice(0, j + FENCE.length);
         s = s.slice(j + FENCE.length);
@@ -31,14 +36,20 @@ export class FinalChannelPass implements LLMNoiseFilterPass {
         const carryStart = possiblePrefixStart(s);
         out += s.slice(0, carryStart);
         this.tail = s.slice(carryStart);
-        return { cleaned: out, removed: 0 }
+        return { cleaned: out };
       }
 
-      if (start > 0) { out += s.slice(0, start); s = s.slice(start); }
+      if (start > 0) {
+        out += s.slice(0, start);
+        s = s.slice(start);
+      }
 
       const metaStart = CHAN.length;
       const msgIdx = s.indexOf(MSG, metaStart);
-      if (msgIdx < 0) { this.tail = s; return out; }
+      if (msgIdx < 0) {
+        this.tail = s;
+        return { cleaned: out };
+      }
 
       const meta = s.slice(metaStart, msgIdx).trim();
       const payloadStart = msgIdx + MSG.length;
@@ -53,32 +64,40 @@ export class FinalChannelPass implements LLMNoiseFilterPass {
       const payloadEnd = nextTag >= 0 ? nextTag : s.length;
       const raw = s.slice(payloadStart, payloadEnd);
 
-      out += this.unwrapCommentary(meta, raw);
+      out += unwrapCommentary(meta, raw);
       s = s.slice(payloadEnd);
     }
-    return { cleaned: out, removed: 0 }; //FIXME - removed is not 0 but do we even need it?
+
+    return { cleaned: out };
   }
 
-  flush(): string { const t = this.tail; this.tail = ""; return t; }
-
-  private unwrapCommentary(meta: string, raw: string): string {
-    const looksCommentary =
-      /<\|constrain\|\>\s*:?\/commentary\b/i.test(meta) || /commentary\b/i.test(meta);
-    if (!looksCommentary) return raw;
-
-    const text = raw.trimStart();
-    try {
-      const j = JSON.parse(text);
-      if (j && typeof j === "object") {
-        const v = pickFirstString(j, ["stdout", "output", "message", "result"]);
-        if (typeof v === "string") return v; // preserve trailing \n if present
-      }
-    } catch { /* not JSON */ }
-
-    const m = text.match(/echo\s+(?:"([^"]+)"|'([^']+)'|(@@?[^\s"'].*?))(?:\s|$)/i);
-    if (m) return (m[1] ?? m[2] ?? m[3]) ?? raw;
-    return raw;
+  flush(): string {
+    const t = this.tail;
+    this.tail = "";
+    return t;
   }
+}
+
+function unwrapCommentary(meta: string, raw: string): string {
+  const looksCommentary =
+    /<\|constrain\|\>\s*:?\/commentary\b/i.test(meta) || /commentary\b/i.test(meta);
+
+  if (!looksCommentary) return raw;
+
+  const text = raw.trimStart();
+  try {
+    const j = JSON.parse(text);
+    if (j && typeof j === "object") {
+      const v = pickFirstString(j, ["stdout", "output", "message", "result"]);
+      if (typeof v === "string") return v; // keep trailing \n if present
+    }
+  } catch {
+    /* not JSON */
+  }
+
+  const m = text.match(/echo\s+(?:"([^"]+)"|'([^']+)'|(@@?[^\s"'].*?))(?:\s|$)/i);
+  if (m) return (m[1] ?? m[2] ?? m[3]) ?? raw;
+  return raw;
 }
 
 function pickFirstString(obj: any, keys: string[]): string | null {

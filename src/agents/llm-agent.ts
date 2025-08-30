@@ -1,6 +1,8 @@
-// src/llm-agent.ts
-import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
 import { C, Logger } from "../logger";
+import { R } from "../runtime/runtime";
+import LLMNoiseFilter from "../utils/llm-noise-filter";
+import { StreamingTagProtector } from "../utils/tag-protect";
+import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
 import { AgentMemory } from "../memory";
 import { GuardRail } from "../guardrails/guardrail";
 import { Agent } from "./agent";

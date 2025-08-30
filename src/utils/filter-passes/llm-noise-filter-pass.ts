@@ -1,4 +1,9 @@
-export abstract class LLMNoiseFilterPass {
-  abstract feed(chunk: string): { cleaned: string; removed: number };
-  abstract flush(): string; 
+export type PassFeedResult = { cleaned: string; removed?: number };
+
+export interface LLMNoiseFilterPass {
+  /** Feed a (possibly partial) chunk through the pass. */
+  feed(chunk: string): PassFeedResult;
+
+  /** Flush any carried state from this pass (e.g., incomplete fences/tags). */
+  flush(): string;
 }
