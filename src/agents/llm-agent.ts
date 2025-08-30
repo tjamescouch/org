@@ -177,7 +177,7 @@ export class LlmAgent extends Agent {
 
     // --- Streaming filter: RAW when DEBUG=1/true/yes; FILTERED otherwise ---
     const dbg = (R.env.DEBUG ?? "").trim().toLowerCase();
-    const dbg2 = (process.env.LOG_LEVEL||'').toUpperCase()==='DEBUG';
+    const dbg2 = (process.env.LOG_LEVEL || '').toUpperCase() === 'DEBUG';
     let debugStreaming = (dbg === "1") || (dbg === "true") || (dbg === "yes");
     if (dbg2) {
       debugStreaming = true;
@@ -210,11 +210,11 @@ export class LlmAgent extends Agent {
           Logger.streamInfo(C.bold(t));
         } else {
           // FILTERED streaming with tag preservation
-          //if(t) Logger.streamInfo(C.gray(t));
-          const masked = tagProtector.feedProtect(t);
-          const cleaned = this.streamFilter.feed(masked).cleaned;
-          const unmasked = tagProtector.unprotect(cleaned);
-          if (unmasked) Logger.streamInfo(C.bold(t));
+          if(t) Logger.streamInfo(C.gray(t));
+          //const masked = tagProtector.feedProtect(t);
+          //const cleaned = this.streamFilter.feed(masked).cleaned;
+          //const unmasked = tagProtector.unprotect(cleaned);
+          //if (unmasked) Logger.streamInfo(C.bold(t));
         }
       },
       onToolCallDelta
@@ -223,7 +223,7 @@ export class LlmAgent extends Agent {
     // --- Correct flush order: protector → filter → unprotect ---
     if (!debugStreaming) {
       const protTail = tagProtector.flush();                               // masked remainder
-      const filteredTail = this.streamFilter.feed(protTail).cleaned             // run through filter
+      const filteredTail = this.streamFilter.feed(protTail).cleaned             // run through filter 
         + this.streamFilter.flush();                            // then flush filter
       const unmaskedTail = tagProtector.unprotect(filteredTail);           // finally unmask
       if (unmaskedTail) Logger.streamInfo(C.bold(unmaskedTail));
