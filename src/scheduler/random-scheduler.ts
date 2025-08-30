@@ -135,7 +135,7 @@ export class RandomScheduler {
 
         let remaining = this.maxTools;
         let totalToolsUsed = 0;
-        const messagesIn = [...messages];
+        const messagesIn = [...messages].reverse();
 
         try {
           for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
