@@ -1,32 +1,50 @@
-import { describe, test, expect, mock } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import RandomScheduler from "../../src/scheduler/random-scheduler";
 import { Logger } from "../../src/logger";
+import { spyMethod } from "../helpers/spy";
+
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("scheduler external prompt bridge", () => {
   test("uses readUserLine and retains state machine", async () => {
-    const info = mock.spy(Logger, "info");
-    let called = 0;
+    // Spy on Logger.info without relying on Bun's mock API.
+    const infoSpy = spyMethod(Logger as unknown as { info: (...args: unknown[]) => void }, "info");
 
+    let calls = 0;
     const sched = new RandomScheduler({
       agents: [],
       maxTools: 0,
-      onAskUser: async () => undefined,
+      onAskUser: async () => undefined, // not used when readUserLine is provided
       projectDir: "/tmp",
       reviewMode: "never",
       promptEnabled: true,
-      readUserLine: async () => { called++; return called === 1 ? "hello" : ""; },
+      // Bridge supplies exactly one line, then empty to avoid a tight loop
+      readUserLine: async () => {
+        calls++;
+        return calls === 1 ? "hello" : "";
+      },
       idleSleepMs: 5,
-    } as any); // if SchedulerOptions isn't augmented in the test build
+    } as any); // local extension in tests to pass readUserLine
 
-    // Kick it once
-    await sched.start();
-    await sched.stop();
+    try {
+      // Run the scheduler and then stop it; avoid awaiting start() directly to prevent a hang.
+      const running = sched.start();
+      await wait(20);
+      await sched.stop();
+      await running;
+    } finally {
+      infoSpy.restore();
+    }
 
-    expect(called).toBeGreaterThan(0);
-    const log = info.mock.calls.map(([m]) => String(m)).join("\n");
-    // no scheduler-owned banner
-    expect(log.includes("user: (scheduler)")).toBe(false);
+    // Bridge was exercised at least once
+    expect(calls).toBeGreaterThan(0);
 
-    info.mockRestore();
+    // Build a joined string of what Logger.info saw
+    const joined = infoSpy.calls
+      .map((args) => args.map((a) => String(a)).join(" "))
+      .join("\n");
+
+    // With the bridge, the scheduler must NOT print its own 'user: (scheduler)' banner.
+    expect(joined.includes("user: (scheduler)")).toBe(false);
   });
 });

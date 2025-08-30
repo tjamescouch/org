@@ -37,6 +37,7 @@ function buildSystemPrompt(id: string): string {
     "",
     "MESSAGING",
     "- @@user to talk to the human.",
+    "- All messages intended for the user must be prefixed with @@user. No other tags are permitted for direct user communication. The user does not see group chat.",
     "- @@<agent> to DM a peer.",
     "-  @@group to address everyone.",
     "- **Only insert a tag when a reply from that participant is required.** If I can keep working on the task without waiting for input, I should proceed silently.",
