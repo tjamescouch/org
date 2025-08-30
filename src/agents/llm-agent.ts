@@ -175,6 +175,13 @@ export class LlmAgent extends Agent {
       Logger.streamInfo(C.red(deltaText));
     }
 
+    // --- NEW: streaming filter setup (raw in DEBUG=1; filtered otherwise) ---
+    const debugStreaming = String(R.env.DEBUG || "").trim() !== "" && R.env.DEBUG !== "0";
+    // Build a streaming pipeline identical to the post-turn cleaner
+    const streamFilter = LLMNoiseFilter.createDefault ? LLMNoiseFilter.createDefault() : new LLMNoiseFilter([] as any);
+    const tagProtector = new StreamingTagProtector();
+    // ------------------------------------------------------------------------
+
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
       tools: this.tools,
@@ -193,10 +200,25 @@ export class LlmAgent extends Agent {
           streamState = "content";
         }
 
-        Logger.streamInfo(C.bold(t))
+        // DEBUG=1 -> raw model tokens; otherwise filter the stream
+        if (debugStreaming) {
+          Logger.streamInfo(C.bold(t));
+        } else {
+          const masked = tagProtector.feedProtect(t);
+          const cleaned = streamFilter.feed(masked).cleaned;
+          const unmasked = tagProtector.unprotect(cleaned);
+          if (unmasked) Logger.streamInfo(C.bold(unmasked));
+        }
       },
       onToolCallDelta
     });
+    // After streaming completes, flush any buffered filter/protector state (non-debug only)
+    if (!debugStreaming) {
+      const tail = streamFilter.flush() + tagProtector.flush();
+      const unmaskedTail = tagProtector.unprotect(tail);
+      if (unmaskedTail) Logger.streamInfo(C.bold(unmaskedTail));
+    }
+
     Logger.info('');
     Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
 
