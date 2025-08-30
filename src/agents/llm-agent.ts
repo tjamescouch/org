@@ -86,7 +86,7 @@ export class LlmAgent extends Agent {
 
   // New: polymorphic tool executor (pure refactor)
   private readonly toolExecutor: ToolExecutor;
-  private streamFilter = LLMNoiseFilter.createDefault();
+  private streamFilter = new LLMNoiseFilter();
 
   constructor(id: string, driver: ChatDriver, model: string, guard?: GuardRail) {
     super(id, guard);

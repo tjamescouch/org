@@ -1,24 +1,21 @@
-
+// src/utils/filter-passes/__test__/llm-pda-stream.test.ts
 import { describe, it, expect } from "bun:test";
-import LLMPdaStreamPass from "../llm-pda-stream-pass";
-
-function* chunk(input: string, n: number): Generator<string> {
-  for (let i = 0; i < input.length; i += n) yield input.slice(i, i + n);
-}
-
-function runAtChunkSize(input: string, size: number): string {
-  const f = new LLMPdaStreamPass();
-  let out = "";
-  for (const ch of chunk(input, size)) {
-    out += f.feed(ch).cleaned;
-  }
-  out += f.flush().cleaned;
-  return out;
-}
+import { PDAStreamFilter } from "../llm-pda-stream";
 
 const SIZES = [1, 2, 3, 5, 7];
 
-describe("PDA filter — streaming (parameterized)", () => {
+function runAtChunkSize(s: string, n: number): string {
+  const f = new PDAStreamFilter();
+  let out = "";
+  for (let i = 0; i < s.length; i += n) {
+    const chunk = s.slice(i, Math.min(i + n, s.length));
+    out += f.feed(chunk).cleaned;
+  }
+  out += f.flush();
+  return out;
+}
+
+describe("PDA stream filter — streaming (parameterized)", () => {
   for (const n of SIZES) {
     it(`final channel: interspersed fence + mention (chunk size = ${n})`, () => {
       const s = "<|channel|>final <|constrain|>@@user<|message|>Hello!";
@@ -26,15 +23,17 @@ describe("PDA filter — streaming (parameterized)", () => {
     });
 
     it(`fence preserved verbatim (chunk size = ${n})`, () => {
-      const s = "before\n```bash\n<|constrain|>\n```\nafter";
+      const s =
+        "A\n```ts\n<|analysis_start|>keep this literal<|analysis_end|>\n```\nB";
       expect(runAtChunkSize(s, n)).toBe(s);
     });
 
     it(`drop memory + analysis + tool_call, unwrap tool_result (chunk size = ${n})`, () => {
-      const s = "A<|memory_start|>DUMP<|memory_end|>B"
-              + "<|analysis_start|>secret<|analysis_end|>"
-              + "<|tool_call_start|>{...}<|tool_call_end|>"
-              + "<|tool_result_start|>OK<|tool_result_end|>C";
+      const s =
+        "A<|memory_start|>DUMP<|memory_end|>B" +
+        "<|analysis_start|>secret<|analysis_end|>" +
+        "<|tool_call_start|>{...}<|tool_call_end|>" +
+        "<|tool_result_start|>OK<|tool_result_end|>C";
       expect(runAtChunkSize(s, n)).toBe("ABOKC");
     });
 
@@ -56,6 +55,11 @@ describe("PDA filter — streaming (parameterized)", () => {
     it(`drop non-JSON channel line up to newline (chunk size = ${n})`, () => {
       const s = "X<|channel|>foo<|message|>not-json-here\nY";
       expect(runAtChunkSize(s, n)).toBe("XY");
+    });
+
+    it(`unwrap <|final_start|>…<|final_end|> (chunk size = ${n})`, () => {
+      const s = "A<|final_start|>hi<|final_end|>B";
+      expect(runAtChunkSize(s, n)).toBe("AhiB");
     });
   }
 });
