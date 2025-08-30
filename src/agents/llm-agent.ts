@@ -174,14 +174,15 @@ export class LlmAgent extends Agent {
       Logger.streamInfo(C.red(deltaText));
     }
 
-    // --- Streaming filter setup (RAW when DEBUG=1/true/yes; FILTERED otherwise) ---
+    // --- Streaming filter: RAW when DEBUG=1/true/yes; FILTERED otherwise ---
     const dbg = String(R.env.DEBUG ?? "").trim().toLowerCase();
     const debugStreaming = dbg === "1" || dbg === "true" || dbg === "yes";
+    Logger.debug('debugStreaming', debugStreaming);
 
-    // Build a streaming pipeline identical to the post-turn cleaner
+    // Same pipeline as post-turn
     const streamFilter = LLMNoiseFilter.createDefault();
     const tagProtector = new StreamingTagProtector();
-    // ------------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
@@ -200,10 +201,10 @@ export class LlmAgent extends Agent {
         }
 
         if (debugStreaming) {
-          // RAW streaming (debug)
+          // RAW streaming
           Logger.streamInfo(C.bold(t));
         } else {
-          // FILTERED streaming (same pipeline as post-turn), with tag protection
+          // FILTERED streaming with tag preservation
           const masked   = tagProtector.feedProtect(t);
           const cleaned  = streamFilter.feed(masked).cleaned;
           const unmasked = tagProtector.unprotect(cleaned);
@@ -213,12 +214,15 @@ export class LlmAgent extends Agent {
       onToolCallDelta
     });
 
-    // Flush any remaining buffered text (non-debug path only)
+    // --- Correct flush order: protector → filter → unprotect ---
     if (!debugStreaming) {
-      const tail = streamFilter.flush() + tagProtector.flush();
-      const unmaskedTail = tagProtector.unprotect(tail);
+      const protTail = tagProtector.flush();                               // masked remainder
+      const filteredTail = streamFilter.feed(protTail).cleaned             // run through filter
+                         + streamFilter.flush();                            // then flush filter
+      const unmaskedTail = tagProtector.unprotect(filteredTail);           // finally unmask
       if (unmaskedTail) Logger.streamInfo(C.bold(unmaskedTail));
     }
+    // -----------------------------------------------------------
 
     Logger.info('');
     Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
