@@ -18,6 +18,10 @@ import { Logger } from "../logger";
 import type { RandomScheduler } from "../scheduler";
 import { finalizeAllSandboxes } from "../tools/sandboxed-sh";
 import { R } from "../runtime/runtime";
+import { defaultTtyScopes } from "./tty-scopes";
+
+export const withCookedTTY = defaultTtyScopes.withCookedTTY.bind(defaultTtyScopes);
+export const withRawTTY    = defaultTtyScopes.withRawTTY.bind(defaultTtyScopes);
 
 export type InputControllerOptions = {
   interjectKey?: string;         // default: "i"
