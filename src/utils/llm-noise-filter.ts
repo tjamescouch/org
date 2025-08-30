@@ -5,6 +5,7 @@
 
 import type { LLMNoiseFilterPass, PassFeedResult } from "./filter-passes/llm-noise-filter-pass";
 import { LLMNoiseFilterFirstPass } from "./filter-passes/llm-noise-filter-first-pass";
+import { ToolformerSentinelPass } from "./filter-passes/llm-toolformer-sentinel-pass";
 import { FinalChannelPass } from "./filter-passes/llm-final-channel-pass";
 import { AdvancedMemoryScrubPass } from "./filter-passes/llm-adv-memory-scrub-pass";
 
@@ -15,8 +16,7 @@ export class LLMNoiseFilter {
     if (!Array.isArray(passes) || passes.length === 0) {
       throw new Error("LLMNoiseFilter requires at least one filter pass");
     }
-    // IMPORTANT: do not mutate caller’s array (no .pop/.shift)!
-    this.passes = passes.slice();
+    this.passes = passes.slice(); // do not mutate caller array
   }
 
   feed(chunk: string): { cleaned: string; removed: number } {
@@ -25,7 +25,6 @@ export class LLMNoiseFilter {
 
     for (const pass of this.passes) {
       const res: PassFeedResult = pass.feed(cleaned) ?? { cleaned };
-      // Defensive: if a pass has a bug and returns falsy/empty string, keep pipeline stable.
       if (res && typeof res.cleaned === "string") {
         cleaned = res.cleaned;
       }
@@ -33,16 +32,12 @@ export class LLMNoiseFilter {
         removedTotal += res.removed;
       }
     }
-
     return { cleaned, removed: removedTotal };
   }
 
   flush(): string {
-    if (this.passes.length === 1) {
-      return this.passes[0].flush();
-    }
+    if (this.passes.length === 1) return this.passes[0].flush();
 
-    // Flush the first pass (lowest-level carry), then pipe via feed+flush through the rest.
     let tail = this.passes[0].flush();
     for (let i = 1; i < this.passes.length; i++) {
       const p = this.passes[i];
@@ -51,14 +46,14 @@ export class LLMNoiseFilter {
     return tail;
   }
 
-  // Convenience for older callers/tests
   push(chunk: string): string { return this.feed(chunk).cleaned; }
   end(): string { return this.flush(); }
 
-  /** Our standard pipeline (first-pass -> final-channel -> advanced-scrub). */
+  /** Standard pipeline: first-pass → toolformer → final-channel → advanced scrub. */
   static createDefault(): LLMNoiseFilter {
     return new LLMNoiseFilter([
       new LLMNoiseFilterFirstPass(),
+      new ToolformerSentinelPass(),
       new FinalChannelPass(),
       new AdvancedMemoryScrubPass(),
     ]);
