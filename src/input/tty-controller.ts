@@ -18,6 +18,7 @@ import { Readable, Writable } from "node:stream";
 import * as readline from "node:readline";
 import { SchedulerLike } from "../scheduler/scheduler";
 import { Logger } from "../logger";
+import { R } from "../runtime/runtime";
 
 export type TtyState = "idle" | "reading" | "draining" | "closed";
 
@@ -28,6 +29,20 @@ export interface Keypress {
   meta?: boolean;
   shift?: boolean;
 }
+
+// src/input/tty-controller.ts
+// Centralized, type-safe TTY state management with scoped transitions.
+// No external side-effects beyond toggling raw/cooked on the provided stream.
+
+export type TtyMode = "raw" | "cooked";
+
+/**
+ * Minimal surface we need from a TTY-like input stream.
+ * NodeJS.ReadStream conforms structurally, and test doubles can too.
+ */
+export type TtyIn = Pick<NodeJS.ReadStream, "isTTY"> &
+  Partial<Pick<NodeJS.ReadStream, "setRawMode" | "isRaw">>;
+
 
 export interface TtyControllerOptions {
   waitOverlayMessage?: string;            // default: "Waiting for agent to finish"
@@ -56,6 +71,14 @@ export interface TtyControllerEvents {
 export class TtyController extends EventEmitter {
   public state: TtyState = "idle";
 
+  /**
+   * Mode stack allows safe nesting (re-entrant scopes). The top of the stack
+   * reflects the mode *before* the current scope was entered.
+   */
+  private readonly modeStack: TtyMode[] = [];
+
+  /** Our current view of the stream's mode. */
+  private current: TtyMode;
   private readonly stdin: TtyControllerOptions["stdin"];
   private readonly stdout: TtyControllerOptions["stdout"];
   private readonly ensureTrailingNewline: boolean;
@@ -94,6 +117,7 @@ export class TtyController extends EventEmitter {
     this.stdout = opts.stdout;
     this.scheduler = opts.scheduler;
     this.finalizer = opts.finalizer;
+    this.current = this.detectInitialMode(this.stdin);
 
     this.prompt = opts.prompt ?? "You: ";
     this.interjectBanner = opts.interjectBanner ?? "You: ";
@@ -120,13 +144,13 @@ export class TtyController extends EventEmitter {
   public start(): void {
     if (this.state !== "idle") return;
 
-    const isTrace = process.env.ORG_TRACE === "1";
+    const isTrace = R.env.ORG_TRACE === "1";
     const rs = this.stdin as NodeJS.ReadStream;
 
     readline.emitKeypressEvents(rs);
     if (rs.isTTY?.valueOf?.() || rs.isTTY === true) {
-      try { rs.setRawMode?.(true); } catch {}
-      try { rs.resume?.(); } catch {}
+      try { rs.setRawMode?.(true); } catch { }
+      try { rs.resume?.(); } catch { }
     }
 
     if (isTrace) {
@@ -163,9 +187,9 @@ export class TtyController extends EventEmitter {
 
     if (graceful) {
       this.transition("draining");
-      try { await this.scheduler?.stop?.(); } catch {}
-      try { await this.scheduler?.drain?.(); } catch {}
-      try { await this.finalizer?.(); } catch {}
+      try { await this.scheduler?.stop?.(); } catch { }
+      try { await this.scheduler?.drain?.(); } catch { }
+      try { await this.finalizer?.(); } catch { }
     }
 
     const rs = this.stdin as NodeJS.ReadStream;
@@ -178,7 +202,7 @@ export class TtyController extends EventEmitter {
     this.rl = undefined;
 
     if (rs.isTTY) {
-      try { rs.setRawMode?.(false); } catch {}
+      try { rs.setRawMode?.(false); } catch { }
     }
 
     this.flush(true);
@@ -236,8 +260,8 @@ export class TtyController extends EventEmitter {
     this.interjectActive = true;
     if (this.rl) {
       this.stdout.write("\n");
-      (this.rl as any).setPrompt?.(this.interjectBanner);
-      (this.rl as any).prompt?.();
+      this.rl.setPrompt?.(this.interjectBanner);
+      this.rl.prompt?.();
     }
   }
 
@@ -247,15 +271,15 @@ export class TtyController extends EventEmitter {
     this.interjectDoneResolve?.();
     this.interjectDoneResolve = null;
     if (this.rl) {
-      (this.rl as any).setPrompt?.(this.prompt);
-      (this.rl as any).prompt?.(true);
+      this.rl.setPrompt?.(this.prompt);
+      this.rl.prompt?.(true);
     }
   }
 
   private renderPrompt() {
     if (this.rl) {
-      (this.rl as any).setPrompt?.(this.prompt);
-      (this.rl as any).prompt?.(true);
+      this.rl.setPrompt?.(this.prompt);
+      this.rl.prompt?.(true);
     } else {
       this.stdout.write(this.prompt);
     }
@@ -264,23 +288,23 @@ export class TtyController extends EventEmitter {
   // ---------- input handling ----------
 
   private onLine = async (line: string) => {
-    if (process.env.ORG_TRACE === "1") {
+    if (R.env.ORG_TRACE === "1") {
       Logger.info(`[TRACE] tty.onLine`, { line });
     }
 
     const s = this.scheduler;
     try {
-      if (s?.enqueueUserText)       await s.enqueueUserText(line);
-      else if (s?.enqueue)          await s.enqueue({ role: "user", content: line });
-      else if (s?.send)             await s.send(line);
-      else                          this.emit("line", line);
+      if (s?.enqueueUserText) await s.enqueueUserText(line);
+      else if (s?.enqueue) await s.enqueue({ role: "user", content: line });
+      else if (s?.send) await s.send(line);
+      else this.emit("line", line);
     } finally {
       this.endInterject();
     }
   };
 
   private onKeypress = async (_: string, key: Keypress) => {
-    if (process.env.ORG_TRACE === "1") {
+    if (R.env.ORG_TRACE === "1") {
       Logger.info(`[TRACE] tty.keypress`, key);
     }
 
@@ -351,7 +375,7 @@ export class TtyController extends EventEmitter {
   }
 
   public async askUser(fromAgent: string, content: string): Promise<void> {
-    if (process.env.ORG_TRACE === "1") {
+    if (R.env.ORG_TRACE === "1") {
       Logger.info(`[TRACE] tty.askUser`, { fromAgent, content });
     }
     const header = fromAgent ? `[${fromAgent}] ` : "";
@@ -361,42 +385,12 @@ export class TtyController extends EventEmitter {
       this.beginInterject();
     });
   }
-}
-
-export default TtyController;
 
 
 
 
-// src/input/tty-controller.ts
-// Centralized, type-safe TTY state management with scoped transitions.
-// No external side-effects beyond toggling raw/cooked on the provided stream.
 
-export type TtyMode = "raw" | "cooked";
 
-/**
- * Minimal surface we need from a TTY-like input stream.
- * NodeJS.ReadStream conforms structurally, and test doubles can too.
- */
-export type TtyIn = Pick<NodeJS.ReadStream, "isTTY"> &
-  Partial<Pick<NodeJS.ReadStream, "setRawMode" | "isRaw">>;
-
-export class TtyControllerNew {
-  private readonly tty: TtyIn;
-
-  /**
-   * Mode stack allows safe nesting (re-entrant scopes). The top of the stack
-   * reflects the mode *before* the current scope was entered.
-   */
-  private readonly modeStack: TtyMode[] = [];
-
-  /** Our current view of the stream's mode. */
-  private current: TtyMode;
-
-  constructor(tty: TtyIn) {
-    this.tty = tty;
-    this.current = this.detectInitialMode(tty);
-  }
 
   /** Returns the controller's view of the current mode. */
   get mode(): TtyMode {
@@ -418,19 +412,19 @@ export class TtyControllerNew {
    * Public to make adoption incremental; we can tighten later if desired.
    */
   setMode(next: TtyMode): void {
-    if (!this.tty.isTTY || typeof this.tty.setRawMode !== "function") {
+    if (!this.stdin.isTTY || typeof this.stdin.setRawMode !== "function") {
       // Non-TTY or no toggling available: just update our local view.
       this.current = next;
       return;
     }
 
     const wantRaw = next === "raw";
-    const isRaw = this.tty.isRaw === true; // Node sets this when in raw mode.
+    const isRaw = this.stdin.isRaw === true; // Node sets this when in raw mode.
 
     if (wantRaw && !isRaw) {
-      this.tty.setRawMode(true);
+      this.stdin.setRawMode(true);
     } else if (!wantRaw && isRaw) {
-      this.tty.setRawMode(false);
+      this.stdin.setRawMode(false);
     }
 
     this.current = next;
@@ -457,10 +451,11 @@ export class TtyControllerNew {
       this.setMode(prev);
     }
   }
-}
 
-/**
- * Default controller bound to process.stdin.
- * Kept as a convenience; callers may also construct their own with a custom stream.
- */
-//export const defaultTtyController = new TtyController(process.stdin);
+  public async unwind(): Promise<void> {
+    while (this.modeStack.length > 0) {
+      const mode = this.modeStack.pop() ?? "cooked";
+      this.setMode(mode);
+    }
+  }
+}

@@ -16,20 +16,45 @@ import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
 import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
 import { getRecipe } from "./recipes";
-import { installTtyGuard, withCookedTTY } from "./input/tty-guard";
 import { ReviewManager } from "./scheduler/review-manager";
 import { sandboxMangers } from "./sandbox/session";
 import { TtyController } from "./input/tty-controller";
 import Passthrough from "./input/passthrough";
 
+
+// Install once
+let installed = false;
+const controlContainer: { controller: TtyController | undefined } = { controller: undefined };
+
+/**
+ * Default controller bound to R.stdin.
+ * Kept as a convenience; callers may also construct their own with a custom stream.
+ */
+export function installTtyGuard() {
+  if (installed) return;
+  installed = true;
+
+  const unwind = () => {
+    try { controlContainer.controller?.unwind(); } catch (e) { Logger.error(e) }
+  };
+
+  //R.on("beforeExit", unwind);
+  R.on("SIGINT", () => { unwind(); R.exit(130); });
+  R.on("SIGTERM", () => { unwind(); R.exit(143); });
+  R.on("uncaughtException", (err) => { unwind(); Logger.error?.(err); R.exit(1); });
+  R.on("unhandledRejection", (reason: any) => { unwind(); Logger.error?.(reason); R.exit(1); });
+}
+
+export function withCookedTTY(f: () => {}): void {
+  controlContainer.controller?.withCookedTTY(() => { f() });
+}
+
+export function withRawTTY(f: () => {}): void {
+  controlContainer.controller?.withRawTTY(() => { f() });
+}
+
 installTtyGuard();
 
-type InputPort = {
-  askUser(fromAgent: string, content: string): Promise<void>;
-  setScheduler(s: IScheduler): void;
-  start(): void;
-  close?(graceful?: boolean): Promise<void>;
-};
 
 function parseArgs(argv: string[]) {
   const out: Record<string, string | boolean> = {};
@@ -53,7 +78,7 @@ function resolveProjectDir(seed: string): string {
   try {
     const out = execFileSync("git", ["-C", seed, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
     if (out) return out;
-  } catch {}
+  } catch { }
   let d = path.resolve(seed);
   while (true) {
     if (fs.existsSync(path.join(d, ".git"))) return d;
@@ -123,9 +148,9 @@ async function listRecentSessionPatches(projectDir: string, minutes = 20): Promi
       try {
         const st = await fsp.stat(patch);
         if (st.isFile() && st.size > 0 && st.mtimeMs >= cutoff) out.push(patch);
-      } catch {}
+      } catch { }
     }
-  } catch {}
+  } catch { }
   return out.sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
 }
 
@@ -156,9 +181,9 @@ function applyPatch(projectDir: string, patchPath: string) {
 }
 
 async function finalizeOnce(scheduler: SchedulerLike | null, projectDir: string, reviewMode: "ask" | "auto" | "never") {
-  try { await scheduler?.drain?.(); } catch {}
-  try { await (sandboxMangers as any)?.finalizeAll?.(); } catch {}
-  try { await scheduler?.stop?.(); } catch {}
+  try { await scheduler?.drain?.(); } catch { }
+  try { await (sandboxMangers as any)?.finalizeAll?.(); } catch { }
+  try { await scheduler?.stop?.(); } catch { }
 
   const patches = await listRecentSessionPatches(projectDir, 120);
   if (patches.length === 0) {
@@ -234,40 +259,37 @@ async function main() {
   // kickoff FIRST so we can set promptEnabled properly
   const kickoff: string | undefined =
     typeof args["prompt"] === "string" ? String(args["prompt"])
-    : typeof recipe?.kickoff === "string" ? recipe!.kickoff
-    : undefined;
+      : typeof recipe?.kickoff === "string" ? recipe!.kickoff
+        : undefined;
 
-  const wrapper: any = {
-    input: undefined
-  }
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
 
   const scheduler: IScheduler = new RandomScheduler({
     agents,
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
-    onAskUser: (fromAgent: string, content: string) => wrapper.input.askUser(fromAgent, content),
+    onAskUser: (fromAgent: string, content: string) => { return controlContainer.controller?.askUser(fromAgent, content) ?? Promise.resolve(undefined) },
     projectDir,
     reviewMode,
     promptEnabled:
       typeof args["prompt"] === "boolean" ? (args["prompt"] as boolean)
-      : kickoff ? false
-      : R.stdin.isTTY,
+        : kickoff ? false
+          : R.stdin.isTTY,
   });
 
   // Build input
   if (R.stdin.isTTY) {
-    wrapper.input = new TtyController({
+    controlContainer.controller = new TtyController({
       waitOverlayMessage: "Waiting for agent to finish",
       waitSuppressOutput: true,
       stdin: R.stdin,
       stdout: R.stdout,
-      prompt: String(args["banner"] ?? "User: "),
+      prompt: String(args["banner"] ?? "user: "),
       interjectKey: String(args["interject-key"] ?? "i"),
-      interjectBanner: String(args["banner"] ?? "You: "),
+      interjectBanner: String(args["banner"] ?? "user: "),
       finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
     });
   } else {
-    wrapper.input = new Passthrough({
+    new Passthrough({
       stdin: R.stdin,
       stdout: R.stdout,
       scheduler,
@@ -275,8 +297,8 @@ async function main() {
     });
   }
 
-  wrapper.input.setScheduler(scheduler);
-  wrapper.input.start();
+  controlContainer.controller?.setScheduler(scheduler);
+  controlContainer.controller?.start();
 
   // Enqueue seed (type-safe, single call)
   if (typeof kickoff === "string" && kickoff.length > 0) {

@@ -1,6 +1,7 @@
 // src/input/__tests__/tty-controller.test.ts
 import { describe, test, expect } from "bun:test";
 import { TtyController, type TtyIn } from "../../input/tty-controller";
+import { R } from "../../runtime/runtime";
 
 class FakeTty implements TtyIn {
   isTTY: boolean;
@@ -18,7 +19,7 @@ class FakeTty implements TtyIn {
 describe("TtyController", () => {
   test("withCookedTTY restores prior raw mode", async () => {
     const tty = new FakeTty({ isTTY: true, isRaw: true }); // start raw
-    const ctl = new TtyController(tty);
+    const ctl = new TtyController({stdin: tty, stdout: R.stdout});
 
     expect(ctl.mode).toBe("raw");
     await ctl.withCookedTTY(async () => {
@@ -32,7 +33,7 @@ describe("TtyController", () => {
 
   test("withRawTTY restores prior cooked mode", async () => {
     const tty = new FakeTty({ isTTY: true, isRaw: false }); // start cooked
-    const ctl = new TtyController(tty);
+    const ctl = new TtyController({stdin: tty, stdout: R.stdout});
 
     expect(ctl.mode).toBe("cooked");
     await ctl.withRawTTY(() => {
@@ -46,7 +47,7 @@ describe("TtyController", () => {
 
   test("nesting is safe and restores outer mode", async () => {
     const tty = new FakeTty({ isTTY: true, isRaw: true }); // raw
-    const ctl = new TtyController(tty);
+    const ctl = new TtyController({stdin: tty, stdout: R.stdout});
 
     await ctl.withCookedTTY(async () => {
       expect(ctl.mode).toBe("cooked");
@@ -62,7 +63,7 @@ describe("TtyController", () => {
 
   test("exceptions still restore prior mode", async () => {
     const tty = new FakeTty({ isTTY: true, isRaw: false }); // cooked
-    const ctl = new TtyController(tty);
+    const ctl = new TtyController({stdin: tty, stdout: R.stdout});
 
     await expect(
       ctl.withRawTTY(async () => {
@@ -76,7 +77,7 @@ describe("TtyController", () => {
 
   test("non-TTY streams don't throw and update internal view", async () => {
     const tty: TtyIn = { isTTY: false };
-    const ctl = new TtyController(tty);
+    const ctl = new TtyController({stdin: tty, stdout: R.stdout});
 
     expect(ctl.mode).toBe("cooked"); // default
     await ctl.withRawTTY(async () => {
