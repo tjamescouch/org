@@ -14,6 +14,8 @@ export interface StepsDirCarrier {
   runRootHostDir?: string; // optional hint if available
 }
 
+function toPosix(p: string) { return p.split(path.sep).join(path.posix.sep); }
+
 /** Resolve a usable steps directory path even if the session lacks a helper. */
 export function resolveStepsHostDir(session: StepsDirCarrier, fallbackRoot?: string): string {
   if (typeof session.getStepsHostDir === "function") {
