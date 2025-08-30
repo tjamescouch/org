@@ -9,6 +9,9 @@
 // - Preserves content inside fenced code blocks.
 // - Streaming-safe: carries the last partial line; tracks fence state across chunks.
 
+import { LLMNoiseFilterPass } from "./llm-noise-filter-pass";
+
+
 type FenceDelim = "```" | "~~~";
 
 const FINAL_PREFIXES = [
@@ -39,14 +42,15 @@ const META_DROP_RE: RegExp[] = [
   /^\s*<\/?(?:analysis|thinking|deliberation|plan|scratch|reasoning|commentary|tool)>\s*$/i,
 ];
 
-export class AdvancedMemoryScrubPass {
+export class AdvancedMemoryScrubPass implements LLMNoiseFilterPass {
   private tail = "";
   private inFence: FenceDelim | "" = "";
 
-  feed(chunk: string): string {
-    if (!chunk) return "";
+  feed(chunk: string): { cleaned: string; removed: number }{
+    if (!chunk) return { cleaned: "", removed: 0 };
     let s = this.tail + chunk;
     this.tail = "";
+    let removed = 0;
 
     const endedWithNL = s.endsWith("\n");
     const lines = s.split("\n");
@@ -61,6 +65,7 @@ export class AdvancedMemoryScrubPass {
       // --- Fence handling (preserve verbatim inside fences) ---
       const toggled = this.applyFenceToggles(line);
       if (this.inFence) {
+        removed++;
         out.push(line);
         // Fence state already updated via applyFenceToggles
         continue;
@@ -83,6 +88,7 @@ export class AdvancedMemoryScrubPass {
         continue;
       }
 
+      removed++;
       out.push(stripped);
       if (norm.length > 0) lastEmitted = norm;
     }
@@ -96,7 +102,7 @@ export class AdvancedMemoryScrubPass {
     // keep any partial last line in the tail
     this.tail = last ?? "";
 
-    return joined;
+    return { cleaned: joined, removed };
   }
 
   flush(): string {

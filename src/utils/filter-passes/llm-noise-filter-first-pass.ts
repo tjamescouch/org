@@ -8,7 +8,9 @@
 // - Preserves fenced code blocks verbatim
 // - Streaming carry for partial tokens and incomplete fences
 
-export class LLMNoiseFilterFirstPass {
+import { LLMNoiseFilterPass } from "./llm-noise-filter-pass";
+
+export class LLMNoiseFilterFirstPass implements LLMNoiseFilterPass {
   private tail = "";
 
   feed(chunk: string): { cleaned: string; removed: number } {

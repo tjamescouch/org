@@ -1,6 +1,9 @@
 // src/scheduler/filters.ts
 import { LLMNoiseFilter } from "../utils/llm-noise-filter";
 import { extractCodeGuards } from "../utils/extract-code-blocks";
+import { LLMNoiseFilterFirstPass } from "../utils/filter-passes/llm-noise-filter-first-pass";
+import { FinalChannelPass } from "../utils/filter-passes/llm-final-channel-pass";
+import { AdvancedMemoryScrubPass } from "../utils/filter-passes/llm-adv-memory-scrub-pass";
 
 /**
  * Protect scheduler tags from being altered by the noise filter.
@@ -26,9 +29,21 @@ function unprotectTags(s: string): string {
  * Each filter is stateful (rolling tail), so keep them per-scheduler.
  */
 export class NoiseFilters {
-  readonly agent = new LLMNoiseFilter();
-  readonly group = new LLMNoiseFilter();
-  readonly file = new LLMNoiseFilter();
+  readonly agent = new LLMNoiseFilter([
+    new LLMNoiseFilterFirstPass(), // preserves legacy sentinel/fence behavior
+    new FinalChannelPass(),        // handles <|channel|>final … <|message|>… + commentary unwrap
+    new AdvancedMemoryScrubPass(), // minimal "LLM quirks" scrub (safe by default)
+  ]);
+  readonly group = new LLMNoiseFilter([
+    new LLMNoiseFilterFirstPass(), // preserves legacy sentinel/fence behavior
+    new FinalChannelPass(),        // handles <|channel|>final … <|message|>… + commentary unwrap
+    new AdvancedMemoryScrubPass(), // minimal "LLM quirks" scrub (safe by default)
+  ]);
+  readonly file = new LLMNoiseFilter([
+    new LLMNoiseFilterFirstPass(), // preserves legacy sentinel/fence behavior
+    new FinalChannelPass(),        // handles <|channel|>final … <|message|>… + commentary unwrap
+    new AdvancedMemoryScrubPass(), // minimal "LLM quirks" scrub (safe by default)
+  ]);
 
   cleanAgent(s: string): string {
     const masked = protectTags(String(s ?? ""));
