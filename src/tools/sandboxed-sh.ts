@@ -1,13 +1,12 @@
 import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
-import { spawn, spawnSync } from "child_process";
+import { spawn, spawnSync, execFileSync } from "child_process";
 import { SandboxManager, sandboxMangers } from "../sandbox/session";
 import { ExecPolicy } from "../sandbox/policy";
 import { detectBackend } from "../sandbox/detect";
 import { Logger } from "../logger";
 import { R } from "../runtime/runtime";
-
 
 export interface StepsDirCarrier {
   getStepsHostDir?: () => string;
@@ -33,14 +32,34 @@ export function resolveStepsHostDir(session: StepsDirCarrier, fallbackRoot?: str
   // Last resort: a deterministic path under the CWD (keeps tests deterministic).
   return path.resolve(".org", "runs", "current", "steps");
 }
-// --- end helper ---
 
+function makeMgrKey(agent: string, workDir: string, runRoot: string) {
+  return `${agent}::${path.resolve(workDir)}::${path.resolve(runRoot)}`;
+}
 
+/* -----------------------------------------------------------------------------
+ * Helper: resolve the repository enclosing a seed directory (or the seed itself)
+ * ---------------------------------------------------------------------------*/
+function resolveRepoRootOrSelf(seed: string): string {
+  try {
+    const out = execFileSync("git", ["-C", seed, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+    if (out) return out;
+  } catch {
+    // not a git repo; fall through
+  }
+  return path.resolve(seed);
+}
+
+/* -----------------------------------------------------------------------------
+ * Types
+ * ---------------------------------------------------------------------------*/
 export type ToolArgs = { cmd: string };
 export type ToolResult = { ok: boolean; stdout: string; stderr: string; exit_code: number; cmd: string };
 
 export interface ToolCtx {
+  /** Historical field; ignored for sandbox copy source in sandboxedSh (we use the host CWD repo). */
   projectDir: string;
+
   runRoot?: string;
   agentSessionId?: string;
   policy?: Partial<ExecPolicy>;
@@ -203,18 +222,22 @@ function tailStepsDir(
  * Public API — non-interactive with heartbeat + live streaming
  * ---------------------------------------------------------------------------*/
 
-export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
-  const sessionKey = ctx.agentSessionId ?? "default";
-  const projectDir = ctx.projectDir ?? R.cwd();
-  const runRoot = ctx.runRoot ?? path.join(projectDir, ".org");
-  const idleHeartbeatMsRaw = ctx?.idleHeartbeatMs ?? 1000;
+export async function sandboxedSh(args: ToolArgs, _ctx: ToolCtx): Promise<ToolResult> {
+  const sessionKey = _ctx.agentSessionId ?? "default";
+
+  // >>> IMPORTANT: choose the repository enclosing the host CWD as the copy source
+  // This ensures the agent works on the user's *actual* project, not the org repo.
+  const hostRepoRoot = resolveRepoRootOrSelf(R.cwd());
+
+  // Keep runRoot scoped under that repo (default .org)
+  const runRoot = _ctx.runRoot ?? path.join(hostRepoRoot, ".org");
+  const idleHeartbeatMsRaw = _ctx?.idleHeartbeatMs ?? 1000;
   const idleHeartbeatMs = HEARTBEAT_MUTED ? 0 : Math.max(250, idleHeartbeatMsRaw);
 
-  const mgr = await getManager(sessionKey, projectDir, runRoot);
-  const session = await mgr.getOrCreate(sessionKey, ctx.policy);
+  const mgr = await getManager(sessionKey, hostRepoRoot, runRoot);
+  const session = await mgr.getOrCreate(sessionKey, _ctx.policy);
 
   const stepsHostDir = resolveStepsHostDir(session as unknown as StepsDirCarrier, runRoot);
-
 
   // Baseline: make sure the directory exists; streaming handler tolerates absence.
   try { await fsp.mkdir(stepsHostDir, { recursive: true }); } catch { }
@@ -252,7 +275,7 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   );
 
   // Run the step inside the sandbox (this writes those files)
-  const step = await (session as any).exec(args.cmd);
+  const step = await session.exec(args.cmd);
 
   // Stop heartbeat + streamers and clean up the line nicely.
   clearInterval(hbTimer);
@@ -279,11 +302,14 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
 }
 
 export async function finalizeSandbox(ctx: ToolCtx) {
-  const sessionKey = ctx.agentSessionId ?? "default";
-  Logger.info("Finalizing sandbox", sessionKey);
-  const m = sandboxMangers.get(sessionKey);
+  // Match the same manager key we used for creation
+  const agentSessionId = ctx.agentSessionId ?? "default";
+  const workDir = R.cwd();
+  const runRoot = ctx.runRoot ?? path.join(ctx.projectDir ?? workDir, ".org");
+  const key = makeMgrKey(agentSessionId, workDir, runRoot);
+  const m = sandboxMangers.get(key);
   if (!m) return;
-  return m.finalize(sessionKey);
+  return m.finalize(agentSessionId);
 }
 
 export async function finalizeAllSandboxes() {
@@ -317,7 +343,8 @@ export async function shCapture(
   cmd: string,
   opts: { projectDir: string; agentSessionId: string }
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const mgr = await getManager(opts.agentSessionId, opts.projectDir);
+  // For programmatic capture, prefer explicit projectDir (callers know what they want).
+  const mgr = await getManager(opts.agentSessionId, opts.projectDir, R.cwd());
   const session = await mgr.getOrCreate(opts.agentSessionId);
   const r = await (session as any).exec(cmd);
   const stdout = (r && r.stdoutFile && fs.existsSync(r.stdoutFile)) ? fs.readFileSync(r.stdoutFile, "utf8") : (r?.stdout ?? "");
@@ -369,7 +396,7 @@ export async function shInteractive(
     script = cmdOrArgv;
   }
 
-  const mgr = await getManager(opts.agentSessionId, opts.projectDir);
+  const mgr = await getManager(opts.agentSessionId, opts.projectDir, R.cwd());
   const session = await mgr.getOrCreate(opts.agentSessionId);
 
   const runInteractive =
@@ -407,4 +434,3 @@ export async function shInteractive(
     child.on("exit", (code) => resolve({ code: code ?? 0 }));
   });
 }
-

@@ -56,12 +56,10 @@ export async function routeWithSideEffects(
         onAgent: async (_from, to, content) => {
             deps.setRespondingAgent(to);
             const cleaned = filters.cleanAgent(content);
-            console.log("CLEANED", cleaned);
             if (cleaned) deps.enqueue(to, { role: "user", from: fromAgent.id, content: cleaned });
         },
         onGroup: async (_from, content) => {
             const cleaned = filters.cleanGroup(content);
-            console.log("CLEANED", cleaned);
             const peers = deps.agents.map(a => a.id);
             const dec = fromAgent.guardCheck?.("group", cleaned, peers) || null;
             if (dec) await deps.applyGuard(fromAgent, dec);
@@ -75,7 +73,6 @@ export async function routeWithSideEffects(
             }
         },
         onUser: async (_from, _content) => {
-            console.log("CLEANED", filters.cleanAgent(_content));
             // In non-interactive mode, an @@user tag should terminate cleanly
             if (!process.stdin.isTTY) {
                 try { await finalizeAllSandboxes(); } catch (e) { Logger.error(e); }

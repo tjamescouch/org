@@ -1,144 +1,49 @@
-// src/utils/llm-noise-filter-first-pass.ts
-//
-// First pass: historical sentinel & fence logic, with ONE key change:
-// **Do not remove `<|channel|>final … <|message|>…` blocks**.
-// Those are forwarded to FinalChannelPass.
-//
-// - Removes non-final toolformer sentinels
-// - Preserves fenced code blocks verbatim
-// - Streaming carry for partial tokens and incomplete fences
-
-import { LLMNoiseFilterPass } from "./llm-noise-filter-pass";
-
-export class LLMNoiseFilterFirstPass implements LLMNoiseFilterPass {
+// Fence‑aware pass‑through with strict prefix carry guards.
+// Leaves tokens intact and keeps only a STRICT token prefix as carry.
+export class LLMNoiseFilterFirstPass {
   private tail = "";
-
-  feed(chunk: string): { cleaned: string; removed: number } {
-    const s = this.tail + (chunk ?? "");
-    const { cleaned, carry, removed } = stripSentinelsPreservingFences(s);
-    this.tail = carry;
-    return { cleaned, removed };
-  }
-
-  flush(): string {
-    const out = this.tail;
+  feed(chunk: string) {
+    if (!chunk) return { cleaned: "" };
+    let s = this.tail + chunk;
     this.tail = "";
-    return out;
-  }
-}
+    let out = "";
+    let i = 0;
 
-const TAIL_WINDOW = 128;
-const CH_TOKEN = "<|channel|>";
-const MSG_TOKEN = "<|message|>";
-const FENCE = "```";
-
-function stripSentinelsPreservingFences(
-  s: string
-): { cleaned: string; carry: string; removed: number } {
-  const parts: string[] = [];
-  const n = s.length;
-  let i = 0;
-  let removed = 0;
-
-  while (i < n) {
-    // Preserve fenced code blocks verbatim.
-    if (s.startsWith(FENCE, i)) {
-      const j = s.indexOf(FENCE, i + FENCE.length);
-      if (j < 0) break; // incomplete fence -> keep whole remainder as carry
-      parts.push(s.slice(i, j + FENCE.length));
-      i = j + FENCE.length;
-      continue;
-    }
-
-    // Look for a sentinel start.
-    const start = s.indexOf(CH_TOKEN, i);
-    if (start < 0) {
-      // No sentinel ahead. Emit all except a tiny suffix that *might* be
-      // the beginning of CH_TOKEN, MSG_TOKEN, or FENCE split across chunks.
-      const carryStart = findPossiblePrefixStart(s, i, n);
-      parts.push(s.slice(i, carryStart));
-      i = carryStart; // everything from i is carry
-      break;
-    }
-
-    // Emit prefix up to sentinel.
-    if (start > i) parts.push(s.slice(i, start));
-
-    // We have "<|channel|>", require "<|message|>" after it.
-    const metaStart = start + CH_TOKEN.length;
-    const msgTag = s.indexOf(MSG_TOKEN, metaStart);
-    if (msgTag < 0) { i = start; break; } // keep from sentinel start as carry
-
-    // **NEW**: skip final; let FinalChannelPass handle it
-    const meta = s.slice(metaStart, msgTag);
-    if (/^\s*final\b/i.test(meta)) {
-      // Emit a byte to avoid infinite loop; leave the block intact for later pass
-      parts.push(s[start]!);
-      i = start + 1;
-      continue;
-    }
-
-    const p = msgTag + MSG_TOKEN.length;
-
-    // Try to consume a following JSON object (balanced, string-aware).
-    const scan = scanJSONObject(s, p);
-    if (scan.ok) {
-      i = scan.end;    // drop entire sentinel
-      removed++;
-      continue;
-    }
-
-    // If JSON is incomplete and no newline is present yet, keep for next chunk.
-    const nl = s.indexOf("\n", p);
-    if (nl < 0) { i = start; break; }
-
-    // Otherwise drop up to the newline and continue.
-    i = nl + 1;
-    removed++;
-  }
-
-  const cleaned = parts.join("");
-  const carry = s.slice(i);    // only what we did NOT emit
-  return { cleaned, carry, removed };
-}
-
-/** Find earliest index t in [i, n] such that s.slice(t) could start a token. */
-function findPossiblePrefixStart(s: string, i: number, n: number): number {
-  const windowStart = Math.max(i, n - TAIL_WINDOW);
-  for (let t = windowStart; t < n; t++) {
-    const suf = s.slice(t);
-    if (
-      CH_TOKEN.startsWith(suf) ||
-      MSG_TOKEN.startsWith(suf) ||
-      FENCE.startsWith(suf)
-    ) {
-      return t; // keep from here as carry
-    }
-  }
-  return n; // no possible prefix -> emit all
-}
-
-function scanJSONObject(s: string, i: number): { ok: boolean; end: number } {
-  const n = s.length;
-  while (i < n && /\s/.test(s[i]!)) i++;
-  if (s[i] !== "{") return { ok: false, end: i };
-
-  let depth = 0, inStr = false, esc = false;
-
-  for (; i < n; i++) {
-    const ch = s[i]!;
-    if (inStr) {
-      if (esc) { esc = false; continue; }
-      if (ch === "\\") { esc = true; continue; }
-      if (ch === "\"") { inStr = false; continue; }
-    } else {
-      if (ch === "\"") { inStr = true; continue; }
-      if (ch === "{") { depth++; continue; }
-      if (ch === "}") {
-        depth--;
-        if (depth === 0) return { ok: true, end: i + 1 };
+    while (i < s.length) {
+      if (s.startsWith("```", i)) {
+        const j = s.indexOf("```", i + 3);
+        if (j < 0) { this.tail = s.slice(i); return { cleaned: out }; }
+        out += s.slice(i, j + 3); i = j + 3; continue;
       }
+      const nextFence = s.indexOf("```", i);
+      const nextChan  = s.indexOf("<|channel|>", i);
+      const nextMsg   = s.indexOf("<|message|>", i);
+      let next = Number.MAX_SAFE_INTEGER;
+      if (nextFence >= 0) next = Math.min(next, nextFence);
+      if (nextChan  >= 0) next = Math.min(next, nextChan);
+      if (nextMsg   >= 0) next = Math.min(next, nextMsg);
+      if (next === Number.MAX_SAFE_INTEGER) {
+        const carryStart = strictPrefixStart(s, i);
+        out += s.slice(i, carryStart);
+        this.tail = s.slice(carryStart);
+        return { cleaned: out };
+      }
+      if (next > i) { out += s.slice(i, next); i = next; continue; }
+      if (s.startsWith("<|channel|>", i)) { out += "<|channel|>"; i += 11; continue; }
+      if (s.startsWith("<|message|>", i)) { out += "<|message|>"; i += 11; continue; }
+      out += s[i]!; i++;
     }
+    return { cleaned: out };
   }
-  return { ok: false, end: n }; // incomplete object
+  flush() { const t = this.tail; this.tail = ""; return t; }
+}
+function strictPrefixStart(s: string, i: number): number {
+  const toks = ["```", "<|channel|>", "<|message|>"];
+  const n = s.length, maxLen = Math.max(...toks.map(t => t.length)) - 1;
+  const win = Math.max(i, n - maxLen);
+  for (let t = win; t < n; t++) {
+    const suf = s.slice(t);
+    if (toks.some(tok => suf.length < tok.length && tok.startsWith(suf))) return t;
+  }
+  return n;
 }

@@ -1,6 +1,8 @@
-// src/llm-agent.ts
-import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
 import { C, Logger } from "../logger";
+import { R } from "../runtime/runtime";
+import LLMNoiseFilter from "../utils/llm-noise-filter";
+import { StreamingTagProtector } from "../utils/tag-protect";
+import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
 import { AgentMemory } from "../memory";
 import { GuardRail } from "../guardrails/guardrail";
 import { Agent } from "./agent";
@@ -126,7 +128,6 @@ export class LlmAgent extends Agent {
     Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
     if (abortCallback?.()) {
       Logger.debug("Aborted turn");
-
       return [{ message: "Turn aborted.", toolsUsed: 0 }];
     }
 
@@ -173,16 +174,24 @@ export class LlmAgent extends Agent {
       Logger.streamInfo(C.red(deltaText));
     }
 
+    // --- Streaming filter: RAW when DEBUG=1/true/yes; FILTERED otherwise ---
+    const dbg = String(R.env.DEBUG ?? "").trim().toLowerCase();
+    const debugStreaming = dbg === "1" || dbg === "true" || dbg === "yes";
+    Logger.info('debugStreaming', debugStreaming);
+
+    // Same pipeline as post-turn
+    const streamFilter = LLMNoiseFilter.createDefault();
+    const tagProtector = new StreamingTagProtector();
+    // -----------------------------------------------------------------------
+
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
       tools: this.tools,
       onReasoningToken: t => {
-        if (process.env.HIDE_COT) {
+        if (R.env.HIDE_COT) {
           Logger.streamInfo(C.cyan('.'));
-
           return;
         }
-
         Logger.streamInfo(C.cyan(t))
       },
       onToken: t => {
@@ -191,10 +200,30 @@ export class LlmAgent extends Agent {
           streamState = "content";
         }
 
-        Logger.streamInfo(C.bold(t))
+        if (debugStreaming) {
+          // RAW streaming
+          Logger.streamInfo(C.bold(t));
+        } else {
+          // FILTERED streaming with tag preservation
+          const masked   = tagProtector.feedProtect(t);
+          const cleaned  = streamFilter.feed(masked).cleaned;
+          const unmasked = tagProtector.unprotect(cleaned);
+          if (unmasked) Logger.streamInfo(C.bold(unmasked));
+        }
       },
       onToolCallDelta
     });
+
+    // --- Correct flush order: protector → filter → unprotect ---
+    if (!debugStreaming) {
+      const protTail = tagProtector.flush();                               // masked remainder
+      const filteredTail = streamFilter.feed(protTail).cleaned             // run through filter
+                         + streamFilter.flush();                            // then flush filter
+      const unmaskedTail = tagProtector.unprotect(filteredTail);           // finally unmask
+      if (unmaskedTail) Logger.streamInfo(C.bold(unmaskedTail));
+    }
+    // -----------------------------------------------------------
+
     Logger.info('');
     Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
 
@@ -203,7 +232,6 @@ export class LlmAgent extends Agent {
     }
 
     const finalText = sanitizeContent((out.text || "").trim());
-
     const allReasoning = out?.reasoning || "";
 
     // Inform guard rail about this assistant turn (before routing)
@@ -243,7 +271,7 @@ export class LlmAgent extends Agent {
       }
     }
 
-    // --- Refactored: delegate to executor (pure behavior) ---
+    // Delegate to executor (pure behavior)
     const execResult = await this.toolExecutor.execute({
       calls: sanitizedCalls,
       maxTools,
@@ -255,7 +283,6 @@ export class LlmAgent extends Agent {
     });
     const toolsUsed = execResult.toolsUsed;
     forceEndTurn = execResult.forceEndTurn;
-    // --------------------------------------------------------
 
     if (toolsUsed >= maxTools) {
       if (finalText) {
@@ -266,7 +293,6 @@ export class LlmAgent extends Agent {
         await this.memory.add({ role: "assistant", content: allReasoning, from: "Me" });
       }
     }
-    // Loop: the assistant will see tool outputs (role:"tool") now in memory.
 
     Logger.info(C.blue(`\n[${this.id}] wrote. [${calls.length}] tools requested. [${toolsUsed}] tools used.`));
 
