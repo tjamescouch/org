@@ -21,40 +21,44 @@ import { sandboxMangers } from "./sandbox/session";
 import { TtyController } from "./input/tty-controller";
 import Passthrough from "./input/passthrough";
 
-
 // Install once
 let installed = false;
 const controlContainer: { controller: TtyController | undefined } = { controller: undefined };
 
 /**
- * Default controller bound to R.stdin.
- * Kept as a convenience; callers may also construct their own with a custom stream.
+ * Hook signals and ensure the controller finalizer runs once.
  */
-export function installTtyGuard() {
+export function installTtyGuard(): void {
   if (installed) return;
   installed = true;
 
   const unwind = () => {
-    try { controlContainer.controller?.unwind(); } catch (e) { Logger.error(e) }
+    const c = controlContainer.controller;
+    if (!c) return;
+    c.unwind().catch((e) => Logger.error(e));
   };
 
-  //R.on("beforeExit", unwind);
   R.on("SIGINT", () => { unwind(); R.exit(130); });
   R.on("SIGTERM", () => { unwind(); R.exit(143); });
   R.on("uncaughtException", (err) => { unwind(); Logger.error?.(err); R.exit(1); });
-  R.on("unhandledRejection", (reason: any) => { unwind(); Logger.error?.(reason); R.exit(1); });
+  R.on("unhandledRejection", (reason: unknown) => { unwind(); Logger.error?.(reason); R.exit(1); });
 }
 
-export function withCookedTTY(f: () => {}): void {
-  controlContainer.controller?.withCookedTTY(() => { f() });
+/** Scoped cooked/raw helpers that return promises (safe to `await`). */
+export async function withCookedTTY<T>(f: () => Promise<T> | T): Promise<T> {
+  const ctl = controlContainer.controller;
+  if (!ctl) return await Promise.resolve(f());
+  return ctl.withCookedTTY(f);
 }
-
-export function withRawTTY(f: () => {}): void {
-  controlContainer.controller?.withRawTTY(() => { f() });
+export async function withRawTTY<T>(f: () => Promise<T> | T): Promise<T> {
+  const ctl = controlContainer.controller;
+  if (!ctl) return await Promise.resolve(f());
+  return ctl.withRawTTY(f);
 }
 
 installTtyGuard();
 
+// ------------------------------- Args & config -------------------------------
 
 function parseArgs(argv: string[]) {
   const out: Record<string, string | boolean> = {};
@@ -78,7 +82,7 @@ function resolveProjectDir(seed: string): string {
   try {
     const out = execFileSync("git", ["-C", seed, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
     if (out) return out;
-  } catch { }
+  } catch { /* ignore */ }
   let d = path.resolve(seed);
   while (true) {
     if (fs.existsSync(path.join(d, ".git"))) return d;
@@ -99,12 +103,12 @@ function enableDebugIfRequested(args: Record<string, string | boolean>) {
 function computeMode(extra?: { allowTools?: string[] }) {
   const interactive = true;
   const cfg = loadConfig();
-  const safe = !!(cfg as any)?.runtime?.safe;
+  const safe = !!(cfg as unknown as { runtime?: { safe?: boolean } })?.runtime?.safe;
   ExecutionGate.configure({ safe, interactive, allowTools: extra?.allowTools });
 }
 
 type ModelKind = "mock" | "lmstudio";
-type AgentSpec = { id: string; kind: ModelKind; model: any };
+type AgentSpec = { id: string; kind: ModelKind; model: unknown };
 
 function parseAgents(
   spec: string | undefined,
@@ -123,11 +127,11 @@ function parseAgents(
       const driver = makeStreamingOpenAiLmStudio({
         baseUrl: llmDefaults.baseUrl,
         model: llmDefaults.model,
-        apiKey: (llmDefaults as any).apiKey
+        apiKey: llmDefaults.apiKey
       });
-      const agentModel = new LlmAgent(id, driver, llmDefaults.model) as any;
-      if (recipeSystemPrompt && typeof agentModel.setSystemPrompt === "function") {
-        agentModel.setSystemPrompt(recipeSystemPrompt);
+      const agentModel = new LlmAgent(id, driver, llmDefaults.model) as unknown;
+      if (recipeSystemPrompt && (agentModel as { setSystemPrompt?: (s: string) => void }).setSystemPrompt) {
+        (agentModel as { setSystemPrompt: (s: string) => void }).setSystemPrompt(recipeSystemPrompt);
       }
       out.push({ id, kind, model: agentModel });
     } else {
@@ -148,9 +152,9 @@ async function listRecentSessionPatches(projectDir: string, minutes = 20): Promi
       try {
         const st = await fsp.stat(patch);
         if (st.isFile() && st.size > 0 && st.mtimeMs >= cutoff) out.push(patch);
-      } catch { }
+      } catch { /* ignore */ }
     }
-  } catch { }
+  } catch { /* ignore */ }
   return out.sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
 }
 
@@ -181,9 +185,9 @@ function applyPatch(projectDir: string, patchPath: string) {
 }
 
 async function finalizeOnce(scheduler: SchedulerLike | null, projectDir: string, reviewMode: "ask" | "auto" | "never") {
-  try { await scheduler?.drain?.(); } catch { }
-  try { await (sandboxMangers as any)?.finalizeAll?.(); } catch { }
-  try { await scheduler?.stop?.(); } catch { }
+  try { await scheduler?.drain?.(); } catch { /* ignore */ }
+  try { await (sandboxMangers as { finalizeAll?: () => Promise<void> }).finalizeAll?.(); } catch { /* ignore */ }
+  try { await scheduler?.stop?.(); } catch { /* ignore */ }
 
   const patches = await listRecentSessionPatches(projectDir, 120);
   if (patches.length === 0) {
@@ -197,7 +201,7 @@ async function finalizeOnce(scheduler: SchedulerLike | null, projectDir: string,
 
     if (reviewMode === "auto" || !R.stdout.isTTY) {
       try { applyPatch(projectDir, patch); Logger.info("Patch auto-applied."); }
-      catch (e: any) { Logger.error("Auto-apply failed:", e?.message || e); Logger.info(`You can apply manually: git -C ${projectDir} apply --index ${patch}`); }
+      catch (e) { const msg = e instanceof Error ? e.message : String(e); Logger.error("Auto-apply failed:", msg); Logger.info(`You can apply manually: git -C ${projectDir} apply --index ${patch}`); }
       continue;
     }
 
@@ -205,24 +209,25 @@ async function finalizeOnce(scheduler: SchedulerLike | null, projectDir: string,
     const yes = await askYesNo("Apply this patch? [y/N]");
     if (yes) {
       try { applyPatch(projectDir, patch); Logger.info("Patch applied."); }
-      catch (e: any) { Logger.error("Apply failed:", e?.message || e); Logger.info(`You can apply manually: git -C ${projectDir} apply --index ${patch}`); }
+      catch (e) { const msg = e instanceof Error ? e.message : String(e); Logger.error("Apply failed:", msg); Logger.info(`You can apply manually: git -C ${projectDir} apply --index ${patch}`); }
     } else {
       Logger.info("Patch NOT applied.");
     }
   }
 }
 
-// ---------- main ----------
+// ---------------------------------- main ----------------------------------
+
 async function main() {
   const cfg = loadConfig();
-  const argv = ((globalThis as any).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
+  const argv = ((globalThis as unknown as { Bun?: unknown }).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
   const args = parseArgs(argv);
 
   // tmux handoff
   if (args["ui"] === "tmux" && R.env.ORG_TMUX !== "1") {
     const sandbox = R.env.SANDBOX_BACKEND ?? "podman";
     const tmuxScope: "host" | "container" =
-      (R.env.ORG_TMUX_SCOPE as any) ?? (sandbox === "none" ? "host" : "container");
+      (R.env.ORG_TMUX_SCOPE as "host" | "container" | undefined) ?? (sandbox === "none" ? "host" : "container");
     const { doctorTmux } = await import("./cli/doctor");
     if (tmuxScope === "host") {
       if ((await doctorTmux("host")) !== 0) R.exit(1);
@@ -250,10 +255,10 @@ async function main() {
   const agents = agentSpecs.map(a => ({
     id: a.id,
     respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) =>
-      a.model.respond(prompt, budget, peers, cb),
-    guardOnIdle: (state: any) => a.model.guardOnIdle?.(state) ?? null,
-    guardCheck: (route: any, content: string, peers: string[]) =>
-      a.model.guardCheck?.(route, content, peers) ?? null,
+      (a.model as { respond: typeof LlmAgent.prototype.respond }).respond(prompt, budget, peers, cb),
+    guardOnIdle: (state: unknown) => (a.model as { guardOnIdle?: (s: unknown) => unknown }).guardOnIdle?.(state) ?? null,
+    guardCheck: (route: unknown, content: string, peers: string[]) =>
+      (a.model as { guardCheck?: (r: unknown, c: string, p: string[]) => unknown }).guardCheck?.(route, content, peers) ?? null,
   }));
 
   // kickoff FIRST so we can set promptEnabled properly
@@ -267,7 +272,8 @@ async function main() {
   const scheduler: IScheduler = new RandomScheduler({
     agents,
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
-    onAskUser: (fromAgent: string, content: string) => { return controlContainer.controller?.askUser(fromAgent, content) ?? Promise.resolve(undefined) },
+    onAskUser: (fromAgent: string, content: string) =>
+      controlContainer.controller?.askUser(fromAgent, content) ?? Promise.resolve(undefined),
     projectDir,
     reviewMode,
     promptEnabled:
@@ -298,9 +304,9 @@ async function main() {
   }
 
   controlContainer.controller?.setScheduler(scheduler);
-  controlContainer.controller?.start();
+  await controlContainer.controller?.start();
 
-  // Enqueue seed (type-safe, single call)
+  // Seed a kickoff message if provided
   if (typeof kickoff === "string" && kickoff.length > 0) {
     await scheduler.enqueueUserText(kickoff);
   }
