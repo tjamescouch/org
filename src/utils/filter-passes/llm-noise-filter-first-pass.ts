@@ -2,69 +2,146 @@
 import type { LLMNoiseFilterPass, PassFeedResult } from "./llm-noise-filter-pass";
 
 /**
- * First pass: fast, conservative cleanup of obvious LLM sentinel noise
- * while being safe for streaming.
+ * First pass: fast & stream-safe cleanup of obvious single-token sentinels.
  *
- * - Removes single-token sentinels like <|constrain|>, <|endoftext|>, etc.
- *   (but deliberately keeps *_start/*_end tokens for later passes)
- * - Strips zero-width characters and control chars (except \n and \t).
- * - Holds back an incomplete "<|" ... "|>" token if chunk boundary splits it.
+ * Responsibilities
+ *  - Drop tokens like <|constrain|>, <|endoftext|>, <|channel|> etc.
+ *  - Special-case: <|channel|>TOKEN removes the channel TOKEN (e.g. "final").
+ *  - Special-case: <|message|> becomes a single space to separate role header from text.
+ *  - Strip zero-width & control chars (but keep \t, \r, \n).
+ *  - Never leak partial "<" or "<|" across chunk boundaries (buffer tail).
  */
 export class LLMNoiseFilterFirstPass implements LLMNoiseFilterPass {
   private tail = "";
+  // If the previous chunk ended right after <|channel|>, we must consume the channel name
+  private pendingChannelWord = false;
 
   feed(chunk: string): PassFeedResult {
-    const incoming = (chunk ?? "");
-    let buf = this.tail + incoming;
+    let buf = (this.tail ?? "") + (chunk ?? "");
+    const before = buf.length;
+    let removed = 0;
 
-    // 1) Remove zero-width and control chars (except \n, \r, \t)
-    const beforeLen1 = buf.length;
+    // 0) Remove zero width / control characters (except \t, \n, \r)
+    const zBefore = buf.length;
     buf = buf
-      // Zero-width / BOM
       .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, "")
-      // Control chars except tab/newline/carriage-return
       .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
-    let removed = beforeLen1 - buf.length;
+    removed += zBefore - buf.length;
 
-    // 2) Remove single-token sentinels like <|foo|>, but keep *_start/*_end for later passes
-    //    We do two steps: find candidates, then filter in replacer for _start/_end.
-    const singleTokenRe = /<\|([A-Za-z0-9:_\-]+)\|>/g;
-    buf = buf.replace(singleTokenRe, (_m, name: string) => {
-      if (/_start$/i.test(name) || /_end$/i.test(name)) return _m; // keep block sentinels for later passes
-      removed += _m.length;
-      return "";
-    });
-
-    // 3) Determine safe emit index: if an unclosed "<|" appears with no closing "|>", hold it.
-    const lastOpen = buf.lastIndexOf("<|");
-    let emitUpto = buf.length;
-    if (lastOpen !== -1) {
-      const closeIdx = buf.indexOf("|>", lastOpen + 2);
-      if (closeIdx === -1) {
-        emitUpto = lastOpen; // keep potential partial sentinel in tail
+    // 1) If last chunk ended with <|channel|>, consume the channel word here.
+    if (this.pendingChannelWord) {
+      const eaten = this.consumeLeadingChannelWord(buf);
+      if (eaten > 0) {
+        buf = buf.slice(eaten);
+        removed += eaten;
+        this.pendingChannelWord = false;
+      } else {
+        // still waiting for the word to complete
+        this.tail = (this.tail ?? "") + (chunk ?? "");
+        return { cleaned: "", removed };
       }
     }
 
-    const cleaned = buf.slice(0, emitUpto);
-    this.tail = buf.slice(emitUpto);
+    // 2) <|message|> → single space
+    buf = buf.replace(/<\|message\|>/gi, " ");
 
-    return { cleaned, removed };
+    // 3) Remove <|channel|> + immediate channel word (letters/_/-) and one trailing space.
+    while (true) {
+      const m = /<\|channel\|>/i.exec(buf);
+      if (!m) break;
+      const idx = m.index;
+      const startLen = m[0].length;
+      const after = buf.slice(idx + startLen);
+      const eat = this.computeChannelEat(after);
+      if (eat === -1) {
+        // Token complete, channel word incomplete. Drop token now, hold the word in tail.
+        const emit = buf.slice(0, idx);
+        const afterToken = buf.slice(idx + startLen);
+        this.pendingChannelWord = true;
+        this.tail = afterToken; // wait to consume the word on next feed
+        removed += startLen;    // we know at least the token itself is dropped
+        return { cleaned: emit, removed };
+      }
+      // Drop token + word
+      buf = buf.slice(0, idx) + after.slice(eat);
+      removed += startLen + eat;
+    }
+
+    // 4) Drop other single-token sentinels <|name|> (keep *_start/_end for later passes)
+    buf = buf.replace(/<\|([A-Za-z0-9:_-]+)\|>/g, (full: string, name: string) => {
+      if (/_start$/i.test(name) || /_end$/i.test(name)) return full;
+      removed += full.length;
+      return "";
+    });
+
+    // 5) Stream-safety: hold any trailing partial sentinel like "<", "<|", "<|name", "<|name|"
+    const holdFrom = this.findHoldStart(buf);
+    const cleaned = holdFrom === -1 ? buf : buf.slice(0, holdFrom);
+    this.tail = holdFrom === -1 ? "" : buf.slice(holdFrom);
+
+    return { cleaned, removed: removed + (before - (cleaned.length + this.tail.length)) };
   }
 
   flush(): string {
-    // On flush, remove any leftover single-token sentinels and spill remainder.
     let buf = this.tail;
     this.tail = "";
 
-    // Remove remaining single-token sentinels (now safe to drop all)
-    buf = buf.replace(/<\|[A-Za-z0-9:_\-]+?\|>/g, "");
+    // If we were waiting to eat the channel word, drop whatever is there (conservative).
+    if (this.pendingChannelWord) {
+      const eaten = this.consumeLeadingChannelWord(buf, /*allowPartial*/ true);
+      buf = buf.slice(eaten);
+      this.pendingChannelWord = false;
+    }
 
-    // Final zero-width/control cleanup (just in case)
+    // Apply final transformations to tail
+    buf = buf.replace(/<\|message\|>/gi, " ");
+    buf = buf.replace(/<\|channel\|>\s*[A-Za-z_-]+\s*/gi, "");
+    buf = buf.replace(/<\|[A-Za-z0-9:_-]+\|>/g, "");
+
+    // Final clean of zero-width/control
     buf = buf
       .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, "")
       .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
 
     return buf;
+  }
+
+  // ---- helpers ----
+
+  /** How many chars to eat after <|channel|> to remove the channel name. -1 → need more data. */
+  private computeChannelEat(s: string): number {
+    let i = 0;
+    while (i < s.length && /\s/.test(s[i])) i++;
+    let j = i;
+    while (j < s.length && /[A-Za-z_-]/.test(s[j])) j++;
+    if (j === i) return -1;                   // no letters yet
+    if (j === s.length) { this.pendingChannelWord = true; return -1; } // incomplete
+    let k = j;
+    if (s[k] === " ") k++;                    // optional trailing space
+    return k;
+  }
+
+  /** Consume a leading channel word at the start of s. */
+  private consumeLeadingChannelWord(s: string, allowPartial = false): number {
+    let i = 0;
+    while (i < s.length && /\s/.test(s[i])) i++;
+    let j = i;
+    while (j < s.length && /[A-Za-z_-]/.test(s[j])) j++;
+    if (j === i && !allowPartial) return 0;
+    if (!allowPartial && j === s.length) return 0;
+    if (j < s.length && s[j] === " ") j++;
+    return j;
+  }
+
+  /** Index to hold from (start of a possible sentinel) or -1 if safe. */
+  private findHoldStart(s: string): number {
+    const lastLt = s.lastIndexOf("<");
+    if (lastLt !== -1) {
+      const tail = s.slice(lastLt);
+      // e.g., "<", "<|", "<|name", "<|name|"
+      if (/^<\|?[A-Za-z-]*\|?$/.test(tail)) return lastLt;
+    }
+    return -1;
   }
 }
 
