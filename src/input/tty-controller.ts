@@ -150,7 +150,7 @@ export class TtyController {
 
   /** Agent asks the user for input; we print the content then prompt once. */
   async askUser(_fromAgent: string, content: string): Promise<string | undefined> {
-    Logger.info(C.red(content.trim()));
+    Logger.info(C.green(content.trim()));
     const ans = await this.promptOnce(this.opts.interjectBanner);
     return ans.trim() === "" ? undefined : ans;
   }
