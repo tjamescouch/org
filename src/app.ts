@@ -243,9 +243,9 @@ async function main() {
 
   // Host starting directory (prefer an explicit host hint if provided).
   const hostStartDir =
-    (typeof process.env.ORG_HOST_PWD === "string" && process.env.ORG_HOST_PWD.trim())
-      ? path.resolve(process.env.ORG_HOST_PWD)
-      : path.resolve((process.env.PWD && process.env.PWD.trim()) ? process.env.PWD : R.cwd());
+    (typeof R.env.ORG_HOST_PWD === "string" && R.env.ORG_HOST_PWD.trim())
+      ? path.resolve(R.env.ORG_HOST_PWD)
+      : path.resolve((R.env.PWD && R.env.PWD.trim()) ? R.env.PWD : R.cwd());
 
   // Resolve repo root from that frozen starting directory.
   const projectDir = resolveProjectDir(hostStartDir);
@@ -253,7 +253,7 @@ async function main() {
   // Helpful banner (diagnostics)
   Logger.info(`[org] host cwd = ${hostStartDir}`);
   Logger.info(`[org] repo  dir = ${projectDir}`);
-  Logger.info(`[org] process.cwd = ${process.cwd()}  PWD=${process.env.PWD ?? ""}`);
+  Logger.info(`[org] R.cwd = ${R.cwd()}  PWD=${R.env.PWD ?? ""}`);
 
   const recipeName = (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
   const recipe = getRecipe(recipeName || null);
@@ -331,9 +331,6 @@ async function main() {
       finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
     });
   }
-
-  controlContainer.controller?.setScheduler(scheduler);
-  await controlContainer.controller?.start();
 
   // Seed a kickoff message if provided
   if (typeof kickoff === "string" && kickoff.length > 0) {
