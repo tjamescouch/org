@@ -66,7 +66,7 @@ function fireEsc() {
 
 /** Core path used by real 'data' and tests. */
 function handleChunk(chunk: Buffer | string) {
-  //if (!state.installed || state.suspended) return;
+  if (!state.installed || state.suspended) return;
 
   const buf: Buffer = Buffer.isBuffer(chunk)
     ? chunk
@@ -120,7 +120,7 @@ function handleChunk(chunk: Buffer | string) {
 function attach() {
   if (!isTTY() || state.onData) return;
   state.onData = (buf: Buffer | string) => handleChunk(buf);
-  process.stdin.on("data", state.onData!);
+  //process.stdin.on("data", state.onData!);
 }
 
 function detach() {
