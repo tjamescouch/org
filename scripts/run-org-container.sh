@@ -30,6 +30,7 @@ mkdir -p "${REPO_ROOT}/.org"
 
 # Run
 exec podman run --rm -it \
+  -v "$ROOT:/project:ro,Z" \
   -v "${REPO_ROOT}:/project:ro,Z" \
   -v "${REPO_ROOT}/.org:/hostrun:rw,Z" \
   -e ORG_DEFAULT_CWD="${ORG_DEFAULT_CWD}" \
