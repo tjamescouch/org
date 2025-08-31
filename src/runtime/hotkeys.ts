@@ -8,6 +8,8 @@
 //
 // Testing: __testOnly_emit() feeds the same handler used by runtime.
 
+import { Logger } from "../logger";
+
 type Handlers = {
   onEsc?: () => void;
   onCtrlC?: () => void;
@@ -36,12 +38,17 @@ function isTTY() {
   return !!(process.stdin && process.stdin.isTTY);
 }
 
-function setRawMode(enable: boolean) {
+function setRawMode(enable: boolean) { //FIXME -> move to controller for single point of setting the terminal mode
   const anyIn: any = process.stdin as any;
   if (!isTTY()) return;
   try {
-    if (typeof anyIn.setRawMode === "function") anyIn.setRawMode(!!enable);
+    if (typeof anyIn.setRawMode === "function") i{
+      Logger.error(enable ? "🥩 Input in raw mode" : "🥩 Input in raw mode");
+      anyIn.setRawMode(!!enable);
+    }
+
     if (enable) {
+      if(enable) Logger.error("stdin resumed");
       process.stdin.resume();
       process.stdin.setEncoding("utf8");
     }
