@@ -183,7 +183,6 @@ export class LlmAgent extends Agent {
     if (dbg2) {
       debugStreaming = true;
     }
-    Logger.info('debugStreaming', debugStreaming, dbg);
 
     // Same pipeline as post-turn
     const tagProtector = new StreamingTagProtector();
