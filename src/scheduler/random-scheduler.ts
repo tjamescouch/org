@@ -155,15 +155,14 @@ export class RandomScheduler {
             this.activeAgent = a;
 
             let replies: ChatResponse[] = [];
-            R.ttyController?.onStreamStart();
+            // ---- STREAM DEFERRAL (single seam to TTY controller) ----
             this.onStreamStart?.();
             try {
               replies = await a.respond(messagesIn, Math.max(0, remaining), peers, () => this.draining);
             } finally {
-              this.onStreamEnd?.();
-              R.ttyController?.onStreamEnd();
+              if (this.onStreamEnd) { await this.onStreamEnd(); }
             }
-
+            // ---------------------------------------------------------
 
             for (const { message, toolsUsed } of replies) {
               totalToolsUsed += toolsUsed;
@@ -228,9 +227,7 @@ export class RandomScheduler {
         idleTicks++;
         const queuesEmpty = !this.inbox.hasAnyWork();
 
-        // ---------- NEW: external prompt bridge owns idle input ----------
-        // If we are idle, prompting is enabled, and a bridge is supplied,
-        // block for exactly one user line via TTY controller (single prompt, no extra listeners).
+        // ---------- external prompt bridge owns idle input ----------
         if (queuesEmpty && this.promptEnabled && typeof this.readUserLine === "function") {
           // Prefer the last DM target or the first agent if we need a default
           const preferred = this.lastUserDMTarget ?? this.agents[0]?.id ?? undefined;
@@ -464,7 +461,6 @@ export default RandomScheduler;
 
 /* ------------------------- Module-level convenience ------------------------- */
 /* Kept for compatibility with any legacy imports. Prefer the runtime-owned instance. */
-
 
 export function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return R.ttyController!.withCookedTTY(fn); }
 export function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return R.ttyController!.withRawTTY(fn); }
