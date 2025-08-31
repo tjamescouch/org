@@ -88,6 +88,8 @@ export interface TtyControllerOptions {
   /** Called on graceful unwind (signals/exits). Should run: stop → drain → review/pager. */
   finalizer?: () => Promise<void> | void;
 
+  beginFeedback?: (msg: string) => { done: () => void };
+
   /**
    * Who owns the idle user loop?
    *  - "controller": this class runs the idle loop (default).
@@ -106,6 +108,8 @@ export class TtyController {
   private reading = false;
   private interjecting = false;
   private keyBound = false;
+
+  private activeFeedback: { done: () => void } | null = null;
 
   // Streaming/intent flags (PR-safe additions)
   private streaming = false;            // true while model is "chattering"
@@ -178,17 +182,20 @@ export class TtyController {
   async onStreamEnd(): Promise<void> {
     this.streaming = false;
 
-    // Highest priority: finalize if ESC was pressed during streaming
+    const fb = this.activeFeedback;
+    this.activeFeedback = null;
+
     if (this.shutdownRequested) {
-      this.shutdownRequested = false; // consume
+      this.shutdownRequested = false;
+      fb?.done();                   // resume logs before pager
       await this.finalizeAndReviewAndExit();
       return;
     }
-
-    // Next: open a queued interjection
     if (this.interjectPending) {
       this.interjectPending = false;
+      fb?.done();                   // resume logs before prompt
       await this.openInterjectionPromptOnce();
+      return;
     }
   }
 
@@ -198,18 +205,21 @@ export class TtyController {
     // Esc → graceful exit path (always active)
     if (key.name === "escape" || key.sequence === "\u001b") {
       if (this.streaming) {
-        // Defer finalize until stream end; give immediate feedback once.
-        this.shutdownRequested = true;
-        if (!this.statusShown.esc) {
-          this.statusShown.esc = true;
-          this.statusLine(
-            this.opts.waitOverlayMessage ??
-              "⏳ ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)"
-          );
+        if (!this.shutdownRequested) {
+          this.shutdownRequested = true;
+          // pause stream + show status instantly (newline + message + spinner if you want)
+          this.activeFeedback ??= this.opts.beginFeedback?.(
+            "⏳ ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)"
+          ) ?? null;
         }
-        return;
+
+        return; // defer finalize to onStreamEnd()
       }
+      // idle: give immediate feedback then finalize
+      const fb = this.opts.beginFeedback?.("⏳ ESC pressed — opening patch review…");
       await this.finalizeAndReviewAndExit();
+      fb?.done();
+
       return;
     }
 
@@ -221,16 +231,18 @@ export class TtyController {
       if (this.reading || this.interjecting) return;
 
       if (this.streaming) {
-        // Queue interjection until the stream completes; give feedback once.
-        this.interjectPending = true;
-        if (!this.statusShown.i) {
-          this.statusShown.i = true;
-          this.statusLine("…waiting for model to finish before interjection");
+        if (!this.interjectPending) {
+          this.interjectPending = true;
+          this.activeFeedback ??= this.opts.beginFeedback?.(
+            "…waiting for model to finish before interjection"
+          ) ?? null;
         }
+
         return;
       }
 
       await this.openInterjectionPromptOnce();
+
       return;
     }
   };

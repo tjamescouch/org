@@ -25,6 +25,7 @@ import { getRecipe } from "./recipes";
 import { sandboxMangers } from "./sandbox/session";
 import { TtyController } from "./input/tty-controller";
 import Passthrough from "./input/passthrough";
+import { createFeedbackController } from "./ui/feedback";
 
 // ───────────────────────────────────────────────────────────────────────────────
 // TTY guard: the RUNTIME holds the controller instance (R.ttyController)
@@ -319,7 +320,14 @@ async function main() {
 
   // Build input (controller binds raw mode & keys; loop owned by scheduler)
   if (R.stdin.isTTY) {
+    const feedback = createFeedbackController({
+      spinner: true,
+      pause: () => { R.setOutputPaused?.(true); /* or set a shared flag the LLM writer checks */ },
+      resume: () => { R.setOutputPaused?.(false); },
+    });
+
     R.ttyController = new TtyController({
+      beginFeedback: feedback.begin,
       waitOverlayMessage: "Waiting for agent to finish",
       waitSuppressOutput: true,
       stdin: R.stdin,
