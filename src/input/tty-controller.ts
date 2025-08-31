@@ -208,6 +208,7 @@ export class TtyController {
   private onKeypress = async (_: string, key: Key) => {
     // Esc → graceful exit path (always active)
     if (key.name === "escape" || key.sequence === "\u001b") {
+      Logger.info("\n 🔴 ESC");
       if (this.streaming) {
         if (!this.shutdownRequested) {
           this.shutdownRequested = true;
