@@ -12,6 +12,25 @@ export interface OpenAiDriverConfig {
 }
 
 /**
+ * **Cooperative streaming**
+ * ------------------------
+ * To make hotkey acks (Esc / `i`) show **immediately** while the model streams,
+ * we yield to the event loop periodically inside the token-processing loops.
+ * This is lightweight and does **not** abort the request; it only gives stdin's
+ * keypress handler a chance to run promptly.
+ */
+function yieldToLoop(): Promise<void> {
+  return new Promise<void>((resolve) =>
+    typeof (globalThis as any).setImmediate === "function"
+      ? (globalThis as any).setImmediate(resolve)
+      : setTimeout(resolve, 0)
+  );
+}
+
+/** Yield every N stream events/chunks (power of two for a cheap bitmask). */
+const YIELD_INTERVAL_MASK = 31; // 32 events/chunks
+
+/**
  * Streaming OpenAI-compatible chat driver for LM Studio / OpenAI-style endpoints.
  * Streams tokens via optional callbacks while returning the final ChatOutput.
  *
@@ -31,7 +50,7 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
 
   async function chat(messages: ChatMessage[], opts?: any): Promise<ChatOutput> {
     await rateLimiter.limit("llm-ask", 1);
-    Logger.debug('streamining messages out', messages);
+    Logger.debug("streaming messages out", messages);
 
     const controller = new AbortController();
     const userSignal: AbortSignal | undefined = opts?.signal;
@@ -174,6 +193,13 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
       // Stream reader: browser/electron (WHATWG) or Node stream fallback
       const body: any = res.body;
 
+      // --- Cooperative yield counter (shared across loops) ---
+      let spin = 0;
+      const maybeYield = async () => {
+        // yield every 32 iterations/events
+        if ((++spin & YIELD_INTERVAL_MASK) === 0) await yieldToLoop();
+      };
+
       if (body && typeof body.getReader === "function") {
         // WHATWG ReadableStream
         const reader = body.getReader();
@@ -188,7 +214,10 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
             const rawEvent = buf.slice(0, sepIdx).trim();
             buf = buf.slice(sepIdx + 2);
             if (rawEvent) pumpEvent(rawEvent);
+            await maybeYield(); // ← give the loop a turn so keypress acks render
           }
+
+          await maybeYield(); // also yield between large chunks
         }
         // Drain remainder (if any)
         if (buf.trim()) pumpEvent(buf.trim());
@@ -201,7 +230,9 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
             const rawEvent = buf.slice(0, sepIdx).trim();
             buf = buf.slice(sepIdx + 2);
             if (rawEvent) pumpEvent(rawEvent);
+            await maybeYield(); // ← keep UI responsive during bursts
           }
+          await maybeYield();
         }
         if (buf.trim()) pumpEvent(buf.trim());
       } else {
@@ -209,7 +240,10 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
         const txt = await res.text();
         buf += txt;
         const parts = buf.split("\n\n").map((s) => s.trim());
-        for (const part of parts) if (part) pumpEvent(part);
+        for (const part of parts) {
+          if (part) pumpEvent(part);
+          await maybeYield();
+        }
       }
 
       Logger.debug("toolByIndex.entries()", toolByIndex.entries());

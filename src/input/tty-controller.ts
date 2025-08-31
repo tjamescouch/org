@@ -10,6 +10,7 @@ import { emitKeypressEvents, Key } from "node:readline";
 import type { ReadStream as TtyReadStream } from "node:tty";
 import type { IScheduler } from "../scheduler/scheduler";
 import { Logger } from "../logger";
+import { R } from "../runtime/runtime";
 
 /* ----------------------------- Types & adapters ----------------------------- */
 
@@ -32,7 +33,7 @@ export function toTtyIn(stream: NodeJS.ReadStream): TtyIn {
   return base;
 }
 
-export function stdinTty(): TtyIn { return toTtyIn(process.stdin); }
+export function stdinTty(): TtyIn { return toTtyIn(R.stdin); }
 
 /* ------------------------------- Mode manager ------------------------------- */
 
@@ -69,6 +70,7 @@ class ModeController {
 /* --------------------------------- Options --------------------------------- */
 
 export interface TtyControllerOptions {
+  feedbackStream?: NodeJS.WriteStream;
   stdin: NodeJS.ReadStream;
   stdout: NodeJS.WriteStream;
 
@@ -117,6 +119,7 @@ export class TtyController {
   private interjectPending = false;     // 'i' pressed during streaming -> open after stream
   private reviewInFlight = false;       // avoid double finalize
   private statusShown = { esc: false, i: false };
+  private readonly feedback = this.opts.feedbackStream ?? R.stderr;
 
   constructor(private readonly opts: TtyControllerOptions) {
     if (!this.opts.prompt.endsWith(" ")) this.opts.prompt += " ";
@@ -265,11 +268,11 @@ export class TtyController {
     this.reviewInFlight = true;
     try {
       await this.unwind();     // will run your finalizer (stop → drain → review/pager)
-      process.exit(0);
+      R.exit(0);
     } catch (err) {
       Logger.warn(`Finalize/review failed: ${String(err)}`);
       try { await this.unwind(); } catch { /* ignore */ }
-      process.exit(1);
+      R.exit(1);
     } finally {
       this.reviewInFlight = false;
     }
@@ -291,10 +294,9 @@ export class TtyController {
 
   private statusLine(msg: string): void {
     try {
-      this.opts.stdout.write(`\n${msg}\n`);
-    } catch {
-      // ignore write errors on teardown
-    }
+      // stderr avoids contention with token stream on stdout
+      this.feedback.write(`\n${msg}\n`);
+    } catch {/* ignore */ }
   }
 
   /** Default idle loop (only when loopMode === "controller"). */
@@ -312,8 +314,8 @@ export class TtyController {
 /* Kept for compatibility with any legacy imports. Prefer the runtime-owned instance. */
 
 const _default = new TtyController({
-  stdin: process.stdin,
-  stdout: process.stdout,
+  stdin: R.stdin,
+  stdout: R.stdout,
   prompt: "user: ",
   interjectKey: "i",
   interjectBanner: "user: ",
