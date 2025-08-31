@@ -24,7 +24,8 @@ export type RouteOutcome = {
  */
 export function routeWithTags(raw: string, agentTokens: string[]): RouteOutcome {
   const filter = createPDAStreamFilter();
-  const s = filter.feed(raw) + filter.flush();
+  let s = filter.feed(raw);
+  s += filter.flush();
 
   const parts: TagPart[] = TagSplitter.split(s, { agentTokens });
   const deliveries: Delivery[] = [];
