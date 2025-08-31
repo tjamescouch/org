@@ -1,4 +1,4 @@
-import type { ChatMessage } from "./scheduler";
+import { ChatMessage } from "../drivers/types";
 
 const VALID_ROLES = new Set(["system", "user", "assistant", "tool"] as const);
 

@@ -18,7 +18,7 @@ import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio
 import { getRecipe } from "./recipes";
 import { ReviewManager } from "./scheduler/review-manager";
 import { sandboxMangers } from "./sandbox/session";
-import { TtyController } from "./input/tty-controller";
+import { setScheduler, TtyController } from "./input/tty-controller";
 import Passthrough from "./input/passthrough";
 
 // Install once
@@ -294,6 +294,9 @@ async function main() {
     // Bridge: scheduler keeps the logic; controller renders & collects the line.
     readUserLine: () => controlContainer.controller!.readUserLine(),
   });
+
+  setScheduler(scheduler);
+  //await ttyStart();
 
   // Build input (controller binds raw mode & keys; loop owned by scheduler)
   if (R.stdin.isTTY) {

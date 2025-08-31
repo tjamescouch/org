@@ -8,12 +8,19 @@ import { ReviewManager } from "./review-manager";
 import { TagSplitter, TagPart } from "../utils/tag-splitter";
 import type { GuardDecision } from "../guardrails/guardrail";
 import type { ChatMessage } from "../types";
-import type { Responder, SchedulerOptions, AskUserFn } from "./types";
+import type { Responder, SchedulerOptions, AskUserFn, ChatResponse } from "./types";
 import { sandboxMangers } from "../sandbox/session";
 import { sleep } from "../utils/sleep";
+import { onStreamEnd, onStreamStart } from "../input/tty-controller";
+
+
+type Hooks = {
+  onStreamStart: () => void;
+  onStreamEnd: () => void | Promise<void>;
+};
 
 /** Extend options locally to accept the external prompt bridge without changing the global type. */
-type SchedulerOptionsWithBridge = SchedulerOptions & {
+type SchedulerOptionsWithBridge = Hooks & SchedulerOptions & {
   /**
    * If provided, scheduler will not render its own 'user:' banner or readline.
    * Instead it awaits this provider and treats the returned line as user input.
@@ -71,11 +78,16 @@ export class RandomScheduler {
   private readonly askUser: AskUserFn;
   private readonly promptEnabled: boolean;
   private readonly idleSleepMs: number;
+  
+  private readonly onStreamStart: Hooks['onStreamStart'];
+  private readonly onStreamEnd: Hooks['onStreamEnd'];
 
   // when true, break the current agent loop and start a new tick immediately
   private rescheduleNow = false;
 
   constructor(opts: SchedulerOptionsWithBridge) {
+    this.onStreamStart = opts.onStreamStart;
+    this.onStreamEnd = opts.onStreamEnd;
     this.agents = opts.agents;
     this.maxTools = opts.maxTools;
     this.shuffle = opts.shuffle ?? fisherYatesShuffle;
@@ -143,7 +155,17 @@ export class RandomScheduler {
             Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
             this.activeAgent = a;
 
-            const replies = await a.respond(messagesIn, Math.max(0, remaining), peers, () => this.draining);
+            let replies: ChatResponse[] = [];
+
+            onStreamStart();
+            this.onStreamStart?.();
+            try {
+              replies = await a.respond(messagesIn, Math.max(0, remaining), peers, () => this.draining);
+            } finally {
+              this.onStreamEnd?.();
+              onStreamEnd();
+            }
+
 
             for (const { message, toolsUsed } of replies) {
               totalToolsUsed += toolsUsed;
@@ -321,6 +343,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
   }
 
   async finalizeAndReviewAll(): Promise<void> {
+    Logger.info("\n👀 Finalize and review all ...");
     try {
       await this.review.finalizeAndReview(this.agents.map(a => a.id));
     } catch (e: any) {

@@ -2,6 +2,9 @@ import type { ISandboxSession } from "../sandbox/types";
 import type { ChatMessage } from "../types";
 import type { GuardDecision, GuardRouteKind } from "../guardrails/guardrail";
 
+
+export type ChatResponse = { message: string; toolsUsed: number };
+
 /**
  * Minimal surface the scheduler needs from an agent implementation.
  * Keep this stable; other parts of the system (tests, UI) depend on it.
@@ -13,7 +16,7 @@ export interface Responder {
     maxTools: number,
     peers: string[],
     abortCallback: () => boolean
-  ): Promise<{ message: string; toolsUsed: number }[]>;
+  ): Promise<ChatResponse[]>;
   /**
    * Optional guard hook invoked by the scheduler when the system is idle.
    * Agents may request a user prompt or suggest a nudge.

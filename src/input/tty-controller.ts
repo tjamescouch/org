@@ -103,14 +103,14 @@ export interface TtyControllerOptions {
 export class TtyController {
   private readonly mode: ModeController;
   private readonly loopMode: "controller" | "external";
-  private schedulerNominal: IScheduler | undefined; // for enqueueUserText (typed)
-  private schedulerAny: unknown | undefined;        // for optional finalizeAndReview at runtime
+  private schedulerNominal: IScheduler | undefined; // enqueueUserText (typed)
+  private schedulerAny: unknown | undefined;        // finalizeAndReview (optional at runtime)
   private running = false;
   private reading = false;
   private interjecting = false;
   private keyBound = false;
 
-  // --- PR2 additions (minimal, additive) ---
+  // Streaming/intent state
   private streaming = false;            // true while model is "chattering"
   private shutdownRequested = false;    // ESC pressed while streaming -> defer finalize
   private interjectPending = false;     // 'i' pressed while streaming -> open after stream
@@ -128,7 +128,7 @@ export class TtyController {
 
   setScheduler(s: IScheduler): void {
     this.schedulerNominal = s;
-    this.schedulerAny = s; // keep a flexible handle for optional capabilities
+    this.schedulerAny = s;
   }
 
   /** Bind raw mode and key handlers; spawn the idle loop only if loopMode="controller". */
@@ -175,16 +175,13 @@ export class TtyController {
   withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return Promise.resolve(fn()); }
   withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return Promise.resolve(fn()); }
 
-  // --- PR2 additions (minimal, additive) ---
-  /** Called by the scheduler when the model starts emitting tokens. */
+  /** Streaming hooks (call from scheduler) */
   onStreamStart(): void {
     this.streaming = true;
-    // Reset one-line statuses for this streaming session
     this.statusShown.esc = false;
     this.statusShown.i = false;
   }
 
-  /** Called by the scheduler when the model finishes emitting tokens. */
   async onStreamEnd(): Promise<void> {
     this.streaming = false;
 
@@ -227,7 +224,7 @@ export class TtyController {
     if (key.name === (this.opts.interjectKey || "i")) {
       if (!this.mode.isInteractive()) return;
 
-      // If currently prompting or opening an interjection, ignore repeat presses
+      // If currently prompting/opening an interjection, ignore repeat presses
       if (this.reading || this.interjecting) return;
 
       if (this.streaming) {
@@ -338,10 +335,22 @@ const _default = new TtyController({
 export function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return _default.withCookedTTY(fn); }
 export function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return _default.withRawTTY(fn); }
 
-// Optional compatibility: some older code stores a scheduler here.
-let _scheduler: unknown | undefined;
-export function setScheduler(s: unknown): void { _scheduler = s; }
-export function getScheduler(): unknown | undefined { return _scheduler; }
+// NEW in PR3: convenience exports so callers don't need to hold the instance
+export async function start(): Promise<void> { return _default.start(); }
+export async function unwind(): Promise<void> { return _default.unwind(); }
+export function onStreamStart(): void { return _default.onStreamStart(); }
+export function onStreamEnd(): Promise<void> { return _default.onStreamEnd(); }
+export async function readUserLine(label?: string): Promise<string> { return _default.readUserLine(label); }
+export async function askUser(from: string, content: string): Promise<string | undefined> {
+  return _default.askUser(from, content);
+}
+
+// Restored: setScheduler now actually wires the singleton controller.
+export function setScheduler(s: IScheduler): void { _default.setScheduler(s); }
+
+// Optional compatibility hooks
+let _schedulerOpaque: unknown | undefined;
+export function getScheduler(): unknown | undefined { return _schedulerOpaque; }
 
 /* ------------------------------- Type guards ------------------------------- */
 
