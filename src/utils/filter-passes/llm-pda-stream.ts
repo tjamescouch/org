@@ -6,7 +6,7 @@
  *   - <|channel|>final <|constrain|>@@user<|message|>Hello!  → "@@user Hello!"
  *   - <|channel|>final |json<|message|>{"cmd":"echo \"@@user Hi!\" "} → "@@user Hi!"
  *   - <|channel|>commentary<|message|>{"ok":true,"stdout":"@@user Done."} → "@@user Done."
- *   - <|channel|>commentary to=functions sh<|message|>{"cmd":1} → drop entire line
+ *   - <|channel|>commentary to=functions sh<|message|>{"cmd":1} → drop entire line segment (preserve trailing text)
  *   - <|channel|>foo<|message|>not-json-here\n → drop that line up to newline
  * - Strip memory/analysis/tool_call blocks; unwrap tool_result:
  *   A<|memory_start|>…<|memory_end|>B<|analysis_start|>…<|analysis_end|>
@@ -201,13 +201,21 @@ function transformChannelLines(s: string): string {
 
     // Decide how to terminate this channel "line"
     const newlinePos = s.indexOf("\n", payloadStart);
-    const rest = s.slice(payloadStart);
 
     const headerNorm = header.trim();
 
-    // 1) Toolformer style: commentary to=functions sh → drop entire line
+    // 1) Toolformer style: commentary to=functions sh → drop just this channel segment
+    //    (header + its JSON payload), preserving any trailing text on the same line.
+    //    FIX: previously we dropped to newline (or EOF) which removed trailing text.
     if (/\bcommentary\b/i.test(headerNorm) && /\bto=functions\b/i.test(headerNorm)) {
-      i = newlinePos === -1 ? s.length : newlinePos + 1; // skip up to newline
+      const json = tryExtractJSONObject(s, payloadStart);
+      if (json.ok && json.end > payloadStart) {
+        // Skip exactly the channel block + its JSON payload; keep trailing text.
+        i = json.end;
+        continue;
+      }
+      // Not JSON → drop up to newline (if any). If no newline, drop to end for safety.
+      i = newlinePos === -1 ? s.length : newlinePos + 1;
       continue;
     }
 
@@ -292,7 +300,10 @@ function extractEchoPayload(cmd: string): string {
  * Try to extract a single JSON object that starts at `start` (or after optional whitespace)
  * and ends at the matching closing '}'. Returns its parsed value and end offset.
  */
-function tryExtractJSONObject(s: string, start: number): { ok: true; value: unknown; end: number } | { ok: false } {
+function tryExtractJSONObject(
+  s: string,
+  start: number
+): { ok: true; value: unknown; end: number } | { ok: false } {
   // Skip leading whitespace
   let i = start;
   while (i < s.length && /\s/.test(s[i]!)) i++;

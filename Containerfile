@@ -120,31 +120,34 @@ RUN set -eux; \
 ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (command -v delta >/dev/null && delta -s --paging=never .org/last-session.patch || (echo; echo \"(delta not found; showing raw patch)\"; echo; cat .org/last-session.patch)); else echo \"No session patch found.\"; fi; echo; read -p \"Enter to close...\" _"'
 
 # --- Robust networking defaults for UI processes (console + tmux) ---
-
-# Stable alias to the VM host from inside a Linux container. Works with podman & docker.
-# (We don't strictly need to set this, but it's nice to have a canonical place.)
 ENV ORG_HOST_ALIAS=host.containers.internal
-
-# Default OpenAI-compatible base if none is provided. LM Studio often lives at 11434.
-# Your code that builds the client should prefer ORG_OPENAI_BASE if present.
 ENV ORG_OPENAI_BASE_DEFAULT=http://host.containers.internal:11434/v1
-
-# Make proxy bypass bulletproof for local endpoints and the VM host alias.
-# If user already sets NO_PROXY, keep it; just append what we need.
 ENV NO_PROXY=localhost,127.0.0.1,::1,host.containers.internal,192.168.56.1
 
-# (Optional) if you want PATH to always contain bun for clean tmux shells:
+# (Optional) PATH with Bun first for clean tmux shells:
 ENV PATH="/root/.bun/bin:/home/ollama/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# --- Ensure workspace exists so "-w /work" is valid at 'podman run' ---
+RUN mkdir -p /work
+
+# --- Copy the org CLI source into the image (so 'org' exists in PATH) ---
+# We run the CLI with Bun directly from source (no prebuild necessary).
+WORKDIR /opt/org
+COPY . /opt/org
+# Install deps only if package.json exists (keeps image robust)
+RUN test -f package.json && /usr/local/bin/bun install --ci || true
+
+# Provide an in-image 'org' runner so entrypoint can 'exec org'
+RUN printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
+  'cd /opt/org' 'exec /usr/local/bin/bun ./src/app.ts "$@"' \
+  > /usr/local/bin/org \
+ && chmod +x /usr/local/bin/org
 
 # --- Single-container session defaults ---
 # Force the app to avoid nested podman when already in a container.
 ENV SANDBACKEND=none
-# By default, run the 'org' CLI; change to "bun run /app/dist/app.js" if you prefer
-ENV APP_CMD=org
 
-# Entrypoint: primes /work, baselines repo, honors ORG_DEFAULT_CWD, then execs app.
-# Ensure workspace exists so "-w /work" at podman run succeeds
-RUN mkdir -p /work
+# Entrypoint: primes /work, baselines repo, honors ORG_DEFAULT_CWD, then execs app ('org' by default)
 COPY container/entrypoint.sh /usr/local/bin/org-entrypoint
 RUN chmod +x /usr/local/bin/org-entrypoint
 ENTRYPOINT ["/usr/local/bin/org-entrypoint"]
