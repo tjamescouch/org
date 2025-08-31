@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { createPDAStreamFilter } from "../llm-pda-stream";
 
-const SIZES = [1, 2, 3, 5, 7];
+const SIZES = [1, 2, 3, 5, 7, 10, 15, 20];
 
 function runAtChunkSize(s: string, n: number) {
   const f = createPDAStreamFilter();

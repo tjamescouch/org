@@ -53,13 +53,11 @@ export async function routeWithSideEffects(
     sandbox?: ISandboxSession,
 ): Promise<boolean> {
     const router = makeRouter({
-        onAgent: async (_from, to, content) => {
+        onAgent: async (_from, to, cleaned) => {
             deps.setRespondingAgent(to);
-            const cleaned = filters.cleanAgent(content);
             if (cleaned) deps.enqueue(to, { role: "user", from: fromAgent.id, content: cleaned });
         },
-        onGroup: async (_from, content) => {
-            const cleaned = filters.cleanGroup(content);
+        onGroup: async (_from, cleaned) => {
             const peers = deps.agents.map(a => a.id);
             const dec = fromAgent.guardCheck?.("group", cleaned, peers) || null;
             if (dec) await deps.applyGuard(fromAgent, dec);

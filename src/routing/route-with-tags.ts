@@ -1,5 +1,6 @@
 import { Logger } from "../logger";
 import { Responder } from "../scheduler";
+import { createPDAStreamFilter } from "../utils/filter-passes/llm-pda-stream";
 import { TagPart } from "../utils/tag-parser";
 import { TagSplitter } from "../utils/tag-splitter";
 
@@ -21,7 +22,10 @@ export type RouteOutcome = {
  *  - yieldForUser: message contains @@user
  *  - yieldForGroup: message contains @@group
  */
-export function routeWithTags(s: string, agentTokens: string[]): RouteOutcome {
+export function routeWithTags(raw: string, agentTokens: string[]): RouteOutcome {
+  const filter = createPDAStreamFilter();
+  let s = filter.feed(raw) + filter.flush();
+
   const parts: TagPart[] = TagSplitter.split(s, { agentTokens });
   const deliveries: Delivery[] = [];
   let sawUser = false, sawGroup = false, sawFile = false, sawAgent = false;
