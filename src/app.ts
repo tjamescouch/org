@@ -310,7 +310,6 @@ async function main() {
       interjectBanner: String(args["banner"] ?? "user: "),
       finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
       loopMode: "external", // <<< do not spawn controller's idle loop,
-      onStream
     });
     const _defaultController = new TtyController({
       waitOverlayMessage: "Waiting for agent to finish",
