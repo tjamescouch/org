@@ -60,7 +60,7 @@ export async function routeWithSideEffects(
         },
         onGroup: async (_from, cleaned) => {
             //const cleaned = filters.cleanGroup(content); //FIXME - need to scrub then route
-            Logger.info('{cleaned,content}',{ cleaned, content });
+            Logger.info('{cleaned,content}',{ cleaned });
             const peers = deps.agents.map(a => a.id);
             const dec = fromAgent.guardCheck?.("group", cleaned, peers) || null;
             if (dec) await deps.applyGuard(fromAgent, dec);
@@ -70,7 +70,7 @@ export async function routeWithSideEffects(
             }
             for (const a of deps.agents) {
                 if (a.id === fromAgent.id) continue;
-                if (cleaned) deps.enqueue(a.id, { role: "user", from: fromAgent.id, content });
+                if (cleaned) deps.enqueue(a.id, { role: "user", from: fromAgent.id, content: cleaned });
             }
         },
         onUser: async (_from, _content) => {
