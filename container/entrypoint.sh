@@ -5,24 +5,19 @@
 #   - Mirror /project (host repo, ro) -> /work (rw).
 #   - Baseline /work (git init/commit) so patch review diffs against HEAD.
 #   - Honor ORG_DEFAULT_CWD (e.g., /work/sub/area) for app/tools.
-#   - Exec the app (set with APP_CMD; defaults to "bun run /app/dist/app.js").
-#
-# Required host mounts:
-#   -v <host/repo>:/project:ro,Z
-#   -v <host/repo>/.org:/hostrun:rw,Z      # optional: store runs/patches on host
+#   - Exec the app (default APP_CMD: "org"), **forwarding CLI args**.
 
 set -euo pipefail
 
-: "${PROJECT_MOUNT:=/project}"        # host repo mount (read-only)
-: "${WORKDIR:=/work}"                 # workspace inside container (read-write)
-: "${HOSTRUN_MOUNT:=/hostrun}"        # runs/patch artifacts if you want to persist to host
-: "${ORG_DEFAULT_CWD:=/work}"         # default cwd for app/tools (e.g., /work/examples)
-: "${APP_CMD:=bun run /app/dist/app.js}"  # how to start your app (adjust if needed)
+: "${PROJECT_MOUNT:=/project}"         # host repo mount (read-only)
+: "${WORKDIR:=/work}"                  # workspace inside container (read-write)
+: "${HOSTRUN_MOUNT:=/hostrun}"         # runs/patch artifacts if you persist to host (optional)
+: "${ORG_DEFAULT_CWD:=/work}"          # default cwd for app/tools (e.g., /work/examples)
+: "${APP_CMD:=org}"                    # how to start your app; default 'org'
 : "${TRACE:=0}"
 
 _log() { printf '[entry] %s\n' "$*" >&2; }
 
-# Banner for quick diagnosis
 _log "PROJECT_MOUNT=${PROJECT_MOUNT}"
 _log "WORKDIR=${WORKDIR}"
 _log "ORG_DEFAULT_CWD=${ORG_DEFAULT_CWD}"
@@ -66,6 +61,6 @@ if [ -n "${ORG_DEFAULT_CWD:-}" ] && [ -d "${ORG_DEFAULT_CWD}" ]; then
   cd "${ORG_DEFAULT_CWD}"
 fi
 
-# 4) Exec the app
-_log "exec: ${APP_CMD}"
-exec ${APP_CMD}
+# 4) Exec the app (forward CLI args)
+_log "exec: ${APP_CMD} $*"
+exec ${APP_CMD} "$@"
