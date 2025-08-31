@@ -2,44 +2,41 @@
 # container/entrypoint.sh
 #
 # Single-container session entrypoint:
-#   - Mirror /project (host repo, ro) -> /work (rw).
-#   - Baseline /work (git init/commit) so patch review diffs against HEAD.
-#   - Honor ORG_DEFAULT_CWD (e.g., /work/sub/area) for app/tools.
-#   - Exec the app (default APP_CMD: "org"), **forwarding CLI args**.
+#   - Mirror /project (ro) -> /work (rw)
+#   - Baseline /work
+#   - Honor ORG_DEFAULT_CWD (/work or /work/<subdir>)
+#   - Exec the app ('org' by default), forwarding CLI args
 
 set -euo pipefail
 
-: "${PROJECT_MOUNT:=/project}"         # host repo mount (read-only)
-: "${WORKDIR:=/work}"                  # workspace inside container (read-write)
-: "${HOSTRUN_MOUNT:=/hostrun}"         # runs/patch artifacts if you persist to host (optional)
-: "${ORG_DEFAULT_CWD:=/work}"          # default cwd for app/tools (e.g., /work/examples)
-: "${APP_CMD:=org}"                    # how to start your app; default 'org'
-: "${TRACE:=0}"
+: "${PROJECT_MOUNT:=/project}"
+: "${WORKDIR:=/work}"
+: "${HOSTRUN_MOUNT:=/hostrun}"
+: "${ORG_DEFAULT_CWD:=/work}"
+: "${APP_CMD:=org}"
 
-_log() { printf '[entry] %s\n' "$*" >&2; }
+log() { printf '[entry] %s\n' "$*" >&2; }
 
-_log "PROJECT_MOUNT=${PROJECT_MOUNT}"
-_log "WORKDIR=${WORKDIR}"
-_log "ORG_DEFAULT_CWD=${ORG_DEFAULT_CWD}"
-_log "APP_CMD=${APP_CMD}"
+log "PROJECT_MOUNT=${PROJECT_MOUNT}"
+log "WORKDIR=${WORKDIR}"
+log "ORG_DEFAULT_CWD=${ORG_DEFAULT_CWD}"
+log "APP_CMD=${APP_CMD}"
 
 mkdir -p "${WORKDIR}" "${HOSTRUN_MOUNT}"
 
-# 1) Mirror repo from /project -> /work (idempotent)
 if command -v rsync >/dev/null 2>&1; then
-  _log "rsync /project -> /work"
+  log "rsync /project -> /work"
   rsync -a --delete \
     --exclude ".git/***" \
     --exclude ".org/***" \
     --filter="P .org/" \
     "${PROJECT_MOUNT}/." "${WORKDIR}/"
 else
-  _log "cp -a /project -> /work (rsync not present)"
+  log "cp -a /project -> /work (rsync not present)"
   find "${WORKDIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
   cp -a "${PROJECT_MOUNT}/." "${WORKDIR}/"
 fi
 
-# 2) Baseline /work (so patch review diffs against baseline)
 cd "${WORKDIR}"
 if ! [ -d .git ]; then
   git init -q
@@ -52,15 +49,13 @@ else
 fi
 mkdir -p .org .org/steps
 
-# 3) Export env visible to app/tools
 export ORG_PROJECT_DIR="${WORKDIR}"
 export ORG_DEFAULT_CWD="${ORG_DEFAULT_CWD}"
 
-# Optional: start the app from ORG_DEFAULT_CWD
+# Optional: start the app directly in the default cwd
 if [ -n "${ORG_DEFAULT_CWD:-}" ] && [ -d "${ORG_DEFAULT_CWD}" ]; then
   cd "${ORG_DEFAULT_CWD}"
 fi
 
-# 4) Exec the app (forward CLI args)
-_log "exec: ${APP_CMD} $*"
+log "exec: ${APP_CMD} $*"
 exec ${APP_CMD} "$@"
