@@ -6,6 +6,7 @@ import * as fsp from "fs/promises";
 import * as path from "path";
 import { execFileSync, spawn } from "child_process";
 
+import { start as ttyStart } from "./input/tty-controller";
 import { R } from "./runtime/runtime";
 import { ExecutionGate } from "./tools/execution-gate";
 import { loadConfig } from "./config/config";
@@ -18,43 +19,43 @@ import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio
 import { getRecipe } from "./recipes";
 import { ReviewManager } from "./scheduler/review-manager";
 import { sandboxMangers } from "./sandbox/session";
-import { setScheduler, TtyController } from "./input/tty-controller";
+import { setScheduler, TtyController, unwind as ttyUnwind, } from "./input/tty-controller";
 import Passthrough from "./input/passthrough";
 
-// Install once
 let installed = false;
-const controlContainer: { controller: TtyController | undefined } = { controller: undefined };
-
 /** Hook signals; ensure finalizer runs once. */
 export function installTtyGuard(): void {
   if (installed) return;
   installed = true;
 
   const unwind = () => {
-    const c = controlContainer.controller;
+    const c = R.ttyController;
     if (!c) return;
     c.unwind().catch((e) => Logger.error(e));
   };
 
-  R.on("SIGINT", () => { unwind(); R.exit(130); });
-  R.on("SIGTERM", () => { unwind(); R.exit(143); });
+  R.on("SIGINT", () => { unwind(); Logger.error?.("SIGINT"); R.exit(130); });
+  R.on("SIGTERM", () => { unwind(); Logger.error?.("SIGTERM"); R.exit(143); });
   R.on("uncaughtException", (err) => { unwind(); Logger.error?.(err); R.exit(1); });
   R.on("unhandledRejection", (reason: unknown) => { unwind(); Logger.error?.(reason); R.exit(1); });
 }
 
+
+
+installTtyGuard();
+
+
 /** Scoped helpers that return promises (safe to `await`). */
 export async function withCookedTTY<T>(f: () => Promise<T> | T): Promise<T> {
-  const ctl = controlContainer.controller;
+  const ctl = R.ttyController;
   if (!ctl) return await Promise.resolve(f());
   return ctl.withCookedTTY(f);
 }
 export async function withRawTTY<T>(f: () => Promise<T> | T): Promise<T> {
-  const ctl = controlContainer.controller;
+  const ctl = R.ttyController;
   if (!ctl) return await Promise.resolve(f());
   return ctl.withRawTTY(f);
 }
-
-installTtyGuard();
 
 // ------------------------------- Args & config -------------------------------
 
@@ -284,7 +285,7 @@ async function main() {
     agents,
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
     onAskUser: (fromAgent: string, content: string) =>
-      controlContainer.controller?.askUser(fromAgent, content) ?? Promise.resolve(undefined),
+      R.ttyController?.askUser(fromAgent, content) ?? Promise.resolve(undefined),
     projectDir, // repo root to copy/sync into /work
     reviewMode,
     promptEnabled:
@@ -292,15 +293,12 @@ async function main() {
         : kickoff ? false
           : R.stdin.isTTY,
     // Bridge: scheduler keeps the logic; controller renders & collects the line.
-    readUserLine: () => controlContainer.controller!.readUserLine(),
+    readUserLine: () => R.ttyController!.readUserLine(),
   });
-
-  setScheduler(scheduler);
-  //await ttyStart();
 
   // Build input (controller binds raw mode & keys; loop owned by scheduler)
   if (R.stdin.isTTY) {
-    controlContainer.controller = new TtyController({
+    R.ttyController = new TtyController({
       waitOverlayMessage: "Waiting for agent to finish",
       waitSuppressOutput: true,
       stdin: R.stdin,
@@ -311,6 +309,20 @@ async function main() {
       finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
       loopMode: "external", // <<< do not spawn controller's idle loop
     });
+    const _defaultController = new TtyController({
+      waitOverlayMessage: "Waiting for agent to finish",
+      waitSuppressOutput: true,
+      stdin: R.stdin,
+      stdout: R.stdout,
+      prompt: String(args["banner"] ?? "user: "),
+      interjectKey: String(args["interject-key"] ?? "i"),
+      interjectBanner: String(args["banner"] ?? "user: "),
+      finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
+      loopMode: "external", // <<< do not spawn controller's idle loop
+    });
+
+    setScheduler(scheduler);
+    await ttyStart();
   } else {
     new Passthrough({
       stdin: R.stdin,
@@ -337,7 +349,8 @@ async function main() {
   R.exit(0);
 }
 
-main().catch((e) => {
+main().catch(async (e) => {
   Logger.info(e);
+  await ttyUnwind();
   R.exit(1);
 });

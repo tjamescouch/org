@@ -342,7 +342,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
     await this.interject(text);
   }
 
-  async finalizeAndReviewAll(): Promise<void> {
+  async finalizeAndReview(): Promise<void> {
     Logger.info("\n👀 Finalize and review all ...");
     try {
       await this.review.finalizeAndReview(this.agents.map(a => a.id));

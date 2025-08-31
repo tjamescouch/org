@@ -11,6 +11,7 @@ import { emitKeypressEvents, Key } from "node:readline";
 import type { ReadStream as TtyReadStream } from "node:tty";
 import type { IScheduler } from "../scheduler/scheduler";
 import { C, Logger } from "../logger";
+import { R } from "../runtime/runtime";
 
 /* ----------------------------- Types & adapters ----------------------------- */
 
@@ -211,7 +212,7 @@ export class TtyController {
           this.statusShown.esc = true;
           this.statusLine(
             this.opts.waitOverlayMessage ??
-              "⏳ ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)"
+            "⏳ ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)"
           );
         }
         return;
@@ -324,31 +325,24 @@ export class TtyController {
 
 /* ------------------------- Module-level convenience ------------------------- */
 
-const _default = new TtyController({
-  stdin: process.stdin,
-  stdout: process.stdout,
-  prompt: "user: ",
-  interjectKey: "i",
-  interjectBanner: "user: ",
-});
 
-export function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return _default.withCookedTTY(fn); }
-export function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return _default.withRawTTY(fn); }
+export function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return R.ttyController!.withCookedTTY(fn); }
+export function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return R.ttyController!.withRawTTY(fn); }
 
-// NEW in PR3: convenience exports so callers don't need to hold the instance
-export async function start(): Promise<void> { return _default.start(); }
-export async function unwind(): Promise<void> { return _default.unwind(); }
-export function onStreamStart(): void { return _default.onStreamStart(); }
-export function onStreamEnd(): Promise<void> { return _default.onStreamEnd(); }
-export async function readUserLine(label?: string): Promise<string> { return _default.readUserLine(label); }
+// Convenience exports so callers can use a simple functional API
+export async function start(): Promise<void> { return R.ttyController!.start(); }
+export async function unwind(): Promise<void> { return R.ttyController!.unwind(); }
+export function onStreamStart(): void { return R.ttyController!.onStreamStart(); }
+export function onStreamEnd(): Promise<void> { return R.ttyController!.onStreamEnd(); }
+export async function readUserLine(label?: string): Promise<string> { return R.ttyController!.readUserLine(label); }
 export async function askUser(from: string, content: string): Promise<string | undefined> {
-  return _default.askUser(from, content);
+  return R.ttyController!.askUser(from, content);
 }
 
-// Restored: setScheduler now actually wires the singleton controller.
-export function setScheduler(s: IScheduler): void { _default.setScheduler(s); }
+// Restored/kept: setScheduler wires the singleton controller
+export function setScheduler(s: IScheduler): void { R.ttyController!.setScheduler(s); }
 
-// Optional compatibility hooks
+// Optional compatibility: older code may stash a scheduler here
 let _schedulerOpaque: unknown | undefined;
 export function getScheduler(): unknown | undefined { return _schedulerOpaque; }
 
@@ -356,12 +350,12 @@ export function getScheduler(): unknown | undefined { return _schedulerOpaque; }
 
 function hasEnqueueUserText(x: unknown): x is { enqueueUserText(text: string): Promise<void> | void } {
   return typeof x === "object" && x !== null &&
-         "enqueueUserText" in (x as Record<string, unknown>) &&
-         typeof (x as Record<string, unknown>)["enqueueUserText"] === "function";
+    "enqueueUserText" in (x as Record<string, unknown>) &&
+    typeof (x as Record<string, unknown>)["enqueueUserText"] === "function";
 }
 
 function hasFinalizeAndReview(x: unknown): x is { finalizeAndReview(): Promise<void> | Promise<{ patchProduced: boolean }> } {
   return typeof x === "object" && x !== null &&
-         "finalizeAndReview" in (x as Record<string, unknown>) &&
-         typeof (x as Record<string, unknown>)["finalizeAndReview"] === "function";
+    "finalizeAndReview" in (x as Record<string, unknown>) &&
+    typeof (x as Record<string, unknown>)["finalizeAndReview"] === "function";
 }
