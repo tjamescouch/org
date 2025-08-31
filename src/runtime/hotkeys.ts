@@ -1,4 +1,4 @@
-// src/runtime/hotkeys.ts
+import { emitKeypressEvents, Key } from "node:readline";
 import type { ReadStream } from "node:tty";
 import { Logger } from "../logger";
 
@@ -11,75 +11,61 @@ type HotkeysOpts = {
 };
 
 /**
- * Install a low-level raw-byte hotkey handler (ESC / Ctrl+C).
- * - Plays nicely with readline/keypress (they can coexist).
- * - Prints feedback to stderr immediately.
+ * Install a low-level hotkey handler (ESC / Ctrl+C) using the 'keypress' API.
+ * - Works in Bun and Node.
+ * - Prints ACKs to stderr immediately.
  * - Returns an uninstall() function.
  */
 export function installHotkeys(opts: HotkeysOpts): () => void {
-  Logger.info("Installing hotkeys 🔥");
-  const inTTY = !!opts.stdin.isTTY;
+  const tty = opts.stdin;
   const out = opts.feedback ?? process.stderr;
-  const log = (msg: string, ...a: any[]) =>
-    opts.debug ? Logger.debug(`[hotkeys] ${msg}`, ...a) : undefined;
+  const log = (m: string, ...a: any[]) =>
+    opts.debug ? Logger.debug(`[hotkeys] ${m}`, ...a) : undefined;
 
-  if (!inTTY) {
+  if (!tty.isTTY) {
     Logger.debug?.("[hotkeys] stdin is not a TTY; hotkeys disabled");
     return () => {};
   }
 
-  Logger.error("🥩 Input in raw mode");
-  try { opts.stdin.setRawMode?.(true); } catch { /* ignore */ }
-  // Ensure the stream is in flowing mode; without this you won't see 'data' events.
-  try { opts.stdin.resume(); } catch { /* ignore */ }
+  // Prepare the stream for keypress events
+  try { emitKeypressEvents(tty); } catch { /* ignore */ }
+  try { tty.setRawMode?.(true); } catch { /* ignore */ }
+  try { tty.resume(); } catch { /* ignore */ }
 
-  let escTimer: NodeJS.Timeout | null = null;
+  let installed = true;
 
-  const handleChunk = (chunk: Buffer | string) => {
-    // You asked “should I see logs for handleChunk?” — this is it:
-    log("handleChunk");
+  const onKeypress = async (_: string, key: Key) => {
+    if (!installed) return;
 
-    const buf: Buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
-    const len = buf.length;
-    if (len === 0) return;
-
-    // Ctrl+C (ETX)
-    if (buf[0] === 0x03) {
+    // Ctrl+C
+    if ((key.ctrl && key.name === "c") || key.sequence === "\x03") {
       log("Ctrl+C");
-      try { opts.onCtrlC?.(); } finally { /* fall through */ }
+      try { opts.onCtrlC?.(); } catch {}
       return;
     }
 
-    // ── ESC handling with a tiny debounce ─────────────────────────────────
-    // If we see exactly one ESC byte, wait a tick to see if this is part of a CSI / Alt+ combo.
-    if (len === 1 && buf[0] === 0x1b) {
-      if (escTimer) clearTimeout(escTimer);
-      escTimer = setTimeout(async () => {
-        escTimer = null;
-        try {
-          out.write("\n⏳ ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)\n");
-        } catch { /* ignore */ }
-        log("ESC (bare)");
-        await Promise.resolve(opts.onEsc());
-      }, 15); // small hair; feels instant but avoids misfires on arrow keys etc.
+    // Bare ESC (not Alt+ or CSI)
+    if (key.name === "escape" || key.sequence === "\u001b") {
+      try {
+        // immediate feedback on stderr so it never competes with stdout tokens
+        out.write(
+          `\n⏳ ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)\n`
+        );
+      } catch { /* ignore */ }
+
+      log("ESC");
+      try { await Promise.resolve(opts.onEsc()); } catch {}
       return;
     }
-
-    // If a CSI sequence arrives, cancel the pending bare-ESC
-    if (escTimer && len >= 2 && buf[0] === 0x1b && buf[1] === 0x5b /* [ */) {
-      clearTimeout(escTimer);
-      escTimer = null;
-      log("ESC canceled (CSI)");
-    }
-    // ──────────────────────────────────────────────────────────────────────
   };
 
-  opts.stdin.on("data", handleChunk);
-  Logger.debug?.("[hotkeys] installed");
+  tty.on("keypress", onKeypress);
+  Logger.debug?.("[hotkeys] installed (keypress)");
 
   return () => {
-    if (escTimer) { clearTimeout(escTimer); escTimer = null; }
-    try { opts.stdin.off("data", handleChunk); } catch { /* ignore */ }
+    if (!installed) return;
+    installed = false;
+    try { tty.off("keypress", onKeypress); } catch {}
     Logger.debug?.("[hotkeys] uninstalled");
   };
 }
