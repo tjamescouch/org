@@ -206,7 +206,7 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
         const reader = body.getReader();
         while (true) {
           //await new Promise<void>(r => (typeof setImmediate === "function" ? setImmediate(r) : setTimeout(r, 0)));
-          await sleep(1000);
+          //await sleep(1000);
           const { value, done } = await reader.read();
           if (done) break;
           buf += decoder.decode(value, { stream: true });

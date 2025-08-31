@@ -66,7 +66,7 @@ function fireEsc() {
 
 /** Core path used by real 'data' and tests. */
 function handleChunk(chunk: Buffer | string) {
-  if (!state.installed || state.suspended) return;
+  //if (!state.installed || state.suspended) return;
 
   const buf: Buffer = Buffer.isBuffer(chunk)
     ? chunk
