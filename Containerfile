@@ -143,6 +143,8 @@ ENV SANDBACKEND=none
 ENV APP_CMD=org
 
 # Entrypoint: primes /work, baselines repo, honors ORG_DEFAULT_CWD, then execs app.
+# Ensure workspace exists so "-w /work" at podman run succeeds
+RUN mkdir -p /work
 COPY container/entrypoint.sh /usr/local/bin/org-entrypoint
 RUN chmod +x /usr/local/bin/org-entrypoint
 ENTRYPOINT ["/usr/local/bin/org-entrypoint"]
