@@ -76,7 +76,13 @@ function installStdoutGuard(mode: GuardMode): () => void {
         (process.stderr || console).write(tag + (new Error().stack || "") + "\n");
       } catch { /* ignore */ }
       if (mode === "throw") {
-        throw new Error("stdout-guard: ESC byte written to stdout");
+        try {
+          throw new Error("stdout-guard: ESC byte written to stdout");
+        }
+        catch (e) {
+          console.log('ESCAPE DETECTED');
+          console.log(e);
+        }
       }
     }
     return origWrite(chunk, encoding as any, cb);
