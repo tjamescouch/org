@@ -8,7 +8,6 @@ import { detectBackend } from "../sandbox/detect";
 import { Logger } from "../logger";
 import { R } from "../runtime/runtime";
 
-
 export interface StepsDirCarrier {
   getStepsHostDir?: () => string;
   stepsHostDir?: string;
@@ -33,8 +32,6 @@ export function resolveStepsHostDir(session: StepsDirCarrier, fallbackRoot?: str
   // Last resort: a deterministic path under the CWD (keeps tests deterministic).
   return path.resolve(".org", "runs", "current", "steps");
 }
-// --- end helper ---
-
 
 export type ToolArgs = { cmd: string };
 export type ToolResult = { ok: boolean; stdout: string; stderr: string; exit_code: number; cmd: string };
@@ -61,6 +58,23 @@ export async function withMutedShHeartbeat<T>(fn: () => Promise<T>): Promise<T> 
   HEARTBEAT_MUTED = true;
   try { return await fn(); }
   finally { HEARTBEAT_MUTED = prev; }
+}
+
+/* -----------------------------------------------------------------------------
+ * Small helpers
+ * ---------------------------------------------------------------------------*/
+
+function trace(...a: any[]) {
+  if (R.env.DEBUG || R.env.ORG_TRACE) Logger.info("[sandboxed-sh]", ...a);
+}
+
+/** If `child` is inside `parent`, return the relative; otherwise return "" */
+function relIfInside(parent: string, child: string): string {
+  const p = path.resolve(parent);
+  const c = path.resolve(child);
+  if (c === p) return "";
+  if (!c.startsWith(p + path.sep)) return "";
+  return path.relative(p, c);
 }
 
 /* -----------------------------------------------------------------------------
@@ -147,7 +161,7 @@ function tailStepsDir(
 
   const attachTailer = async (fullPath: string, kind: "out" | "err") => {
     if (tracked.has(fullPath)) return;
-    // Start tailing from the beginning so we capture early bytes too.
+    trace("attach tailer:", fullPath, kind);
     const t = tailFile(
       fullPath,
       (s) => (kind === "out" ? onOut(s) : onErr(s)),
@@ -160,7 +174,6 @@ function tailStepsDir(
   const tick = async () => {
     if (stopped) return;
     try {
-      // Scan directory for new step files created/modified after startMs.
       const names = await fsp.readdir(stepsDir).catch(() => []);
       for (const name of names) {
         if (!pattern.test(name)) continue;
@@ -168,7 +181,6 @@ function tailStepsDir(
         if (tracked.has(full)) continue;
         try {
           const st = await fsp.stat(full);
-          // Use mtime/ctime heuristics; birthtime can be unreliable on overlayfs.
           const recentEnough =
             st.mtimeMs >= startMs - 10 ||
             st.ctimeMs >= startMs - 10;
@@ -186,8 +198,8 @@ function tailStepsDir(
     setTimeout(tick, pollMs);
   };
 
+  trace("tail steps dir:", stepsDir);
   tick();
-
   return {
     stop: () => {
       stopped = true;
@@ -205,16 +217,24 @@ function tailStepsDir(
 
 export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
   const sessionKey = ctx.agentSessionId ?? "default";
-  const projectDir = ctx.projectDir ?? R.cwd();
-  const runRoot = ctx.runRoot ?? path.join(projectDir, ".org");
+  const projectDir = path.resolve(ctx.projectDir ?? R.cwd());
+  const runRoot = path.resolve(ctx.runRoot ?? path.join(projectDir, ".org"));
+  const userCwd = path.resolve(R.cwd());
+  const cwdRel = relIfInside(projectDir, userCwd);
   const idleHeartbeatMsRaw = ctx?.idleHeartbeatMs ?? 1000;
   const idleHeartbeatMs = HEARTBEAT_MUTED ? 0 : Math.max(250, idleHeartbeatMsRaw);
+
+  trace("exec begin", { projectDir, runRoot, userCwd, cwdRel, cmd: args.cmd });
 
   const mgr = await getManager(sessionKey, projectDir, runRoot);
   const session = await mgr.getOrCreate(sessionKey, ctx.policy);
 
   const stepsHostDir = resolveStepsHostDir(session as unknown as StepsDirCarrier, runRoot);
 
+  // Prefix the command with `cd <rel>` if we’re in a subdirectory of the project
+  const prefix = cwdRel ? `cd ${JSON.stringify(cwdRel)} && ` : "";
+  const fullCmd = `${prefix}${args.cmd}`;
+  trace("exec command:", fullCmd);
 
   // Baseline: make sure the directory exists; streaming handler tolerates absence.
   try { await fsp.mkdir(stepsHostDir, { recursive: true }); } catch { }
@@ -240,7 +260,6 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   }, Math.max(250, Math.floor(Math.max(1, idleHeartbeatMs) / 2)));
 
   // Start a directory-wide streamer that will tail any new step-*.out/.err files
-  // created by this exec. This handles both index-based and stamp-based filenames.
   const startMs = Date.now();
   const dirTail = tailStepsDir(
     stepsHostDir,
@@ -252,15 +271,13 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   );
 
   // Run the step inside the sandbox (this writes those files)
-  const step = await (session as any).exec(args.cmd);
+  const step = await (session as any).exec(fullCmd);
 
   // Stop heartbeat + streamers and clean up the line nicely.
   clearInterval(hbTimer);
   dirTail.stop();
   if (printedHeartbeat && !brokeLineAfterHeartbeat) R.stderr.write("\n");
 
-  // If absolutely nothing appeared and the step succeeded with no files,
-  // end the line to avoid a dangling prompt.
   try {
     const hasOut = step?.stdoutFile && fs.existsSync(step.stdoutFile);
     const hasErr = step?.stderrFile && fs.existsSync(step.stderrFile);
@@ -275,8 +292,13 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   const out = (step?.stdoutFile && fs.existsSync(step.stdoutFile)) ? fs.readFileSync(step.stdoutFile, "utf8") : (step?.stdout ?? "");
   const err = (step?.stderrFile && fs.existsSync(step.stderrFile)) ? fs.readFileSync(step.stderrFile, "utf8") : (step?.stderr ?? "");
 
+  trace("exec end", { ok: !!step?.ok, exit: step?.exit ?? 0 });
   return { ok: !!step?.ok, stdout: out, stderr: err, exit_code: step?.exit ?? 0, cmd: args.cmd };
 }
+
+/* -----------------------------------------------------------------------------
+ * Finalization helpers
+ * ---------------------------------------------------------------------------*/
 
 export async function finalizeSandbox(ctx: ToolCtx) {
   const sessionKey = ctx.agentSessionId ?? "default";
@@ -317,9 +339,17 @@ export async function shCapture(
   cmd: string,
   opts: { projectDir: string; agentSessionId: string }
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const mgr = await getManager(opts.agentSessionId, opts.projectDir);
+  const projectDir = path.resolve(opts.projectDir);
+  const userCwd = path.resolve(R.cwd());
+  const cwdRel = relIfInside(projectDir, userCwd);
+  const prefix = cwdRel ? `cd ${JSON.stringify(cwdRel)} && ` : "";
+  const fullCmd = `${prefix}${cmd}`;
+  trace("shCapture", { projectDir, userCwd, cwdRel, fullCmd });
+
+  const mgr = await getManager(opts.agentSessionId, projectDir, R.cwd());
   const session = await mgr.getOrCreate(opts.agentSessionId);
-  const r = await (session as any).exec(cmd);
+  const r = await (session as any).exec(fullCmd);
+
   const stdout = (r && r.stdoutFile && fs.existsSync(r.stdoutFile)) ? fs.readFileSync(r.stdoutFile, "utf8") : (r?.stdout ?? "");
   const stderr = (r && r.stderrFile && fs.existsSync(r.stderrFile)) ? fs.readFileSync(r.stderrFile, "utf8") : (r?.stderr ?? "");
   return { code: r?.exit ?? 0, stdout, stderr };
@@ -358,7 +388,6 @@ export async function shInteractive(
   // Preserve REAL newlines; do NOT JSON.stringify.
   let script: string;
   if (Array.isArray(cmdOrArgv)) {
-    // Prefer raw shell script when caller uses ["bash","-lc", "<script>"]
     if (cmdOrArgv.length >= 2 && cmdOrArgv[0] === "bash" && cmdOrArgv[1] === "-lc") {
       script = cmdOrArgv.slice(2).join(" ");
     } else {
@@ -369,7 +398,14 @@ export async function shInteractive(
     script = cmdOrArgv;
   }
 
-  const mgr = await getManager(opts.agentSessionId, opts.projectDir);
+  const projectDir = path.resolve(opts.projectDir);
+  const userCwd = path.resolve(R.cwd());
+  const cwdRel = relIfInside(projectDir, userCwd);
+  const prefix = cwdRel ? `cd ${JSON.stringify(cwdRel)} && ` : "";
+  const fullScript = `${prefix}${script}`;
+  trace("shInteractive", { projectDir, userCwd, cwdRel, fullScript });
+
+  const mgr = await getManager(opts.agentSessionId, projectDir, R.cwd());
   const session = await mgr.getOrCreate(opts.agentSessionId);
 
   const runInteractive =
@@ -378,10 +414,10 @@ export async function shInteractive(
       : null;
 
   if (runInteractive) {
-    const child = runInteractive(script);
+    const child = runInteractive(fullScript);
     return await new Promise<{ code: number }>((resolve) => {
       child.on("close", (code: number | null) => resolve({ code: code ?? 0 }));
-      child.on("exit", (code: number | null) => resolve({ code: code ?? 0 }));
+      child.on("exit",  (code: number | null) => resolve({ code: code ?? 0 }));
     });
   }
 
@@ -398,13 +434,12 @@ export async function shInteractive(
     );
   }
 
-  const argv = ["exec", "-it", cname, "bash", "-lc", script];
+  const argv = ["exec", "-it", cname, "bash", "-lc", fullScript];
   Logger.info(`[sandboxed-sh] fallback interactive via ${engine}: ${argv.join(" ")}`);
 
   const child = spawn(engine, argv, { stdio: "inherit" });
   return await new Promise<{ code: number }>((resolve) => {
     child.on("close", (code) => resolve({ code: code ?? 0 }));
-    child.on("exit", (code) => resolve({ code: code ?? 0 }));
+    child.on("exit",  (code) => resolve({ code: code ?? 0 }));
   });
 }
-

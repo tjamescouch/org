@@ -10,6 +10,7 @@ import { createInterface } from "node:readline/promises";
 import { emitKeypressEvents, Key } from "node:readline";
 import type { ReadStream as TtyReadStream } from "node:tty";
 import type { IScheduler } from "../scheduler/scheduler";
+import { C, Logger } from "../logger";
 
 /* ----------------------------- Types & adapters ----------------------------- */
 
@@ -149,7 +150,7 @@ export class TtyController {
 
   /** Agent asks the user for input; we print the content then prompt once. */
   async askUser(_fromAgent: string, content: string): Promise<string | undefined> {
-    await this.writeLine(content.trim());
+    Logger.info(C.green(content.trim()));
     const ans = await this.promptOnce(this.opts.interjectBanner);
     return ans.trim() === "" ? undefined : ans;
   }
@@ -179,11 +180,6 @@ export class TtyController {
       }
     }
   };
-
-  private async writeLine(s: string): Promise<void> {
-    if (s.length === 0) return;
-    await Promise.resolve(this.opts.stdout.write(s + "\n"));
-  }
 
   private async promptOnce(label: string): Promise<string> {
     this.reading = true;

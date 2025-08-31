@@ -1,5 +1,6 @@
 // src/config/config.ts
 import { getRecipe } from "../recipes";
+import { R } from "../runtime/runtime";
 
 export interface LlmConfig {
   driver: "lmstudio";

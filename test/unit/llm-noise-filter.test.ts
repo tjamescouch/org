@@ -1,21 +1,50 @@
-// src/utils/llm-noise-filter.test.ts
+/* bun test test/unit/llm-noise-filter.test.ts */
 import { describe, it, expect } from "bun:test";
-import { LLMNoiseFilter } from "../../src/utils/llm-noise-filter";
-import { LLMNoiseFilterFirstPass } from "../../src/utils/filter-passes/llm-noise-filter-first-pass"
-import { FinalChannelPass } from "../../src/utils/filter-passes/llm-final-channel-pass"
-import { AdvancedMemoryScrubPass } from "../../src/utils/filter-passes/llm-adv-memory-scrub-pass"
+import { LLMNoiseFilterFirstPass } from "../../src/utils/filter-passes/llm-noise-filter-first-pass";
+import { ToolformerSentinelPass } from "../../src/utils/filter-passes/llm-toolformer-sentinel-pass";
+import { FinalChannelPass } from "../../src/utils/filter-passes/llm-final-channel-pass";
+import LLMNoiseFilter from "../../src/utils/llm-noise-filter";
+import { AdvancedMemoryScrubPass } from "../../src/utils/filter-passes/llm-adv-memory-scrub-pass";
 
-function collect(filter: LLMNoiseFilter, chunks: string[]): { text: string; removed: number } {
-  let text = "";
-  let removed = 0;
-  for (const c of chunks) {
-    const r = filter.feed(c);
-    text += r.cleaned;
-    removed += r.removed;
-  }
-  text += filter.flush(); // final drain
-  return { text, removed };
+type FeedLike = { feed: (s: string) => any; flush: () => string };
+
+function asObj(r: any): { cleaned: string } {
+  if (typeof r === "string") return { cleaned: r };
+  if (r && typeof r.cleaned === "string") return r as { cleaned: string };
+  return { cleaned: String(r ?? "") };
 }
+
+export function collect(f: FeedLike, chunks: string[]): string {
+  let out = "";
+  for (const c of chunks) {
+    out += asObj(f.feed(c)).cleaned;
+  }
+  out += f.flush();
+  return out;
+}
+
+
+export function newFilter() {
+  const p1: FeedLike = new LLMNoiseFilterFirstPass();
+  const p2: FeedLike = new ToolformerSentinelPass();
+  const p3: FeedLike = new FinalChannelPass();
+
+  return {
+    feed(s: string) {
+      const a = asObj(p1.feed(s)).cleaned;
+      const b = asObj(p2.feed(a)).cleaned;
+      return asObj(p3.feed(b));
+    },
+    flush() {
+      let t = "";
+      t += p1.flush();
+      t = asObj(p2.feed(t)).cleaned + p2.flush();
+      t = asObj(p3.feed(t)).cleaned + p3.flush();
+      return t;
+    },
+  };
+}
+
 
 describe("LLMNoiseFilter – plain text", () => {
   it("returns the chunk as-is and flush() is empty (no duplication)", () => {
@@ -39,7 +68,7 @@ describe("LLMNoiseFilter – plain text", () => {
       new AdvancedMemoryScrubPass(), // minimal "LLM quirks" scrub (safe by default)
     ]);
     const out = collect(f, ["ban", "ana", "!"]);
-    expect(out.text).toBe("banana!");
+    expect(out).toBe("banana!");
     expect(out.removed).toBe(0);
   });
 });
@@ -54,7 +83,7 @@ describe("LLMNoiseFilter – toolformer sentinels", () => {
       new AdvancedMemoryScrubPass(), // minimal "LLM quirks" scrub (safe by default)
     ]);
     const out = collect(f, [sentinel]);
-    expect(out.text).toBe("before  after");
+    expect(out).toBe("before  after");
     expect(out.removed).toBe(1);
   });
 
@@ -69,7 +98,7 @@ describe("LLMNoiseFilter – toolformer sentinels", () => {
       "nnel|>commentary to=functions sh<|message|>{\"cmd\":1} after",
     ];
     const out = collect(f, chunks);
-    expect(out.text).toBe("before  after");
+    expect(out).toBe("before  after");
     expect(out.removed).toBe(1);
   });
 
@@ -82,7 +111,7 @@ describe("LLMNoiseFilter – toolformer sentinels", () => {
     const s = `X<|channel|>foo<|message|>not-json-here
 Y`;
     const out = collect(f, [s]);
-    expect(out.text).toBe("XY");
+    expect(out).toBe("XY");
     expect(out.removed).toBe(1);
   });
 });
@@ -96,7 +125,7 @@ describe("LLMNoiseFilter – fenced code blocks must be preserved verbatim", () 
       new AdvancedMemoryScrubPass(), // minimal "LLM quirks" scrub (safe by default)
     ]);
     const out = collect(f, [code]);
-    expect(out.text).toBe(code); // unchanged
+    expect(out).toBe(code);
     expect(out.removed).toBe(0);
   });
 
@@ -108,7 +137,7 @@ describe("LLMNoiseFilter – fenced code blocks must be preserved verbatim", () 
     ]);
     const chunks = ["```", "js\nconsole.log('x')\n```", "\nOK"];
     const out = collect(f, chunks);
-    expect(out.text).toBe("```js\nconsole.log('x')\n```\nOK");
+    expect(out).toBe("```js\nconsole.log('x')\n```\nOK");
     expect(out.removed).toBe(0);
   });
 });

@@ -1,59 +1,30 @@
-import type { LLMNoiseFilterPass, PassFeedResult } from "./filter-passes/llm-noise-filter-pass";
+// src/utils/llm-noise-filter.ts
+import type { LLMNoiseFilterPass } from "./filter-passes/llm-noise-filter-pass";
+import { LLMNoisePDAStream } from "./filter-passes/llm-pda-stream";
 
 export class LLMNoiseFilter {
-  // Keep our own copy so callers can't mutate the live pipeline after construction.
-  private readonly passes: LLMNoiseFilterPass[];
+  private readonly passes: LLMNoiseFilterPass[] = [];
 
-  constructor(passes: LLMNoiseFilterPass[]) {
-    if (!Array.isArray(passes) || passes.length === 0) {
-      throw new Error("LLMNoiseFilter requires at least one filter pass");
-    }
-    this.passes = passes.slice();
-  }
-
-  /**
-   * Push a chunk through the pipeline, left-to-right.
-   * - Each pass may alter the text and optionally report "removed" counts.
-   * - We sum removed across passes.
-   */
-  feed(chunk: string): { cleaned: string; removed: number } {
+  feed(chunk: string): string {
     let cleaned = chunk ?? "";
-    let removedTotal = 0;
-
     for (const pass of this.passes) {
-      const res: PassFeedResult = pass.feed(cleaned) ?? { cleaned };
-      cleaned = res.cleaned;
-      if (typeof res.removed === "number") removedTotal += res.removed;
+      const r = pass.feed(cleaned) ?? "";
+      cleaned = r ?? cleaned;
     }
-
-    return { cleaned, removed: removedTotal };
+    return cleaned;
   }
 
-  /**
-   * Flush any carried state:
-   *   1) Flush the first pass (lowest-level stream buffer).
-   *   2) Pipe that tail through each subsequent pass as feed(...) + flush().
-   * This mirrors the old fixed pipeline semantics.
-   */
   flush(): string {
-    if (this.passes.length === 1) {
-      return this.passes[0].flush();
-    }
-
-    // Start with the first pass's tail
+    if (this.passes.length === 1) return this.passes[0].flush();
     let tail = this.passes[0].flush();
-
-    // Pipe through the rest of the passes in order
     for (let i = 1; i < this.passes.length; i++) {
       const p = this.passes[i];
-      tail = (p.feed(tail).cleaned) + p.flush();
+      tail = p.feed(tail) + p.flush();
     }
-
     return tail;
   }
 
-  // Convenience aliases kept for callers/tests that used push/end.
-  push(chunk: string): string { return this.feed(chunk).cleaned; }
+  push(chunk: string): string { return this.feed(chunk); }
   end(): string { return this.flush(); }
 }
 

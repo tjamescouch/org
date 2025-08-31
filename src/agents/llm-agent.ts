@@ -1,6 +1,8 @@
-// src/llm-agent.ts
-import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
 import { C, Logger } from "../logger";
+import { R } from "../runtime/runtime";
+import LLMNoiseFilter from "../utils/llm-noise-filter";
+import { StreamingTagProtector } from "../utils/tag-protect";
+import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
 import { AgentMemory } from "../memory";
 import { GuardRail } from "../guardrails/guardrail";
 import { Agent } from "./agent";
@@ -10,6 +12,7 @@ import { AdvancedMemory } from "../memory/advanced-memory";
 import { ToolExecutor } from "../executors/tool-executor";
 import { StandardToolExecutor } from "../executors/standard-tool-executor";
 import { SANDBOXED_SH_TOOL_SCHEMA } from "../tools/sandboxed-sh";
+import { createPDAStreamFilter } from "../utils/filter-passes/llm-pda-stream";
 
 export interface AgentReply {
   message: string;   // assistant text
@@ -27,7 +30,7 @@ function buildSystemPrompt(id: string): string {
     "TOOLS",
     "- sh(cmd): run a POSIX command. Args: {cmd:string}. Returns {ok, stdout, stderr, exit_code, cmd}.",
     "  • Use for builds/tests/git/etc. Check exit_code and stderr. Never invent outputs.",
-//    "- vimdiff(left,right[,cwd]): open an interactive vimdiff for human review. Returns {exitCode} when the user quits.",
+    //    "- vimdiff(left,right[,cwd]): open an interactive vimdiff for human review. Returns {exitCode} when the user quits.",
     "",
     "FILES",
     "- Prefer tag-based writes for full files (no code fences):",
@@ -84,6 +87,7 @@ export class LlmAgent extends Agent {
 
   // New: polymorphic tool executor (pure refactor)
   private readonly toolExecutor: ToolExecutor;
+  private streamFilter = createPDAStreamFilter();
 
   constructor(id: string, driver: ChatDriver, model: string, guard?: GuardRail) {
     super(id, guard);
@@ -126,7 +130,6 @@ export class LlmAgent extends Agent {
     Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
     if (abortCallback?.()) {
       Logger.debug("Aborted turn");
-
       return [{ message: "Turn aborted.", toolsUsed: 0 }];
     }
 
@@ -173,17 +176,29 @@ export class LlmAgent extends Agent {
       Logger.streamInfo(C.red(deltaText));
     }
 
+    // --- Streaming filter: RAW when DEBUG=1/true/yes; FILTERED otherwise ---
+    const dbg = (R.env.DEBUG ?? "").trim().toLowerCase();
+    const dbg2 = (process.env.LOG_LEVEL || '').toUpperCase() === 'DEBUG';
+    let debugStreaming = (dbg === "1") || (dbg === "true") || (dbg === "yes");
+    if (dbg2) {
+      debugStreaming = true;
+    }
+    Logger.info('debugStreaming', debugStreaming, dbg);
+
+    // Same pipeline as post-turn
+    const tagProtector = new StreamingTagProtector();
+    // -----------------------------------------------------------------------
+
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
       tools: this.tools,
       onReasoningToken: t => {
-        if (process.env.HIDE_COT) {
+        if (R.env.HIDE_COT) {
           Logger.streamInfo(C.cyan('.'));
-
           return;
         }
-
-        Logger.streamInfo(C.cyan(t))
+        //Logger.streamInfo(C.cyan(t))
+        Logger.streamInfo(C.cyan('.'));
       },
       onToken: t => {
         if (streamState !== "content") {
@@ -191,10 +206,26 @@ export class LlmAgent extends Agent {
           streamState = "content";
         }
 
-        Logger.streamInfo(C.bold(t))
+        //if (debugStreaming) {
+        //  // RAW streaming
+        //  Logger.streamInfo(C.bold(t));
+        //} else {
+          // FILTERED streaming with tag preservation
+          if(t) Logger.streamInfo(C.gray(t));
+          //const cleaned = this.streamFilter.feed(t);
+          //if (cleaned) Logger.streamInfo(C.bold(cleaned));
+        //}
       },
       onToolCallDelta
     });
+
+    // --- Correct flush order: protector → filter → unprotect ---
+    //if (!debugStreaming) {
+      const tail = this.streamFilter.flush();                            // then flush filter
+      if (tail) Logger.streamInfo(C.bold(tail) + "\n");
+    //}
+    // -----------------------------------------------------------
+
     Logger.info('');
     Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
 
@@ -203,7 +234,6 @@ export class LlmAgent extends Agent {
     }
 
     const finalText = sanitizeContent((out.text || "").trim());
-
     const allReasoning = out?.reasoning || "";
 
     // Inform guard rail about this assistant turn (before routing)
@@ -238,12 +268,12 @@ export class LlmAgent extends Agent {
         const totalUsed = maxTools; // consume budget → end turn
         forceEndTurn = true;
         if (finalText) await this.memory.add({ role: "system", content: finalText, from: "System" });
-        
+
         return [{ message: finalText, toolsUsed: totalUsed }];
       }
     }
 
-    // --- Refactored: delegate to executor (pure behavior) ---
+    // Delegate to executor (pure behavior)
     const execResult = await this.toolExecutor.execute({
       calls: sanitizedCalls,
       maxTools,
@@ -255,7 +285,6 @@ export class LlmAgent extends Agent {
     });
     const toolsUsed = execResult.toolsUsed;
     forceEndTurn = execResult.forceEndTurn;
-    // --------------------------------------------------------
 
     if (toolsUsed >= maxTools) {
       if (finalText) {
@@ -266,7 +295,6 @@ export class LlmAgent extends Agent {
         await this.memory.add({ role: "assistant", content: allReasoning, from: "Me" });
       }
     }
-    // Loop: the assistant will see tool outputs (role:"tool") now in memory.
 
     Logger.info(C.blue(`\n[${this.id}] wrote. [${calls.length}] tools requested. [${toolsUsed}] tools used.`));
 

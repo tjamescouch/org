@@ -24,17 +24,26 @@ function inContainer(): boolean {
 }
 
 /** Decide which sandbox backend to use. Env var wins. Then container→local, then podman, docker, mock. */
-export function detectBackend(): Backend {
-  const forced = (process.env.ORG_BACKEND || "").toLowerCase().trim();
-  if (forced === "podman" || forced === "docker" || forced === "local" || forced === "mock") {
-    return forced as Backend;
-  }
-
-  if (inContainer()) return "local";
-  if (binExists("podman")) return "podman";
-  if (binExists("docker")) return "docker";
-  return "mock";
+//export function detectBackend(): Backend {
+//  const forced = (process.env.ORG_BACKEND || "").toLowerCase().trim();
+//  if (forced === "podman" || forced === "docker" || forced === "local" || forced === "mock") {
+//    return forced as Backend;
+//  }
+//
+//  if (inContainer()) return "local";
+//  if (binExists("podman")) return "podman";
+//  if (binExists("docker")) return "docker";
+//  return "mock";
+//}
+// src/sandbox/detect.ts
+export function detectBackend(): "podman" | "none" {
+  // If we're already in a container (Option B), avoid podman-in-podman.
+  const forced = String(process.env.SANDBACKEND || "").toLowerCase();
+  if (forced === "none") return "none";
+  if (process.env.container) return "none";
+  return "podman";
 }
+
 
 export function isMock(): boolean {
   return detectBackend() === "mock";
