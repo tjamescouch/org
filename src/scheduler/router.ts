@@ -55,12 +55,9 @@ export async function routeWithSideEffects(
     const router = makeRouter({
         onAgent: async (_from, to, cleaned) => {
             deps.setRespondingAgent(to);
-            //const cleaned = filters.cleanAgent(content);
             if (cleaned) deps.enqueue(to, { role: "user", from: fromAgent.id, content: cleaned });
         },
         onGroup: async (_from, cleaned) => {
-            //const cleaned = filters.cleanGroup(content); //FIXME - need to scrub then route
-            Logger.info('{cleaned,content}',{ cleaned });
             const peers = deps.agents.map(a => a.id);
             const dec = fromAgent.guardCheck?.("group", cleaned, peers) || null;
             if (dec) await deps.applyGuard(fromAgent, dec);
