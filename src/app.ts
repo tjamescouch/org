@@ -56,15 +56,13 @@ export function installTtyGuard(): void {
 }
 
 installTtyGuard();
-installHotkeys({  
-  stdin: R.stdin,
-  onEsc: () => Logger.error("ESC"),
-  onCtrlC: () => {
-    Logger.error("Ctrl+C"),
-    R.exit(5);
-  },
-  feedback: R.stderr,
-  debug: false,
+Logger.info("Installing hotkeys 🔥");
+const uninstallHotkeys = installHotkeys({
+  stdin: R.stdin as any,
+  onEsc: async () => { await R.ttyController?.unwind(); /* finalizer handles review+exit */ },
+  onCtrlC: () => { Logger.error("SIGINT"); R.exit(130); },
+  feedback: process.stderr,
+  debug: !!process.env.DEBUG,
 });
 
 /** Scoped helpers that return promises (safe to `await`). */
@@ -385,6 +383,7 @@ async function main() {
 
 main().catch(async (e) => {
   Logger.info(e);
+  uninstallHotkeys();
   try { await R.ttyController?.unwind(); } catch { /* ignore */ }
   R.exit(1);
 });
