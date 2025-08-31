@@ -66,7 +66,9 @@ function fireEsc() {
 
 /** Core path used by real 'data' and tests. */
 function handleChunk(chunk: Buffer | string) {
+  Logger.error("handleChunk");
   if (!state.installed || state.suspended) return;
+  Logger.error("handleChunk inside");
 
   const buf: Buffer = Buffer.isBuffer(chunk)
     ? chunk
@@ -87,7 +89,6 @@ function handleChunk(chunk: Buffer | string) {
   if (len === 1 && buf[0] === 0x1b) {
     // If another bare ESC is already pending, restart the timer.
     if (state.escTimer) { clearTimeout(state.escTimer); state.escTimer = null; }
-    Logger.error("Escape pending");
     state.escPending = true;
     state.escTimer = setTimeout(() => {
       if (state.escPending) fireEsc();
