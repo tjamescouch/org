@@ -1,10 +1,10 @@
 // src/input/tty-controller.ts
-// Runtime-owned TTY controller with portable hotkeys and rich debug logging.
-// - Primary: 'keypress' path (readline-based), portable in Bun/Node
-// - Fallback: raw 'data' byte parser (ESC/Ctrl+C/'i'), so hotkeys still work
-// - Immediate feedback goes to stderr (feedbackStream) to avoid contention
+// Runtime-owned TTY controller with portable hotkeys and a stdout guard.
+// - Primary hotkeys via 'keypress' (works in Bun/Node), fallback via raw 'data'
+// - ESC: graceful (defer if streaming, then finalize+review); 'i': interject
+// - Immediate feedback to stderr so it never competes with tokens
 // - Non-interactive (no TTY): hotkeys disabled automatically
-// - Exposes start()/unwind() and proxies start() when called via legacy ttyStart()
+// - Optional stdout guard: ORG_STDOUT_GUARD=1 (log) | "throw" (crash on ESC to stdout)
 
 import { createInterface } from "node:readline/promises";
 import { emitKeypressEvents, Key } from "node:readline";
@@ -13,7 +13,7 @@ import type { IScheduler } from "../scheduler/scheduler";
 import { Logger } from "../logger";
 import { R } from "../runtime/runtime";
 
-/* ------------------------------- Debug flag -------------------------------- */
+/* -------------------------------- Debug flags ------------------------------- */
 
 const TTY_DEBUG =
   (typeof process !== "undefined" &&
@@ -26,42 +26,87 @@ function dlog(...args: any[]) {
   try { (process.stderr || console).write(`[tty] ${args.join(" ")}\n`); } catch { /* ignore */ }
 }
 
-/* ----------------------------- Types & helpers ----------------------------- */
+/* ------------------------------ Stdout guard -------------------------------- */
+
+type GuardMode = "off" | "log" | "throw";
+
+function resolveGuardMode(): GuardMode {
+  return "throw";
+  const v = (process.env.ORG_STDOUT_GUARD || "").toLowerCase().trim();
+  if (v === "1" || v === "log") return "log";
+  if (v === "throw" || v === "crash" || v === "hard") return "throw";
+  return "off";
+}
+
+function chunkHasEsc(chunk: unknown): boolean {
+  if (chunk == null) return false;
+  if (Buffer.isBuffer(chunk)) return chunk.includes(0x1b); // ESC
+  const s = String(chunk);
+  return s.indexOf("\u001b") !== -1;
+}
+
+function printablePreview(chunk: unknown, max = 160): string {
+  const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+  let out = "";
+  for (let i = 0; i < buf.length && out.length < max; i++) {
+    const b = buf[i]!;
+    if (b === 0x1b) out += "^[";
+    else if (b === 0x0a) out += "\\n";
+    else if (b === 0x0d) out += "\\r";
+    else if (b < 0x20 || b === 0x7f) out += `\\x${b.toString(16).padStart(2, "0")}`;
+    else out += String.fromCharCode(b);
+  }
+  return out;
+}
+
+function installStdoutGuard(mode: GuardMode): () => void {
+  if (mode === "off") return () => {};
+  const stdout: any = process.stdout;
+  const origWrite = stdout.write.bind(stdout);
+
+  const patched = function writePatched(
+    chunk: any,
+    encoding?: BufferEncoding | ((err?: Error) => void),
+    cb?: (err?: Error) => void
+  ) {
+    if (chunkHasEsc(chunk)) {
+      const prev = printablePreview(chunk);
+      const tag = `[stdout-guard:${mode}] ESC byte detected in write(); preview="${prev}"\n`;
+      try {
+        (process.stderr || console).write(tag + (new Error().stack || "") + "\n");
+      } catch { /* ignore */ }
+      if (mode === "throw") {
+        throw new Error("stdout-guard: ESC byte written to stdout");
+      }
+    }
+    return origWrite(chunk, encoding as any, cb);
+  };
+
+  stdout.write = patched;
+  dlog(`stdout-guard installed (mode=${mode})`);
+  return () => { try { stdout.write = origWrite; } catch { /* ignore */ } };
+}
+
+/* ----------------------------- Types & helpers ------------------------------ */
 
 export interface TtyControllerOptions {
   stdin: NodeJS.ReadStream;
   stdout: NodeJS.WriteStream;
-
-  /** Idle prompt label (e.g., "user: "). A trailing space is enforced. */
-  prompt: string;
-
-  /** Interjection key (default 'i'). */
-  interjectKey: string;
-
-  /** Interjection prompt label (e.g., "user: "). A trailing space is enforced. */
-  interjectBanner: string;
-
-  /** UX hint when deferring on ESC (printed once to stderr). */
+  prompt: string;            // banner for idle prompt (trailing space enforced)
+  interjectKey: string;      // key name, default 'i'
+  interjectBanner: string;   // banner for interjection prompt
   waitOverlayMessage?: string;
-
-  /** Called on graceful unwind (signals/ESC): should perform stop→drain→review. */
   finalizer?: () => Promise<void> | void;
-
-  /** Who owns the idle user loop? We keep for API parity; you use "external". */
   loopMode?: "controller" | "external";
-
-  /** Where to print hotkey feedback; defaults to stderr. */
   feedbackStream?: NodeJS.WriteStream;
-
-  /** If true, we force exclusive ownership: remove other 'keypress' listeners. */
-  forceExclusive?: boolean;
+  forceExclusive?: boolean;  // remove other keypress listeners if true
 }
 
 function hasSetRawMode(s: NodeJS.ReadStream): s is TtyReadStream {
   return typeof (s as { setRawMode?: unknown }).setRawMode === "function";
 }
 
-/* -------------------------------- Controller ------------------------------- */
+/* -------------------------------- Controller -------------------------------- */
 
 export class TtyController {
   private readonly loopMode: "controller" | "external";
@@ -81,8 +126,9 @@ export class TtyController {
 
   private readonly feedback: NodeJS.WriteStream;
   private readonly interjectKeyName: string;
+  private uninstallGuard: (() => void) | null = null;
 
-  // used to suppress duplicate handling if both handlers fire
+  // dedupe if both keypress and data fire for same key
   private lastEscAt = 0;
   private lastIAt = 0;
 
@@ -94,13 +140,17 @@ export class TtyController {
     this.interjectKeyName = (opts.interjectKey || "i").toLowerCase();
   }
 
-  /* ------------------------------ Public API ------------------------------ */
-
   setScheduler(s: IScheduler): void { this.scheduler = s; }
 
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
+
+    // Optional stdout guard (dev-only)
+    const gm = resolveGuardMode();
+    if (!this.uninstallGuard && gm !== "off") {
+      this.uninstallGuard = installStdoutGuard(gm);
+    }
 
     const { stdin } = this.opts;
     if (!stdin.isTTY) {
@@ -108,28 +158,23 @@ export class TtyController {
       return;
     }
 
-    // Own the TTY
     try { emitKeypressEvents(stdin as any); dlog("emitKeypressEvents OK"); } catch { dlog("emitKeypressEvents failed"); }
     try { hasSetRawMode(stdin) && stdin.setRawMode!(true); dlog("setRawMode(true)"); } catch { dlog("setRawMode failed"); }
     try { (stdin as any).resume?.(); dlog("stdin.resume()"); } catch { /* ignore */ }
 
-    // (Optional) ensure exclusive ownership of 'keypress' to avoid duplicates
     if (this.opts.forceExclusive) {
       try {
         const existing = (stdin as any).rawListeners?.("keypress") ?? (stdin as any).listeners?.("keypress") ?? [];
         if (existing.length > 0) dlog(`forceExclusive: removing ${existing.length} prior keypress listeners`);
-        existing.forEach((fn: any) => { try { (stdin as any).off?.("keypress", fn); } catch { /* ignore */ } });
+        for (const fn of existing) { try { (stdin as any).off?.("keypress", fn); } catch { /* ignore */ } }
       } catch { /* ignore */ }
     }
 
-    // Primary path: keypress
     if (!this.keypressBound) {
       (stdin as any).on("keypress", this.onKeypress);
       this.keypressBound = true;
       dlog("keypress handler bound");
     }
-
-    // Fallback: raw byte path (data) — attach too, but dedupe in handler
     if (!this.dataBound) {
       (stdin as any).on("data", this.onData);
       this.dataBound = true;
@@ -146,10 +191,12 @@ export class TtyController {
     this.running = false;
 
     if (stdin.isTTY) {
-      try { (stdin as any).off?.("keypress", this.onKeypress); this.keypressBound = false; } catch { /* ignore */ }
-      try { (stdin as any).off?.("data", this.onData); this.dataBound = false; } catch { /* ignore */ }
-      try { hasSetRawMode(stdin) && stdin.setRawMode!(false); dlog("setRawMode(false)"); } catch { /* ignore */ }
+      try { (stdin as any).off?.("keypress", this.onKeypress); this.keypressBound = false; } catch {}
+      try { (stdin as any).off?.("data", this.onData); this.dataBound = false; } catch {}
+      try { hasSetRawMode(stdin) && stdin.setRawMode!(false); dlog("setRawMode(false)"); } catch {}
     }
+
+    if (this.uninstallGuard) { try { this.uninstallGuard(); } catch {} this.uninstallGuard = null; }
 
     await Promise.resolve(this.opts.finalizer?.());
   }
@@ -166,50 +213,34 @@ export class TtyController {
   async withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return await Promise.resolve(fn()); }
   async withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return await Promise.resolve(fn()); }
 
-  onStreamStart(): void {
-    this.streaming = true;
-    dlog("onStreamStart");
-  }
+  onStreamStart(): void { this.streaming = true; dlog("onStreamStart"); }
   async onStreamEnd(): Promise<void> {
-    this.streaming = false;
-    dlog("onStreamEnd");
-    if (this.shutdownRequested) {
-      this.shutdownRequested = false;
-      await this.finalizeAndReviewAndExit();
-      return;
-    }
-    if (this.interjectPending) {
-      this.interjectPending = false;
-      await this.openInterjectionPromptOnce();
-    }
+    this.streaming = false; dlog("onStreamEnd");
+    if (this.shutdownRequested) { this.shutdownRequested = false; await this.finalizeAndReviewAndExit(); return; }
+    if (this.interjectPending) { this.interjectPending = false; await this.openInterjectionPromptOnce(); }
   }
 
-  /* ------------------------------- Internals ------------------------------- */
+  /* -------------------------------- Handlers -------------------------------- */
 
   private onKeypress = async (_: string, key: Key) => {
-    // This path is portable across Node/Bun; we prefer it when available.
-    // Dedupe with onData by time (if both fire for the same physical key).
     const now = Date.now();
 
-    // Ctrl+C → immediate
     if ((key.ctrl && key.name === "c") || key.sequence === "\x03") {
       dlog("keypress: Ctrl+C");
       try { this.statusLine("SIGINT"); } finally { process.exit(130); }
       return;
     }
 
-    // ESC → graceful (defer if streaming)
     if (key.name === "escape" || key.sequence === "\u001b") {
-      if (now - this.lastEscAt < 50) return; // dedupe
+      if (now - this.lastEscAt < 50) return;
       this.lastEscAt = now;
       dlog("keypress: ESC");
       await this.handleEsc();
       return;
     }
 
-    // 'i' → interject (interactive only)
     if ((key.name || "").toLowerCase() === this.interjectKeyName) {
-      if (now - this.lastIAt < 50) return; // dedupe
+      if (now - this.lastIAt < 50) return;
       this.lastIAt = now;
       dlog("keypress: i");
       await this.handleInterjectHit();
@@ -218,50 +249,43 @@ export class TtyController {
   };
 
   private onData = async (chunk: Buffer | string) => {
-    // Fallback parser: raw bytes in raw mode.
-    // Important: we do not write chunk to stdout (avoids '^[' leakage).
     try {
       const buf: Buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
       if (!buf || buf.length === 0) return;
       const now = Date.now();
 
-      // Ctrl+C (ETX)
-      if (buf[0] === 0x03) {
+      if (buf[0] === 0x03) { // ETX
         dlog("data: Ctrl+C");
         try { this.statusLine("SIGINT"); } finally { process.exit(130); }
         return;
       }
 
-      // Bare ESC (0x1b). We wait a hair (15ms) to avoid CSI mis-fire, but only if len==1
       if (buf.length === 1 && buf[0] === 0x1b) {
-        if (now - this.lastEscAt < 50) return; // dedupe with keypress
+        if (now - this.lastEscAt < 50) return;
         this.lastEscAt = now;
-        dlog("data: ESC (single-byte)");
+        dlog("data: ESC");
         await this.handleEsc();
         return;
       }
 
-      // 'i' (0x69) in raw mode (single byte, not while prompting)
       if (buf.length === 1 && (buf[0] === 0x69 || buf[0] === 0x49)) {
-        if (now - this.lastIAt < 50) return; // dedupe with keypress
+        if (now - this.lastIAt < 50) return;
         this.lastIAt = now;
         dlog("data: i");
         await this.handleInterjectHit();
         return;
       }
-
-      // Multi-byte CSI (e.g., arrows): ignore; we only care about ESC/i/Ctrl+C.
-      // dlog("data: ignored", JSON.stringify([...buf.slice(0, 8)]));
+      // ignore CSI etc.
     } catch { /* ignore */ }
   };
 
   private async handleEsc(): Promise<void> {
-    if (!this.opts.stdin.isTTY) return; // hotkeys disabled in non-interactive
+    if (!this.opts.stdin.isTTY) return;
     if (this.streaming) {
       this.shutdownRequested = true;
       this.statusLine(
         this.opts.waitOverlayMessage ??
-          "⏳ ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)"
+        "⏳ ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)"
       );
       return;
     }
@@ -269,7 +293,7 @@ export class TtyController {
   }
 
   private async handleInterjectHit(): Promise<void> {
-    if (!this.opts.stdin.isTTY) return; // interactive only
+    if (!this.opts.stdin.isTTY) return;
     if (this.reading || this.interjecting) return;
     if (this.streaming) {
       this.interjectPending = true;
@@ -294,11 +318,11 @@ export class TtyController {
     if (this.reviewInFlight) return;
     this.reviewInFlight = true;
     try {
-      await this.unwind();     // runs your finalizer (stop→drain→review)
+      await this.unwind(); // runs finalizer (stop→drain→review)
       process.exit(0);
     } catch (err) {
       Logger.warn(`Finalize/review failed: ${String(err)}`);
-      try { await this.unwind(); } catch { /* ignore */ }
+      try { await this.unwind(); } catch {}
       process.exit(1);
     } finally {
       this.reviewInFlight = false;
@@ -310,11 +334,8 @@ export class TtyController {
     dlog(`promptOnce: "${label.trim()}"`);
     try {
       const rl = createInterface({ input: this.opts.stdin, output: this.opts.stdout, terminal: true });
-      try {
-        return await rl.question(label);
-      } finally {
-        rl.close();
-      }
+      try { return await rl.question(label); }
+      finally { rl.close(); }
     } finally {
       this.reading = false;
     }
@@ -336,8 +357,7 @@ export class TtyController {
   }
 }
 
-/* ------------------------- Module-level convenience ------------------------- */
-/* Keep legacy `await ttyStart()` working; proxy to runtime-owned controller. */
+/* ---------------------- Module-level compatibility layer -------------------- */
 
 const _default = new TtyController({
   stdin: process.stdin,
@@ -349,7 +369,6 @@ const _default = new TtyController({
   forceExclusive: true,
 });
 
-/** Start the runtime-owned controller if present; otherwise start the module default. */
 export async function start(): Promise<void> {
   const ctl = (R as any)?.ttyController as TtyController | undefined;
   if (ctl) return ctl.start();
@@ -362,7 +381,6 @@ export async function unwind(): Promise<void> {
   return _default.unwind();
 }
 
-// API parity helpers (some legacy code calls these)
 export function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return _default.withCookedTTY(fn); }
 export function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return _default.withRawTTY(fn); }
 
