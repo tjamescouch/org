@@ -293,9 +293,9 @@ async function main() {
         : kickoff ? false
           : R.stdin.isTTY,
     // Bridge: scheduler keeps the logic; controller renders & collects the line.
-    readUserLine:  () => R.ttyController!.readUserLine(),
+    readUserLine: () => R.ttyController!.readUserLine(),
     onStreamStart: () => R.ttyController?.onStreamStart(),
-    onStreamEnd:   () => R.ttyController?.onStreamEnd(),
+    onStreamEnd: () => R.ttyController?.onStreamEnd(),
   });
 
   // Build input (controller binds raw mode & keys; loop owned by scheduler)
@@ -310,17 +310,6 @@ async function main() {
       interjectBanner: String(args["banner"] ?? "user: "),
       finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
       loopMode: "external", // <<< do not spawn controller's idle loop,
-    });
-    const _defaultController = new TtyController({
-      waitOverlayMessage: "Waiting for agent to finish",
-      waitSuppressOutput: true,
-      stdin: R.stdin,
-      stdout: R.stdout,
-      prompt: String(args["banner"] ?? "user: "),
-      interjectKey: String(args["interject-key"] ?? "i"),
-      interjectBanner: String(args["banner"] ?? "user: "),
-      finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
-      loopMode: "external", // <<< do not spawn controller's idle loop
     });
 
     setScheduler(scheduler);
