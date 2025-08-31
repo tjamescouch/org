@@ -27,7 +27,7 @@ class YieldBudget {
   constructor(
     private readonly byteBudget = 1024,
     private readonly msBudget = 8
-  ) {}
+  ) { }
   async maybe(extraBytes = 0): Promise<void> {
     this.bytesSince += extraBytes;
     const now = Date.now();
@@ -38,6 +38,9 @@ class YieldBudget {
     }
   }
 }
+
+const sanitizeCtrl = (s: string) =>
+  s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
 
 /**
  * Streaming OpenAI-compatible chat driver for LM Studio / OpenAI-style endpoints.
@@ -166,17 +169,21 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
         // Content tokens (may arrive as large CoT chunks; stream cooperatively)
         if (typeof delta.content === "string" && delta.content.length) {
           fullText += delta.content;
-          if (onToken) {
-            // break very large slices so UI can breathe
-            let s = delta.content;
-            while (s.length) {
-              const piece = s.slice(0, 512);
-              s = s.slice(512);
-              try { onToken(piece); } catch { /* ignore sink errors */ }
-              await yb.maybe(piece.length);
+          if (typeof delta.content === "string" && delta.content.length) {
+            const clean = delta.content;
+            fullText += clean;
+            if (onToken) {
+              // break very large slices so UI can breathe
+              let s = delta.content;
+              while (s.length) {
+                const piece = s.slice(0, 512);
+                s = s.slice(512);
+                try { onToken(piece); } catch { /* ignore sink errors */ }
+                await yb.maybe(piece.length);
+              }
+            } else {
+              await yb.maybe(delta.content.length);
             }
-          } else {
-            await yb.maybe(delta.content.length);
           }
         }
 
