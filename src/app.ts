@@ -1,12 +1,17 @@
 #!/usr/bin/env bun
 // src/app.ts
+//
+// Vale note:
+// - Runtime OWNS the single TtyController instance (R.ttyController).
+// - Do NOT start the module-level singleton. Do NOT call finalize on startup.
+// - ESC → controller.unwind() → finalizer (stop → drain → review/apply) → exit.
+// - Scheduler drives work; controller renders prompts and handles hotkeys.
 
 import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
 import { execFileSync, spawn } from "child_process";
 
-import { start as ttyStart } from "./input/tty-controller";
 import { R } from "./runtime/runtime";
 import { ExecutionGate } from "./tools/execution-gate";
 import { loadConfig } from "./config/config";
@@ -17,10 +22,13 @@ import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
 import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
 import { getRecipe } from "./recipes";
-import { ReviewManager } from "./scheduler/review-manager";
 import { sandboxMangers } from "./sandbox/session";
-import { setScheduler, TtyController, unwind as ttyUnwind, } from "./input/tty-controller";
+import { TtyController } from "./input/tty-controller";
 import Passthrough from "./input/passthrough";
+
+// ───────────────────────────────────────────────────────────────────────────────
+// TTY guard: the RUNTIME holds the controller instance (R.ttyController)
+// ───────────────────────────────────────────────────────────────────────────────
 
 let installed = false;
 /** Hook signals; ensure finalizer runs once. */
@@ -40,10 +48,7 @@ export function installTtyGuard(): void {
   R.on("unhandledRejection", (reason: unknown) => { unwind(); Logger.error?.(reason); R.exit(1); });
 }
 
-
-
 installTtyGuard();
-
 
 /** Scoped helpers that return promises (safe to `await`). */
 export async function withCookedTTY<T>(f: () => Promise<T> | T): Promise<T> {
@@ -57,7 +62,9 @@ export async function withRawTTY<T>(f: () => Promise<T> | T): Promise<T> {
   return ctl.withRawTTY(f);
 }
 
-// ------------------------------- Args & config -------------------------------
+// ───────────────────────────────────────────────────────────────────────────────
+// Args & config
+// ───────────────────────────────────────────────────────────────────────────────
 
 function parseArgs(argv: string[]) {
   const out: Record<string, string | boolean> = {};
@@ -106,6 +113,10 @@ function computeMode(extra?: { allowTools?: string[] }) {
   ExecutionGate.configure({ safe, interactive, allowTools: extra?.allowTools });
 }
 
+// ───────────────────────────────────────────────────────────────────────────────
+// Agent parsing
+// ───────────────────────────────────────────────────────────────────────────────
+
 type ModelKind = "mock" | "lmstudio";
 type AgentSpec = { id: string; kind: ModelKind; model: unknown };
 
@@ -139,6 +150,10 @@ function parseAgents(
   }
   return out;
 }
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Review helpers (pager + apply)
+// ───────────────────────────────────────────────────────────────────────────────
 
 async function listRecentSessionPatches(projectDir: string, minutes = 20): Promise<string[]> {
   const root = path.join(projectDir, ".org", "runs");
@@ -184,6 +199,7 @@ function applyPatch(projectDir: string, patchPath: string) {
 }
 
 async function finalizeOnce(scheduler: SchedulerLike | null, projectDir: string, reviewMode: "ask" | "auto" | "never") {
+  // Ensure tools/sandboxes are finalized before we exit
   try { await (sandboxMangers as { finalizeAll?: () => Promise<void> }).finalizeAll?.(); } catch { /* ignore */ }
   try { await scheduler?.stop?.(); } catch { /* ignore */ }
   try { await scheduler?.drain?.(); } catch { /* ignore */ }
@@ -215,7 +231,9 @@ async function finalizeOnce(scheduler: SchedulerLike | null, projectDir: string,
   }
 }
 
-// ---------------------------------- main ----------------------------------
+// ───────────────────────────────────────────────────────────────────────────────
+// main
+// ───────────────────────────────────────────────────────────────────────────────
 
 async function main() {
   const cfg = loadConfig();
@@ -294,6 +312,7 @@ async function main() {
           : R.stdin.isTTY,
     // Bridge: scheduler keeps the logic; controller renders & collects the line.
     readUserLine: () => R.ttyController!.readUserLine(),
+    // STREAM DEFERRAL: bracket every chattering section
     onStreamStart: () => R.ttyController?.onStreamStart(),
     onStreamEnd: () => R.ttyController?.onStreamEnd(),
   });
@@ -308,13 +327,18 @@ async function main() {
       prompt: String(args["banner"] ?? "user: "),
       interjectKey: String(args["interject-key"] ?? "i"),
       interjectBanner: String(args["banner"] ?? "user: "),
+      // ESC path ends up here: stop → drain → review/apply
       finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
-      loopMode: "external", // <<< do not spawn controller's idle loop,
+      // Let the scheduler drive the idle loop
+      loopMode: "external",
     });
 
-    setScheduler(scheduler);
-    await ttyStart();
+    // Wire scheduler into THIS instance (the one that owns stdin)
+    R.ttyController.setScheduler(scheduler);
+    // Bind raw-mode & key handlers
+    await R.ttyController.start();
   } else {
+    // Non-interactive passthrough (no hotkeys)
     new Passthrough({
       stdin: R.stdin,
       stdout: R.stdout,
@@ -328,17 +352,15 @@ async function main() {
     await scheduler.enqueueUserText(kickoff);
   }
 
-  // Run the loop; normal finalize path
+  // Start the scheduler loop. IMPORTANT: do NOT finalize here.
   await scheduler.start();
 
-  const reviewManager = new ReviewManager(projectDir, reviewMode);
-  await reviewManager.finalizeAndReview();
-  await finalizeOnce(scheduler, projectDir, reviewMode);
-  R.exit(0);
+  // Keep the process alive via active listeners (TTY + scheduler loop).
+  // Finalization happens via ESC (controller.finalizer) or signals (guard above).
 }
 
 main().catch(async (e) => {
   Logger.info(e);
-  await ttyUnwind();
+  try { await R.ttyController?.unwind(); } catch { /* ignore */ }
   R.exit(1);
 });
