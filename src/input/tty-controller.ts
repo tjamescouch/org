@@ -119,13 +119,14 @@ export class TtyController {
   private interjectPending = false;     // 'i' pressed during streaming -> open after stream
   private reviewInFlight = false;       // avoid double finalize
   private statusShown = { esc: false, i: false };
-  private readonly feedback = this.opts.feedbackStream ?? R.stderr;
+  private feedback = R.stderr;
 
   constructor(private readonly opts: TtyControllerOptions) {
     if (!this.opts.prompt.endsWith(" ")) this.opts.prompt += " ";
     if (!this.opts.interjectBanner.endsWith(" ")) this.opts.interjectBanner += " ";
     this.mode = new ModeController(toTtyIn(opts.stdin));
     this.loopMode = opts.loopMode ?? "controller";
+    this.feedback = this.opts.feedbackStream ?? this.feedback;
   }
 
   /* ------------------------------ Public API ------------------------------ */
@@ -313,16 +314,9 @@ export class TtyController {
 /* ------------------------- Module-level convenience ------------------------- */
 /* Kept for compatibility with any legacy imports. Prefer the runtime-owned instance. */
 
-const _default = new TtyController({
-  stdin: R.stdin,
-  stdout: R.stdout,
-  prompt: "user: ",
-  interjectKey: "i",
-  interjectBanner: "user: ",
-});
 
-export function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return _default.withCookedTTY(fn); }
-export function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return _default.withRawTTY(fn); }
+export function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return R.ttyController!.withCookedTTY(fn); }
+export function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return R.ttyController!.withRawTTY(fn); }
 
 // Optional compatibility: some older code stores a scheduler here.
 let _scheduler: unknown | undefined;

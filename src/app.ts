@@ -27,6 +27,11 @@ import { TtyController } from "./input/tty-controller";
 import Passthrough from "./input/passthrough";
 import { createFeedbackController } from "./ui/feedback";
 
+let paused = false;
+export const setOutputPaused = (v: boolean) => {
+  paused = v;
+}
+
 // ───────────────────────────────────────────────────────────────────────────────
 // TTY guard: the RUNTIME holds the controller instance (R.ttyController)
 // ───────────────────────────────────────────────────────────────────────────────
@@ -322,8 +327,8 @@ async function main() {
   if (R.stdin.isTTY) {
     const feedback = createFeedbackController({
       spinner: true,
-      pause: () => { R.setOutputPaused?.(true); /* or set a shared flag the LLM writer checks */ },
-      resume: () => { R.setOutputPaused?.(false); },
+      pause: () => { setOutputPaused?.(true); /* or set a shared flag the LLM writer checks */ },
+      resume: () => { setOutputPaused?.(false); },
     });
 
     R.ttyController = new TtyController({
