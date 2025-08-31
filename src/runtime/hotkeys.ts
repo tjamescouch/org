@@ -87,6 +87,7 @@ function handleChunk(chunk: Buffer | string) {
   if (len === 1 && buf[0] === 0x1b) {
     // If another bare ESC is already pending, restart the timer.
     if (state.escTimer) { clearTimeout(state.escTimer); state.escTimer = null; }
+    Logger.error("Escape pending");
     state.escPending = true;
     state.escTimer = setTimeout(() => {
       if (state.escPending) fireEsc();
@@ -120,7 +121,7 @@ function handleChunk(chunk: Buffer | string) {
 function attach() {
   if (!isTTY() || state.onData) return;
   state.onData = (buf: Buffer | string) => handleChunk(buf);
-  //process.stdin.on("data", state.onData!);
+  process.stdin.on("data", state.onData!);
 }
 
 function detach() {
