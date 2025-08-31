@@ -56,10 +56,10 @@ export async function routeWithSideEffects(
         onAgent: async (_from, to, content) => {
             deps.setRespondingAgent(to);
             const cleaned = filters.cleanAgent(content);
-            if (cleaned) deps.enqueue(to, { role: "user", from: fromAgent.id, content: cleaned });
+            if (cleaned) deps.enqueue(to, { role: "user", from: fromAgent.id, content });
         },
         onGroup: async (_from, content) => {
-            const cleaned = filters.cleanGroup(content);
+            const cleaned = filters.cleanGroup(content); //FIXME - need to scrub then route
             Logger.info('{cleaned,content}',{ cleaned, content });
             const peers = deps.agents.map(a => a.id);
             const dec = fromAgent.guardCheck?.("group", cleaned, peers) || null;
@@ -70,7 +70,7 @@ export async function routeWithSideEffects(
             }
             for (const a of deps.agents) {
                 if (a.id === fromAgent.id) continue;
-                if (cleaned) deps.enqueue(a.id, { role: "user", from: fromAgent.id, content: cleaned });
+                if (cleaned) deps.enqueue(a.id, { role: "user", from: fromAgent.id, content });
             }
         },
         onUser: async (_from, _content) => {
