@@ -126,7 +126,7 @@ export class TtyController {
     if (!this.opts.interjectBanner.endsWith(" ")) this.opts.interjectBanner += " ";
     this.mode = new ModeController(toTtyIn(opts.stdin));
     this.loopMode = opts.loopMode ?? "controller";
-    this.feedback = this.opts.feedbackStream ?? this.feedback;
+    //this.feedback = this.opts.feedbackStream ?? this.feedback;
   }
 
   /* ------------------------------ Public API ------------------------------ */
