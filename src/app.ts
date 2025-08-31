@@ -26,6 +26,7 @@ import { sandboxMangers } from "./sandbox/session";
 import { TtyController } from "./input/tty-controller";
 import Passthrough from "./input/passthrough";
 import { createFeedbackController } from "./ui/feedback";
+import { installHotkeys } from "./runtime/hotkeys";
 
 let paused = false;
 export const setOutputPaused = (v: boolean) => {
@@ -55,6 +56,16 @@ export function installTtyGuard(): void {
 }
 
 installTtyGuard();
+installHotkeys({  
+  stdin: R.stdin,
+  onEsc: () => Logger.error("ESC"),
+  onCtrlC: () => {
+    Logger.error("Ctrl+C"),
+    R.exit(5);
+  },
+  feedback: R.stderr,
+  debug: false,
+});
 
 /** Scoped helpers that return promises (safe to `await`). */
 export async function withCookedTTY<T>(f: () => Promise<T> | T): Promise<T> {
