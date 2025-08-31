@@ -2,11 +2,16 @@
 // We intentionally cast to any here so the rest of the codebase never
 // needs @types/node or bun types if you don't want them.
 
+import { TtyController } from "../input/tty-controller";
+
 type Env = Record<string, string | undefined>;
 
 export type RuntimeName = "bun" | "node" | "unknown";
 
+
 export interface Runtime {
+  ttyController: TtyController | undefined;
+
   /** Which runtime we detected */
   name: RuntimeName;
 

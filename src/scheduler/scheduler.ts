@@ -2,19 +2,12 @@
  * Public scheduler API (type-safe).
  */
 
+import { ChatMessage } from "../drivers/types";
+
 export type ReviewMode = "ask" | "auto" | "never";
 export type OnAskUser = (fromAgent: string, content: string) => Promise<void>;
 
 export type ChatRole = "system" | "user" | "assistant" | "tool";
-
-/** Minimal chat message used by the scheduler and agents. */
-export interface ChatMessage {
-  role: ChatRole;
-  content: string;
-  from?: string;
-  /** "@group" means broadcast, otherwise route to that agent id */
-  to?: string;
-}
 
 /** The app and input layer talk to a scheduler via this interface only. */
 export interface IScheduler {

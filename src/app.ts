@@ -1,5 +1,11 @@
 #!/usr/bin/env bun
 // src/app.ts
+//
+// Vale note:
+// - Runtime OWNS the single TtyController instance (R.ttyController).
+// - Do NOT start the module-level singleton. Do NOT call finalize on startup.
+// - ESC → controller.unwind() → finalizer (stop → drain → review/apply) → exit.
+// - Scheduler drives work; controller renders prompts and handles hotkeys.
 
 import * as fs from "fs";
 import * as fsp from "fs/promises";
@@ -16,47 +22,49 @@ import { LlmAgent } from "./agents/llm-agent";
 import { MockModel } from "./agents/mock-model";
 import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
 import { getRecipe } from "./recipes";
-import { ReviewManager } from "./scheduler/review-manager";
 import { sandboxMangers } from "./sandbox/session";
 import { TtyController } from "./input/tty-controller";
 import Passthrough from "./input/passthrough";
 
-// Install once
-let installed = false;
-const controlContainer: { controller: TtyController | undefined } = { controller: undefined };
+// ───────────────────────────────────────────────────────────────────────────────
+// TTY guard: the RUNTIME holds the controller instance (R.ttyController)
+// ───────────────────────────────────────────────────────────────────────────────
 
+let installed = false;
 /** Hook signals; ensure finalizer runs once. */
 export function installTtyGuard(): void {
   if (installed) return;
   installed = true;
 
   const unwind = () => {
-    const c = controlContainer.controller;
+    const c = R.ttyController;
     if (!c) return;
     c.unwind().catch((e) => Logger.error(e));
   };
 
-  R.on("SIGINT", () => { unwind(); R.exit(130); });
-  R.on("SIGTERM", () => { unwind(); R.exit(143); });
+  R.on("SIGINT", () => { unwind(); Logger.error?.("SIGINT"); R.exit(130); });
+  R.on("SIGTERM", () => { unwind(); Logger.error?.("SIGTERM"); R.exit(143); });
   R.on("uncaughtException", (err) => { unwind(); Logger.error?.(err); R.exit(1); });
   R.on("unhandledRejection", (reason: unknown) => { unwind(); Logger.error?.(reason); R.exit(1); });
 }
 
+installTtyGuard();
+
 /** Scoped helpers that return promises (safe to `await`). */
 export async function withCookedTTY<T>(f: () => Promise<T> | T): Promise<T> {
-  const ctl = controlContainer.controller;
+  const ctl = R.ttyController;
   if (!ctl) return await Promise.resolve(f());
   return ctl.withCookedTTY(f);
 }
 export async function withRawTTY<T>(f: () => Promise<T> | T): Promise<T> {
-  const ctl = controlContainer.controller;
+  const ctl = R.ttyController;
   if (!ctl) return await Promise.resolve(f());
   return ctl.withRawTTY(f);
 }
 
-installTtyGuard();
-
-// ------------------------------- Args & config -------------------------------
+// ───────────────────────────────────────────────────────────────────────────────
+// Args & config
+// ───────────────────────────────────────────────────────────────────────────────
 
 function parseArgs(argv: string[]) {
   const out: Record<string, string | boolean> = {};
@@ -105,6 +113,10 @@ function computeMode(extra?: { allowTools?: string[] }) {
   ExecutionGate.configure({ safe, interactive, allowTools: extra?.allowTools });
 }
 
+// ───────────────────────────────────────────────────────────────────────────────
+// Agent parsing
+// ───────────────────────────────────────────────────────────────────────────────
+
 type ModelKind = "mock" | "lmstudio";
 type AgentSpec = { id: string; kind: ModelKind; model: unknown };
 
@@ -138,6 +150,10 @@ function parseAgents(
   }
   return out;
 }
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Review helpers (pager + apply)
+// ───────────────────────────────────────────────────────────────────────────────
 
 async function listRecentSessionPatches(projectDir: string, minutes = 20): Promise<string[]> {
   const root = path.join(projectDir, ".org", "runs");
@@ -183,9 +199,10 @@ function applyPatch(projectDir: string, patchPath: string) {
 }
 
 async function finalizeOnce(scheduler: SchedulerLike | null, projectDir: string, reviewMode: "ask" | "auto" | "never") {
-  try { await scheduler?.drain?.(); } catch { /* ignore */ }
+  // Ensure tools/sandboxes are finalized before we exit
   try { await (sandboxMangers as { finalizeAll?: () => Promise<void> }).finalizeAll?.(); } catch { /* ignore */ }
   try { await scheduler?.stop?.(); } catch { /* ignore */ }
+  try { await scheduler?.drain?.(); } catch { /* ignore */ }
 
   const patches = await listRecentSessionPatches(projectDir, 120);
   if (patches.length === 0) {
@@ -214,7 +231,9 @@ async function finalizeOnce(scheduler: SchedulerLike | null, projectDir: string,
   }
 }
 
-// ---------------------------------- main ----------------------------------
+// ───────────────────────────────────────────────────────────────────────────────
+// main
+// ───────────────────────────────────────────────────────────────────────────────
 
 async function main() {
   const cfg = loadConfig();
@@ -242,9 +261,9 @@ async function main() {
 
   // Host starting directory (prefer an explicit host hint if provided).
   const hostStartDir =
-    (typeof process.env.ORG_HOST_PWD === "string" && process.env.ORG_HOST_PWD.trim())
-      ? path.resolve(process.env.ORG_HOST_PWD)
-      : path.resolve((process.env.PWD && process.env.PWD.trim()) ? process.env.PWD : R.cwd());
+    (typeof R.env.ORG_HOST_PWD === "string" && R.env.ORG_HOST_PWD.trim())
+      ? path.resolve(R.env.ORG_HOST_PWD)
+      : path.resolve((R.env.PWD && R.env.PWD.trim()) ? R.env.PWD : R.cwd());
 
   // Resolve repo root from that frozen starting directory.
   const projectDir = resolveProjectDir(hostStartDir);
@@ -252,7 +271,7 @@ async function main() {
   // Helpful banner (diagnostics)
   Logger.info(`[org] host cwd = ${hostStartDir}`);
   Logger.info(`[org] repo  dir = ${projectDir}`);
-  Logger.info(`[org] process.cwd = ${process.cwd()}  PWD=${process.env.PWD ?? ""}`);
+  Logger.info(`[org] R.cwd = ${R.cwd()}  PWD=${R.env.PWD ?? ""}`);
 
   const recipeName = (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
   const recipe = getRecipe(recipeName || null);
@@ -284,7 +303,7 @@ async function main() {
     agents,
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
     onAskUser: (fromAgent: string, content: string) =>
-      controlContainer.controller?.askUser(fromAgent, content) ?? Promise.resolve(undefined),
+      R.ttyController?.askUser(fromAgent, content) ?? Promise.resolve(undefined),
     projectDir, // repo root to copy/sync into /work
     reviewMode,
     promptEnabled:
@@ -292,12 +311,15 @@ async function main() {
         : kickoff ? false
           : R.stdin.isTTY,
     // Bridge: scheduler keeps the logic; controller renders & collects the line.
-    readUserLine: () => controlContainer.controller!.readUserLine(),
+    readUserLine: () => R.ttyController!.readUserLine(),
+    // STREAM DEFERRAL: bracket every chattering section
+    onStreamStart: () => R.ttyController?.onStreamStart(),
+    onStreamEnd: () => R.ttyController?.onStreamEnd(),
   });
 
   // Build input (controller binds raw mode & keys; loop owned by scheduler)
   if (R.stdin.isTTY) {
-    controlContainer.controller = new TtyController({
+    R.ttyController = new TtyController({
       waitOverlayMessage: "Waiting for agent to finish",
       waitSuppressOutput: true,
       stdin: R.stdin,
@@ -305,10 +327,18 @@ async function main() {
       prompt: String(args["banner"] ?? "user: "),
       interjectKey: String(args["interject-key"] ?? "i"),
       interjectBanner: String(args["banner"] ?? "user: "),
+      // ESC path ends up here: stop → drain → review/apply
       finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
-      loopMode: "external", // <<< do not spawn controller's idle loop
+      // Let the scheduler drive the idle loop
+      loopMode: "external",
     });
+
+    // Wire scheduler into THIS instance (the one that owns stdin)
+    R.ttyController.setScheduler(scheduler);
+    // Bind raw-mode & key handlers
+    await R.ttyController.start();
   } else {
+    // Non-interactive passthrough (no hotkeys)
     new Passthrough({
       stdin: R.stdin,
       stdout: R.stdout,
@@ -317,24 +347,20 @@ async function main() {
     });
   }
 
-  controlContainer.controller?.setScheduler(scheduler);
-  await controlContainer.controller?.start();
-
   // Seed a kickoff message if provided
   if (typeof kickoff === "string" && kickoff.length > 0) {
     await scheduler.enqueueUserText(kickoff);
   }
 
-  // Run the loop; normal finalize path
+  // Start the scheduler loop. IMPORTANT: do NOT finalize here.
   await scheduler.start();
 
-  const reviewManager = new ReviewManager(projectDir, reviewMode);
-  await reviewManager.finalizeAndReview();
-  await finalizeOnce(scheduler, projectDir, reviewMode);
-  R.exit(0);
+  // Keep the process alive via active listeners (TTY + scheduler loop).
+  // Finalization happens via ESC (controller.finalizer) or signals (guard above).
 }
 
-main().catch((e) => {
+main().catch(async (e) => {
   Logger.info(e);
+  try { await R.ttyController?.unwind(); } catch { /* ignore */ }
   R.exit(1);
 });
