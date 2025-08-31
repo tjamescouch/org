@@ -1,10 +1,10 @@
 import { describe, it, expect } from "bun:test";
-import { LLMNoisePDAStream } from "../llm-pda-stream";
+import { makePDAStreamFilter } from "../llm-pda-stream";
 
 const SIZES = [1, 2, 3, 5, 7];
 
 function runAtChunkSize(s: string, n: number) {
-  const f = new LLMNoisePDAStream();
+  const f = makePDAStreamFilter();
   let out = "";
   for (let i = 0; i < s.length; i += n) {
     out += f.feed(s.slice(i, i + n));

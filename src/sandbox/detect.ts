@@ -35,13 +35,15 @@ function inContainer(): boolean {
 //  if (binExists("docker")) return "docker";
 //  return "mock";
 //}
-export function detectBackend(): "podman" | "none" | "mock" {
-  // Force "none" if we're already inside a container, or SANDBACKEND=none
+// src/sandbox/detect.ts
+export function detectBackend(): "podman" | "none" {
+  // If we're already in a container (Option B), avoid podman-in-podman.
   const forced = String(process.env.SANDBACKEND || "").toLowerCase();
   if (forced === "none") return "none";
   if (process.env.container) return "none";
   return "podman";
 }
+
 
 export function isMock(): boolean {
   return detectBackend() === "mock";

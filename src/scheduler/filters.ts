@@ -2,28 +2,28 @@
 //
 // Centralized post-turn cleaning for agent/group/file channels.
 
-import LLMNoiseFilter from "../utils/llm-noise-filter";
+import { makePDAStreamFilter, PDAStreamFilter } from "../utils/filter-passes/llm-pda-stream";
 
 export class NoiseFilters {
-  private readonly agentFilter: LLMNoiseFilter;
-  private readonly groupFilter: LLMNoiseFilter;
-  private readonly fileFilter:  LLMNoiseFilter;
+  private readonly agentFilter: PDAStreamFilter;
+  private readonly groupFilter: PDAStreamFilter;
+  private readonly fileFilter: PDAStreamFilter;
 
   constructor() {
-    this.agentFilter = new LLMNoiseFilter();
-    this.groupFilter = new LLMNoiseFilter();
-    this.fileFilter  = new LLMNoiseFilter();
+    this.agentFilter = makePDAStreamFilter();
+    this.groupFilter = makePDAStreamFilter();
+    this.fileFilter = makePDAStreamFilter();
   }
 
   cleanAgent(s: string): string {
-    return s;//this.agentFilter.feed(s).cleaned + this.agentFilter.flush();
+    return this.agentFilter.feed(s) + this.agentFilter.flush();
   }
 
   cleanGroup(s: string): string {
-    return s;//this.groupFilter.feed(s).cleaned + this.groupFilter.flush();
+    return this.groupFilter.feed(s) + this.groupFilter.flush();
   }
 
   cleanFile(s: string): string {
-    return s;//this.fileFilter.feed(s).cleaned + this.fileFilter.flush();
+    return this.fileFilter.feed(s) + this.fileFilter.flush();
   }
 }
