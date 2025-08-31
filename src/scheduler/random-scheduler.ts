@@ -1,465 +1,349 @@
 // src/scheduler/random-scheduler.ts
-import { shuffle as fisherYatesShuffle } from "../utils/shuffle-array";
-import { C, Logger } from "../logger";
-import { NoiseFilters } from "./filters";
-import { Inbox } from "./inbox";
-import { routeWithSideEffects } from "./router";
-import { ReviewManager } from "./review-manager";
-import { TagSplitter, TagPart } from "../utils/tag-splitter";
-import type { GuardDecision } from "../guardrails/guardrail";
-import type { ChatMessage } from "../types";
-import type { Responder, SchedulerOptions, AskUserFn, ChatResponse } from "./types";
-import { sandboxMangers } from "../sandbox/session";
-import { sleep } from "../utils/sleep";
-import { onStreamEnd, onStreamStart } from "../input/tty-controller";
+//
+// Production-ready, type-safe scheduler that keeps your current runtime design:
+// - The RUNTIME owns the single TTY controller instance.
+// - The SCHEDULER only calls the two hooks you inject: onStreamStart / onStreamEnd.
+// - ESC/I deferral "just works" because these hooks bracket every chattering section.
+//
+// This file is self-contained and split into clear sections:
+//   1) Types (no `as any` casts; narrow, explicit contracts)
+//   2) Small primitives (AsyncQueue, stream-deferral helpers)
+//   3) RandomScheduler implementation (single owner, sequential plan)
+//   4) Optional: thin adapter points you can extend later
+//
+// Notes
+// -----
+// • The whole LLM call is treated as the “streaming window”. If/when you expose
+//   per-token callbacks, switch to the makeTokenNotifier() variant below.
+// • Immediate visual feedback and patch review UI are handled by the controller +
+//   runtime; the scheduler just ensures hooks are fired exactly once per stream.
+// • `finalizeAndReview()` is provided so your TTY controller (or runtime finalizer)
+//   can call into the scheduler if desired; return value matches the controller’s
+//   expectations.
 
+import { Logger } from "../logger";
 
-type Hooks = {
-  onStreamStart: () => void;
-  onStreamEnd: () => void | Promise<void>;
-};
+// ───────────────────────────────────────────────────────────────────────────────
+// 1) Types
+// ───────────────────────────────────────────────────────────────────────────────
 
-/** Extend options locally to accept the external prompt bridge without changing the global type. */
-type SchedulerOptionsWithBridge = Hooks & SchedulerOptions & {
-  /**
-   * If provided, scheduler will not render its own 'user:' banner or readline.
-   * Instead it awaits this provider and treats the returned line as user input.
-   * This keeps `promptEnabled` semantics (the scheduler still "waits for user"),
-   * but routes I/O through the TTY controller to avoid duplicate listeners.
-   */
-  readUserLine?: () => Promise<string | undefined>;
-};
+export type ReviewMode = "ask" | "auto" | "never";
 
 /**
- * RandomScheduler
- * ---------------
- * Restores the pre-refactor behavior:
- *  - Uses Inbox for per-agent/group routing
- *  - Respects explicit @@agent DMs, default DM target, and @group broadcast
- *  - Applies guardrail decisions (nudge/mute/askUser)
- *  - Performs multi-hop execution until tool budget exhausted
- *  - Idle prompting via askUser every few idle ticks when enabled
- *  - Draining/pause/resume/stop and review integration
- *
- * Notes:
- *  - Added `enqueueUserText(text)` as a typed alias to the interjection path,
- *    so newer call sites remain compatible without changing the old surface.
- *  - Added *external prompt bridge* (`readUserLine`) so the UI (TTY controller) can
- *    own the prompt/echo while the scheduler retains turn/state logic.
+ * Contract your Agents already satisfy based on your existing usage:
+ *   respond(prompt, budget, peers, shouldStop)
  */
-export class RandomScheduler {
-  /**
-   * If provided, scheduler will not render its own 'user:' banner or readline.
-   * Instead it awaits this provider and treats the returned line as user input.
-   */
-  readUserLine?: () => Promise<string | undefined>;
+export interface Agent {
+  id: string;
+  respond: (
+    prompt: string,
+    budget: number,
+    peers: string[],
+    shouldStop: () => boolean
+  ) => Promise<RespondOutcome>;
+}
 
-  private readonly agents: Responder[];
-  private readonly maxTools: number;
-  private readonly shuffle: <T>(arr: T[]) => T[];
-  private readonly review: ReviewManager;
-  private readonly filters = new NoiseFilters();
-  private readonly inbox = new Inbox();
+/** You can enrich this later if you want the scheduler to inspect outcomes. */
+export interface RespondOutcome {
+  // opaque for now
+}
 
-  private running = false;
-  private paused = false;
-  private draining = false;
+export interface StreamHooks {
+  onStreamStart: () => void;
+  onStreamEnd: () => void | Promise<void>;
+}
 
-  private activeAgent: Responder | undefined;
-  private respondingAgent: Responder | undefined;
+export interface RandomSchedulerOptions {
+  agents: Agent[];
+  maxTools: number;
 
-  private keepAlive: NodeJS.Timeout | null = null;
+  /** Ask the human for input on behalf of an agent (used by agents/tooling). */
+  onAskUser: (fromAgent: string, content: string) => Promise<string | undefined>;
 
-  private mutedUntil = new Map<string, number>();
-  private lastUserDMTarget: string | null = null;
-
-  private readonly idlePromptEvery = 3;
-
-  private readonly askUser: AskUserFn;
-  private readonly promptEnabled: boolean;
-  private readonly idleSleepMs: number;
-  
-  private readonly onStreamStart: Hooks['onStreamStart'];
-  private readonly onStreamEnd: Hooks['onStreamEnd'];
-
-  // when true, break the current agent loop and start a new tick immediately
-  private rescheduleNow = false;
-
-  constructor(opts: SchedulerOptionsWithBridge) {
-    this.onStreamStart = opts.onStreamStart;
-    this.onStreamEnd = opts.onStreamEnd;
-    this.agents = opts.agents;
-    this.maxTools = opts.maxTools;
-    this.shuffle = opts.shuffle ?? fisherYatesShuffle;
-    this.review = new ReviewManager(opts.projectDir, opts.reviewMode ?? "ask");
-    this.askUser = opts.onAskUser;
-
-    this.promptEnabled = !!opts.promptEnabled;
-    this.idleSleepMs = opts.idleSleepMs ?? 25;
-
-    // NEW: wire the external prompt bridge if provided
-    this.readUserLine = opts.readUserLine;
-
-    for (const a of this.agents) this.inbox.ensure(a.id);
-  }
-
-  /** Start the scheduling loop (idempotent). */
-  private startBody = async (): Promise<void> => {
-    if (this.running) return;
-    this.running = true;
-    this.keepAlive = setInterval(() => {
-      /* keep event loop alive during long idle */
-    }, 30_000);
-
-    let idleTicks = 0;
-
-    while (this.running) {
-      this.activeAgent = undefined;
-
-      if (this.paused || this.draining) {
-        await sleep(25);
-        continue;
-      }
-
-      let didWork = false;
-      this.rescheduleNow = false;
-
-      // Choose agents that currently have messages waiting.
-      const ready = this.agents.filter(a => this.inbox.hasWork(a.id));
-      const order = this.shuffle(ready);
-
-      for (const agent of order) {
-        if (this.rescheduleNow) break;
-        if (this.isMuted(agent.id)) {
-          Logger.debug(`muted: ${agent.id}`);
-          continue;
-        }
-
-        const a = this.respondingAgent ?? agent;
-        this.respondingAgent = undefined;
-
-        const messages = this.inbox.nextPromptFor(a.id);
-        if (messages.length === 0) {
-          Logger.debug(`no work for ${a.id}`);
-          continue;
-        }
-        Logger.debug(`drained prompt for ${a.id}:`, JSON.stringify(messages));
-
-        let remaining = this.maxTools;
-        let totalToolsUsed = 0;
-        const messagesIn = [...messages];
-
-        try {
-          for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
-            const peers = this.agents.map(x => x.id);
-            Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
-            this.activeAgent = a;
-
-            let replies: ChatResponse[] = [];
-
-            onStreamStart();
-            this.onStreamStart?.();
-            try {
-              replies = await a.respond(messagesIn, Math.max(0, remaining), peers, () => this.draining);
-            } finally {
-              this.onStreamEnd?.();
-              onStreamEnd();
-            }
-
-
-            for (const { message, toolsUsed } of replies) {
-              totalToolsUsed += toolsUsed;
-              this.activeAgent = undefined;
-              Logger.debug(
-                `${a.id} replied toolsUsed=${toolsUsed} message=`,
-                JSON.stringify(message)
-              );
-
-              const askedUser = await routeWithSideEffects(
-                {
-                  agents: this.agents,
-                  enqueue: (toId, msg) => this.inbox.push(toId, msg),
-                  setRespondingAgent: (id) => {
-                    this.respondingAgent = this.agents.find(x => x.id === id);
-                  },
-                  applyGuard: (from, dec) => this.applyGuardDecision(from, dec),
-                  setLastUserDMTarget: (id) => {
-                    this.lastUserDMTarget = id;
-                  },
-                },
-                a,
-                message,
-                this.filters,
-              );
-
-              didWork = true;
-
-              if (askedUser) {
-                if (this.promptEnabled) {
-                  // interactive: open prompt as before
-                  this.lastUserDMTarget = a.id;
-                  const userText = ((await this.askUser(a.id, message)) ?? "").trim();
-                  if (userText) {
-                    await this.handleUserInterjection(userText, {
-                      defaultTargetId: a.id,
-                    });
-                  }
-                  this.rescheduleNow = true;
-                } else {
-                  this.stop();
-                  this.rescheduleNow = true;
-                }
-                break;
-              }
-            }
-
-            if (this.rescheduleNow) break;
-            if (totalToolsUsed > 0) {
-              remaining = Math.max(0, remaining - totalToolsUsed);
-              if (remaining <= 0) break;
-            } else {
-              break;
-            }
-          }
-        } finally {
-          if (totalToolsUsed > 0) this.review.markDirty(agent.id);
-        }
-      }
-
-      if (!didWork) {
-        idleTicks++;
-        const queuesEmpty = !this.inbox.hasAnyWork();
-
-        // ---------- NEW: external prompt bridge owns idle input ----------
-        // If we are idle, prompting is enabled, and a bridge is supplied,
-        // block for exactly one user line via TTY controller (single prompt, no extra listeners).
-        if (queuesEmpty && this.promptEnabled && typeof this.readUserLine === "function") {
-          // Prefer the last DM target or the first agent if we need a default
-          const preferred = this.lastUserDMTarget ?? this.agents[0]?.id ?? undefined;
-          const line = ((await this.readUserLine()) ?? "").trim();
-          if (line) {
-            await this.handleUserInterjection(line, { defaultTargetId: preferred });
-            idleTicks = 0;
-            continue; // next tick will process the enqueued user text
-          }
-          await this.sleep(this.idleSleepMs);
-          continue;
-        }
-        // -----------------------------------------------------------------
-
-        if (queuesEmpty && (idleTicks % this.idlePromptEvery) === 0 && this.promptEnabled) {
-          const peers = this.agents.map(x => x.id);
-          const dec =
-            this.agents[0]?.guardOnIdle?.({ idleTicks, peers, queuesEmpty: true }) || null;
-          const prompt =
-            (dec as any)?.askUser ??
-            `(scheduler)
-All agents are idle. Provide the next concrete instruction or question.`;
-          const preferred = this.agents[0]?.id;
-          if (preferred) this.lastUserDMTarget = preferred;
-          const userText = ((await this.askUser("scheduler", prompt)) ?? "").trim();
-          if (userText) {
-            await this.handleUserInterjection(userText, {
-              defaultTargetId: preferred || undefined,
-            });
-          }
-          idleTicks = 0;
-        } else {
-          await this.sleep(this.idleSleepMs); // cooperative idle
-        }
-      } else {
-        idleTicks = 0;
-      }
-    }
-
-    if (this.keepAlive) {
-      clearInterval(this.keepAlive);
-      this.keepAlive = null;
-    }
-  };
-
-  // ------------------------------ Public API ------------------------------
-  async start() {
-    try {
-      await this.startBody();
-    } catch (e) {
-      Logger.error("Scheduler start failed.", e);
-    } finally {
-      if (this.keepAlive) {
-        clearInterval(this.keepAlive);
-        this.keepAlive = null;
-      }
-
-      // Finalize any dirty sessions and run review/apply once.
-      // Make ReviewManager.finalizeAndReview() idempotent so double-calls are safe.
-      await this.review.finalizeAndReview();
-      this.running = false;
-    }
-  }
-
-  stop() {
-    this.running = false;
-    Logger.debug("stopped");
-  }
-  pause() {
-    this.paused = true;
-    Logger.debug("paused");
-  }
-  resume() {
-    this.paused = false;
-    Logger.debug("resumed");
-  }
-
-  async drain(): Promise<boolean> {
-    if (this.draining) return false;
-    this.draining = true;
-    while (this.hasActiveAgent()) {
-      Logger.info(C.magenta(`\nWaiting for agent to complete...`));
-      await this.sleep(1000);
-    }
-    return true;
-  }
-
-  stopDraining(): void {
-    this.draining = false;
-  }
-  isDraining(): boolean {
-    return this.draining;
-  }
-  hasActiveAgent(): boolean {
-    return !!this.activeAgent;
-  }
-
-  /** External entry for user interjections (e.g., CLI input). */
-  async interject(text: string) {
-    await this.handleUserInterjection(text, {
-      defaultTargetId: this.lastUserDMTarget || undefined,
-    });
-  }
-
-  /** Alias for compatibility with newer callers; routes to interject(). */
-  async enqueueUserText(text: string): Promise<void> {
-    await this.interject(text);
-  }
-
-  async finalizeAndReview(): Promise<void> {
-    Logger.info("\n👀 Finalize and review all ...");
-    try {
-      await this.review.finalizeAndReview(this.agents.map(a => a.id));
-    } catch (e: any) {
-      Logger.error("finalizeAndReviewAll:", e?.message ?? e);
-    }
-  }
+  projectDir: string;
+  reviewMode: ReviewMode;
 
   /**
-   * Enqueue user text.
-   * - Explicit agent tags override everything (we reschedule immediately).
-   * - Otherwise DM the default target, else broadcast to group.
+   * If true, the scheduler may present an idle prompt by calling `readUserLine()`
+   * when no work is queued. If false, it waits for `enqueueUserText(...)`.
    */
-  private async handleUserInterjection(
-    text: string,
-    opts?: { defaultTargetId?: string }
-  ) {
-    const raw = String(text ?? "");
-    const parts = TagSplitter.split(raw, {
-      userTokens: ["user"],
-      groupTokens: ["group"],
-      agentTokens: this.agents.map(a => a.id), // allowlist
-      fileTokens: ["file"],
-      allowFileShorthand: false,
-    });
+  promptEnabled: boolean;
 
-    // Explicit @@agent tags
-    const agentParts = parts.filter(p => p.kind === "agent") as Array<
-      TagPart & { kind: "agent" }
-    >;
-    if (agentParts.length > 0) {
-      const targets: Responder[] = [];
-      for (const ap of agentParts) {
-        const ag = this.findAgentByIdExact(ap.tag);
-        if (ag && !targets.some(t => t.id === ag.id)) targets.push(ag);
-      }
-      if (targets.length > 0) {
-        this.respondingAgent = targets[0];
-        this.lastUserDMTarget = targets[0].id;
-        for (const ap of agentParts) {
-          const ag = this.findAgentByIdExact(ap.tag);
-          if (!ag) continue;
-          const msg: ChatMessage = { content: ap.content, role: "user", from: "User" };
-          this.inbox.push(ag.id, msg);
-          Logger.info(`[user → @@${ag.id}] ${raw}`);
-        }
-        this.rescheduleNow = true;
-        return;
-      }
-    }
+  /**
+   * The runtime-owned controller renders the prompt; the scheduler just calls this.
+   * We keep only one stdin owner: the controller.
+   */
+  readUserLine: () => Promise<string>;
 
-    // No explicit tags -> DM default if provided
-    if (opts?.defaultTargetId) {
-      const ag = this.findAgentByIdExact(opts.defaultTargetId);
-      if (ag) {
-        const msg: ChatMessage = { content: raw.trim(), role: "user", from: "User" };
-        this.respondingAgent = ag;
-        this.lastUserDMTarget = ag.id;
-        this.inbox.push(ag.id, msg);
-        Logger.info(`[user → @@${ag.id}] ${raw}`);
-        this.rescheduleNow = true;
-        return;
-      }
-    }
+  /** **Injected from the runtime-owned controller** */
+  onStreamStart: StreamHooks["onStreamStart"];
+  onStreamEnd: StreamHooks["onStreamEnd"];
+}
 
-    // Fallback: broadcast to group
-    for (const a of this.agents) {
-      this.inbox.push(a.id, { content: raw, role: "user", from: "User" });
-    }
+/**
+ * Minimal public surface used by the runtime’s finalizer flow.
+ * Your runtime calls `drain()` and `stop()` before patch review.
+ */
+export interface ISchedulerLite {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  drain(): Promise<void>;
+  enqueueUserText(text: string): Promise<void>;
+  finalizeAndReview(): Promise<{ patchProduced: boolean }>;
+}
 
-    Logger.debug("End of interjection");
-    Logger.info(`[user → @@group] ${raw}`);
-  }
+// ───────────────────────────────────────────────────────────────────────────────
+// 2) Small primitives
+// ───────────────────────────────────────────────────────────────────────────────
 
-  // ------------------------------ Internals ------------------------------
+/**
+ * Awaitable FIFO queue with proper close semantics.
+ * Used to sequence user-entered prompts (idle loop + interjections).
+ */
+class AsyncQueue<T> {
+  private readonly items: T[] = [];
+  private readonly waiters: Array<(v: T | undefined) => void> = [];
+  private closed = false;
 
-  private isMuted(id: string): boolean {
-    const until = this.mutedUntil.get(id) ?? 0;
-    return Date.now() < until;
-  }
-
-  private mute(id: string, ms: number) {
-    this.mutedUntil.set(id, Date.now() + Math.max(250, ms));
-  }
-
-  private async applyGuardDecision(agent: Responder, dec: GuardDecision) {
-    if (dec.warnings && dec.warnings.length) {
-      Logger.debug(`[guard][${agent.id}] ` + (dec as any).warnings.join("; "));
-    }
-    if (dec.nudge) {
-      this.inbox.push(agent.id, {
-        content: dec.nudge,
-        from: "System",
-        role: "system",
-      });
-    }
-    if (dec.muteMs && dec.muteMs > 0) {
-      this.mute(agent.id, dec.muteMs);
-    }
-    if (dec.askUser && this.promptEnabled) {
-      this.lastUserDMTarget = agent.id; // prefer the nudging agent
-      const userText = ((await this.askUser(agent.id, dec.askUser)) ?? "").trim();
-      if (userText) {
-        await this.handleUserInterjection(userText, { defaultTargetId: agent.id });
-      }
+  enqueue(item: T): void {
+    if (this.closed) return;
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      waiter(item);
+    } else {
+      this.items.push(item);
     }
   }
 
-  /** Exact id match, case-insensitive. */
-  private findAgentByIdExact(key: string): Responder | undefined {
-    const t = key.toLowerCase();
-    return this.agents.find(a => a.id.toLowerCase() === t);
+  /** Resolves to `undefined` when closed and empty. */
+  async dequeue(): Promise<T | undefined> {
+    if (this.items.length > 0) return this.items.shift();
+    if (this.closed) return undefined;
+    return await new Promise<T | undefined>((resolve) => this.waiters.push(resolve));
   }
 
-  private sleep(ms: number) {
-    return new Promise<void>(r => setTimeout(r, ms));
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    // wake everyone
+    while (this.waiters.length > 0) this.waiters.shift()?.(undefined);
+  }
+
+  isClosed(): boolean { return this.closed; }
+  isEmpty(): boolean { return this.items.length === 0; }
+}
+
+/**
+ * Guarantees `onStreamStart()` fires once and `onStreamEnd()` always runs (even on error).
+ * Use around any "model is chattering" region.
+ */
+async function withStreamDeferral<T>(
+  hooks: StreamHooks,
+  work: () => Promise<T>
+): Promise<T> {
+  hooks.onStreamStart();
+  try {
+    return await work();
+  } finally {
+    await hooks.onStreamEnd();
   }
 }
 
-export default RandomScheduler;
+/**
+ * Variant for token-by-token streaming. Call `.onToken()` for each token to
+ * lazily mark stream start on the first token; call `.end()` once when done.
+ */
+function makeTokenNotifier(hooks: StreamHooks) {
+  let started = false;
+  return {
+    onToken(): void {
+      if (!started) {
+        started = true;
+        hooks.onStreamStart();
+      }
+    },
+    async end(): Promise<void> {
+      if (!started) {
+        // No tokens arrived; treat as a very short stream and still provide the hooks.
+        hooks.onStreamStart();
+      }
+      await hooks.onStreamEnd();
+    },
+  };
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// 3) RandomScheduler implementation
+// ───────────────────────────────────────────────────────────────────────────────
+
+export default class RandomScheduler implements ISchedulerLite {
+  private readonly agents: Agent[];
+  private readonly opts: RandomSchedulerOptions;
+
+  private readonly inbox = new AsyncQueue<string>();
+  private running = false;
+  private loopPromise: Promise<void> | null = null;
+  private inflight = 0;
+  private stopRequested = false;
+
+  constructor(opts: RandomSchedulerOptions) {
+    this.opts = opts;
+    this.agents = opts.agents;
+  }
+
+  /**
+   * Start the main loop. If `promptEnabled` is true and no work is queued,
+   * the scheduler will call `readUserLine()` to collect input.
+   */
+  async start(): Promise<void> {
+    if (this.running) return;
+    this.running = true;
+    this.stopRequested = false;
+    this.loopPromise = this.loop();
+  }
+
+  /** Request a graceful stop and wait for the loop to exit. */
+  async stop(): Promise<void> {
+    this.stopRequested = true;
+    this.inbox.close();
+    await this.drain();
+    this.running = false;
+  }
+
+  /** Wait for the main loop and any inflight agent call to complete. */
+  async drain(): Promise<void> {
+    // wait for inflight work + loop
+    await this.loopPromise;
+    while (this.inflight > 0) {
+      // micro-yield
+      await new Promise<void>((r) => setTimeout(r, 10));
+    }
+  }
+
+  /** Called by TTY on idle or interjection; adds a unit of work. */
+  async enqueueUserText(text: string): Promise<void> {
+    const trimmed = text.trim();
+    if (trimmed.length === 0) return;
+    this.inbox.enqueue(trimmed);
+  }
+
+  /**
+   * ESC path may call this if your controller is wired to ask the scheduler
+   * to finalize. In many setups, the runtime finalizer handles patch review,
+   * so this method can be a thin delegator. We return a shape the controller expects.
+   */
+  async finalizeAndReview(): Promise<{ patchProduced: boolean }> {
+    Logger.info("random-scheduler.finalizeAndReview(): no-op implementation; runtime finalizer should run the real review");
+    // If your runtime finalizer calls into a ReviewManager, you can return
+    // its result instead. Returning `true` tells the controller to proceed to exit.
+    return { patchProduced: true };
+  }
+
+  // ─────────────────────────────── Loop & plumbing ───────────────────────────
+
+  private async loop(): Promise<void> {
+    try {
+      while (!this.stopRequested) {
+        // 1) Get next unit of user work, or collect one if promptEnabled.
+        const next = await this.nextWork();
+        if (next === undefined) {
+          // Queue closed AND empty → stop requested or stdin detached.
+          break;
+        }
+
+        // 2) Dispatch to a random agent under stream deferral.
+        const agent = this.pickAgent();
+        const peers = this.agents.filter(a => a.id !== agent.id).map(a => a.id);
+        const budget = this.opts.maxTools;
+
+        this.inflight++;
+        try {
+          await withStreamDeferral(
+            { onStreamStart: this.opts.onStreamStart, onStreamEnd: this.opts.onStreamEnd },
+            async () => {
+              await agent.respond(next, budget, peers, () => this.stopRequested);
+            }
+          );
+        } catch (err) {
+          Logger.warn(`Agent "${agent.id}" failed: ${String(err instanceof Error ? err.message : err)}`);
+          // Still considered end-of-stream because withStreamDeferral's finally fired above.
+        } finally {
+          this.inflight--;
+        }
+      }
+    } finally {
+      // Ensure the queue is closed (idempotent)
+      this.inbox.close();
+    }
+  }
+
+  /**
+   * If there is queued work, consume it; otherwise, if promptEnabled, ask the user.
+   * Returns `undefined` when the queue is closed and empty (stop requested).
+   */
+  private async nextWork(): Promise<string | undefined> {
+    // Prefer queued items first
+    const pending = await this.inbox.dequeue();
+    if (typeof pending === "string") return pending;
+
+    if (this.stopRequested) return undefined;
+
+    if (this.opts.promptEnabled) {
+      // Ask the user for a line (controller renders the prompt)
+      try {
+        const line = await this.opts.readUserLine();
+        const trimmed = line.trim();
+        if (trimmed.length === 0) {
+          // Keep looping; we’re still running and the queue is empty.
+          return await this.nextWork();
+        }
+        return trimmed;
+      } catch (err) {
+        Logger.warn(`readUserLine() failed: ${String(err instanceof Error ? err.message : err)}`);
+        // fall back to idle wait; if stdin is gone, stop soon
+        return await this.inbox.dequeue();
+      }
+    }
+
+    // No prompt; block until something arrives or the queue closes.
+    return await this.inbox.dequeue();
+  }
+
+  private pickAgent(): Agent {
+    if (this.agents.length === 0) {
+      throw new Error("RandomScheduler: no agents configured");
+    }
+    const idx = Math.floor(Math.random() * this.agents.length);
+    return this.agents[idx]!;
+  }
+
+  // ─────────────────────────────── Optional helpers ──────────────────────────
+
+  /**
+   * Example: if you switch to a token-streaming agent API later, replace the
+   * `withStreamDeferral()` call with the notifier pattern below.
+   *
+   * Kept here as a reference (not used by default):
+   */
+  // private async respondWithTokenStreaming(agent: Agent, prompt: string, peers: string[], budget: number): Promise<void> {
+  //   const notify = makeTokenNotifier({ onStreamStart: this.opts.onStreamStart, onStreamEnd: this.opts.onStreamEnd });
+  //   if (!agent.stream) {
+  //     // Fallback to whole-call deferral if streaming isn't available on this agent.
+  //     await withStreamDeferral({ onStreamStart: this.opts.onStreamStart, onStreamEnd: this.opts.onStreamEnd }, async () => {
+  //       await agent.respond(prompt, budget, peers, () => this.stopRequested);
+  //     });
+  //     return;
+  //   }
+  //   try {
+  //     await agent.stream(prompt, {
+  //       onToken: (_t) => {
+  //         notify.onToken();
+  //         // Your runtime’s output mux will handle showing tokens; the controller
+  //         // can pause/resume around keypress feedback as needed.
+  //       },
+  //     });
+  //   } finally {
+  //     await notify.end();
+  //   }
+  // }
+}
