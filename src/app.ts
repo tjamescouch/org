@@ -184,9 +184,9 @@ function applyPatch(projectDir: string, patchPath: string) {
 }
 
 async function finalizeOnce(scheduler: SchedulerLike | null, projectDir: string, reviewMode: "ask" | "auto" | "never") {
-  try { await scheduler?.drain?.(); } catch { /* ignore */ }
   try { await (sandboxMangers as { finalizeAll?: () => Promise<void> }).finalizeAll?.(); } catch { /* ignore */ }
   try { await scheduler?.stop?.(); } catch { /* ignore */ }
+  try { await scheduler?.drain?.(); } catch { /* ignore */ }
 
   const patches = await listRecentSessionPatches(projectDir, 120);
   if (patches.length === 0) {

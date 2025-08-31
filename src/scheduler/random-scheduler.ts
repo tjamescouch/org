@@ -1,25 +1,15 @@
 // src/scheduler/random-scheduler.ts
 //
-// Production-ready, type-safe scheduler that keeps your current runtime design:
-// - The RUNTIME owns the single TTY controller instance.
-// - The SCHEDULER only calls the two hooks you inject: onStreamStart / onStreamEnd.
-// - ESC/I deferral "just works" because these hooks bracket every chattering section.
+// RandomScheduler — robust, type-safe, and stream-deferral aware.
+//   • The runtime owns the TTY controller. We only call its hooks that you inject.
+//   • Every chattering section is bracketed with onStreamStart/onStreamEnd.
+//   • stop()/drain() semantics ensure we don't hang on finalize.
 //
-// This file is self-contained and split into clear sections:
-//   1) Types (no `as any` casts; narrow, explicit contracts)
-//   2) Small primitives (AsyncQueue, stream-deferral helpers)
-//   3) RandomScheduler implementation (single owner, sequential plan)
-//   4) Optional: thin adapter points you can extend later
-//
-// Notes
-// -----
-// • The whole LLM call is treated as the “streaming window”. If/when you expose
-//   per-token callbacks, switch to the makeTokenNotifier() variant below.
-// • Immediate visual feedback and patch review UI are handled by the controller +
-//   runtime; the scheduler just ensures hooks are fired exactly once per stream.
-// • `finalizeAndReview()` is provided so your TTY controller (or runtime finalizer)
-//   can call into the scheduler if desired; return value matches the controller’s
-//   expectations.
+// Structure
+//   1) Types
+//   2) Small primitives (AsyncQueue, deferral helpers)
+//   3) Scheduler
+//   4) (optional) Token streaming adapter
 
 import { Logger } from "../logger";
 
@@ -30,8 +20,8 @@ import { Logger } from "../logger";
 export type ReviewMode = "ask" | "auto" | "never";
 
 /**
- * Contract your Agents already satisfy based on your existing usage:
- *   respond(prompt, budget, peers, shouldStop)
+ * Minimal Agent contract based on your current usage:
+ *   respond(prompt, budget, peers, shouldStop) → Promise<RespondOutcome>
  */
 export interface Agent {
   id: string;
@@ -43,9 +33,8 @@ export interface Agent {
   ) => Promise<RespondOutcome>;
 }
 
-/** You can enrich this later if you want the scheduler to inspect outcomes. */
 export interface RespondOutcome {
-  // opaque for now
+  // Extend as you need; scheduler doesn't rely on details today.
 }
 
 export interface StreamHooks {
@@ -57,34 +46,24 @@ export interface RandomSchedulerOptions {
   agents: Agent[];
   maxTools: number;
 
-  /** Ask the human for input on behalf of an agent (used by agents/tooling). */
   onAskUser: (fromAgent: string, content: string) => Promise<string | undefined>;
 
   projectDir: string;
   reviewMode: ReviewMode;
 
-  /**
-   * If true, the scheduler may present an idle prompt by calling `readUserLine()`
-   * when no work is queued. If false, it waits for `enqueueUserText(...)`.
-   */
+  /** If true, the scheduler may prompt the user when idle (via readUserLine). */
   promptEnabled: boolean;
 
-  /**
-   * The runtime-owned controller renders the prompt; the scheduler just calls this.
-   * We keep only one stdin owner: the controller.
-   */
+  /** Render a one-line user prompt (runtime-owned controller). */
   readUserLine: () => Promise<string>;
 
-  /** **Injected from the runtime-owned controller** */
+  /** Injected from the runtime-owned controller (ESC/`i` deferral relies on these). */
   onStreamStart: StreamHooks["onStreamStart"];
   onStreamEnd: StreamHooks["onStreamEnd"];
 }
 
-/**
- * Minimal public surface used by the runtime’s finalizer flow.
- * Your runtime calls `drain()` and `stop()` before patch review.
- */
-export interface ISchedulerLite {
+/** Surface that the runtime uses during finalize. */
+export interface IScheduler {
   start(): Promise<void>;
   stop(): Promise<void>;
   drain(): Promise<void>;
@@ -96,10 +75,7 @@ export interface ISchedulerLite {
 // 2) Small primitives
 // ───────────────────────────────────────────────────────────────────────────────
 
-/**
- * Awaitable FIFO queue with proper close semantics.
- * Used to sequence user-entered prompts (idle loop + interjections).
- */
+/** Awaitable FIFO queue with close semantics. */
 class AsyncQueue<T> {
   private readonly items: T[] = [];
   private readonly waiters: Array<(v: T | undefined) => void> = [];
@@ -108,11 +84,8 @@ class AsyncQueue<T> {
   enqueue(item: T): void {
     if (this.closed) return;
     const waiter = this.waiters.shift();
-    if (waiter) {
-      waiter(item);
-    } else {
-      this.items.push(item);
-    }
+    if (waiter) waiter(item);
+    else this.items.push(item);
   }
 
   /** Resolves to `undefined` when closed and empty. */
@@ -125,18 +98,13 @@ class AsyncQueue<T> {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    // wake everyone
     while (this.waiters.length > 0) this.waiters.shift()?.(undefined);
   }
 
   isClosed(): boolean { return this.closed; }
-  isEmpty(): boolean { return this.items.length === 0; }
 }
 
-/**
- * Guarantees `onStreamStart()` fires once and `onStreamEnd()` always runs (even on error).
- * Use around any "model is chattering" region.
- */
+/** Run a "chattering" workload so hooks always fire (once at start, once in finally). */
 async function withStreamDeferral<T>(
   hooks: StreamHooks,
   work: () => Promise<T>
@@ -149,52 +117,36 @@ async function withStreamDeferral<T>(
   }
 }
 
-/**
- * Variant for token-by-token streaming. Call `.onToken()` for each token to
- * lazily mark stream start on the first token; call `.end()` once when done.
- */
-function makeTokenNotifier(hooks: StreamHooks) {
-  let started = false;
-  return {
-    onToken(): void {
-      if (!started) {
-        started = true;
-        hooks.onStreamStart();
-      }
-    },
-    async end(): Promise<void> {
-      if (!started) {
-        // No tokens arrived; treat as a very short stream and still provide the hooks.
-        hooks.onStreamStart();
-      }
-      await hooks.onStreamEnd();
-    },
-  };
-}
-
 // ───────────────────────────────────────────────────────────────────────────────
-// 3) RandomScheduler implementation
+// 3) Scheduler
 // ───────────────────────────────────────────────────────────────────────────────
 
-export default class RandomScheduler implements ISchedulerLite {
+export default class RandomScheduler implements IScheduler {
   private readonly agents: Agent[];
   private readonly opts: RandomSchedulerOptions;
 
   private readonly inbox = new AsyncQueue<string>();
   private running = false;
   private loopPromise: Promise<void> | null = null;
-  private inflight = 0;
+
+  // Cancellation & inflight tracking
   private stopRequested = false;
+  private inflight = 0;
+
+  // If you later pass an AbortSignal to agents, wire it here.
+  // For now we rely on the shouldStop predicate (agents should check it).
+  // private currentAbort: AbortController | null = null;
+
+  // Timeouts to keep finalize responsive even with misbehaving agents.
+  private static readonly DRAIN_POLL_MS = 20;
+  private static readonly DRAIN_MAX_WAIT_MS = 30_000; // 30s hard cap (adjust to taste)
 
   constructor(opts: RandomSchedulerOptions) {
     this.opts = opts;
     this.agents = opts.agents;
   }
 
-  /**
-   * Start the main loop. If `promptEnabled` is true and no work is queued,
-   * the scheduler will call `readUserLine()` to collect input.
-   */
+  /** Start the main loop. */
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
@@ -202,25 +154,34 @@ export default class RandomScheduler implements ISchedulerLite {
     this.loopPromise = this.loop();
   }
 
-  /** Request a graceful stop and wait for the loop to exit. */
+  /** Graceful stop: signal, close inbox, and wait for completion. */
   async stop(): Promise<void> {
     this.stopRequested = true;
     this.inbox.close();
+    // If using an AbortController later, call: this.currentAbort?.abort();
     await this.drain();
     this.running = false;
   }
 
-  /** Wait for the main loop and any inflight agent call to complete. */
+  /** Wait for loop + inflight to complete (bounded). */
   async drain(): Promise<void> {
-    // wait for inflight work + loop
-    await this.loopPromise;
-    while (this.inflight > 0) {
-      // micro-yield
-      await new Promise<void>((r) => setTimeout(r, 10));
+    // Wait for the loop to exit (inbox closed or stop requested)
+    if (this.loopPromise) {
+      try { await this.loopPromise; } catch (err) {
+        Logger.warn(`scheduler loop ended with error: ${String(err instanceof Error ? err.message : err)}`);
+      }
+    }
+    // Bounded wait for inflight work to drain
+    const until = Date.now() + RandomScheduler.DRAIN_MAX_WAIT_MS;
+    while (this.inflight > 0 && Date.now() < until) {
+      await new Promise<void>((r) => setTimeout(r, RandomScheduler.DRAIN_POLL_MS));
+    }
+    if (this.inflight > 0) {
+      Logger.warn(`drain(): proceeding with ${this.inflight} task(s) still inflight (timed out)`);
     }
   }
 
-  /** Called by TTY on idle or interjection; adds a unit of work. */
+  /** Called by TTY (idle or interjection). */
   async enqueueUserText(text: string): Promise<void> {
     const trimmed = text.trim();
     if (trimmed.length === 0) return;
@@ -228,30 +189,23 @@ export default class RandomScheduler implements ISchedulerLite {
   }
 
   /**
-   * ESC path may call this if your controller is wired to ask the scheduler
-   * to finalize. In many setups, the runtime finalizer handles patch review,
-   * so this method can be a thin delegator. We return a shape the controller expects.
+   * ESC path can call this if you want the scheduler to drive review.
+   * Many setups let the runtime finalizer run the pager; here we simply
+   * return that a patch exists so the controller proceeds to exit.
    */
   async finalizeAndReview(): Promise<{ patchProduced: boolean }> {
-    Logger.info("random-scheduler.finalizeAndReview(): no-op implementation; runtime finalizer should run the real review");
-    // If your runtime finalizer calls into a ReviewManager, you can return
-    // its result instead. Returning `true` tells the controller to proceed to exit.
+    Logger.info("random-scheduler.finalizeAndReview(): delegate to runtime review manager if needed");
     return { patchProduced: true };
   }
 
-  // ─────────────────────────────── Loop & plumbing ───────────────────────────
+  // ─────────────────────────────── loop plumbing ──────────────────────────────
 
   private async loop(): Promise<void> {
     try {
       while (!this.stopRequested) {
-        // 1) Get next unit of user work, or collect one if promptEnabled.
         const next = await this.nextWork();
-        if (next === undefined) {
-          // Queue closed AND empty → stop requested or stdin detached.
-          break;
-        }
+        if (next === undefined) break; // queue closed, nothing more to do
 
-        // 2) Dispatch to a random agent under stream deferral.
         const agent = this.pickAgent();
         const peers = this.agents.filter(a => a.id !== agent.id).map(a => a.id);
         const budget = this.opts.maxTools;
@@ -261,51 +215,52 @@ export default class RandomScheduler implements ISchedulerLite {
           await withStreamDeferral(
             { onStreamStart: this.opts.onStreamStart, onStreamEnd: this.opts.onStreamEnd },
             async () => {
-              await agent.respond(next, budget, peers, () => this.stopRequested);
+              // Agents should check shouldStop periodically (tool loops, long I/O, etc.)
+              const shouldStop = (): boolean => this.stopRequested;
+              await agent.respond(next, budget, peers, shouldStop);
             }
           );
         } catch (err) {
-          Logger.warn(`Agent "${agent.id}" failed: ${String(err instanceof Error ? err.message : err)}`);
-          // Still considered end-of-stream because withStreamDeferral's finally fired above.
+          Logger.warn(`agent "${agent.id}" failed: ${String(err instanceof Error ? err.message : err)}`);
+          // onStreamEnd already fired via withStreamDeferral.finally
         } finally {
           this.inflight--;
         }
       }
     } finally {
-      // Ensure the queue is closed (idempotent)
+      // Ensure the queue is closed; wake any pending readers
       this.inbox.close();
     }
   }
 
   /**
-   * If there is queued work, consume it; otherwise, if promptEnabled, ask the user.
+   * Consume queued work if present; otherwise, prompt (if enabled).
    * Returns `undefined` when the queue is closed and empty (stop requested).
    */
   private async nextWork(): Promise<string | undefined> {
-    // Prefer queued items first
-    const pending = await this.inbox.dequeue();
-    if (typeof pending === "string") return pending;
-
+    // 1) Prefer queued work
+    const fromQueue = await this.inbox.dequeue();
+    if (typeof fromQueue === "string") return fromQueue;
     if (this.stopRequested) return undefined;
 
+    // 2) If prompts are enabled, collect one line via the runtime-controlled TTY
     if (this.opts.promptEnabled) {
-      // Ask the user for a line (controller renders the prompt)
       try {
         const line = await this.opts.readUserLine();
-        const trimmed = line.trim();
-        if (trimmed.length === 0) {
-          // Keep looping; we’re still running and the queue is empty.
+        const t = line.trim();
+        if (t.length === 0) {
+          // Empty: keep looping, but don't starve the queue
           return await this.nextWork();
         }
-        return trimmed;
+        return t;
       } catch (err) {
         Logger.warn(`readUserLine() failed: ${String(err instanceof Error ? err.message : err)}`);
-        // fall back to idle wait; if stdin is gone, stop soon
+        // Fall back to waiting on the queue (or stopping if closed)
         return await this.inbox.dequeue();
       }
     }
 
-    // No prompt; block until something arrives or the queue closes.
+    // 3) Otherwise block on the queue (or stop if closed)
     return await this.inbox.dequeue();
   }
 
@@ -316,34 +271,27 @@ export default class RandomScheduler implements ISchedulerLite {
     const idx = Math.floor(Math.random() * this.agents.length);
     return this.agents[idx]!;
   }
-
-  // ─────────────────────────────── Optional helpers ──────────────────────────
-
-  /**
-   * Example: if you switch to a token-streaming agent API later, replace the
-   * `withStreamDeferral()` call with the notifier pattern below.
-   *
-   * Kept here as a reference (not used by default):
-   */
-  // private async respondWithTokenStreaming(agent: Agent, prompt: string, peers: string[], budget: number): Promise<void> {
-  //   const notify = makeTokenNotifier({ onStreamStart: this.opts.onStreamStart, onStreamEnd: this.opts.onStreamEnd });
-  //   if (!agent.stream) {
-  //     // Fallback to whole-call deferral if streaming isn't available on this agent.
-  //     await withStreamDeferral({ onStreamStart: this.opts.onStreamStart, onStreamEnd: this.opts.onStreamEnd }, async () => {
-  //       await agent.respond(prompt, budget, peers, () => this.stopRequested);
-  //     });
-  //     return;
-  //   }
-  //   try {
-  //     await agent.stream(prompt, {
-  //       onToken: (_t) => {
-  //         notify.onToken();
-  //         // Your runtime’s output mux will handle showing tokens; the controller
-  //         // can pause/resume around keypress feedback as needed.
-  //       },
-  //     });
-  //   } finally {
-  //     await notify.end();
-  //   }
-  // }
 }
+
+// ───────────────────────────────────────────────────────────────────────────────
+// 4) Optional: token streaming adapter (reference only)
+//
+// If/when your driver exposes per-token callbacks or an async iterator, replace
+// the withStreamDeferral(...) call above with a notifier that fires on the first
+// token, then `await hooks.onStreamEnd()` after the stream completes.
+//
+// function makeTokenNotifier(hooks: StreamHooks) {
+//   let started = false;
+//   return {
+//     onToken(): void {
+//       if (!started) {
+//         started = true;
+//         hooks.onStreamStart();
+//       }
+//     },
+//     async end(): Promise<void> {
+//       if (!started) hooks.onStreamStart();
+//       await hooks.onStreamEnd();
+//     },
+//   };
+// }
