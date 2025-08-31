@@ -158,6 +158,7 @@ export class RandomScheduler {
             // ---- STREAM DEFERRAL (single seam to TTY controller) ----
             this.onStreamStart?.();
             try {
+              await new Promise<void>(r => (typeof setImmediate === "function" ? setImmediate(r) : setTimeout(r, 0)));
               replies = await a.respond(messagesIn, Math.max(0, remaining), peers, () => this.draining);
             } finally {
               if (this.onStreamEnd) { await this.onStreamEnd(); }
