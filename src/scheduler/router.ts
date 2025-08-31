@@ -60,6 +60,7 @@ export async function routeWithSideEffects(
         },
         onGroup: async (_from, content) => {
             const cleaned = filters.cleanGroup(content);
+            Logger.info('cleaned,content',cleaned,content);
             const peers = deps.agents.map(a => a.id);
             const dec = fromAgent.guardCheck?.("group", cleaned, peers) || null;
             if (dec) await deps.applyGuard(fromAgent, dec);
