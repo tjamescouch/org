@@ -1,41 +1,51 @@
 #!/usr/bin/env bash
-# ./org  — host wrapper to run the single-container session.
-# Ensures the repo is mounted at /project, /work is primed by entrypoint, and
-# ORG_DEFAULT_CWD points to the same subdir you launched from.
-# IMPORTANT: do NOT leak a stray positional to the entrypoint. We only forward "$@".
+# CWD-agnostic org launcher: always mounts the repo root to /work
+# and runs bun /work/src/app.ts inside the container.
 
-set -euo pipefail
+set -Eeuo pipefail
 
-IMAGE="${IMAGE:-localhost/org-build:debian-12}"
-
-# Resolve repo root (prefer enclosing git repo; else current dir)
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-
-# Resolve subdir relative to repo root so tools enter /work/<subdir>
-CWD_SUB="$(
-python3 - <<'PY' "$REPO_ROOT" "$PWD"
-import os, sys
-root=os.path.realpath(sys.argv[1])
-cwd =os.path.realpath(sys.argv[2])
-print(os.path.relpath(cwd, root) if cwd.startswith(root+os.sep) else "")
+# ---------- resolve real path to this script (portable) ----------
+resolve_realpath() {
+  # Prefer readlink -f if available; fall back to Python
+  if command -v readlink >/dev/null 2>&1; then
+    readlink -f "$1" 2>/dev/null || python3 - "$1" <<'PY'
+import os, sys; print(os.path.realpath(sys.argv[1]))
 PY
-)"
+  else
+    python3 - "$1" <<'PY'
+import os, sys; print(os.path.realpath(sys.argv[1]))
+PY
+  fi
+}
 
-# Effective default cwd inside the container
-ORG_DEFAULT_CWD="/work${CWD_SUB:+/$CWD_SUB}"
+SCRIPT_PATH="$(resolve_realpath "$0")"
+REPO_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 
-echo "[host] repo   = ${REPO_ROOT}"
-echo "[host] subdir = ${CWD_SUB:-<root>}"
-echo "[host] ORG_DEFAULT_CWD = ${ORG_DEFAULT_CWD}"
+# ---------- engine/image/file ----------
+ENGINE="${ORG_ENGINE:-podman}"   # set ORG_ENGINE=docker if you prefer
+IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
+FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
 
-# Place for run artifacts on host (optional)
-mkdir -p "${REPO_ROOT}/.org"
+echo "[org] engine = $ENGINE"
+echo "[org] image  = $IMAGE"
+echo "[org] file   = $FILE"
+echo "[org] repo   = $REPO_DIR"
 
-# NOTE: No stray "org" after entrypoint — only forward actual CLI args ($@)
-exec podman run --rm -it \
-  -v "${REPO_ROOT}:/project:ro,Z" \
-  -v "${REPO_ROOT}/.org:/hostrun:rw,Z" \
-  -e ORG_DEFAULT_CWD="${ORG_DEFAULT_CWD}" \
+# ---------- ensure image exists (build if missing) ----------
+if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "[org] building image with $ENGINE (this can take a while)..."
+  "$ENGINE" build -t "$IMAGE" -f "$FILE" "$REPO_DIR"
+  echo "[org] image built: $IMAGE"
+fi
+
+# ---------- run bun inside the container, mounting the repo root ----------
+# - Always mount REPO_DIR → /work, regardless of the caller's CWD.
+# - Workdir is /work so /work/src/app.ts is stable.
+# - Pass through your args unchanged.
+exec "$ENGINE" run --rm -it \
+  -v "$REPO_DIR:/work:Z" \
   -w /work \
-  "${IMAGE}" \
-  /usr/local/bin/org-entrypoint "$@"
+  -e ORG_PROJECT_DIR=/work \
+  -e TERM="${TERM:-xterm-256color}" \
+  "$IMAGE" bun /work/src/app.ts "$@"
+
