@@ -49,6 +49,7 @@ class ModeController {
   /** Force raw for the lifetime of the controller to avoid OS echo duplication. */
   forceRaw(): void {
     if (this.tty.isTTY && this.tty.setRawMode) {
+      Logger.error("🥩 Input in raw mode");
       this.tty.setRawMode(true);
       this.current = "raw";
     }
@@ -57,6 +58,7 @@ class ModeController {
   /** Best-effort return to cooked on unwind. */
   toCooked(): void {
     if (this.tty.isTTY && this.tty.setRawMode) {
+      Logger.error("🍗 Input in cooked mode");
       this.tty.setRawMode(false);
       this.current = "cooked";
     }
