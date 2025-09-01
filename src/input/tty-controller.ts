@@ -107,6 +107,9 @@ class ModeController {
   }
 }
 
+const escapePressedString = () => `⏳ ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)`;
+const interjectPressedString = () => `⏳ i pressed — finishing current step...`;
+
 /* ------------------------------- Main class -------------------------------- */
 
 export class TtyController {
@@ -246,7 +249,7 @@ export class TtyController {
             this.inPrompt = false;
             this.modes.toRaw();
             this.feedback.write(
-              "ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)\n",
+              escapePressedString() + "\n",
             );
             void this.finalizeThenExit();
             // resolve an empty string to unblock any awaiting callers
@@ -325,16 +328,12 @@ export class TtyController {
           // Defer finalize until stream end, ACK immediately
           if (!this.pendingEsc) {
             this.pendingEsc = true;
-            this.feedback.write(
-              "ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)\n",
-            );
+            this.feedback.write(escapePressedString());
           }
           return;
         }
         // Idle -> finalize now
-        this.feedback.write(
-          "ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)\n",
-        );
+        this.feedback.write(escapePressedString());
         void this.finalizeThenExit();
         return;
       }
@@ -344,9 +343,7 @@ export class TtyController {
         if (this.streaming) {
           if (!this.pendingInterject) {
             this.pendingInterject = true;
-            this.feedback.write(
-              "Interjection queued — waiting for model to finish before interjection.\n",
-            );
+            this.feedback.write(interjectPressedString());
           }
           return;
         }
