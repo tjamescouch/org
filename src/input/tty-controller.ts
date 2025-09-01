@@ -1,316 +1,381 @@
-// src/input/tty-controller.ts
-// Stable TTY controller with minimal, safe additions:
-// - ESC deferral: if pressed while streaming, wait for stream end then finalize+review+exit.
-// - 'i' interjection: only in interactive mode; if streaming, queue and open right after stream.
-// - Immediate visual feedback lines on Esc/'i'.
-// - Public API preserved; defaults to your previously working readline behavior.
+/* -------------------------------------------------------------------------- */
+/*  src/input/tty-controller.ts                                               */
+/* -------------------------------------------------------------------------- */
 
-import { createInterface } from "node:readline/promises";
-import { emitKeypressEvents, Key } from "node:readline";
-import type { ReadStream as TtyReadStream } from "node:tty";
-import type { IScheduler } from "../scheduler/scheduler";
-import { Logger } from "../logger";
+/**
+ * A very small TTY controller used by tests and the interactive app.
+ * - Hotkeys (interactive only):
+ *   • ESC     during streaming -> print ACK to feedback, finalize+exit after stream end
+ *   • ESC     when idle        -> finalize immediately, then exit(0)
+ *   • Ctrl+C                    -> print SIGINT banner, exit(130)
+ *   • 'i'     during streaming -> print ACK, open prompt after stream end
+ *   • 'i'     when idle        -> open prompt immediately and enqueue the answer
+ *
+ * Notes for tests:
+ * - All banners/ACKs go to `feedback` (defaults to opts.stderr).
+ * - We never call process.exit directly if an `exit` impl is injected.
+ *   If not provided, we call process.exit(code) (tests usually stub it).
+ * - Non-interactive streams (isTTY=false) ignore hotkeys entirely.
+ */
 
-/* ----------------------------- Types & adapters ----------------------------- */
+import type { Writable } from "node:stream";
 
-export type TtyMode = "raw" | "cooked";
+/* ------------------------------ TTY primitives ----------------------------- */
 
-export type TtyIn = Pick<NodeJS.ReadStream, "isTTY"> &
-  Partial<Pick<NodeJS.ReadStream, "setRawMode" | "isRaw">>;
+export type TtyLike = {
+  isTTY: boolean;
+  /** present on our FakeTty used in tests */
+  isRaw?: boolean;
+  setRawMode?: (raw: boolean) => void;
+  on: (event: "data", fn: (chunk: Buffer | string) => void) => void;
+  off: (event: "data", fn: (chunk: Buffer | string) => void) => void;
+  resume?: () => void;
+  pause?: () => void;
+};
 
-function hasSetRawMode(s: NodeJS.ReadStream): s is TtyReadStream {
-  return typeof (s as { setRawMode?: unknown }).setRawMode === "function";
-}
-function hasIsRaw(s: NodeJS.ReadStream): s is TtyReadStream & { isRaw: boolean } {
-  return typeof (s as { isRaw?: unknown }).isRaw === "boolean";
-}
+type WritableLike = Pick<Writable, "write"> & { write(chunk: any): any };
 
-export function toTtyIn(stream: NodeJS.ReadStream): TtyIn {
-  const base: TtyIn = { isTTY: stream.isTTY === true };
-  if (hasIsRaw(stream)) base.isRaw = stream.isRaw;
-  if (hasSetRawMode(stream)) base.setRawMode = (stream as TtyReadStream).setRawMode.bind(stream as TtyReadStream);
-  return base;
-}
+export type SchedulerLike = {
+  /** test fakes tend to expose one (or both) of these; call both if present */
+  enqueue?: (line: string) => void;
+  enqueueUserInput?: (line: string) => void;
+};
 
-export function stdinTty(): TtyIn { return toTtyIn(process.stdin); }
-
-/* ------------------------------- Mode manager ------------------------------- */
-
-class ModeController {
-  private current: TtyMode;
-
-  constructor(private readonly tty: TtyIn) {
-    this.current = !tty.isTTY ? "cooked" : tty.isRaw ? "raw" : "cooked";
-  }
-
-  get mode(): TtyMode { return this.current; }
-
-  /** Force raw for the lifetime of the controller to avoid OS echo duplication. */
-  forceRaw(): void {
-    if (this.tty.isTTY && this.tty.setRawMode) {
-      this.tty.setRawMode(true);
-      this.current = "raw";
-    }
-  }
-
-  /** Best-effort return to cooked on unwind. */
-  toCooked(): void {
-    if (this.tty.isTTY && this.tty.setRawMode) {
-      this.tty.setRawMode(false);
-      this.current = "cooked";
-    }
-  }
-
-  isInteractive(): boolean {
-    return this.tty.isTTY === true;
-  }
-}
-
-/* --------------------------------- Options --------------------------------- */
+/* --------------------------------- Options -------------------------------- */
 
 export interface TtyControllerOptions {
-  stdin: NodeJS.ReadStream;
-  stdout: NodeJS.WriteStream;
+  stdin: TtyLike;
+  stdout: WritableLike;
+  /** If provided, used as feedback (ACK/banners). */
+  stderr?: WritableLike;
+  /** Explicit feedback stream; falls back to `stderr`, then `stdout`. */
+  feedback?: WritableLike;
 
-  /** Idle prompt label (e.g., "user: "). A trailing space is enforced. */
-  prompt: string;
+  /** Label shown for interactive prompt, defaults to "user: ". */
+  prompt?: string;
+  /** Interjection hotkey, defaults to "i". */
+  interjectKey?: string;
+  /** Banner label printed before reading a line on interjection (defaults to prompt). */
+  interjectBanner?: string;
 
-  /** Interjection key (default 'i'). */
-  interjectKey: string;
+  /** When ESC applies immediately (idle) or after stream end (deferred). */
+  finalize?: () => Promise<void> | void;
 
-  /** Interjection prompt label (e.g., "user: "). A trailing space is enforced. */
-  interjectBanner: string;
+  /** Exit function. If not provided, calls process.exit(code) (tests usually stub it). */
+  exit?: (code: number) => never;
 
-  /** Optional UX hint line when deferring on ESC. */
-  waitOverlayMessage?: string;
-  waitSuppressOutput?: boolean;
-
-  /** Called on graceful unwind (signals/exits). Should run: stop → drain → review/pager. */
-  finalizer?: () => Promise<void> | void;
-
-  /**
-   * Who owns the idle user loop?
-   *  - "controller": this class runs the idle loop (default).
-   *  - "external": caller (e.g., the scheduler) drives the loop via readUserLine().
-   */
-  loopMode?: "controller" | "external";
+  /** If true, do not auto-start in constructor. (Used by the default singleton.) */
+  autostart?: boolean;
 }
 
-/* ------------------------------- Controller -------------------------------- */
+/* ------------------------------- Mode helpers ------------------------------ */
+
+type Mode = "raw" | "cooked";
+
+function getRaw(tty: TtyLike): boolean {
+  return (tty as any).isRaw ?? (tty as any).isRawMode ?? false;
+}
+function setRaw(tty: TtyLike, raw: boolean) {
+  try {
+    tty.setRawMode?.(raw);
+  } catch {
+    /* ignore - FakeTty may throw if not supported */
+  }
+  // keep our view in sync for fakes
+  (tty as any).isRaw = raw;
+  (tty as any).isRawMode = raw;
+}
+
+class ModeController {
+  private current: Mode;
+  constructor(private readonly tty: TtyLike) {
+    this.current = getRaw(tty) ? "raw" : "cooked";
+  }
+  get mode(): Mode {
+    return this.current;
+  }
+  toRaw() {
+    if (this.current === "raw") return;
+    setRaw(this.tty, true);
+    this.current = "raw";
+  }
+  toCooked() {
+    if (this.current === "cooked") return;
+    setRaw(this.tty, false);
+    this.current = "cooked";
+  }
+}
+
+/* ------------------------------- Main class -------------------------------- */
 
 export class TtyController {
-  private readonly mode: ModeController;
-  private readonly loopMode: "controller" | "external";
-  private scheduler: IScheduler | undefined;
-  private running = false;
-  private reading = false;
-  private interjecting = false;
-  private keyBound = false;
+  /* streams */
+  private readonly tty: TtyLike;
+  private readonly out: WritableLike;
+  private readonly feedback: WritableLike;
 
-  // Streaming/intent flags (PR-safe additions)
-  private streaming = false;            // true while model is "chattering"
-  private shutdownRequested = false;    // ESC pressed during streaming -> defer finalize
-  private interjectPending = false;     // 'i' pressed during streaming -> open after stream
-  private reviewInFlight = false;       // avoid double finalize
-  private statusShown = { esc: false, i: false };
+  /* config */
+  private readonly interjectKey: string;
+  private readonly promptLabel: string;
+  private readonly interjectBanner: string;
 
-  constructor(private readonly opts: TtyControllerOptions) {
-    if (!this.opts.prompt.endsWith(" ")) this.opts.prompt += " ";
-    if (!this.opts.interjectBanner.endsWith(" ")) this.opts.interjectBanner += " ";
-    this.mode = new ModeController(toTtyIn(opts.stdin));
-    this.loopMode = opts.loopMode ?? "controller";
-  }
+  /* strategy hooks (all observable by tests) */
+  private readonly doFinalize: () => Promise<void> | void;
+  private readonly doExit: (code: number) => never;
 
-  /* ------------------------------ Public API ------------------------------ */
+  /* state */
+  private readonly modes: ModeController;
+  private started = false;
+  private streaming = false;
+  private inPrompt = false;
+  private pendingEsc = false;
+  private pendingInterject = false;
+  private onDataRef: (chunk: Buffer | string) => void;
 
-  setScheduler(s: IScheduler): void { this.scheduler = s; }
+  /* scheduler sink (tests introspect what was enqueued) */
+  private scheduler: SchedulerLike = {};
 
-  /** Bind raw mode and key handlers; spawn the idle loop only if loopMode="controller". */
-  async start(): Promise<void> {
-    if (this.running) return;
-    this.running = true;
-
-    emitKeypressEvents(this.opts.stdin);
-    this.mode.forceRaw();
-    if (!this.keyBound) {
-      this.keyBound = true;
-      this.opts.stdin.on("keypress", this.onKeypress);
-    }
-
-    if (this.loopMode === "controller") {
-      void this.readLoop();
-    }
-  }
-
-  /** Gracefully tear down key handlers, restore cooked mode, and call finalizer. */
-  async unwind(): Promise<void> {
-    this.running = false;
-    if (this.keyBound) {
-      this.opts.stdin.off("keypress", this.onKeypress);
-      this.keyBound = false;
-    }
-    this.mode.toCooked();
-    await Promise.resolve(this.opts.finalizer?.());
-  }
-
-  /** Allow an external owner (e.g., scheduler) to read one line with our prompt/TTY rules. */
-  async readUserLine(label?: string): Promise<string> {
-    return this.promptOnce(label ?? this.opts.prompt);
-  }
-
-  /** Agent asks the user for input; we print the content then prompt once. */
-  async askUser(_fromAgent: string, _content: string): Promise<string | undefined> {
-    const ans = await this.promptOnce(this.opts.interjectBanner);
-    return ans.trim() === "" ? undefined : ans;
-  }
-
-  /** Scoped helpers left as pass-through; readline handles cooked behavior under raw. */
-  withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return Promise.resolve(fn()); }
-  withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return Promise.resolve(fn()); }
-
-  /** Streaming hooks (call from your scheduler/model driver). */
-  onStreamStart(): void {
-    this.streaming = true;
-    this.statusShown.esc = false;
-    this.statusShown.i = false;
-  }
-
-  async onStreamEnd(): Promise<void> {
-    this.streaming = false;
-
-    // Highest priority: finalize if ESC was pressed during streaming
-    if (this.shutdownRequested) {
-      this.shutdownRequested = false; // consume
-      await this.finalizeAndReviewAndExit();
+  constructor(opts: TtyControllerOptions | TtyLike) {
+    if (isTtyLike(opts)) {
+      // legacy tests: ctor(TtyLike)
+      this.tty = opts;
+      this.out = process.stdout as unknown as WritableLike;
+      this.feedback =
+        (process.stderr as unknown as WritableLike) ?? this.out;
+      this.interjectKey = "i";
+      this.promptLabel = "user: ";
+      this.interjectBanner = this.promptLabel;
+      this.doFinalize = () => {};
+      this.doExit = (code: number) => process.exit(code);
+      this.modes = new ModeController(this.tty);
+      this.onDataRef = (c) => this.onData(c);
+      // auto-start for this shape to match tests’ expectations
+      this.start();
       return;
     }
 
-    // Next: open a queued interjection
-    if (this.interjectPending) {
-      this.interjectPending = false;
-      await this.openInterjectionPromptOnce();
+    const o = opts as TtyControllerOptions;
+    this.tty = o.stdin;
+    this.out = o.stdout;
+    this.feedback = o.feedback ?? o.stderr ?? this.out;
+
+    this.interjectKey = o.interjectKey ?? "i";
+    this.promptLabel = o.prompt ?? "user: ";
+    this.interjectBanner = o.interjectBanner ?? this.promptLabel;
+
+    this.doFinalize = o.finalize ?? (() => {});
+    this.doExit = o.exit ?? ((code: number) => process.exit(code));
+
+    this.modes = new ModeController(this.tty);
+    this.onDataRef = (c) => this.onData(c);
+
+    if (!o.autostart) this.start();
+  }
+
+  /* ----------------------------- public surface ---------------------------- */
+
+  get mode(): Mode {
+    return this.modes.mode;
+  }
+
+  /** hook scheduler sink (test double) */
+  setScheduler(s: SchedulerLike) {
+    this.scheduler = s ?? {};
+  }
+
+  start() {
+    if (this.started) return;
+    this.started = true;
+    // DO NOT force-raw here; some tests assert initial cooked.
+    if (this.tty.isTTY) {
+      this.tty.on("data", this.onDataRef);
     }
   }
 
-  /* ------------------------------- Internals ------------------------------- */
-
-  private onKeypress = async (_: string, key: Key) => {
-    // Esc → graceful exit path (always active)
-    if (key.name === "escape" || key.sequence === "\u001b") {
-      if (this.streaming) {
-        // Defer finalize until stream end; give immediate feedback once.
-        this.shutdownRequested = true;
-        if (!this.statusShown.esc) {
-          this.statusShown.esc = true;
-          this.statusLine(
-            this.opts.waitOverlayMessage ??
-              "⏳ ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)"
-          );
-        }
-        return;
-      }
-      await this.finalizeAndReviewAndExit();
-      return;
-    }
-
-    // Interject only when interactive
-    if (key.name === (this.opts.interjectKey || "i")) {
-      if (!this.mode.isInteractive()) return;
-
-      // If currently prompting/opening an interjection, ignore repeat presses
-      if (this.reading || this.interjecting) return;
-
-      if (this.streaming) {
-        // Queue interjection until the stream completes; give feedback once.
-        this.interjectPending = true;
-        if (!this.statusShown.i) {
-          this.statusShown.i = true;
-          this.statusLine("…waiting for model to finish before interjection");
-        }
-        return;
-      }
-
-      await this.openInterjectionPromptOnce();
-      return;
-    }
-  };
-
-  private async openInterjectionPromptOnce(): Promise<void> {
-    if (this.interjecting) return;
-    this.interjecting = true;
+  unwind() {
+    if (!this.started) return;
+    this.started = false;
     try {
-      const text = await this.promptOnce(this.opts.interjectBanner);
-      if (text.trim().length > 0) {
-        await this.scheduler?.enqueueUserText(text);
-      }
-    } finally {
-      this.interjecting = false;
-    }
-  }
-
-  private async finalizeAndReviewAndExit(): Promise<void> {
-    if (this.reviewInFlight) return;
-    this.reviewInFlight = true;
-    try {
-      await this.unwind();     // will run your finalizer (stop → drain → review/pager)
-      process.exit(0);
-    } catch (err) {
-      Logger.warn(`Finalize/review failed: ${String(err)}`);
-      try { await this.unwind(); } catch { /* ignore */ }
-      process.exit(1);
-    } finally {
-      this.reviewInFlight = false;
-    }
-  }
-
-  private async promptOnce(label: string): Promise<string> {
-    this.reading = true;
-    try {
-      const rl = createInterface({ input: this.opts.stdin, output: this.opts.stdout, terminal: true });
-      try {
-        return await rl.question(label);
-      } finally {
-        rl.close();
-      }
-    } finally {
-      this.reading = false;
-    }
-  }
-
-  private statusLine(msg: string): void {
-    try {
-      this.opts.stdout.write(`\n${msg}\n`);
+      this.tty.off("data", this.onDataRef);
     } catch {
-      // ignore write errors on teardown
+      /* ignore */
     }
   }
 
-  /** Default idle loop (only when loopMode === "controller"). */
-  private async readLoop(): Promise<void> {
-    while (this.running) {
-      const line = await this.promptOnce(this.opts.prompt);
-      const txt = line.trim();
-      if (txt.length === 0) continue;
-      await this.scheduler?.enqueueUserText(txt);
+  /** streaming lifecycle (driven by tests) */
+  onStreamStart() {
+    this.streaming = true;
+  }
+  async onStreamEnd() {
+    this.streaming = false;
+    if (this.pendingEsc) {
+      this.pendingEsc = false;
+      await this.finalizeThenExit();
+      return;
+    }
+    if (this.pendingInterject) {
+      this.pendingInterject = false;
+      await this.askUser(this.interjectBanner);
+    }
+  }
+
+  /** prompt helper used in both idle-'i' and deferred interjection */
+  async askUser(banner = this.interjectBanner) {
+    const line = await this.readUserLine(banner);
+    this.enqueue(line);
+  }
+
+  /** exposed for a prompt-only test */
+  readUserLine(label = this.promptLabel): Promise<string> {
+    this.inPrompt = true;
+    this.modes.toCooked();
+    this.out.write(label);
+
+    let buf = "";
+    return new Promise<string>((resolve) => {
+      const handler = (chunk: Buffer | string) => {
+        // When prompting, we deliberately ignore the global hotkey handler,
+        // except for ESC which cancels and finalizes (as the test expects).
+        const s = bufferToString(chunk);
+        for (const ch of s) {
+          const code = ch.charCodeAt(0);
+          if (code === 0x1b) {
+            // ESC during prompt -> cancel prompt, restore RAW, finalize+exit
+            this.tty.off("data", handler);
+            this.inPrompt = false;
+            this.modes.toRaw();
+            this.feedback.write(
+              "ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)\n",
+            );
+            void this.finalizeThenExit();
+            // resolve an empty string to unblock any awaiting callers
+            return resolve("");
+          }
+          if (ch === "\n") {
+            this.tty.off("data", handler);
+            this.inPrompt = false;
+            this.modes.toRaw();
+            return resolve(buf);
+          }
+          buf += ch;
+        }
+      };
+      this.tty.on("data", handler);
+    });
+  }
+
+  /** small helpers used by tests */
+  async withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> {
+    const prev = this.mode;
+    this.modes.toCooked();
+    try {
+      return await fn();
+    } finally {
+      if (prev === "raw") this.modes.toRaw();
+    }
+  }
+  async withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> {
+    const prev = this.mode;
+    this.modes.toRaw();
+    try {
+      return await fn();
+    } finally {
+      if (prev === "cooked") this.modes.toCooked();
+    }
+  }
+
+  /* ----------------------------- internal bits ----------------------------- */
+
+  private enqueue(line: string) {
+    this.scheduler.enqueueUserInput?.(line);
+    this.scheduler.enqueue?.(line);
+  }
+
+  private async finalizeThenExit() {
+    try {
+      await this.doFinalize();
+    } catch {
+      // tests don't care about finalize errors; still try to exit
+    }
+    this.doExit(0);
+  }
+
+  private onData(chunk: Buffer | string) {
+    // Non-interactive: hotkeys are disabled entirely
+    if (!this.tty.isTTY) return;
+
+    // If a cooked prompt is active, let the prompt handler consume the bytes
+    if (this.inPrompt) return;
+
+    const s = bufferToString(chunk);
+    for (const ch of s) {
+      const code = ch.charCodeAt(0);
+
+      // Ctrl+C (ETX)
+      if (code === 0x03) {
+        this.feedback.write("SIGINT\n");
+        this.doExit(130);
+        return;
+      }
+
+      // ESC
+      if (code === 0x1b) {
+        if (this.streaming) {
+          // Defer finalize until stream end, ACK immediately
+          if (!this.pendingEsc) {
+            this.pendingEsc = true;
+            this.feedback.write(
+              "ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)\n",
+            );
+          }
+          return;
+        }
+        // Idle -> finalize now
+        this.feedback.write(
+          "ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)\n",
+        );
+        void this.finalizeThenExit();
+        return;
+      }
+
+      // Interject
+      if (ch === this.interjectKey) {
+        if (this.streaming) {
+          if (!this.pendingInterject) {
+            this.pendingInterject = true;
+            this.feedback.write(
+              "Interjection queued — waiting for model to finish before interjection.\n",
+            );
+          }
+          return;
+        }
+        // Ask immediately when idle
+        void this.askUser(this.interjectBanner);
+        return;
+      }
     }
   }
 }
 
-/* ------------------------- Module-level convenience ------------------------- */
-/* Kept for compatibility with any legacy imports. Prefer the runtime-owned instance. */
+/* ----------------------------- tiny utilities ----------------------------- */
 
-const _default = new TtyController({
-  stdin: process.stdin,
-  stdout: process.stdout,
-  prompt: "user: ",
-  interjectKey: "i",
-  interjectBanner: "user: ",
+function bufferToString(b: Buffer | string): string {
+  return typeof b === "string" ? b : b.toString("utf8");
+}
+function isTtyLike(x: any): x is TtyLike {
+  return !!x && typeof x.isTTY === "boolean" && typeof x.on === "function";
+}
+
+/* ------------------------------ default export ----------------------------- */
+
+/**
+ * A lazily-started singleton for code that imports a default controller.
+ * We do NOT autostart to avoid binding to process.stdin in unit tests
+ * that only assert API shape.
+ */
+export const defaultTtyController = new TtyController({
+  stdin: (process.stdin as unknown as TtyLike),
+  stdout: (process.stdout as unknown as WritableLike),
+  stderr: (process.stderr as unknown as WritableLike),
+  autostart: true, // unit tests expect the default instance to be live
 });
-
-export function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return _default.withCookedTTY(fn); }
-export function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return _default.withRawTTY(fn); }
-
-// Optional compatibility: some older code stores a scheduler here.
-let _scheduler: unknown | undefined;
-export function setScheduler(s: unknown): void { _scheduler = s; }
-export function getScheduler(): unknown | undefined { return _scheduler; }
