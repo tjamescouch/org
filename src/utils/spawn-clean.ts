@@ -1,7 +1,7 @@
 // utils/spawn-clean.ts
 import { spawn, type ChildProcess } from "node:child_process";
 
-export type SpawnWithTimeoutOpts = {
+type SpawnWithTimeoutOpts = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;   // hard timeout (default: undefined = no timeout)

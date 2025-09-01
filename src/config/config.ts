@@ -2,18 +2,18 @@
 import { getRecipe } from "../recipes";
 import { R } from "../runtime/runtime";
 
-export interface LlmConfig {
+interface LlmConfig {
   driver: "lmstudio";
   protocol: "openai";
   baseUrl: string;
   model: string;
 }
 
-export interface AppRuntime {
+interface AppRuntime {
   safe: boolean;
 }
 
-export interface AppConfig {
+interface AppConfig {
   llm: LlmConfig;
   runtime: AppRuntime;
   cli: Record<string, string>;

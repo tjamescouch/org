@@ -25,6 +25,13 @@ import { getRecipe } from "./recipes";
 import { sandboxMangers } from "./sandbox/session";
 import { TtyController } from "./input/tty-controller";
 import Passthrough from "./input/passthrough";
+import { createFeedbackController } from "./ui/feedback";
+import { installHotkeys } from "./runtime/hotkeys";
+
+let paused = false;
+export const setOutputPaused = (v: boolean) => {
+  paused = v;
+}
 
 // ───────────────────────────────────────────────────────────────────────────────
 // TTY guard: the RUNTIME holds the controller instance (R.ttyController)
@@ -49,6 +56,14 @@ export function installTtyGuard(): void {
 }
 
 installTtyGuard();
+Logger.info("Installing hotkeys 🔥");
+const uninstallHotkeys = installHotkeys({
+  stdin: R.stdin as any,
+  onEsc: async () => { await R.ttyController?.unwind(); /* finalizer handles review+exit */ },
+  onCtrlC: () => { Logger.error("SIGINT"); R.exit(130); },
+  feedback: process.stderr,
+  debug: !!process.env.DEBUG,
+});
 
 /** Scoped helpers that return promises (safe to `await`). */
 export async function withCookedTTY<T>(f: () => Promise<T> | T): Promise<T> {
@@ -319,7 +334,14 @@ async function main() {
 
   // Build input (controller binds raw mode & keys; loop owned by scheduler)
   if (R.stdin.isTTY) {
+    const feedback = createFeedbackController({
+      spinner: true,
+      pause: () => { setOutputPaused?.(true); /* or set a shared flag the LLM writer checks */ },
+      resume: () => { setOutputPaused?.(false); },
+    });
+
     R.ttyController = new TtyController({
+      beginFeedback: feedback.begin,
       waitOverlayMessage: "Waiting for agent to finish",
       waitSuppressOutput: true,
       stdin: R.stdin,
@@ -361,6 +383,7 @@ async function main() {
 
 main().catch(async (e) => {
   Logger.info(e);
+  uninstallHotkeys();
   try { await R.ttyController?.unwind(); } catch { /* ignore */ }
   R.exit(1);
 });

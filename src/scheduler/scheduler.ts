@@ -4,10 +4,10 @@
 
 import { ChatMessage } from "../drivers/types";
 
-export type ReviewMode = "ask" | "auto" | "never";
-export type OnAskUser = (fromAgent: string, content: string) => Promise<void>;
+type ReviewMode = "ask" | "auto" | "never";
+type OnAskUser = (fromAgent: string, content: string) => Promise<void>;
 
-export type ChatRole = "system" | "user" | "assistant" | "tool";
+type ChatRole = "system" | "user" | "assistant" | "tool";
 
 /** The app and input layer talk to a scheduler via this interface only. */
 export interface IScheduler {
@@ -25,7 +25,7 @@ export interface IScheduler {
 }
 
 /** Agent shape schedulers coordinate. Only what we need. */
-export interface SchedulerAgent {
+interface SchedulerAgent {
   id: string;
 
   /**
@@ -44,7 +44,7 @@ export interface SchedulerAgent {
 }
 
 /** Options used to construct a scheduler. */
-export interface SchedulerOptions {
+interface SchedulerOptions {
   agents: SchedulerAgent[];
   maxTools: number;
   onAskUser: OnAskUser;

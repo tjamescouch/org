@@ -21,7 +21,7 @@
  *       at flush(). Tests only assert final output, not incremental chunks.
  */
 
-export type StreamFilter = {
+type StreamFilter = {
   /**
    * Supply a chunk of data. Returns any output that is safe to emit now.
    * For simplicity and test-compatibility we return an empty string here
@@ -51,7 +51,7 @@ export function createPDAStreamFilter(): any {
 }
 
 /** Public: pure function version (useful for non-streaming paths or tests) */
-export function filterPDAText(input: string): string {
+function filterPDAText(input: string): string {
   // 1) Split by fenced code blocks (```...```); process only non-fence parts.
   const parts = splitByBacktickFences(input);
 

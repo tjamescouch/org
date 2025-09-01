@@ -1,7 +1,7 @@
 // test/helpers/spy.ts
 // Minimal manual spy: wraps an object's method, records calls, preserves behavior.
 
-export type Spy<T extends object, K extends keyof T & string> = {
+type Spy<T extends object, K extends keyof T & string> = {
   /** Restore the original method. Always call in a finally {} block. */
   restore(): void;
   /** All invocations as arrays of arguments. */

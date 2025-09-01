@@ -5,11 +5,42 @@ import { timedFetch } from "../utils/timed-fetch";
 
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types";
 
-export interface OpenAiDriverConfig {
-  baseUrl: string;   // e.g. http://127.0.0.1:11434
-  model: string;     // e.g. openai/gpt-oss-20b
+interface OpenAiDriverConfig {
+  baseUrl: string;    // e.g. http://127.0.0.1:11434
+  model: string;      // e.g. openai/gpt-oss-20b
   timeoutMs?: number; // default 2h (aligns with non-streaming driver)
 }
+
+/** Give the event loop a chance to run key handlers / UI. */
+function yieldToLoop(): Promise<void> {
+  return new Promise<void>((resolve) =>
+    typeof (globalThis as any).setImmediate === "function"
+      ? (globalThis as any).setImmediate(resolve)
+      : setTimeout(resolve, 0)
+  );
+}
+
+/** Cooperative scheduler: yield after ~1 KiB processed or ~8ms elapsed. */
+class YieldBudget {
+  private bytesSince = 0;
+  private last = Date.now();
+  constructor(
+    private readonly byteBudget = 1024,
+    private readonly msBudget = 8
+  ) { }
+  async maybe(extraBytes = 0): Promise<void> {
+    this.bytesSince += extraBytes;
+    const now = Date.now();
+    if (this.bytesSince >= this.byteBudget || (now - this.last) >= this.msBudget) {
+      this.bytesSince = 0;
+      this.last = now;
+      await yieldToLoop();
+    }
+  }
+}
+
+const sanitizeCtrl = (s: string) =>
+  s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
 
 /**
  * Streaming OpenAI-compatible chat driver for LM Studio / OpenAI-style endpoints.
@@ -26,12 +57,11 @@ export interface OpenAiDriverConfig {
 export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver {
   const base = cfg.baseUrl.replace(/\/+$/, "");
   const endpoint = `${base}/v1/chat/completions`;
-  // Keep very generous outer guard, like your non-streaming driver.
   const defaultTimeout = cfg.timeoutMs ?? 2 * 60 * 60 * 1000;
 
   async function chat(messages: ChatMessage[], opts?: any): Promise<ChatOutput> {
     await rateLimiter.limit("llm-ask", 1);
-    Logger.debug('streamining messages out', messages);
+    Logger.debug("streaming messages out", messages);
 
     const controller = new AbortController();
     const userSignal: AbortSignal | undefined = opts?.signal;
@@ -81,7 +111,6 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
         body: JSON.stringify(payload),
         signal: controller.signal,
         where: "driver:openai-lmstudio:stream",
-        // Inner fetch watchdog (separate from AbortController guard)
         timeoutMs: 2 * 60 * 60 * 1000
       });
 
@@ -92,7 +121,7 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
         throw new Error(`LM Studio / OpenAI chat (stream) failed (${res.status}): ${text}`);
       }
 
-      // Some servers may fall back to non-streaming JSON despite stream:true (misconfig, proxy, etc.)
+      // Some servers may fall back to non-streaming JSON despite stream:true
       const ct = (res.headers.get("content-type") || "").toLowerCase();
       if (!ct.includes("text/event-stream")) {
         const data = await res.json().catch(() => ({}));
@@ -106,6 +135,7 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
 
       // SSE streaming path
       const decoder = new TextDecoder("utf-8");
+      const yb = new YieldBudget(1024, 8); // 1 KiB or 8ms
       let buf = "";
       let fullText = "";
       let fullReasoning = "";
@@ -113,8 +143,9 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
       // Accumulate tool call deltas per index (OpenAI streaming format)
       const toolByIndex = new Map<number, ChatToolCall>();
 
-      const pumpEvent = (rawEvent: string) => {
-        // Each event is lines separated by \n, typically "data: {...}" or "data: [DONE]"
+      // Process one SSE event (cooperative: yields by size/time)
+      const pumpEvent = async (rawEvent: string) => {
+        // Lines typically "data: {...}" or "data: [DONE]"
         const dataLines = rawEvent
           .split("\n")
           .map((l) => l.trim())
@@ -135,16 +166,41 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
         const delta = payload?.choices?.[0]?.delta;
         if (!delta) return;
 
-        // Content tokens
+        // Content tokens (may arrive as large CoT chunks; stream cooperatively)
         if (typeof delta.content === "string" && delta.content.length) {
           fullText += delta.content;
-          if (onToken) onToken(delta.content);
+          if (typeof delta.content === "string" && delta.content.length) {
+            const clean = delta.content;
+            fullText += clean;
+            if (onToken) {
+              // break very large slices so UI can breathe
+              let s = delta.content;
+              while (s.length) {
+                const piece = s.slice(0, 512);
+                s = s.slice(512);
+                try { onToken(piece); } catch { /* ignore sink errors */ }
+                await yb.maybe(piece.length);
+              }
+            } else {
+              await yb.maybe(delta.content.length);
+            }
+          }
         }
 
-        // Reasoning tokens (if surfaced by the server/model)
+        // Reasoning tokens (same cooperative strategy)
         if (typeof delta.reasoning === "string" && delta.reasoning.length) {
           fullReasoning += delta.reasoning;
-          if (onReasoningToken) onReasoningToken(delta.reasoning);
+          if (onReasoningToken) {
+            let s = delta.reasoning;
+            while (s.length) {
+              const piece = s.slice(0, 512);
+              s = s.slice(512);
+              try { onReasoningToken(piece); } catch { /* ignore */ }
+              await yb.maybe(piece.length);
+            }
+          } else {
+            await yb.maybe(delta.reasoning.length);
+          }
         }
 
         // Tool call streaming (OpenAI delta format)
@@ -166,12 +222,15 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
             if (typeof f.arguments === "string" && f.arguments) prev.function.arguments += f.arguments;
 
             toolByIndex.set(idx, prev);
-            if (onToolCallDelta) onToolCallDelta(prev);
+            if (onToolCallDelta) {
+              try { onToolCallDelta(prev); } catch { /* ignore */ }
+            }
+            await yb.maybe(64); // small budget for tool deltas
           }
         }
       };
 
-      // Stream reader: browser/electron (WHATWG) or Node stream fallback
+      // Stream reader: WHATWG or Node stream
       const body: any = res.body;
 
       if (body && typeof body.getReader === "function") {
@@ -181,35 +240,41 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
           const { value, done } = await reader.read();
           if (done) break;
           buf += decoder.decode(value, { stream: true });
+          await yb.maybe((value as Uint8Array)?.byteLength ?? 0);
 
           // Process complete events separated by \n\n
           let sepIdx: number;
           while ((sepIdx = buf.indexOf("\n\n")) !== -1) {
             const rawEvent = buf.slice(0, sepIdx).trim();
             buf = buf.slice(sepIdx + 2);
-            if (rawEvent) pumpEvent(rawEvent);
+            if (rawEvent) await pumpEvent(rawEvent);
           }
         }
         // Drain remainder (if any)
-        if (buf.trim()) pumpEvent(buf.trim());
+        if (buf.trim()) await pumpEvent(buf.trim());
       } else if (body && typeof body[Symbol.asyncIterator] === "function") {
-        // Node.js Readable (for node-fetch/undici in some setups)
+        // Node.js Readable (for node-fetch/undici)
         for await (const chunk of body as AsyncIterable<Uint8Array>) {
-          buf += decoder.decode(chunk as Uint8Array, { stream: true });
+          const bytes = chunk as Uint8Array;
+          buf += decoder.decode(bytes, { stream: true });
+          await yb.maybe(bytes.byteLength);
+
           let sepIdx: number;
           while ((sepIdx = buf.indexOf("\n\n")) !== -1) {
             const rawEvent = buf.slice(0, sepIdx).trim();
             buf = buf.slice(sepIdx + 2);
-            if (rawEvent) pumpEvent(rawEvent);
+            if (rawEvent) await pumpEvent(rawEvent);
           }
         }
-        if (buf.trim()) pumpEvent(buf.trim());
+        if (buf.trim()) await pumpEvent(buf.trim());
       } else {
         // Last-resort fallback: try to read as text (non-streaming)
         const txt = await res.text();
         buf += txt;
         const parts = buf.split("\n\n").map((s) => s.trim());
-        for (const part of parts) if (part) pumpEvent(part);
+        for (const part of parts) {
+          if (part) await pumpEvent(part);
+        }
       }
 
       Logger.debug("toolByIndex.entries()", toolByIndex.entries());

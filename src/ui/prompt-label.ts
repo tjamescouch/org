@@ -1,7 +1,7 @@
 import { R } from "../runtime/runtime";
 
 // src/ui/prompt-label.ts
-export interface PromptLabelOptions {
+interface PromptLabelOptions {
   username?: string;   // default 'user'
   separator?: string;  // default ': '
 }

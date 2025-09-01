@@ -13,7 +13,7 @@ import { ISandboxSession } from "../sandbox/types";
 import { LockedDownFileWriter } from "../io/locked-down-file-writer";
 
 /** Side-effects required by routing (DMs, group fanout, files, user prompts). */
-export interface RouteDeps {
+interface RouteDeps {
     /** Known agents (for lookup and fan-out). */
     agents: Responder[];
     /** Enqueue a message for an agent. */

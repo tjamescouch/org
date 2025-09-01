@@ -16,7 +16,7 @@ The repository implements a **CLI tool** (`org`) that lets AI agents act on a co
 | `src/sandbox/` | `session.ts`, `policy.ts`, backends (`local.ts`, `podman.ts`, `mock.ts`) | Isolates command execution; supports local and Podman containers, applies glob‑based file‑system restrictions. |
 | `src/guardrails/` | `advanced-guardrail.ts`, `guardrail.ts` | Provides per‑agent safety checks (loop detection, tool‑use limits, content validation). |
 | `src/scheduler/` | `random-scheduler.ts`, `round-robin-scheduler.ts`, `review-manager.ts` | Decouples **task routing** from agents; decides which agent processes a message, handles idle fallback via guard rails. |
-| `src/input/` | TTY adapters/controllers (`tty-controller.ts`, `tty-adapter.ts`, etc.) | Manages interactive vs raw terminal modes, passes user prompts to the scheduler and receives agent output. |
+| `src/input/` | TTY adapters/controllers (`tty-controller.ts`, etc.) | Manages interactive vs raw terminal modes, passes user prompts to the scheduler and receives agent output. |
 | `src/io/` | `file-writer.ts`, `locked-down-file-writer.ts` | Abstracted file‑write API that respects sandbox policies and creates **git patches** instead of direct writes. |
 | `src/memory/` | Various memory implementations (`advanced-memory.ts`, `summary-memory.ts`, etc.) | Stores conversation context per agent, supports summarisation to keep token usage bounded. |
 | `src/ui/` | Console & tmux front‑ends (`console/index.ts`, `tmux/*`) | Presents prompts, progress bars and patch diffs to the human operator. |

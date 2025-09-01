@@ -4,11 +4,11 @@ import { randomUUID } from "crypto";
 import * as path from "path";
 import * as os from "os";
 
-export type NetPolicy =
+type NetPolicy =
     | { mode: "deny" }
     | { mode: "allow"; allowCidrs: string[] };
 
-export interface ExecLimits {
+interface ExecLimits {
     timeoutMs: number;
     memMiB: number;
     cpuCores: number;
@@ -16,7 +16,7 @@ export interface ExecLimits {
     pidsMax: number;
 }
 
-export interface WritePolicy {
+interface WritePolicy {
     allow: string[]; // globs (under /work) allowed to be modified/created
     deny: string[];
 }
@@ -74,7 +74,7 @@ export function defaultPolicy(opts: {
     };
 }
 
-export function toSpec(p: ExecPolicy): ExecSpec {
+function toSpec(p: ExecPolicy): ExecSpec {
     const id = randomUUID();
     const runDir = path.join(p.runRoot, "runs", id);
 
@@ -97,7 +97,7 @@ export function toSpec(p: ExecPolicy): ExecSpec {
     };
 }
 
-export type ExecPolicy2 = {
+type ExecPolicy2 = {
   /** Allow outbound network calls from inside the container */
   allowNetwork: boolean;
   /** Allow invoking any binary (or restrict to a list) */
@@ -107,7 +107,7 @@ export type ExecPolicy2 = {
 };
 
 /** Default policy; becomes fully open if ORG_TRUSTED=1 or ORG_POLICY=open. */
-export function defaultExecPolicy(): ExecPolicy2 {
+function defaultExecPolicy(): ExecPolicy2 {
   if (process.env.ORG_TRUSTED === "1" || process.env.ORG_POLICY === "open") {
     // Fully permissive inside the container (safest place to do it).
     return {

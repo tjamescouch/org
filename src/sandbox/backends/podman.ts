@@ -12,7 +12,7 @@ import { Logger } from "../../logger";
 import { ensureOk } from "../sh-result";
 import { withCookedTTY } from "../../input/tty-controller";
 
-export const HARNESSED_APPLY_PATCH_SCRIPT = `#!/usr/bin/env bash
+const HARNESSED_APPLY_PATCH_SCRIPT = `#!/usr/bin/env bash
 set -euo pipefail
 
 : "\${ORG_PATCH_MAX_BYTES:=204800}"      # 200 KiB default
@@ -101,7 +101,7 @@ git -C /work apply --check "$PATCH_FILE"
 git -C /work apply --index "$PATCH_FILE"
 `;
 
-export const GIT_WRAPPER_SCRIPT = `#!/usr/bin/env bash
+const GIT_WRAPPER_SCRIPT = `#!/usr/bin/env bash
 # Block direct 'git apply' to force policy path
 if [[ "\${1:-}" == "apply" ]]; then
   echo "direct 'git apply' disabled; use apply_patch heredoc" >&2

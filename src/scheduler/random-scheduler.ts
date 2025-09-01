@@ -8,7 +8,12 @@ import { ReviewManager } from "./review-manager";
 import { TagSplitter, TagPart } from "../utils/tag-splitter";
 import type { GuardDecision } from "../guardrails/guardrail";
 import type { ChatMessage } from "../types";
-import type { Responder, SchedulerOptions, AskUserFn, ChatResponse } from "./types";
+import type {
+  Responder,
+  SchedulerOptions,
+  AskUserFn,
+  ChatResponse,
+} from "./types";
 import { sandboxMangers } from "../sandbox/session";
 import { sleep } from "../utils/sleep";
 import { R } from "../runtime/runtime";
@@ -19,15 +24,16 @@ type Hooks = {
 };
 
 /** Extend options locally to accept the external prompt bridge without changing the global type. */
-type SchedulerOptionsWithBridge = Hooks & SchedulerOptions & {
-  /**
-   * If provided, scheduler will not render its own 'user:' banner or readline.
-   * Instead it awaits this provider and treats the returned line as user input.
-   * This keeps `promptEnabled` semantics (the scheduler still "waits for user"),
-   * but routes I/O through the TTY controller to avoid duplicate listeners.
-   */
-  readUserLine?: () => Promise<string | undefined>;
-};
+type SchedulerOptionsWithBridge = Hooks &
+  SchedulerOptions & {
+    /**
+     * If provided, scheduler will not render its own 'user:' banner or readline.
+     * Instead it awaits this provider and treats the returned line as user input.
+     * This keeps `promptEnabled` semantics (the scheduler still "waits for user"),
+     * but routes I/O through the TTY controller to avoid duplicate listeners.
+     */
+    readUserLine?: () => Promise<string | undefined>;
+  };
 
 /**
  * RandomScheduler
@@ -77,9 +83,9 @@ export class RandomScheduler {
   private readonly askUser: AskUserFn;
   private readonly promptEnabled: boolean;
   private readonly idleSleepMs: number;
-  
-  private readonly onStreamStart: Hooks['onStreamStart'];
-  private readonly onStreamEnd: Hooks['onStreamEnd'];
+
+  private readonly onStreamStart: Hooks["onStreamStart"];
+  private readonly onStreamEnd: Hooks["onStreamEnd"];
 
   // when true, break the current agent loop and start a new tick immediately
   private rescheduleNow = false;
@@ -124,7 +130,7 @@ export class RandomScheduler {
       this.rescheduleNow = false;
 
       // Choose agents that currently have messages waiting.
-      const ready = this.agents.filter(a => this.inbox.hasWork(a.id));
+      const ready = this.agents.filter((a) => this.inbox.hasWork(a.id));
       const order = this.shuffle(ready);
 
       for (const agent of order) {
@@ -150,7 +156,7 @@ export class RandomScheduler {
 
         try {
           for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
-            const peers = this.agents.map(x => x.id);
+            const peers = this.agents.map((x) => x.id);
             Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
             this.activeAgent = a;
 
@@ -158,9 +164,16 @@ export class RandomScheduler {
             // ---- STREAM DEFERRAL (single seam to TTY controller) ----
             this.onStreamStart?.();
             try {
-              replies = await a.respond(messagesIn, Math.max(0, remaining), peers, () => this.draining);
+              replies = await a.respond(
+                messagesIn,
+                Math.max(0, remaining),
+                peers,
+                () => this.draining
+              );
             } finally {
-              if (this.onStreamEnd) { await this.onStreamEnd(); }
+              if (this.onStreamEnd) {
+                await this.onStreamEnd();
+              }
             }
             // ---------------------------------------------------------
 
@@ -177,7 +190,9 @@ export class RandomScheduler {
                   agents: this.agents,
                   enqueue: (toId, msg) => this.inbox.push(toId, msg),
                   setRespondingAgent: (id) => {
-                    this.respondingAgent = this.agents.find(x => x.id === id);
+                    this.respondingAgent = this.agents.find(
+                      (x) => x.id === id
+                    );
                   },
                   applyGuard: (from, dec) => this.applyGuardDecision(from, dec),
                   setLastUserDMTarget: (id) => {
@@ -186,7 +201,7 @@ export class RandomScheduler {
                 },
                 a,
                 message,
-                this.filters,
+                this.filters
               );
 
               didWork = true;
@@ -195,7 +210,9 @@ export class RandomScheduler {
                 if (this.promptEnabled) {
                   // interactive: open prompt as before
                   this.lastUserDMTarget = a.id;
-                  const userText = ((await this.askUser(a.id, message)) ?? "").trim();
+                  const userText = (
+                    (await this.askUser(a.id, message)) ?? ""
+                  ).trim();
                   if (userText) {
                     await this.handleUserInterjection(userText, {
                       defaultTargetId: a.id,
@@ -228,12 +245,19 @@ export class RandomScheduler {
         const queuesEmpty = !this.inbox.hasAnyWork();
 
         // ---------- external prompt bridge owns idle input ----------
-        if (queuesEmpty && this.promptEnabled && typeof this.readUserLine === "function") {
+        if (
+          queuesEmpty &&
+          this.promptEnabled &&
+          typeof this.readUserLine === "function"
+        ) {
           // Prefer the last DM target or the first agent if we need a default
-          const preferred = this.lastUserDMTarget ?? this.agents[0]?.id ?? undefined;
+          const preferred =
+            this.lastUserDMTarget ?? this.agents[0]?.id ?? undefined;
           const line = ((await this.readUserLine()) ?? "").trim();
           if (line) {
-            await this.handleUserInterjection(line, { defaultTargetId: preferred });
+            await this.handleUserInterjection(line, {
+              defaultTargetId: preferred,
+            });
             idleTicks = 0;
             continue; // next tick will process the enqueued user text
           }
@@ -242,17 +266,27 @@ export class RandomScheduler {
         }
         // -----------------------------------------------------------------
 
-        if (queuesEmpty && (idleTicks % this.idlePromptEvery) === 0 && this.promptEnabled) {
-          const peers = this.agents.map(x => x.id);
+        if (
+          queuesEmpty &&
+          (idleTicks % this.idlePromptEvery) === 0 &&
+          this.promptEnabled
+        ) {
+          const peers = this.agents.map((x) => x.id);
           const dec =
-            this.agents[0]?.guardOnIdle?.({ idleTicks, peers, queuesEmpty: true }) || null;
+            this.agents[0]?.guardOnIdle?.({
+              idleTicks,
+              peers,
+              queuesEmpty: true,
+            }) || null;
           const prompt =
             (dec as any)?.askUser ??
             `(scheduler)
 All agents are idle. Provide the next concrete instruction or question.`;
           const preferred = this.agents[0]?.id;
           if (preferred) this.lastUserDMTarget = preferred;
-          const userText = ((await this.askUser("scheduler", prompt)) ?? "").trim();
+          const userText = (
+            (await this.askUser("scheduler", prompt)) ?? ""
+          ).trim();
           if (userText) {
             await this.handleUserInterjection(userText, {
               defaultTargetId: preferred || undefined,
@@ -340,7 +374,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
   async finalizeAndReview(): Promise<void> {
     Logger.info("\n👀 Finalize and review all ...");
     try {
-      await this.review.finalizeAndReview(this.agents.map(a => a.id));
+      await this.review.finalizeAndReview(this.agents.map((a) => a.id));
     } catch (e: any) {
       Logger.error("finalizeAndReviewAll:", e?.message ?? e);
     }
@@ -359,20 +393,20 @@ All agents are idle. Provide the next concrete instruction or question.`;
     const parts = TagSplitter.split(raw, {
       userTokens: ["user"],
       groupTokens: ["group"],
-      agentTokens: this.agents.map(a => a.id), // allowlist
+      agentTokens: this.agents.map((a) => a.id), // allowlist
       fileTokens: ["file"],
       allowFileShorthand: false,
     });
 
     // Explicit @@agent tags
-    const agentParts = parts.filter(p => p.kind === "agent") as Array<
-      TagPart & { kind: "agent" }
-    >;
+    const agentParts = parts.filter(
+      (p) => p.kind === "agent"
+    ) as Array<TagPart & { kind: "agent" }>;
     if (agentParts.length > 0) {
       const targets: Responder[] = [];
       for (const ap of agentParts) {
         const ag = this.findAgentByIdExact(ap.tag);
-        if (ag && !targets.some(t => t.id === ag.id)) targets.push(ag);
+        if (ag && !targets.some((t) => t.id === ag.id)) targets.push(ag);
       }
       if (targets.length > 0) {
         this.respondingAgent = targets[0];
@@ -380,7 +414,11 @@ All agents are idle. Provide the next concrete instruction or question.`;
         for (const ap of agentParts) {
           const ag = this.findAgentByIdExact(ap.tag);
           if (!ag) continue;
-          const msg: ChatMessage = { content: ap.content, role: "user", from: "User" };
+          const msg: ChatMessage = {
+            content: ap.content,
+            role: "user",
+            from: "User",
+          };
           this.inbox.push(ag.id, msg);
           Logger.info(`[user → @@${ag.id}] ${raw}`);
         }
@@ -393,7 +431,11 @@ All agents are idle. Provide the next concrete instruction or question.`;
     if (opts?.defaultTargetId) {
       const ag = this.findAgentByIdExact(opts.defaultTargetId);
       if (ag) {
-        const msg: ChatMessage = { content: raw.trim(), role: "user", from: "User" };
+        const msg: ChatMessage = {
+          content: raw.trim(),
+          role: "user",
+          from: "User",
+        };
         this.respondingAgent = ag;
         this.lastUserDMTarget = ag.id;
         this.inbox.push(ag.id, msg);
@@ -449,11 +491,11 @@ All agents are idle. Provide the next concrete instruction or question.`;
   /** Exact id match, case-insensitive. */
   private findAgentByIdExact(key: string): Responder | undefined {
     const t = key.toLowerCase();
-    return this.agents.find(a => a.id.toLowerCase() === t);
+    return this.agents.find((a) => a.id.toLowerCase() === t);
   }
 
   private sleep(ms: number) {
-    return new Promise<void>(r => setTimeout(r, ms));
+    return new Promise<void>((r) => setTimeout(r, ms));
   }
 }
 
@@ -462,10 +504,18 @@ export default RandomScheduler;
 /* ------------------------- Module-level convenience ------------------------- */
 /* Kept for compatibility with any legacy imports. Prefer the runtime-owned instance. */
 
-export function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return R.ttyController!.withCookedTTY(fn); }
-export function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return R.ttyController!.withRawTTY(fn); }
+function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> {
+  return R.ttyController!.withCookedTTY(fn);
+}
+function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> {
+  return R.ttyController!.withRawTTY(fn);
+}
 
 // Optional compatibility: some older code stores a scheduler here.
 let _scheduler: unknown | undefined;
-export function setScheduler(s: unknown): void { _scheduler = s; }
-export function getScheduler(): unknown | undefined { return _scheduler; }
+function setScheduler(s: unknown): void {
+  _scheduler = s;
+}
+function getScheduler(): unknown | undefined {
+  return _scheduler;
+}

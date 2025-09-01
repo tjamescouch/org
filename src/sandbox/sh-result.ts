@@ -1,4 +1,4 @@
-export type ShResult = {
+type ShResult = {
   code?: number | null;
   stdout?: string;
   stderr?: string;

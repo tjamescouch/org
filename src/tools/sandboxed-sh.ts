@@ -8,14 +8,14 @@ import { detectBackend } from "../sandbox/detect";
 import { Logger } from "../logger";
 import { R } from "../runtime/runtime";
 
-export interface StepsDirCarrier {
+interface StepsDirCarrier {
   getStepsHostDir?: () => string;
   stepsHostDir?: string;
   runRootHostDir?: string; // optional hint if available
 }
 
 /** Resolve a usable steps directory path even if the session lacks a helper. */
-export function resolveStepsHostDir(session: StepsDirCarrier, fallbackRoot?: string): string {
+function resolveStepsHostDir(session: StepsDirCarrier, fallbackRoot?: string): string {
   if (typeof session.getStepsHostDir === "function") {
     const p = session.getStepsHostDir();
     if (typeof p === "string" && p.length > 0) return p;
@@ -33,10 +33,10 @@ export function resolveStepsHostDir(session: StepsDirCarrier, fallbackRoot?: str
   return path.resolve(".org", "runs", "current", "steps");
 }
 
-export type ToolArgs = { cmd: string };
+type ToolArgs = { cmd: string };
 export type ToolResult = { ok: boolean; stdout: string; stderr: string; exit_code: number; cmd: string };
 
-export interface ToolCtx {
+interface ToolCtx {
   projectDir: string;
   runRoot?: string;
   agentSessionId?: string;
@@ -48,7 +48,7 @@ export interface ToolCtx {
 
 let HEARTBEAT_MUTED = false;
 
-export function setShHeartbeatMuted(muted: boolean) {
+function setShHeartbeatMuted(muted: boolean) {
   HEARTBEAT_MUTED = muted;
 }
 
@@ -312,7 +312,7 @@ export async function finalizeAllSandboxes() {
   for (const [k, v] of Array.from(sandboxMangers.entries())) v?.finalize(k);
 }
 
-export function selectedSandboxBackend(): string {
+function selectedSandboxBackend(): string {
   return detectBackend();
 }
 

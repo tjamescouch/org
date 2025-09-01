@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
 
-export type ExecResult = {
+type ExecResult = {
   ok: boolean;
   exit: number;
   stdoutFile: string; // host paths (same FS as the running process)

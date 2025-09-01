@@ -6,8 +6,8 @@ import { promises as fsp } from "fs";
 
 function shq(s: string) { return `'${s.replace(/'/g, `'\\''`)}'`; }
 
-export type Send = { delay?: number; keys: string };
-export type RunResult = { code: number; out: string; err: string };
+type Send = { delay?: number; keys: string };
+type RunResult = { code: number; out: string; err: string };
 
 export async function runOrgInTmux(opts: {
   bin: string;         // path to 'org' binary/entry (or "org" if on PATH)

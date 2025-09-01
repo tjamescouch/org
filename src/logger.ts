@@ -26,7 +26,7 @@ function writeRaw(s: string) {
   anyGlobal?.process?.stdout?.write?.(s);
 }
 
-export const Colors = { Reset, Dim, FgCyan, FgGreen, FgMagenta, FgYellow, FgBlue };
+const Colors = { Reset, Dim, FgCyan, FgGreen, FgMagenta, FgYellow, FgBlue };
 
 export class Logger {
   static info(...a: any[]) { console.log(...a); }

@@ -17,16 +17,16 @@ function sh(cmd: string, args: string[], opts: { cwd?: string; input?: Buffer | 
     });
 }
 
-export type ReviewMode = "ask" | "auto" | "never";
+type ReviewMode = "ask" | "auto" | "never";
 
-export type SafetyCaps = {
+type SafetyCaps = {
     maxFiles: number;        // fail review if changed files exceed
     maxDeletes: number;      // fail if too many deletes
     maxBytes: number;        // fail if patch is too large
     restricted: string[];    // deny if any path matches these globs (prefix match is OK)
 };
 
-export const DEFAULT_CAPS: SafetyCaps = {
+const DEFAULT_CAPS: SafetyCaps = {
     maxFiles: 50,
     maxDeletes: 3,
     maxBytes: 200_000,       // 200 KB
@@ -41,7 +41,7 @@ export function modeFromEnvOrFlags(f?: string): ReviewMode {
 }
 
 /** Quick stat of a patch via git’s numstat/summary. */
-export async function patchStats(projectDir: string, patchPath: string) {
+async function patchStats(projectDir: string, patchPath: string) {
     const buf = await fsp.readFile(patchPath);
     const check = await sh("git", ["-C", projectDir, "apply", "--check", "--3way", "--whitespace=nowarn"], { input: buf });
     const num = await sh("git", ["-C", projectDir, "apply", "--numstat", "--summary", "--whitespace=nowarn"], { input: buf });
@@ -105,7 +105,7 @@ async function askYesNo(q: string, def: boolean): Promise<boolean> {
     });
 }
 
-export type ReviewDecision =
+type ReviewDecision =
     | { action: "skip"; reason: string }
     | { action: "apply"; commitMsg: string }
     | { action: "reject" };
@@ -146,7 +146,7 @@ function autoMsg(s: { files: number }) {
     return `agent batch: apply ${s.files} file(s)`;
 }
 
-export async function applyPatch(projectDir: string, patchPath: string, commitMsg: string) {
+async function applyPatch(projectDir: string, patchPath: string, commitMsg: string) {
     const buf = await fsp.readFile(patchPath);
     // double-check
     const chk = await sh("git", ["-C", projectDir, "apply", "--check", "--3way", "--whitespace=nowarn"], { input: buf });

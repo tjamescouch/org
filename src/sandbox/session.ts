@@ -4,7 +4,7 @@ import { ExecPolicy } from "./policy";
 import { LocalSession } from "./backends/local";
 import { PodmanSession } from "./backends/podman";
 
-export type ManagerOpts = {
+type ManagerOpts = {
   backend?: "auto" | Backend;
 };
 

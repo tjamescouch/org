@@ -70,7 +70,7 @@ export interface GuardRail {
  *    and can force end-turn when the limit is reached.
  *  - Tracks repeated *identical tool calls* in the same turn; escalates and can end turn.
  */
-export class StandardGuardRail implements GuardRail {
+class StandardGuardRail implements GuardRail {
   private readonly agentId: string;
 
   private readonly defaultMissingArgEndTurnLimit = 5;

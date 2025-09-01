@@ -9,7 +9,7 @@ export interface RlLike {
   close(): void;
 }
 
-export interface RlFactoryOpts {
+interface RlFactoryOpts {
   input: ReadStream | NodeJS.ReadStream;
   output: WriteStream | NodeJS.WriteStream;
   terminal: boolean;
@@ -31,7 +31,7 @@ function defaultRlFactory(opts: RlFactoryOpts): RlLike {
   };
 }
 
-export interface AskUserLineOptions {
+interface AskUserLineOptions {
   username?: string;                 // default 'user'
   stdin?: NodeJS.ReadStream;         // default process.stdin
   stdout?: NodeJS.WriteStream;       // default process.stdout
@@ -51,7 +51,7 @@ export async function askUserLine(opts?: AskUserLineOptions): Promise<string> {
 
   const label = formatPromptLabel({ username: opts?.username });
 
-  return scopes.withCookedTTY(async () => {
+  return defaultTtyScopes.withCookedTTY(async () => {
     const rl = rlFactory({ input: stdin, output: stdout, terminal: true });
     try {
       // readline prints the label once; no extra banners here
@@ -64,5 +64,4 @@ export async function askUserLine(opts?: AskUserLineOptions): Promise<string> {
 }
 
 /** For places that only need the label (e.g., logging or UI) */
-export { formatPromptLabel } from "../ui/prompt-label";
-export type { TtyIn };
+;;

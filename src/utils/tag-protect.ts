@@ -43,10 +43,10 @@ export class StreamingTagProtector {
 }
 
 /** One-shot protect/unprotect helpers for post-turn cleaning. */
-export function protectWhole(s: string): string {
+function protectWhole(s: string): string {
   return String(s ?? "").replace(TAG_RE, encTag);
 }
-export function unprotectWhole(s: string): string {
+function unprotectWhole(s: string): string {
   return String(s ?? "").replace(/\[TAG:([^\]]+)\]/g, (_, p) => decodeURIComponent(p));
 }
 
