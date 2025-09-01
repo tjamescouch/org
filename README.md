@@ -54,6 +54,7 @@ See [INSTALLATION.md](docs/INSTALLATION.md) for complete setup instructions.
 - **[Architecture](docs/ARCHITECTURE.md)** - How it works under the hood
 - **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
 - **[Testing](docs/TESTING.md)** - Running and writing tests
+- **[Architectural Review](docs/ARCHITECTURAL_REVIEW.md)** - org according to org
 
 ## License
 
