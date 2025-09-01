@@ -383,9 +383,9 @@ export const defaultTtyController = new TtyController({
 
 
   /** small helpers used by tests */
-  export const withCookedTTY = <T>(fn: () => Promise<T> | T): Promise<T> {
+  export const withCookedTTY = async <T>(fn: () => Promise<T> | T): Promise<void> {
     defaultTtyController.withCookedTTY(() => {});
   }
-  export const withRawTTY = <T>(fn: () => Promise<T> | T): Promise<T> {
+  export const withRawTTY = async <T>(fn: () => Promise<T> | T): Promise<void> {
     defaultTtyController.withRawTTY(() => {});
   }

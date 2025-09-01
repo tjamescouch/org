@@ -36,7 +36,7 @@ describe("askUserLine", () => {
 
   test("custom username", async () => {
     const tty = new FakeTty();
-    const scopes = new TtyScopes(tty);
+  const scopes = new TtyScopes(tty)/tty-controller.t;
     const stub = new StubRl("yo");
     const rlFactory: RlFactory = () => stub;
 
