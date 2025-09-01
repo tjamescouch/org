@@ -9,6 +9,7 @@
 import { createInterface } from "node:readline/promises";
 import { emitKeypressEvents, Key } from "node:readline";
 import type { ReadStream as TtyReadStream } from "node:tty";
+import { R } from "../runtime/runtime";
 
 /* ----------------------------------------------------------------------------
  * Types & small adapters
@@ -36,7 +37,7 @@ export function toTtyIn(stream: NodeJS.ReadStream): TtyIn {
   return base;
 }
 
-export function stdinTty(): TtyIn { return toTtyIn(process.stdin); }
+export function stdinTty(): TtyIn { return toTtyIn(R.stdin); }
 
 /* ----------------------------------------------------------------------------
  * Mode manager
@@ -162,9 +163,9 @@ export class TtyController {
     };
 
   constructor(options: TtyControllerOptions = {}) {
-    const stdin = toTtyIn((options.stdin ?? process.stdin) as NodeJS.ReadStream);
-    const stdout = (options.stdout ?? process.stdout) as NodeJS.WriteStream;
-    const feedbackStream = (options.feedbackStream ?? (process.stderr as NodeJS.WriteStream));
+    const stdin = toTtyIn((options.stdin ?? R.stdin) as NodeJS.ReadStream);
+    const stdout = (options.stdout ?? R.stdout) as NodeJS.WriteStream;
+    const feedbackStream = (options.feedbackStream ?? (R.stderr as NodeJS.WriteStream));
 
     let prompt = options.prompt ?? "user: ";
     if (!prompt.endsWith(" ")) prompt += " ";
@@ -294,7 +295,7 @@ export class TtyController {
     // Ctrl+C (SIGINT)
     if (key?.name === "c" && (key.ctrl === true || key.sequence === "\u0003")) {
       this.feedbackWrite("SIGINT\n");
-      process.exit(130);
+      R.exit(130);
       return;
     }
 
@@ -320,7 +321,7 @@ export class TtyController {
     // Ctrl+C
     if (b0 === 0x03) {
       this.feedbackWrite("SIGINT\n");
-      process.exit(130);
+      R.exit(130);
       return;
     }
 
@@ -468,12 +469,12 @@ export class TtyController {
   private async finalizeAndReviewAndExit(): Promise<void> {
     try {
       await this.unwind();
-      process.exit(0);
+      R.exit(0);
     } catch (err) {
       if (err instanceof Error && /^__EXIT__:\d+/.test(err.message)) throw err;
       this.feedbackWrite(`Finalize/review failed: ${String(err)}\n`);
       try { await this.unwind(); } catch { /* ignore */ }
-      process.exit(1);
+      R.exit(1);
     }
   }
 }
@@ -482,23 +483,6 @@ export class TtyController {
  * Module-level convenience + compat exports
  * --------------------------------------------------------------------------*/
 
-const _default = new TtyController({
-  stdin: process.stdin,
-  stdout: process.stdout,
-  prompt: "user: ",
-  interjectKey: "i",
-  interjectBanner: "user: ",
-  feedbackStream: process.stderr,
-  loopMode: "external",
-});
+export function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return R.ttyController!.withCookedTTY(fn); }
+export function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return R.ttyController!.withRawTTY(fn); }
 
-export const defaultTtyController = _default;
-
-export function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return _default.withCookedTTY(fn); }
-export function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return _default.withRawTTY(fn); }
-
-let _scheduler: unknown | undefined;
-export function setScheduler(s: unknown): void { _scheduler = s; }
-export function getScheduler(): unknown | undefined { return _scheduler; }
-
-export default _default;
