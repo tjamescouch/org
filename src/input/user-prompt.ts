@@ -51,7 +51,7 @@ export async function askUserLine(opts?: AskUserLineOptions): Promise<string> {
 
   const label = formatPromptLabel({ username: opts?.username });
 
-  return scopes.withCookedTTY(async () => {
+  return defaultTtyScopes.withCookedTTY(async () => {
     const rl = rlFactory({ input: stdin, output: stdout, terminal: true });
     try {
       // readline prints the label once; no extra banners here
