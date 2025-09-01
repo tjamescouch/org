@@ -1,60 +1,39 @@
+// test/unit/random-scheduler.user-mention.regression.test.ts
 import { describe, it, expect } from "bun:test";
-import { RandomScheduler } from "../../src/scheduler/random-scheduler";
+import { FakeAgent, runSchedulerUntil } from "../_helpers/fake-agent";
 import type { ChatMessage } from "../../src/types";
 
-type Reply = { message: ChatMessage; toolsUsed: number };
-type Responder = {
-  id: string;
-  respond: (
-    msgs: ChatMessage[],
-    toolBudget: number,
-    peers: string[],
-    isDraining: () => boolean
-  ) => Promise<Reply[]>;
-};
-
-function makeAgent(id: string, replyText: string): Responder {
-  return {
-    id,
-    async respond(msgs) {
-      // Reply once with an @@user DM and no tools
-      return [{ message: { role: "assistant", from: id, content: `@@user ${replyText}` }, toolsUsed: 0 }];
-    },
-  };
-}
+const byLastUser = (t: string) => (msgs: ChatMessage[]) =>
+  (msgs[msgs.length - 1]?.role === "user") &&
+  msgs[msgs.length - 1].content.toLowerCase().includes(t.toLowerCase());
 
 describe("RandomScheduler – @@user regression", () => {
-  it("does not reprocess the same prompt after agent replies to @@user", async () => {
-    const alice = makeAgent("alice", "hi there");
-    const calls: number[] = [];
-    const agent: Responder = {
-      id: "alice",
-      async respond(msgs, budget, peers, isDraining) {
-        calls.push(1);
-        return [{ message: { role: "assistant", from: "alice", content: "@@user hi" }, toolsUsed: 0 }];
+  it("agent greets user using @@user and does not DM itself", async () => {
+    const alice = new FakeAgent("alice", [
+      {
+        when: byLastUser("hi"),
+        reply: { kind: "mentionUser", text: "Hi! How can I help you today?" },
       },
-    };
+    ]);
 
-    const scheduler = new RandomScheduler({
-      agents: [agent as any],
-      maxTools: 0,
-      projectDir: process.cwd(),
-      onAskUser: async () => "",            // no interactive prompt in test
-      promptEnabled: false,                 // avoid idle prompts
-      idleSleepMs: 5,
-      onStreamStart: () => {},
-      onStreamEnd: () => {},
-    } as any);
+    const probe = await runSchedulerUntil({
+      agents: [alice],
+      interject: "hi",
+      promptEnabled: false,
+      deadlineMs: 1000,
+      expect: () => alice.sent.some(m => m.content.startsWith("@@user")),
+    });
 
-    // seed: user talks to group (goes to alice)
-    await scheduler.enqueueUserText("hello everyone");
+    // The message we wanted:
+    const m = alice.sent.find(x => x.content.startsWith("@@user"));
+    expect(m).toBeDefined();
+    expect(m!.content).toMatch(/@@user/i);
 
-    // Run the loop briefly, then stop; if it spins, calls[] would keep growing.
-    const stopper = setTimeout(() => scheduler.stop(), 50);
-    await scheduler.start();
-    clearTimeout(stopper);
+    // And crucially, it did NOT DM itself:
+    const wrong = alice.sent.find(x => x.content.startsWith("@@alice"));
+    expect(wrong).toBeUndefined();
 
-    // We expect exactly one call to alice.respond(), not an infinite loop.
-    expect(calls.length).toBe(1);
+    // Sanity: scheduler did not need to ask the user here.
+    expect(probe.asks.length).toBe(0);
   });
 });
