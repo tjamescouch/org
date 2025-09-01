@@ -6,7 +6,7 @@ import * as fsp from "fs/promises";
 import * as path from "path";
 import { ExecSpec } from "../sandbox/policy";
 
-export interface StepMeta {
+interface StepMeta {
   idx: number;
   cmd: string;
   startedAt: string;
@@ -18,13 +18,13 @@ export interface StepMeta {
   patchRel?: string; // optional per-step patch (baseline->this step)
 }
 
-export interface ArtifactMeta {
+interface ArtifactMeta {
   pathRel: string; // relative to runDir
   sha256: string;
   size: number;
 }
 
-export interface RunManifest {
+interface RunManifest {
   spec: ExecSpec;
   startedAt: string;
   endedAt: string;
@@ -37,7 +37,7 @@ export interface RunManifest {
   host: { platform: NodeJS.Platform; release: string; arch: string };
 }
 
-export async function ensureDir(p: string) {
+async function ensureDir(p: string) {
   await fsp.mkdir(p, { recursive: true });
 }
 

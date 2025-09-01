@@ -504,18 +504,18 @@ export default RandomScheduler;
 /* ------------------------- Module-level convenience ------------------------- */
 /* Kept for compatibility with any legacy imports. Prefer the runtime-owned instance. */
 
-export function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> {
+function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> {
   return R.ttyController!.withCookedTTY(fn);
 }
-export function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> {
+function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> {
   return R.ttyController!.withRawTTY(fn);
 }
 
 // Optional compatibility: some older code stores a scheduler here.
 let _scheduler: unknown | undefined;
-export function setScheduler(s: unknown): void {
+function setScheduler(s: unknown): void {
   _scheduler = s;
 }
-export function getScheduler(): unknown | undefined {
+function getScheduler(): unknown | undefined {
   return _scheduler;
 }

@@ -4,7 +4,7 @@ import { ExecutionGate } from "./execution-gate";
 import { C, Logger } from "../logger";
 import { spawnInCleanEnvironment } from "../utils/spawn-clean";
 
-export const SH_TOOL_DEF = {
+const SH_TOOL_DEF = {
   type: "function",
   function: {
     name: "sh",
@@ -25,7 +25,7 @@ export const SH_TOOL_DEF = {
   },
 } as const;
 
-export interface ShResult {
+interface ShResult {
   ok: boolean;
   stdout: string;
   stderr: string;

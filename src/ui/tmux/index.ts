@@ -3,7 +3,7 @@
 import { Logger } from "../../logger";
 import { shInteractive } from "../../tools/sandboxed-sh";
 
-export type Scope = "container" | "host";
+type Scope = "container" | "host";
 
 /**
  * Launch the tmux UI inside the sandbox.
@@ -87,7 +87,7 @@ export async function launchTmuxUI(argv: string[], scope: Scope = "container"): 
  * Minimal tmux presence check where we're about to run it.
  * IMPORTANT: use interactive exec (capture is not implemented in Podman session).
  */
-export async function doctorTmux(
+async function doctorTmux(
   _scope: Scope,
   projectDir: string,
   agentSessionId: string

@@ -1,9 +1,9 @@
 // src/ui/feedback.ts
 import { stderr } from "node:process";
 
-export type FeedbackHandle = { done: () => void };
+type FeedbackHandle = { done: () => void };
 
-export interface FeedbackController {
+interface FeedbackController {
   begin: (message: string) => FeedbackHandle;
   pauseLogs: () => void;
   resumeLogs: () => void;

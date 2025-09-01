@@ -14,7 +14,7 @@ import { StandardToolExecutor } from "../executors/standard-tool-executor";
 import { SANDBOXED_SH_TOOL_SCHEMA } from "../tools/sandboxed-sh";
 import { createPDAStreamFilterHeuristic } from "../utils/filter-passes/llm-pda-stream-heuristic";
 
-export interface AgentReply {
+interface AgentReply {
   message: string;   // assistant text
   reasoning?: string;
   toolsUsed: number; // number of tool calls consumed this hop

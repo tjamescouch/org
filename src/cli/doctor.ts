@@ -6,7 +6,7 @@ import { Logger } from "../logger";
 // re-export them in sandboxed-sh or change the imports here.
 import { shCapture } from "../tools/sandboxed-sh";
 
-export type TmuxScope = "host" | "container";
+type TmuxScope = "host" | "container";
 
 /** Host-side `command -v` */
 function whichHost(cmd: string): boolean {
@@ -25,7 +25,7 @@ async function whichSandbox(cmd: string): Promise<boolean> {
 }
 
 /** Probe for tmux in the requested scope */
-export async function hasTmuxInstalled(scope: TmuxScope = "host"): Promise<boolean> {
+async function hasTmuxInstalled(scope: TmuxScope = "host"): Promise<boolean> {
   if (scope === "host") return whichHost("tmux");
   return await whichSandbox("tmux");
 }

@@ -1,4 +1,4 @@
-export type Role = 'user' | 'assistant' | 'system' | 'tool';
+type Role = 'user' | 'assistant' | 'system' | 'tool';
 
 export interface ChatMessage {
   role: string;
@@ -6,12 +6,12 @@ export interface ChatMessage {
   content: string;
 }
 
-export interface ToolCall {
+interface ToolCall {
   name: string;
   args: Record<string, any>;
 }
 
-export interface ToolResult {
+interface ToolResult {
   name: string;
   content: string;
 }

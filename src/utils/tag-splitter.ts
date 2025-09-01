@@ -23,7 +23,7 @@ export type TagPart =
   | { kind: "user";  tag: "user";  content: string; index: number }
   | { kind: "file";  tag: string;  content: string; index: number };
 
-export type TagSplitterOptions = {
+type TagSplitterOptions = {
   /** Agent names allowed (e.g., ['alice','bob']). Default: [] */
   agentTokens?: string[];
   /** User tokens allowed (e.g., ['user']). Default: ['user'] */

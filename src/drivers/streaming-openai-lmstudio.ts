@@ -5,7 +5,7 @@ import { timedFetch } from "../utils/timed-fetch";
 
 import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types";
 
-export interface OpenAiDriverConfig {
+interface OpenAiDriverConfig {
   baseUrl: string;    // e.g. http://127.0.0.1:11434
   model: string;      // e.g. openai/gpt-oss-20b
   timeoutMs?: number; // default 2h (aligns with non-streaming driver)

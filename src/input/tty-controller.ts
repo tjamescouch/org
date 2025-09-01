@@ -24,7 +24,7 @@ import { ESC_PRESSED_MSG, I_PRESSED_MSG } from "../constants";
 
 /* ------------------------------ TTY primitives ----------------------------- */
 
-export type TtyLike = {
+type TtyLike = {
   isTTY: boolean;
   /** present on our FakeTty used in tests */
   isRaw?: boolean;
@@ -37,7 +37,7 @@ export type TtyLike = {
 
 type WritableLike = Pick<Writable, "write"> & { write(chunk: any): any };
 
-export type SchedulerLike = {
+type SchedulerLike = {
   /** test fakes tend to expose one (or both) of these; call both if present */
   enqueue?: (line: string) => void;
   enqueueUserInput?: (line: string) => void;
@@ -45,7 +45,7 @@ export type SchedulerLike = {
 
 /* --------------------------------- Options -------------------------------- */
 
-export interface TtyControllerOptions {
+interface TtyControllerOptions {
   stdin: TtyLike;
   stdout: WritableLike;
   /** If provided, used as feedback (ACK/banners). */
@@ -370,7 +370,7 @@ function isTtyLike(x: any): x is TtyLike {
  * We do NOT autostart to avoid binding to R.stdin in unit tests
  * that only assert API shape.
  */
-export const defaultTtyController = new TtyController({
+const defaultTtyController = new TtyController({
   stdin: (R.stdin as unknown as TtyLike),
   stdout: (R.stdout as unknown as WritableLike),
   stderr: (R.stderr as unknown as WritableLike),

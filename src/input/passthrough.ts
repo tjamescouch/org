@@ -12,9 +12,9 @@
 import { Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 
-export type PTState = "idle" | "reading" | "closed";
+type PTState = "idle" | "reading" | "closed";
 
-export interface SchedulerLike {
+interface SchedulerLike {
   enqueue?(item: { role: "user"; content: string }): void | Promise<void>;
   enqueueUserText?(text: string): void | Promise<void>;
   send?(text: string): void | Promise<void>;
@@ -22,7 +22,7 @@ export interface SchedulerLike {
   drain?(): void | Promise<void>;
 }
 
-export interface PassthroughOptions {
+interface PassthroughOptions {
   stdin: Readable;
   stdout: Writable;
   scheduler?: SchedulerLike;
@@ -32,7 +32,7 @@ export interface PassthroughOptions {
   finalizer?: () => void | Promise<void>;
 }
 
-export class Passthrough {
+class Passthrough {
   public state: PTState = "idle";
 
   private readonly stdin: Readable;

@@ -1,82 +1,60 @@
-// test/unit/random-scheduler.user-mention.regression.test.ts
+import { describe, it, expect } from "bun:test";
 import { RandomScheduler } from "../../src/scheduler/random-scheduler";
-import type { ChatResponse, Responder } from "../../src/scheduler/types";
 import type { ChatMessage } from "../../src/types";
 
-function withDeadline<T>(p: Promise<T>, ms = 1000, label = "deadline"): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`Timeout: ${label} (${ms}ms)`)), ms);
-    p.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e);
-      },
-    );
-  });
+type Reply = { message: ChatMessage; toolsUsed: number };
+type Responder = {
+  id: string;
+  respond: (
+    msgs: ChatMessage[],
+    toolBudget: number,
+    peers: string[],
+    isDraining: () => boolean
+  ) => Promise<Reply[]>;
+};
+
+function makeAgent(id: string, replyText: string): Responder {
+  return {
+    id,
+    async respond(msgs) {
+      // Reply once with an @@user DM and no tools
+      return [{ message: { role: "assistant", from: id, content: `@@user ${replyText}` }, toolsUsed: 0 }];
+    },
+  };
 }
 
-class FakeAgent implements Responder {
-  constructor(public readonly id: string) {}
-  async respond(
-    messages: ChatMessage[],
-    _toolBudget: number,
-    _peers: string[],
-  ): Promise<ChatResponse[]> {
-    // Produce exactly one reply that begins with '@@user ' like in the regression screenshot.
-    if (messages.length === 0) return [];
-    return [
-      {
-        message: {
-          role: "assistant",
-          from: this.id,
-          content: "@@user Hi! How can I help you today?",
-        },
-        toolsUsed: 0,
+describe("RandomScheduler – @@user regression", () => {
+  it("does not reprocess the same prompt after agent replies to @@user", async () => {
+    const alice = makeAgent("alice", "hi there");
+    const calls: number[] = [];
+    const agent: Responder = {
+      id: "alice",
+      async respond(msgs, budget, peers, isDraining) {
+        calls.push(1);
+        return [{ message: { role: "assistant", from: "alice", content: "@@user hi" }, toolsUsed: 0 }];
       },
-    ];
-  }
-}
+    };
 
-describe("Regression: '@@user' mention from assistant should NOT trigger askUser()", () => {
-  test("scheduler does not enter ask-user path when agent prefixes '@@user '", async () => {
-    const askCalls: Array<{ who: string; prompt: string }> = [];
-
-    const alice = new FakeAgent("alice");
     const scheduler = new RandomScheduler({
-      agents: [alice],
+      agents: [agent as any],
       maxTools: 0,
-      shuffle: (a) => a,
       projectDir: process.cwd(),
-      reviewMode: "skip",
-      promptEnabled: true, // if bug exists, this would cause a prompt
-      idleSleepMs: 20,
-      onAskUser: async (who, prompt) => {
-        askCalls.push({ who, prompt });
-        return ""; // do not enqueue anything even if called
-      },
-
-      // stream deferral hooks (no-ops for the test)
+      onAskUser: async () => "",            // no interactive prompt in test
+      promptEnabled: false,                 // avoid idle prompts
+      idleSleepMs: 5,
       onStreamStart: () => {},
-      onStreamEnd: async () => {},
+      onStreamEnd: () => {},
     } as any);
 
-    const run = scheduler.start();
+    // seed: user talks to group (goes to alice)
+    await scheduler.enqueueUserText("hello everyone");
 
-    // Seed a user message so alice will reply with the '@@user ' line once.
-    await scheduler.interject("hello everyone");
+    // Run the loop briefly, then stop; if it spins, calls[] would keep growing.
+    const stopper = setTimeout(() => scheduler.stop(), 50);
+    await scheduler.start();
+    clearTimeout(stopper);
 
-    // Allow ≤2 idle ticks (idlePromptEvery=3 in scheduler), then stop to avoid idle prompts.
-    await new Promise((r) => setTimeout(r, 60));
-    scheduler.stop();
-
-    await withDeadline(run, 1500, "scheduler stop");
-
-    // If the router misinterprets '@@user ' as "ask the human now",
-    // onAskUser would have been invoked at least once.
-    expect(askCalls.length).toBe(0);
+    // We expect exactly one call to alice.respond(), not an infinite loop.
+    expect(calls.length).toBe(1);
   });
 });

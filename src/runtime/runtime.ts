@@ -6,10 +6,10 @@ import { TtyController } from "../input/tty-controller";
 
 type Env = Record<string, string | undefined>;
 
-export type RuntimeName = "bun" | "node" | "unknown";
+type RuntimeName = "bun" | "node" | "unknown";
 
 
-export interface Runtime {
+interface Runtime {
   ttyController: TtyController | undefined;
 
   /** Which runtime we detected */
@@ -133,4 +133,4 @@ function makeRuntime(): Runtime {
 export const R: Runtime = makeRuntime();
 
 // Convenience re-exports if you like short imports:
-export const { name: RUNTIME, argv: ARGV, env: ENV, cwd: CWD, exit: EXIT } = R;
+export const {      } = R;

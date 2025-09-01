@@ -1,6 +1,6 @@
 // src/recipes.ts
 
-export type Recipe = {
+type Recipe = {
   name: string;
   description: string;
   system: string;                  // system prompt text
@@ -9,7 +9,7 @@ export type Recipe = {
   budgets?: { maxHops?: number; maxTools?: number; timeoutMs?: number };
 };
 
-export const RECIPES: Record<string, Recipe> = {
+const RECIPES: Record<string, Recipe> = {
   fix: {
     name: "fix",
     description: "Turn red tests green with minimal patches.",

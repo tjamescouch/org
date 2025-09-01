@@ -35,7 +35,7 @@ export function sh(
   };
 }
 
-export function shMust(cwd: string, cmd: string, env: Record<string, string> = {}) {
+function shMust(cwd: string, cmd: string, env: Record<string, string> = {}) {
   const { code, out, err } = sh(cwd, cmd, env);
   if (code !== 0) throw new Error(`Command failed (${code}): ${cmd}\n${err || out}`);
   return out;
@@ -149,10 +149,10 @@ export function captureWrites<T extends (...a: any[]) => any>(
   return { done, run: fn() };
 }
 
-export function touch(p: string, data = "") {
+function touch(p: string, data = "") {
   writeFileSync(p, data, "utf8");
 }
 
-export function exists(p: string) {
+function exists(p: string) {
   return existsSync(p);
 }

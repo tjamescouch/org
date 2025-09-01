@@ -1,67 +1,66 @@
-import { ChatMessage } from "../drivers/types";
-
-const VALID_ROLES = new Set(["system", "user", "assistant", "tool"] as const);
-
-function assertString(name: string, v: unknown): asserts v is string {
-  if (typeof v !== "string") {
-    throw new Error(`${name} must be a string; got ${typeof v}`);
-  }
-}
-
-function assertRole(name: string, r: unknown): asserts r is ChatMessage["role"] {
-  assertString(name, r);
-  if (!VALID_ROLES.has(r as any)) {
-    throw new Error(`${name} must be one of ${Array.from(VALID_ROLES).join(", ")}; got '${r}'`);
-  }
-}
+import type { ChatMessage } from "../types";
 
 /**
- * Inbox with per-agent queues plus a group queue ("@group").
- * Enforce message validity at the boundary so bad states fail fast.
+ * Per-agent inbox with simple FIFO queues.
+ * Important: nextPromptFor() DRAINS the queue atomically.
  */
 export class Inbox {
   private queues = new Map<string, ChatMessage[]>();
 
-  ensure(id: string): ChatMessage[] {
+  ensure(id: string): void {
     if (!this.queues.has(id)) this.queues.set(id, []);
-    return this.queues.get(id)!;
   }
 
-  /** Validate and enqueue a message. */
+  /** Push a single message for an agent. */
   push(id: string, msg: ChatMessage): void {
-    this.ensure(id).push(msg);
+    this.ensure(id);
+    this.queues.get(id)!.push(msg);
   }
 
-  /** Returns true if this agent has any work (its own queue or group queue). */
-  hasWork(agentId: string): boolean {
-    const q = this.queues.get(agentId);
-    return (q?.length ?? 0) > 0;// || this.group.length > 0;
+  /** Push many messages at once. */
+  pushAll(id: string, msgs: ChatMessage[]): void {
+    if (!msgs?.length) return;
+    this.ensure(id);
+    const q = this.queues.get(id)!;
+    for (const m of msgs) q.push(m);
   }
 
-  hasAnyWork() {
-    const ids = Object.keys(this.queues);
+  /** Whether an agent has any pending work. */
+  hasWork(id: string): boolean {
+    const q = this.queues.get(id);
+    return !!q && q.length > 0;
+  }
 
-    return ids.some(id => this.hasWork(id));
+  /** Whether any agent has work. */
+  hasAnyWork(): boolean {
+    for (const [, q] of this.queues) if (q.length > 0) return true;
+    return false;
   }
 
   /**
-   * Get the next prompt for an agent. Prefers its own queue, then the group queue.
-   * Returns **a copy** (ChatMessage[]) so downstream cannot mutate internal state.
+   * Drain all pending messages for an agent and return them as a batch.
+   * If empty, returns [] and leaves the queue empty.
+   *
+   * This is intentionally destructive; callers must re‑enqueue if they need
+   * the items again. This prevents infinite reprocessing loops.
    */
-  nextPromptFor(agentId: string): ChatMessage[] {
-    const q = this.queues.get(agentId);
-    let r = [];
-    if (q && q.length > 0) {
-      //const m = q.shift()!;
-      r.push(...q);
-    }
-    return r;
+  nextPromptFor(id: string): ChatMessage[] {
+    const q = this.queues.get(id);
+    if (!q || q.length === 0) return [];
+    // Drain atomically
+    return q.splice(0, q.length);
   }
 
-  /** Total messages waiting. */
-  size(): number {
-    let n = this.group.length;
-    for (const q of this.queues.values()) n += q.length;
-    return n;
+  /** Inspect (without consuming) the current queue length. Useful in tests. */
+  size(id: string): number {
+    return this.queues.get(id)?.length ?? 0;
+  }
+
+  /** Clear an agent queue (mainly for tests and safety). */
+  clear(id: string): void {
+    const q = this.queues.get(id);
+    if (q) q.length = 0;
   }
 }
+
+export default Inbox;

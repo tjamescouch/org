@@ -72,7 +72,7 @@ function normalizePath(p: string): string {
   return p.replace(/\\/g, "/").replace(/^\.\//, "");
 }
 
-export function isAllowed(
+function isAllowed(
   file: string,
   allow: readonly string[] | undefined,
   deny: readonly string[] | undefined

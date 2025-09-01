@@ -7,9 +7,9 @@ import { sanitizeContent } from "../utils/sanitize-content";
  * High-level helper to write content to disk, creating parent directories
  * and normalizing filenames/content in a model-friendly way.
  */
-export type WriteResult = { path: string; bytes: number };
+type WriteResult = { path: string; bytes: number };
 
-export interface Writer {
+interface Writer {
   write(filename: string, content: string): Promise<WriteResult>;
 }
 

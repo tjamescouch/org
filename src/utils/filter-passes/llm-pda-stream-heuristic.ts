@@ -25,7 +25,7 @@
  *   - flush() transforms whatever remains (even if incomplete) and clears.
  */
 
-export type StreamFilter = {
+type StreamFilter = {
   /** Supply a chunk of data; returns output that is safe to emit now. */
   feed: (chunk: string) => string;
   /** Finish the stream and return the final transformed output. */
@@ -71,7 +71,7 @@ export function createPDAStreamFilterHeuristic(): StreamFilter {
 /* Pure transformer (unchanged behavior, proven by tests)                    */
 /* ────────────────────────────────────────────────────────────────────────── */
 
-export function filterPDAText(input: string): string {
+function filterPDAText(input: string): string {
   // 1) Split by fenced code blocks (```...```); process only non-fence parts.
   const parts = splitByBacktickFences(input);
 

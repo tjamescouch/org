@@ -45,7 +45,7 @@ export function detectBackend(): "podman" | "none" {
 }
 
 
-export function isMock(): boolean {
+function isMock(): boolean {
   return detectBackend() === "mock";
 }
 

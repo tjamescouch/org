@@ -1,4 +1,4 @@
-export class RateLimiter {
+class RateLimiter {
   private states = new Map<string, LimiterState>();
   private readonly now: () => number;
 

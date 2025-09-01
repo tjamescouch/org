@@ -4,13 +4,13 @@ import { createPDAStreamFilter } from "../utils/filter-passes/llm-pda-stream";
 import { TagPart } from "../utils/tag-parser";
 import { TagSplitter } from "../utils/tag-splitter";
 
-export type Delivery =
+type Delivery =
   | { kind: "group"; content: string }
   | { kind: "agent"; to: string; content: string }
   | { kind: "user"; content: string }
   | { kind: "file"; name: string; content: string };
 
-export type RouteOutcome = {
+type RouteOutcome = {
   deliveries: Delivery[];
   yieldForUser: boolean;
   yieldForGroup: boolean;
@@ -61,7 +61,7 @@ export function routeWithTags(raw: string, agentTokens: string[]): RouteOutcome 
   };
 }
 
-export type RouterCallbacks = {
+type RouterCallbacks = {
   onGroup?: (from: string, content: string) => Promise<void> | void;
   onAgent?: (from: string, to: string, content: string) => Promise<void> | void;
   onUser?: (from: string, content: string) => Promise<void> | void;

@@ -5,9 +5,9 @@
  * continue to work even if the app constructs its own controller instance.
  */
 
-export type TtyMode = "raw" | "cooked";
+type TtyMode = "raw" | "cooked";
 
-export interface TtyLike {
+interface TtyLike {
   isTTY?: boolean;
   isRaw?: boolean;
   isRawMode?: boolean;
