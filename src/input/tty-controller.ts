@@ -13,13 +13,14 @@
  *
  * Notes for tests:
  * - All banners/ACKs go to `feedback` (defaults to opts.stderr).
- * - We never call process.exit directly if an `exit` impl is injected.
- *   If not provided, we call process.exit(code) (tests usually stub it).
+ * - We never call R.exit directly if an `exit` impl is injected.
+ *   If not provided, we call R.exit(code) (tests usually stub it).
  * - Non-interactive streams (isTTY=false) ignore hotkeys entirely.
  */
 
 import type { Writable } from "node:stream";
 import { R } from "../runtime/runtime";
+import { ESC_PRESSED_MSG, I_PRESSED_MSG } from "../constants";
 
 /* ------------------------------ TTY primitives ----------------------------- */
 
@@ -62,7 +63,7 @@ export interface TtyControllerOptions {
   /** When ESC applies immediately (idle) or after stream end (deferred). */
   finalize?: () => Promise<void> | void;
 
-  /** Exit function. If not provided, calls process.exit(code) (tests usually stub it). */
+  /** Exit function. If not provided, calls R.exit(code) (tests usually stub it). */
   exit?: (code: number) => never;
 
   /** If true, do not auto-start in constructor. (Used by the default singleton.) */
@@ -107,8 +108,6 @@ class ModeController {
   }
 }
 
-const escapePressedString = () => `⏳ ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)`;
-const interjectPressedString = () => `⏳ i pressed — finishing current step...`;
 
 /* ------------------------------- Main class -------------------------------- */
 
@@ -143,14 +142,14 @@ export class TtyController {
     if (isTtyLike(opts)) {
       // legacy tests: ctor(TtyLike)
       this.tty = opts;
-      this.out = process.stdout as unknown as WritableLike;
+      this.out = R.stdout as unknown as WritableLike;
       this.feedback =
-        (process.stderr as unknown as WritableLike) ?? this.out;
+        (R.stderr as unknown as WritableLike) ?? this.out;
       this.interjectKey = "i";
       this.promptLabel = "user: ";
       this.interjectBanner = this.promptLabel;
       this.doFinalize = () => {};
-      this.doExit = (code: number) => process.exit(code);
+      this.doExit = (code: number) => R.exit(code);
       this.modes = new ModeController(this.tty);
       this.onDataRef = (c) => this.onData(c);
       // auto-start for this shape to match tests’ expectations
@@ -168,7 +167,7 @@ export class TtyController {
     this.interjectBanner = o.interjectBanner ?? this.promptLabel;
 
     this.doFinalize = o.finalize ?? (() => {});
-    this.doExit = o.exit ?? ((code: number) => process.exit(code));
+    this.doExit = o.exit ?? ((code: number) => R.exit(code));
 
     this.modes = new ModeController(this.tty);
     this.onDataRef = (c) => this.onData(c);
@@ -249,7 +248,7 @@ export class TtyController {
             this.inPrompt = false;
             this.modes.toRaw();
             this.feedback.write(
-              escapePressedString() + "\n",
+              ESC_PRESSED_MSG + "\n",
             );
             void this.finalizeThenExit();
             // resolve an empty string to unblock any awaiting callers
@@ -328,12 +327,12 @@ export class TtyController {
           // Defer finalize until stream end, ACK immediately
           if (!this.pendingEsc) {
             this.pendingEsc = true;
-            this.feedback.write(escapePressedString());
+            this.feedback.write(ESC_PRESSED_MSG);
           }
           return;
         }
         // Idle -> finalize now
-        this.feedback.write(escapePressedString());
+        this.feedback.write(ESC_PRESSED_MSG);
         void this.finalizeThenExit();
         return;
       }
@@ -343,7 +342,7 @@ export class TtyController {
         if (this.streaming) {
           if (!this.pendingInterject) {
             this.pendingInterject = true;
-            this.feedback.write(interjectPressedString());
+            this.feedback.write(I_PRESSED_MSG);
           }
           return;
         }
@@ -368,13 +367,13 @@ function isTtyLike(x: any): x is TtyLike {
 
 /**
  * A lazily-started singleton for code that imports a default controller.
- * We do NOT autostart to avoid binding to process.stdin in unit tests
+ * We do NOT autostart to avoid binding to R.stdin in unit tests
  * that only assert API shape.
  */
 export const defaultTtyController = new TtyController({
-  stdin: (process.stdin as unknown as TtyLike),
-  stdout: (process.stdout as unknown as WritableLike),
-  stderr: (process.stderr as unknown as WritableLike),
+  stdin: (R.stdin as unknown as TtyLike),
+  stdout: (R.stdout as unknown as WritableLike),
+  stderr: (R.stderr as unknown as WritableLike),
   autostart: true, // unit tests expect the default instance to be live
 });
 
