@@ -19,6 +19,7 @@
  */
 
 import type { Writable } from "node:stream";
+import { R } from "../runtime/runtime";
 
 /* ------------------------------ TTY primitives ----------------------------- */
 
@@ -379,3 +380,12 @@ export const defaultTtyController = new TtyController({
   stderr: (process.stderr as unknown as WritableLike),
   autostart: true, // unit tests expect the default instance to be live
 });
+
+
+  /** small helpers used by tests */
+  export const withCookedTTY = <T>(fn: () => Promise<T> | T): Promise<T> {
+    defaultTtyController.withCookedTTY(() => {});
+  }
+  export const withRawTTY = <T>(fn: () => Promise<T> | T): Promise<T> {
+    defaultTtyController.withRawTTY(() => {});
+  }
