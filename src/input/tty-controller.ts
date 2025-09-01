@@ -1,9 +1,12 @@
 // src/input/tty-controller.ts
-// Runtime-owned TTY controller with portable hotkeys and a stdout guard.
-// - Primary hotkeys via 'keypress' (works in Bun/Node), fallback via raw 'data'
-// - ESC: graceful (defer if streaming, then finalize+review); 'i': interject
-// - Immediate feedback to stderr so it never competes with tokens
-// - Non-interactive (no TTY): hotkeys disabled automatically
+// Runtime-owned TTY controller with portable hotkeys, correct raw/cooked handling,
+// and an optional stdout guard for diagnosing ESC leaks.
+//
+// - Primary hotkeys via 'keypress'; fallback via raw 'data' (ESC/Ctrl+C/'i')
+// - Keep stdin in RAW for the life of the controller; switch to COOKED only
+//   for the exact duration of a readline prompt, then restore RAW immediately.
+// - Immediate feedback to stderr (never competes with model tokens on stdout)
+// - Non-interactive (no TTY): hotkeys disabled
 // - Optional stdout guard: ORG_STDOUT_GUARD=1 (log) | "throw" (crash on ESC to stdout)
 
 import { createInterface } from "node:readline/promises";
@@ -31,7 +34,6 @@ function dlog(...args: any[]) {
 type GuardMode = "off" | "log" | "throw";
 
 function resolveGuardMode(): GuardMode {
-  return "throw";
   const v = (process.env.ORG_STDOUT_GUARD || "").toLowerCase().trim();
   if (v === "1" || v === "log") return "log";
   if (v === "throw" || v === "crash" || v === "hard") return "throw";
@@ -40,7 +42,7 @@ function resolveGuardMode(): GuardMode {
 
 function chunkHasEsc(chunk: unknown): boolean {
   if (chunk == null) return false;
-  if (Buffer.isBuffer(chunk)) return chunk.includes(0x1b); // ESC
+  if (Buffer.isBuffer(chunk)) return chunk.includes(0x1b);
   const s = String(chunk);
   return s.indexOf("\u001b") !== -1;
 }
@@ -72,17 +74,10 @@ function installStdoutGuard(mode: GuardMode): () => void {
     if (chunkHasEsc(chunk)) {
       const prev = printablePreview(chunk);
       const tag = `[stdout-guard:${mode}] ESC byte detected in write(); preview="${prev}"\n`;
-      try {
-        (process.stderr || console).write(tag + (new Error().stack || "") + "\n");
-      } catch { /* ignore */ }
+      try { (process.stderr || console).write(tag + (new Error().stack || "") + "\n"); } catch {}
       if (mode === "throw") {
-        try {
-          throw new Error("stdout-guard: ESC byte written to stdout");
-        }
-        catch (e) {
-          console.log('ESCAPE DETECTED');
-          console.log(e);
-        }
+        // Let caller choose to catch/continue if desired.
+        throw new Error("stdout-guard: ESC byte written to stdout");
       }
     }
     return origWrite(chunk, encoding as any, cb);
@@ -110,6 +105,9 @@ export interface TtyControllerOptions {
 
 function hasSetRawMode(s: NodeJS.ReadStream): s is TtyReadStream {
   return typeof (s as { setRawMode?: unknown }).setRawMode === "function";
+}
+function hasIsRaw(s: NodeJS.ReadStream): s is TtyReadStream & { isRaw: boolean } {
+  return typeof (s as { isRaw?: unknown }).isRaw === "boolean";
 }
 
 /* -------------------------------- Controller -------------------------------- */
@@ -154,42 +152,28 @@ export class TtyController {
 
     // Optional stdout guard (dev-only)
     const gm = resolveGuardMode();
-    if (!this.uninstallGuard && gm !== "off") {
-      this.uninstallGuard = installStdoutGuard(gm);
-    }
+    if (!this.uninstallGuard && gm !== "off") this.uninstallGuard = installStdoutGuard(gm);
 
     const { stdin } = this.opts;
-    if (!stdin.isTTY) {
-      dlog("start: no TTY → hotkeys disabled");
-      return;
-    }
+    if (!stdin.isTTY) { dlog("start: no TTY → hotkeys disabled"); return; }
 
+    // Put the TTY into RAW for the lifetime of the controller
     try { emitKeypressEvents(stdin as any); dlog("emitKeypressEvents OK"); } catch { dlog("emitKeypressEvents failed"); }
-    try { hasSetRawMode(stdin) && stdin.setRawMode!(true); dlog("setRawMode(true)"); } catch { dlog("setRawMode failed"); }
-    try { (stdin as any).resume?.(); dlog("stdin.resume()"); } catch { /* ignore */ }
+    try { hasSetRawMode(stdin) && stdin.setRawMode!(true); dlog("RAW on start"); } catch { dlog("setRawMode(true) failed"); }
+    try { (stdin as any).resume?.(); dlog("stdin.resume()"); } catch {}
 
     if (this.opts.forceExclusive) {
       try {
         const existing = (stdin as any).rawListeners?.("keypress") ?? (stdin as any).listeners?.("keypress") ?? [];
         if (existing.length > 0) dlog(`forceExclusive: removing ${existing.length} prior keypress listeners`);
-        for (const fn of existing) { try { (stdin as any).off?.("keypress", fn); } catch { /* ignore */ } }
-      } catch { /* ignore */ }
+        for (const fn of existing) { try { (stdin as any).off?.("keypress", fn); } catch {} }
+      } catch {}
     }
 
-    if (!this.keypressBound) {
-      (stdin as any).on("keypress", this.onKeypress);
-      this.keypressBound = true;
-      dlog("keypress handler bound");
-    }
-    if (!this.dataBound) {
-      (stdin as any).on("data", this.onData);
-      this.dataBound = true;
-      dlog("data handler bound (fallback)");
-    }
+    if (!this.keypressBound) { (stdin as any).on("keypress", this.onKeypress); this.keypressBound = true; dlog("keypress bound"); }
+    if (!this.dataBound)     { (stdin as any).on("data", this.onData);       this.dataBound     = true; dlog("data bound (fallback)"); }
 
-    if (this.loopMode === "controller") {
-      void this.readLoop();
-    }
+    if (this.loopMode === "controller") { void this.readLoop(); }
   }
 
   async unwind(): Promise<void> {
@@ -198,8 +182,8 @@ export class TtyController {
 
     if (stdin.isTTY) {
       try { (stdin as any).off?.("keypress", this.onKeypress); this.keypressBound = false; } catch {}
-      try { (stdin as any).off?.("data", this.onData); this.dataBound = false; } catch {}
-      try { hasSetRawMode(stdin) && stdin.setRawMode!(false); dlog("setRawMode(false)"); } catch {}
+      try { (stdin as any).off?.("data", this.onData);         this.dataBound     = false; } catch {}
+      try { hasSetRawMode(stdin) && stdin.setRawMode!(false); dlog("COOKED on unwind"); } catch {}
     }
 
     if (this.uninstallGuard) { try { this.uninstallGuard(); } catch {} this.uninstallGuard = null; }
@@ -219,11 +203,15 @@ export class TtyController {
   async withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> { return await Promise.resolve(fn()); }
   async withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> { return await Promise.resolve(fn()); }
 
-  onStreamStart(): void { this.streaming = true; dlog("onStreamStart"); }
+  onStreamStart(): void {
+    this.streaming = true;
+    // Defensive: ensure RAW at stream start
+    this.ensureRaw("onStreamStart");
+  }
   async onStreamEnd(): Promise<void> {
-    this.streaming = false; dlog("onStreamEnd");
+    this.streaming = false;
     if (this.shutdownRequested) { this.shutdownRequested = false; await this.finalizeAndReviewAndExit(); return; }
-    if (this.interjectPending) { this.interjectPending = false; await this.openInterjectionPromptOnce(); }
+    if (this.interjectPending)  { this.interjectPending  = false; await this.openInterjectionPromptOnce(); }
   }
 
   /* -------------------------------- Handlers -------------------------------- */
@@ -232,7 +220,6 @@ export class TtyController {
     const now = Date.now();
 
     if ((key.ctrl && key.name === "c") || key.sequence === "\x03") {
-      dlog("keypress: Ctrl+C");
       try { this.statusLine("SIGINT"); } finally { process.exit(130); }
       return;
     }
@@ -240,7 +227,6 @@ export class TtyController {
     if (key.name === "escape" || key.sequence === "\u001b") {
       if (now - this.lastEscAt < 50) return;
       this.lastEscAt = now;
-      dlog("keypress: ESC");
       await this.handleEsc();
       return;
     }
@@ -248,7 +234,6 @@ export class TtyController {
     if ((key.name || "").toLowerCase() === this.interjectKeyName) {
       if (now - this.lastIAt < 50) return;
       this.lastIAt = now;
-      dlog("keypress: i");
       await this.handleInterjectHit();
       return;
     }
@@ -261,28 +246,22 @@ export class TtyController {
       const now = Date.now();
 
       if (buf[0] === 0x03) { // ETX
-        dlog("data: Ctrl+C");
         try { this.statusLine("SIGINT"); } finally { process.exit(130); }
         return;
       }
-
       if (buf.length === 1 && buf[0] === 0x1b) {
         if (now - this.lastEscAt < 50) return;
         this.lastEscAt = now;
-        dlog("data: ESC");
         await this.handleEsc();
         return;
       }
-
       if (buf.length === 1 && (buf[0] === 0x69 || buf[0] === 0x49)) {
         if (now - this.lastIAt < 50) return;
         this.lastIAt = now;
-        dlog("data: i");
         await this.handleInterjectHit();
         return;
       }
-      // ignore CSI etc.
-    } catch { /* ignore */ }
+    } catch {}
   };
 
   private async handleEsc(): Promise<void> {
@@ -335,31 +314,67 @@ export class TtyController {
     }
   }
 
+  /* ---------------------- RAW/COOKED lifetime management -------------------- */
+
+  private ensureRaw(tag: string): void {
+    const { stdin } = this.opts;
+    if (!stdin.isTTY || !hasSetRawMode(stdin)) return;
+    try {
+      if (!hasIsRaw(stdin) || !(stdin as any).isRaw) {
+        stdin.setRawMode!(true);
+        dlog(`${tag}: RAW restored`);
+      }
+    } catch { /* ignore */ }
+  }
+
+  /** Temporarily switch to COOKED; returns a function that restores RAW. */
+  private temporarilyCooked(tag: string): () => void {
+    const { stdin } = this.opts;
+    let changed = false;
+    if (stdin.isTTY && hasSetRawMode(stdin)) {
+      try {
+        if (hasIsRaw(stdin) && (stdin as any).isRaw) {
+          stdin.setRawMode!(false);
+          changed = true;
+          dlog(`${tag}: COOKED`);
+        }
+      } catch { /* ignore */ }
+    }
+    return () => {
+      if (changed) {
+        try { stdin.setRawMode!(true); dlog(`${tag}: RAW restored`); } catch { /* ignore */ }
+      } else {
+        this.ensureRaw(`${tag}: ensureRaw`);
+      }
+    };
+  }
+
+  /* -------------------------------- Prompting -------------------------------- */
+
   private async promptOnce(label: string): Promise<string> {
     this.reading = true;
-    dlog(`promptOnce: "${label.trim()}"`);
+    const restoreRaw = this.temporarilyCooked("promptOnce");
     try {
       const rl = createInterface({ input: this.opts.stdin, output: this.opts.stdout, terminal: true });
       try { return await rl.question(label); }
       finally { rl.close(); }
     } finally {
       this.reading = false;
+      restoreRaw();
     }
   }
 
   private statusLine(msg: string): void {
-    try { this.feedback.write(`\n${msg}\n`); } catch { /* ignore */ }
+    try { this.feedback.write(`\n${msg}\n`); } catch {}
   }
 
   private async readLoop(): Promise<void> {
-    dlog("readLoop: start");
     while (this.running) {
       const line = await this.promptOnce(this.opts.prompt);
       const txt = line.trim();
       if (txt.length === 0) continue;
       await this.scheduler?.enqueueUserText(txt);
     }
-    dlog("readLoop: end");
   }
 }
 
