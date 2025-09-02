@@ -267,6 +267,7 @@ export class PodmanSession implements ISandboxSession {
             ORG_PIDS_MAX: String(this.spec.limits.pidsMax),
             ...(collectRuntimeEnv(R.env))
         };
+        console.log("ENV", env);
         const run = await this.execInEnv(env, `/work/.org/org-step.sh ${this.shQ(cmd)}`);
 
         // 1) stage normal changes
