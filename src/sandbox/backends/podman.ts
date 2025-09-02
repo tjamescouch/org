@@ -11,7 +11,7 @@ import { ISandboxSession } from "../types";
 import { Logger } from "../../logger";
 import { ensureOk } from "../sh-result";
 import { withCookedTTY } from "../../input/tty-controller";
-import { collectRuntimeEnv, envToPodmanArgs } from "../../runtime/env-forward";
+import { collectRuntimeEnv } from "../../runtime/env-forward";
 import { R } from "../../runtime/runtime";
 
 const HARNESSED_APPLY_PATCH_SCRIPT = `#!/usr/bin/env bash
@@ -34,9 +34,9 @@ import sys
 maxb=int(sys.argv[1]); dst=sys.argv[2]
 data=sys.stdin.buffer.read(maxb+1)
 if len(data)==0:
-  sys.stderr.write("empty patch\n"); sys.exit(2)
+  sys.stderr.write("empty patch\\n"); sys.exit(2)
 if len(data)>maxb:
-  sys.stderr.write("patch too large\n"); sys.exit(3)
+  sys.stderr.write("patch too large\\n"); sys.exit(3)
 open(dst,'wb').write(data)
 PY
 
@@ -138,8 +138,6 @@ export class PodmanSession implements ISandboxSession {
   }
 
   getStepsHostDir(): string {
-    // spec.workHostDir is the host side of /work
-    // .org/steps inside that directory is written live by org-step.sh
     return path.join(this.spec.workHostDir, ".org", "steps");
   }
 
@@ -161,11 +159,11 @@ export class PodmanSession implements ISandboxSession {
       "--memory", `${this.spec.limits.memMiB}m`,
     ];
     const mounts = [
-      "-v", `${this.spec.projectDir}:/project:ro`,  // project is RO in container
-      "-v", `${this.spec.workHostDir}:/work:rw`,    // working copy is RW
+      "-v", `${this.spec.projectDir}:/project:ro`,
+      "-v", `${this.spec.workHostDir}:/work:rw`,
     ];
 
-    // Create and start container
+    // Create container
     const create = await sh(this.tool, [
       "create",
       "--pull=never",
@@ -180,54 +178,41 @@ export class PodmanSession implements ISandboxSession {
     const start = await sh(this.tool, ["start", this.name]);
     if (start.code !== 0) throw new Error(`podman start failed: ${start.stderr || start.stdout}`);
 
-    // Prime /work from /project; PROTECT .org/ from rsync --delete.
-    // Also exclude ephemeral backups like org.bak.*
+    // Prime /work
     const prime = await this.execInCmd(
       "mkdir -p /work/.org && " +
       "rsync -a --delete " +
-      "--exclude '.git/***' --exclude '.org/***' " +          // never copy repo's .org
-      "--exclude 'org.bak*/***' --exclude 'org.bak.*/***' " + // drop backups
-      "--filter='P .org/' " +                                  // don't delete dest .org
+      "--exclude '.git/***' --exclude '.org/***' " +
+      "--exclude 'org.bak*/***' --exclude 'org.bak.*/***' " +
+      "--filter='P .org/' " +
       "/project/ /work/ && " +
       "mkdir -p /work/.org/steps"
     );
     if (prime.code !== 0) throw new Error(`sandbox prime failed: ${prime.stderr || prime.stdout}`);
 
-    // The runner must already be mounted under /work/.org by the host (ensureOrgStepScript)
+    // Runner presence
     const hasRunner = await this.execInCmd("test -x /work/.org/org-step.sh");
     if (hasRunner.code !== 0) throw new Error("runner missing at /work/.org/org-step.sh");
 
     const hostOrgBin = path.join(this.spec.workHostDir, ".org", "bin");
     await fsp.mkdir(hostOrgBin, { recursive: true });
 
-    // write /work/.org/bin/apply_patch
-    await fsp.writeFile(
-      path.join(hostOrgBin, "apply_patch"),
-      HARNESSED_APPLY_PATCH_SCRIPT,
-      { mode: 0o755 }
-    );
+    // /work/.org/bin/apply_patch
+    await fsp.writeFile(path.join(hostOrgBin, "apply_patch"), HARNESSED_APPLY_PATCH_SCRIPT, { mode: 0o755 });
+    // /work/.org/bin/git
+    await fsp.writeFile(path.join(hostOrgBin, "git"), GIT_WRAPPER_SCRIPT, { mode: 0o755 });
 
-    // write /work/.org/bin/git (blocks 'git apply')
-    await fsp.writeFile(
-      path.join(hostOrgBin, "git"),
-      GIT_WRAPPER_SCRIPT,
-      { mode: 0o755 }
-    );
-
-    // Init a repo in /work and configure an identity (baseline/patches are computed here)
+    // Init repo and baseline
     await this.must(this.execInCmd("git -C /work init"), "git init /work");
     await this.must(
       this.execInCmd("git -C /work config user.email noreply@example && git -C /work config user.name org"),
       "git config identity"
     );
-
-    // Ignore sandbox internals & ephemeral backups in this working copy
     await this.execInCmd(
       "mkdir -p /work/.git/info && " +
       "printf '.org/\\norg.bak*/\\norg.bak.*/\\n*.rej\\n' >> /work/.git/info/exclude"
     );
 
-    // ---------------- Baseline commit (guarantee HEAD exists) ----------------
     await this.must(
       this.execInCmd(
         "git -C /work add -A || true; " +
@@ -240,10 +225,7 @@ export class PodmanSession implements ISandboxSession {
       "git baseline commit"
     );
 
-    const rev = await this.must(
-      this.execInCmd("git -C /work rev-parse --verify HEAD"),
-      "git rev-parse HEAD"
-    );
+    const rev = await this.must(this.execInCmd("git -C /work rev-parse --verify HEAD"), "git rev-parse HEAD");
     this.baselineCommit = rev.stdout.trim();
     await this.execInCmd("printf %s " + this.shQ(this.baselineCommit!) + " > /work/.org/baseline.txt");
 
@@ -255,57 +237,52 @@ export class PodmanSession implements ISandboxSession {
     if (!this.started) throw new Error("session not started");
     const idx = this.stepIdx++;
 
-    // --- run the step (workdir=/work already enforced by helpers) ---
     await this.execInCmd("mkdir -p /work/.org/steps");
+
+    // NOTE: Forward host env (process.env) through our safe collector so ad‑hoc
+    // ORG_* vars like ORG_TEST are visible inside the container.
     const env: Record<string, string> = {
       ORG_STEP_IDX: String(idx),
       ORG_OUT_DIR: "/work/.org/steps",
       ORG_TIMEOUT_MS: String(this.spec.limits.timeoutMs),
       ORG_STDOUT_MAX: String(this.spec.limits.stdoutMax),
       ORG_PIDS_MAX: String(this.spec.limits.pidsMax),
-      // Forward runtime env that the app decided is safe/useful in the sandbox.
-      ...(collectRuntimeEnv(R.env)),
+      ...collectRuntimeEnv(process.env),
     };
 
     const run = await this.execInEnv(env, `/work/.org/org-step.sh ${this.shQ(cmd)}`);
 
-    // 1) stage normal changes
+    // Stage normal changes
     await this.execInCmd("git -C /work add -A");
-
-    // 2) explicitly unstage any .org/ (belt-and-suspenders)
+    // Unstage .org
     await this.execInCmd("git -C /work reset -q .org || true");
-
-    // 3) force-add ignored files, but never anything under .org/, .git/, org.bak*/, or *.rej
+    // Force-add ignored files (excluding internal/ephemeral)
     await this.execInCmd(
       "git -C /work ls-files -oi --exclude-standard -z | " +
       "grep -a -z -v -e '^\\.org/' -e '^\\.git/' -e '^org\\.bak' -e '\\.rej$' | " +
       "xargs -0 -r git -C /work add -f --"
     );
-
-    // 4) commit if there is anything staged
+    // Commit if anything staged
     await this.execInCmd(
       "(git -C /work diff --cached --quiet || " +
       " git -C /work commit -m " + this.shQ(`step #${idx}: ${cmd}`) + " >/dev/null)"
     );
 
-    // --- compute changes / violations (but DO NOT return yet) ---
     const changedAll = (await this.execInCmd("git -C /work diff --name-only HEAD~1..HEAD || true")).stdout
-      .split("\n").map(s => s.trim()).filter(Boolean);
+      .split("\n").map((s) => s.trim()).filter(Boolean);
 
     const isEphemeral = (p: string) => p.startsWith("org.bak") || p.endsWith(".rej");
-    const changed = changedAll.filter(p => !isEphemeral(p));
-
-    const violated = changed.filter(p => !this.pathAllowed(p));
+    const changed = changedAll.filter((p) => !isEphemeral(p));
+    const violated = changed.filter((p) => !this.pathAllowed(p));
 
     // Persist step breadcrumbs to host
     const hostSteps = path.join(this.spec.runDir, "steps");
     await fsp.mkdir(hostSteps, { recursive: true }).catch(() => {});
-    await fsp.writeFile(path.join(hostSteps, `step-${idx}.changed.txt`), changed.join("\n") + (changed.length ? "\n" : ""), "utf8")
-      .catch(() => {});
+    await fsp.writeFile(path.join(hostSteps, `step-${idx}.changed.txt`), changed.join("\n") + (changed.length ? "\n" : ""), "utf8").catch(() => {});
     const statusTxt = (await this.execInCmd("git -C /work diff --name-status HEAD~1..HEAD || true")).stdout;
     await fsp.writeFile(path.join(hostSteps, `step-${idx}.status.txt`), statusTxt, "utf8").catch(() => {});
 
-    // --- copy artifacts to host (best-effort; create placeholders if needed) ---
+    // Copy artifacts to host
     const hostOut = path.join(hostSteps, `step-${idx}.out`);
     const hostErr = path.join(hostSteps, `step-${idx}.err`);
     const hostMeta = path.join(hostSteps, `step-${idx}.meta.json`);
@@ -332,7 +309,6 @@ export class PodmanSession implements ISandboxSession {
       await fsp.writeFile(hostMeta, JSON.stringify(meta, null, 2), "utf8").catch(() => {});
     }
 
-    // --- if violated, revert commit and record the violation file, but keep artifacts available ---
     if (violated.length > 0) {
       await this.execInCmd("git -C /work reset --hard HEAD~1 >/dev/null");
       await fsp.writeFile(path.join(hostSteps, `step-${idx}.violation.txt`), violated.join("\n") + "\n", "utf8");
@@ -345,59 +321,47 @@ export class PodmanSession implements ISandboxSession {
   async finalize() {
     if (!this.started) throw new Error("session not started");
 
-    // Generate the session patch while the terminal is in cooked mode.
     await withCookedTTY(async () => {
       await this.execInCmd(
         "git -C /work " +
-        "-c diff.noprefix=false " +   // force a/b prefixes (consistent headers)
-        "-c color.ui=false" +
-        "-c core.pager=cat " +        // ensure no pager inside the container
+        "-c diff.noprefix=false " +
+        "-c color.ui=false " +
+        "-c core.pager=cat " +
         "diff --binary --no-ext-diff " + this.shQ(this.baselineCommit!) + " HEAD " +
         "> /work/.org/session.patch || true"
       );
     });
 
-    // Show accepted file changes
-    const summary = await this.execInCmd(
-      "git -C /work diff --name-status " + this.shQ(this.baselineCommit!) + " HEAD"
-    );
+    const summary = await this.execInCmd("git -C /work diff --name-status " + this.shQ(this.baselineCommit!) + " HEAD");
     if (summary.stdout.trim()) {
       Logger.info("=== Accepted file changes ===");
-      for (const line of summary.stdout.trim().split("\n")) {
-        Logger.info(line);
-      }
+      for (const line of summary.stdout.trim().split("\n")) Logger.info(line);
     } else {
       Logger.info("No accepted file changes.");
     }
 
-    // Show rejected/violations
     const stepDir = path.join(this.spec.runDir, "steps");
-    const violations = (await fsp.readdir(stepDir))
-      .filter(f => f.endsWith(".violation.txt"));
+    const violations = (await fsp.readdir(stepDir)).filter((f) => f.endsWith(".violation.txt"));
     if (violations.length) {
       Logger.info("=== Rejected/violated files ===");
       for (const vf of violations) {
         const body = await fsp.readFile(path.join(stepDir, vf), "utf8");
-        for (const line of body.trim().split("\n")) {
-          if (line) Logger.info(line);
-        }
+        for (const line of body.trim().split("\n")) if (line) Logger.info(line);
       }
     }
 
     const patchDst = path.join(this.spec.runDir, "session.patch");
     await this.execHost(["cp", `${this.name}:/work/.org/session.patch`, patchDst]).catch(() => Promise.resolve());
 
-    // Copy newly added files (artifacts)
     const newFiles = (await this.execInCmd(
       "git -C /work diff --name-status " + this.shQ(this.baselineCommit!) + " HEAD | awk '$1 ~ /^A|^AM$/ {print $2}'"
-    )).stdout.split("\n").map(s => s.trim()).filter(Boolean);
+    )).stdout.split("\n").map((s) => s.trim()).filter(Boolean);
     for (const nf of newFiles) {
       const dst = path.join(this.spec.runDir, "artifacts", nf);
       await fsp.mkdir(path.dirname(dst), { recursive: true });
       await this.execHost(["cp", `${this.name}:/work/${nf}`, dst]).catch(() => Promise.resolve());
     }
 
-    // Manifest
     const stepsMeta = await this.collectStepsMeta();
     const manifest = {
       spec: this.spec,
@@ -418,7 +382,7 @@ export class PodmanSession implements ISandboxSession {
 
     return {
       manifestPath,
-      patchPath: fs.existsSync(patchDst) && fs.statSync(patchDst).size > 0 ? patchDst : undefined
+      patchPath: fs.existsSync(patchDst) && fs.statSync(patchDst).size > 0 ? patchDst : undefined,
     };
   }
 
@@ -437,26 +401,22 @@ export class PodmanSession implements ISandboxSession {
 
   // Execute a command in the container at /work using bash -lc, capturing output.
   private async execInCmd(cmdline: string) {
-    // IMPORTANT: no "-i" here; keep stdin closed to avoid sporadic exit 1s.
     return sh(this.tool, ["exec", "--workdir", "/work", this.name, "bash", "-lc", cmdline]);
   }
 
   // Execute with env vars inside container, capturing output.
   private async execInEnv(env: Record<string, string>, cmdline: string) {
-    // Merge per-step control env with allow-listed host env (R.env) and
-    // convert into the proper `podman exec --env KEY=VAL ...` arguments.
-    const envArgs = envToPodmanArgs(R.env, env);
+    const envArgs = Object.entries(env).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
     return sh(this.tool, ["exec", "--workdir", "/work", ...envArgs, this.name, "bash", "-lc", cmdline]);
   }
 
   private shQ(s: string) { return `'${s.replace(/'/g, `'\\''`)}'`; }
 
   private pathAllowed(p: string): boolean {
-    // Deny takes precedence
     const deny = this.spec.write.deny ?? [];
     if (deny.length && matchAny(deny, p)) {
       Logger.debug("Patch path denied: ", p);
-      return false;     // deny takes precedence
+      return false;
     }
     const allow = this.spec.write.allow ?? ["*", "**/*"];
     const result = matchAny(allow, p);
@@ -475,7 +435,7 @@ export class PodmanSession implements ISandboxSession {
   private async collectStepsMeta() {
     const dir = path.join(this.spec.runDir, "steps");
     const files = await fsp.readdir(dir).catch(() => []);
-    const metas = files.filter(f => f.endsWith(".meta.json")).sort((a, b) => a.localeCompare(b));
+    const metas = files.filter((f) => f.endsWith(".meta.json")).sort((a, b) => a.localeCompare(b));
     const out: any[] = [];
     for (const m of metas) {
       try {
