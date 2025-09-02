@@ -13,6 +13,7 @@ import { ensureOk } from "../sh-result";
 import { withCookedTTY } from "../../input/tty-controller";
 import { collectRuntimeEnv } from "../../runtime/env-forward";
 import { R } from "../../runtime/runtime";
+import { envToPodmanArgs } from "../env";
 
 const HARNESSED_APPLY_PATCH_SCRIPT = `#!/usr/bin/env bash
 set -euo pipefail
@@ -287,11 +288,10 @@ export class PodmanSession implements ISandboxSession {
     const hostErr = path.join(hostSteps, `step-${idx}.err`);
     const hostMeta = path.join(hostSteps, `step-${idx}.meta.json`);
 
-    try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.out`, hostOut]); } catch {}
-    try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.err`, hostErr]); } catch {}
+    try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.out`, hostOut]); } catch (e) { Logger.error(e) }
+    try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.err`, hostErr]); } catch (e) { Logger.error(e) }
     let metaCopied = true;
-    try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.meta.json`, hostMeta]); }
-    catch { metaCopied = false; }
+    try { await this.execHost(["cp", `${this.name}:/work/.org/steps/step-${idx}.meta.json`, hostMeta]); } catch (e) { Logger.error(e); metaCopied = false; }
 
     if (!metaCopied) {
       const now = new Date().toISOString();
