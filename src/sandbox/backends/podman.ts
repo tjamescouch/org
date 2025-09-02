@@ -247,7 +247,7 @@ export class PodmanSession implements ISandboxSession {
       ORG_TIMEOUT_MS: String(this.spec.limits.timeoutMs),
       ORG_STDOUT_MAX: String(this.spec.limits.stdoutMax),
       ORG_PIDS_MAX: String(this.spec.limits.pidsMax),
-      ...collectRuntimeEnv(process.env),
+      ...collectRuntimeEnv(R.env ?? process.env),
     };
 
     const run = await this.execInEnv(env, `/work/.org/org-step.sh ${this.shQ(cmd)}`);
