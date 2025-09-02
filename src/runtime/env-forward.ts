@@ -1,62 +1,78 @@
-// src/utils/pass-env.ts
-//
-// Utilities to (a) collect the development env we want to propagate,
-// (b) apply it to tmux sessions, and (c) turn it into podman args.
+// src/runtime/env-forward.ts
+// Helpers for forwarding environment variables to child processes / containers
+// in a controlled way.
 
-export type EnvMap = Record<string, string>;
+type SrcEnv = NodeJS.ProcessEnv | Record<string, string | undefined>;
 
-const EXACT_ALLOW = new Set([
-  // terminal / locale
-  "TERM", "COLORTERM", "FORCE_COLOR",
-  "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
-  // proxies are frequently needed inside the container
-  "HTTP_PROXY", "http_proxy",
-  "HTTPS_PROXY", "https_proxy",
-  "NO_PROXY", "no_proxy",
-]);
+/**
+ * Collect the subset of environment variables that are safe/expected to forward
+ * into interactive shells and containers.
+ *
+ * By design this forwards any key that starts with one of the allowlisted
+ * prefixes (e.g. ORG_, OPENAI_, OLLAMA_, …) as well as a small set of exact
+ * keys that commonly affect networking/locale/tooling.
+ */
+export function collectRuntimeEnv(src: SrcEnv = process.env): Record<string, string> {
+  const allowPrefixes = [
+    "ORG_",
+    "OPENAI_",
+    "AZURE_OPENAI_",
+    "ANTHROPIC_",
+    "OLLAMA_",
+    "LMSTUDIO_",
+    "GOOGLE_",     // for vertex / genai envs if used
+    "GEMINI_",
+  ];
 
-const PREFIX_ALLOW = [
-  // our project knobs first
-  "ORG_",            // ORG_OPENAI_*, ORG_LLM_*, ORG_*
-  // providers
-  "OPENAI_", "ANTHROPIC_", "AZURE_OPENAI_", "GOOGLE_",
-  "LMSTUDIO_", "OLLAMA_",
-];
+  const allowExact = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "no_proxy",
+    "PATH",
+    "TERM",
+    "TZ",
+    "LANG",
+    "LC_ALL",
+    "NODE_TLS_REJECT_UNAUTHORIZED",
+    "BUN_CONFIG_VERBOSE_FETCH",
+  ];
 
-/** Collect a safe pass‑through env from the current process (or a stub). */
-export function collectRuntimeEnv(src: NodeJS.ProcessEnv = process.env): EnvMap {
-  const out: EnvMap = {};
-  for (const [k, v] of Object.entries(src)) {
-    if (typeof v !== "string") continue;
-    if (EXACT_ALLOW.has(k)) { out[k] = v; continue; }
-    if (PREFIX_ALLOW.some(p => k.startsWith(p))) { out[k] = v; continue; }
+  const out: Record<string, string> = {};
+  for (const [k, vRaw] of Object.entries(src)) {
+    if (typeof vRaw !== "string" || vRaw.length === 0) continue;
+    const forward =
+      allowExact.includes(k) ||
+      allowPrefixes.some((p) => k.startsWith(p));
+    if (forward) out[k] = vRaw;
   }
   return out;
 }
 
-/** Convenience: merge overrides on top of collected env. Later keys win. */
-export function mergeEnv(base: EnvMap, extra: EnvMap): EnvMap {
-  return Object.assign({}, base, extra);
-}
-
-/** Apply env to a tmux session (server‑side), so panes inherit it. */
-export async function applyEnvToTmux(session: string, env: EnvMap): Promise<void> {
-  for (const [k, v] of Object.entries(env)) {
-    // tmux set-environment -t <session> KEY VALUE
-    const p = Bun.spawn(["tmux", "set-environment", "-t", session, k, v]);
-    const code = await p.exited;
-    if (code !== 0) {
-      const err = await new Response(p.stderr!).text();
-      throw new Error(`tmux set-environment failed for ${k} (${code})\n${err}`);
-    }
-  }
-}
-
-/** Turn an env map into podman `-e KEY=VAL` arguments. */
-export function envToPodmanArgs(env: EnvMap): string[] {
+/**
+ * Convert an env object into podman `--env KEY=VAL` args.
+ */
+export function envToPodmanArgs(src: SrcEnv): string[] {
+  const env = collectRuntimeEnv(src);
   const args: string[] = [];
   for (const [k, v] of Object.entries(env)) {
-    args.push("-e", `${k}=${v}`);
+    args.push("--env", `${k}=${v}`);
   }
   return args;
+}
+
+/**
+ * Produce a series of `export KEY='VAL'` statements suitable for injecting into
+ * a shell line (e.g. when creating a tmux session).
+ */
+export function envToShellExports(src: SrcEnv): string {
+  const env = collectRuntimeEnv(src);
+  if (Object.keys(env).length === 0) return "";
+  const parts = Object.entries(env).map(([k, v]) => `export ${shq(k)}=${shq(v)}`);
+  return parts.join("; ");
+}
+
+function shq(s: string): string {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
