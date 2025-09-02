@@ -13,7 +13,6 @@ import { ensureOk } from "../sh-result";
 import { withCookedTTY } from "../../input/tty-controller";
 import { collectRuntimeEnv } from "../../runtime/env-forward";
 import { R } from "../../runtime/runtime";
-import { envToPodmanArgs } from "../env";
 
 const HARNESSED_APPLY_PATCH_SCRIPT = `#!/usr/bin/env bash
 set -euo pipefail

@@ -25,6 +25,8 @@ export function collectRuntimeEnv(src: SrcEnv = process.env): Record<string, str
   ];
 
   const allowExact = [
+    "DEBUG",
+    "LOG_LEVEL",
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "ALL_PROXY",
