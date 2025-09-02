@@ -11,7 +11,7 @@ import { ISandboxSession } from "../types";
 import { Logger } from "../../logger";
 import { ensureOk } from "../sh-result";
 import { withCookedTTY } from "../../input/tty-controller";
-import { buildExportPrefix } from "../../runtime/env-bridge";
+import { collectForwardEnv, toContainerEnvArgs } from "../../runtime/env-forward";
 import { R } from "../../runtime/runtime";
 
 const HARNESSED_APPLY_PATCH_SCRIPT = `#!/usr/bin/env bash
@@ -117,7 +117,7 @@ type ShResult = { code: number; stdout: string; stderr: string };
 
 function sh(cmd: string, args: string[]): Promise<ShResult> {
     return new Promise((resolve) => {
-        const p = spawn(`${buildExportPrefix(R.env)}${cmd}`, args, { stdio: ["ignore", "pipe", "pipe"] });
+        const p = spawn(`${toContainerEnvArgs(collectForwardEnv(R.env))}${cmd}`, args, { stdio: ["ignore", "pipe", "pipe"] });
         let so = "", se = "";
         p.stdout.on("data", (d) => (so += String(d)));
         p.stderr.on("data", (d) => (se += String(d)));

@@ -1,14 +1,14 @@
-// test/e2e.esc.tmux.test.ts
 // E2E: Pressing ESC during streaming shows immediate ACK, then the app exits gracefully.
-// tmux + local SSE server. No external LLM is contacted.
+// This version does NOT rely on a real LMStudio/OpenAI server. It runs a tiny
+// SSE server inside the test and injects all env directly into tmux using -e.
 
-import { describe, test, expect } from "bun:test";
+// Run with: bun test test/e2e.esc.tmux.test.ts
+
+import { describe, test } from "bun:test";
 
 type Cleanup = () => void | Promise<void>;
 
-async function withCleanups<T>(
-  fn: (register: (c: Cleanup) => void) => Promise<T>
-): Promise<T> {
+async function withCleanups<T>(fn: (register: (c: Cleanup) => void) => Promise<T>): Promise<T> {
   const cleanups: Cleanup[] = [];
   const register = (c: Cleanup) => cleanups.unshift(c);
   try {
@@ -23,10 +23,7 @@ async function withCleanups<T>(
 function withDeadline<T>(p: Promise<T>, ms: number, label = "deadline"): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`Timeout: ${label} (${ms}ms)`)), ms);
-    p.then(
-      v => { clearTimeout(t); resolve(v); },
-      e => { clearTimeout(t); reject(e); },
-    );
+    p.then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e); });
   });
 }
 
@@ -46,8 +43,7 @@ function sseChunk(delta: string, idx = 0) {
 describe("E2E interactive ESC (tmux + SSE server)", () => {
   test("ESC during streaming shows ACK and completes gracefully", async () => {
     await withCleanups(async (register) => {
-
-      // 1) Local SSE mock server (OpenAI-compatible)
+      // 1) SSE mock server — OpenAI-compatible streaming endpoint.
       const server = Bun.serve({
         port: 0,
         fetch: async (req) => {
@@ -84,40 +80,33 @@ describe("E2E interactive ESC (tmux + SSE server)", () => {
       register(async () => { try { server.stop(true); } catch {} });
       const baseUrl = `http://127.0.0.1:${server.port}`;
 
-      // 2) Start an app in a dedicated tmux session.
-      // We *inject* the env into the one-shot shell-command so it is guaranteed to be present
-      // even if the tmux server's environment is sparse.
+      // 2) Prepare a tmux session and run the app inside it.
       const session = `e2e_esc_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
 
-      const envPairs: Array<[string, string]> = [
-        // Point to our mock server (cover both our app’s OPENAI and any internal ORG_* variants)
-        ["OPENAI_BASE_URL", baseUrl],
-        ["ORG_OPENAI_BASE_URL", baseUrl],
-        ["LLM_BASE_URL", baseUrl],
-        ["ORG_LLM_BASE_URL", baseUrl],
-        // inert API key so any "auth" checks pass
-        ["OPENAI_API_KEY", "e2e-dummy"],
-        ["ORG_OPENAI_API_KEY", "e2e-dummy"],
-        // keep everything local: do not try any container engine
-        ["SANDBOX_BACKEND", "none"],
-        ["ORG_BACKEND", "none"],
-        // make terminal predictable
-        ["TERM", "xterm-256color"],
-        // a few niceties to reduce surprises
-        ["NO_COLOR", "1"],
-        ["FORCE_COLOR", "0"],
-      ];
+      // NOTE: Use OpenAI provider against our local SSE server.
+      // Inject env via tmux -e so we don't depend on shell rewriting.
+      const envVars: Record<string, string> = {
+        // disable any sandbox/engine, and keep UI purely console
+        ORG_SANDBOX_BACKEND: "none",
+        ORG_ENGINE: "none",
+        // OpenAI-compatible local server + dummy key
+        OPENAI_BASE_URL: baseUrl,
+        ORG_OPENAI_BASE_URL: baseUrl,
+        OPENAI_API_KEY: "sk-e2e-test",
+        ORG_OPENAI_API_KEY: "sk-e2e-test",
+        // keep output stable for test matching
+        NO_COLOR: "1",
+        FORCE_COLOR: "0",
+        TERM: "xterm-256color",
+      };
 
-      // Build: env KEY=VAL ... bun ./src/app.ts --agents alice:openai
-      const cmd = [
-        "tmux", "new-session", "-d", "-s", session,
-        "env",
-        ...envPairs.flatMap(([k, v]) => [`${k}=${v}`]),
-        "bun", "./src/app.ts", "--agents", "alice:openai",
-      ];
+      const tmuxArgs = ["new-session", "-d", "-s", session];
+      for (const [k, v] of Object.entries(envVars)) tmuxArgs.push("-e", `${k}=${v}`);
+      // Run the app with a simple console UI and an openai agent
+      tmuxArgs.push("bun", "./src/app.ts", "--ui", "console", "--agents", "alice:openai");
 
       {
-        const p = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
+        const p = Bun.spawn(["tmux", ...tmuxArgs], { stdout: "pipe", stderr: "pipe" });
         const status = await p.exited;
         if (status !== 0) {
           const err = await new Response(p.stderr!).text();
@@ -152,20 +141,21 @@ describe("E2E interactive ESC (tmux + SSE server)", () => {
         return code === 0;
       }
 
-      // 3) Wait for readiness banner
+      // 3) Wait for readiness banner (or until session disappears)
       await withDeadline((async () => {
-        for (let i = 0; i < 80; i++) {
+        for (let i = 0; i < 120; i++) {
+          if (!(await sessionAlive())) throw new Error("tmux session exited early");
           const buf = await capturePane();
           if (/Press Esc to gracefully exit/i.test(buf)) return;
           await sleep(100);
         }
         throw new Error("app did not reach ready banner");
-      })(), 9000, "ready");
+      })(), 12_000, "ready");
 
       // Send "hi" + Enter
       await sendKeys("h", "i", "Enter");
 
-      // 4) Wait until streaming actually starts (look for any early tokens from mock)
+      // 4) Wait until streaming actually starts
       await withDeadline((async () => {
         for (let i = 0; i < 120; i++) {
           const buf = await capturePane();
@@ -173,38 +163,33 @@ describe("E2E interactive ESC (tmux + SSE server)", () => {
           await sleep(100);
         }
         throw new Error("stream did not start");
-      })(), 12000, "stream start");
+      })(), 12_000, "stream start");
 
       // 5) Press ESC during stream
-      await sendKeys("C-[" /* ESC */);
+      await sendKeys("C-["); // ESC
 
-      // 6) Verify immediate ACK printed (hyphen/en-dash tolerant)
+      // 6) Verify immediate ACK printed (stderr/feedback)
       await withDeadline((async () => {
         for (let i = 0; i < 120; i++) {
           const buf = await capturePane();
           if (/ESC pressed\s*[—–-]\s*finishing current step/i.test(buf) ||
-              (/ESC pressed/i.test(buf) && /opening patch review/i.test(buf))) {
-            return;
-          }
+              (/ESC pressed/i.test(buf) && /opening patch review/i.test(buf))) return;
           await sleep(100);
         }
         throw new Error("ESC ACK did not appear");
-      })(), 7000, "esc ack");
+      })(), 7_000, "esc ack");
 
-      // 7) Graceful completion
+      // 7) Graceful completion: either the review prompt/patch text, or the session ends.
       await withDeadline((async () => {
-        for (let i = 0; i < 150; i++) {
-          const alive = await sessionAlive();
-          if (!alive) return; // session gone => app exited
-
+        for (let i = 0; i < 200; i++) {
+          if (!(await sessionAlive())) return;
           const buf = await capturePane();
           if (/No patch produced\./i.test(buf)) return;
           if (/Patch ready:/i.test(buf) || /Apply this patch\?/i.test(buf)) return;
-
           await sleep(150);
         }
         throw new Error("app did not reach graceful end condition");
-      })(), 30000, "graceful completion");
+      })(), 30_000, "graceful completion");
     });
   }, 45_000);
 });

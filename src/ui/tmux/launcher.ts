@@ -6,7 +6,7 @@ import * as path from "path";
 import { spawnSync, spawn } from "child_process";
 import { buildEphemeralTmuxConf } from "./config";
 import { Logger } from "../../logger";
-import { buildExportPrefix } from "../../runtime/env-bridge";
+import { collectForwardEnv, toContainerEnvArgs, toTmuxEnvArgs } from "../../runtime/env-forward";
 import { R } from "../../runtime/runtime";
 
 export type LaunchTmuxUIOpts = {
@@ -86,12 +86,12 @@ export async function launchTmuxUI(opts: LaunchTmuxUIOpts): Promise<number> {
     `tmux -L ${shq(sockName)} -f ${shq(confPath)} ` +
     `new-session -d -s ${shq(sessionName)} -n main "bash -lc ${shq(childCmd)}"`;
   {
-    const r = spawnSync("bash", ["-lc", newSessionCmd], { cwd, env, stdio: "inherit" });
+    const r = spawnSync(`${toTmuxEnvArgs(collectForwardEnv(R.env))}bash`, ["-lc", newSessionCmd], { cwd, env, stdio: "inherit" });
     if (r.status !== 0) return r.status ?? 1;
   }
 
   // attach
-  const attach = spawn(`${buildExportPrefix(R.env)}bash`, ["-lc", `tmux -L ${shq(sockName)} attach -t ${shq(sessionName)}`], {
+  const attach = spawn(`${toTmuxEnvArgs(collectForwardEnv(R.env))}bash`, ["-lc", `tmux -L ${shq(sockName)} attach -t ${shq(sessionName)}`], {
     cwd,
     env,
     stdio: "inherit",
