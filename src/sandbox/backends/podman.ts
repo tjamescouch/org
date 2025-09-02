@@ -167,6 +167,9 @@ export class PodmanSession implements ISandboxSession {
             "-v", `${this.spec.workHostDir}:/work:rw`,    // working copy is RW
         ];
 
+        // Forward selected runtime env into the container's *base* environment.
+        const forwardedEnvArgs = envToPodmanArgs(collectRuntimeEnv(R.env));
+
         // Create and start container
         const create = await sh(this.tool, [
             "create",
@@ -174,6 +177,7 @@ export class PodmanSession implements ISandboxSession {
             "--name", this.name,
             "--userns=keep-id", "--user", `${uid}:${gid}`,
             ...netArgs, ...caps, ...limits, ...mounts,
+            ...forwardedEnvArgs,
             this.spec.image,
             "sleep", "infinity",
         ]);
@@ -205,14 +209,14 @@ export class PodmanSession implements ISandboxSession {
         // write /work/.org/bin/apply_patch
         await fsp.writeFile(
             path.join(hostOrgBin, "apply_patch"),
-            HARNESSED_APPLY_PATCH_SCRIPT,               // <-- string from earlier answer
+            HARNESSED_APPLY_PATCH_SCRIPT,
             { mode: 0o755 }
         );
 
         // write /work/.org/bin/git (blocks 'git apply')
         await fsp.writeFile(
             path.join(hostOrgBin, "git"),
-            GIT_WRAPPER_SCRIPT,                         // <-- string from earlier answer
+            GIT_WRAPPER_SCRIPT,
             { mode: 0o755 }
         );
 
@@ -267,7 +271,6 @@ export class PodmanSession implements ISandboxSession {
             ORG_PIDS_MAX: String(this.spec.limits.pidsMax),
             ...(collectRuntimeEnv(R.env))
         };
-        console.log("ENV", env);
         const run = await this.execInEnv(env, `/work/.org/org-step.sh ${this.shQ(cmd)}`);
 
         // 1) stage normal changes
