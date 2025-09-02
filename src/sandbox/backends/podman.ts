@@ -11,7 +11,7 @@ import { ISandboxSession } from "../types";
 import { Logger } from "../../logger";
 import { ensureOk } from "../sh-result";
 import { withCookedTTY } from "../../input/tty-controller";
-import { collectForwardEnv, toContainerEnvArgs } from "../../runtime/env-forward";
+import { collectRuntimeEnv, envToPodmanArgs } from "../../runtime/env-forward";
 import { R } from "../../runtime/runtime";
 
 const HARNESSED_APPLY_PATCH_SCRIPT = `#!/usr/bin/env bash
@@ -117,7 +117,7 @@ type ShResult = { code: number; stdout: string; stderr: string };
 
 function sh(cmd: string, args: string[]): Promise<ShResult> {
     return new Promise((resolve) => {
-        const p = spawn(`${toContainerEnvArgs(collectForwardEnv(R.env))}${cmd}`, args, { stdio: ["ignore", "pipe", "pipe"] });
+        const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
         let so = "", se = "";
         p.stdout.on("data", (d) => (so += String(d)));
         p.stderr.on("data", (d) => (se += String(d)));
@@ -265,6 +265,7 @@ export class PodmanSession implements ISandboxSession {
             ORG_TIMEOUT_MS: String(this.spec.limits.timeoutMs),
             ORG_STDOUT_MAX: String(this.spec.limits.stdoutMax),
             ORG_PIDS_MAX: String(this.spec.limits.pidsMax),
+            ...(collectRuntimeEnv(R.env))
         };
         const run = await this.execInEnv(env, `/work/.org/org-step.sh ${this.shQ(cmd)}`);
 

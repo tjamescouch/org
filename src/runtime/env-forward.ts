@@ -1,55 +1,62 @@
-// Centralized allowlist-based environment forwarding for interactive shells (tmux)
-// and container backends (podman/docker). Keep this list small and explicit.
+// src/utils/pass-env.ts
+//
+// Utilities to (a) collect the development env we want to propagate,
+// (b) apply it to tmux sessions, and (c) turn it into podman args.
 
 export type EnvMap = Record<string, string>;
 
-const EXACT: string[] = [
-  // generic
-  "NO_COLOR", "FORCE_COLOR", "TERM",
+const EXACT_ALLOW = new Set([
+  // terminal / locale
+  "TERM", "COLORTERM", "FORCE_COLOR",
+  "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
+  // proxies are frequently needed inside the container
+  "HTTP_PROXY", "http_proxy",
+  "HTTPS_PROXY", "https_proxy",
+  "NO_PROXY", "no_proxy",
+]);
 
-  // openai-compatible clients
-  "OPENAI_API_KEY", "OPENAI_BASE_URL", "ORG_OPENAI_API_KEY", "ORG_OPENAI_BASE_URL",
-
-  // lmstudio (if you still support a dedicated provider)
-  "LMSTUDIO_API_KEY", "ORG_LMSTUDIO_API_KEY", "LMSTUDIO_BASE_URL", "ORG_LMSTUDIO_BASE_URL",
-
-  // app flags
-  "ORG_ENGINE", "ORG_SANDBOX_BACKEND", "ORG_UI", "ORG_REVIEW_MODE",
-
-  // any repo-specific toggles you rely on during tests/dev
-  "ORG_DEBUG", "ORG_LOG_LEVEL",
+const PREFIX_ALLOW = [
+  // our project knobs first
+  "ORG_",            // ORG_OPENAI_*, ORG_LLM_*, ORG_*
+  // providers
+  "OPENAI_", "ANTHROPIC_", "AZURE_OPENAI_", "GOOGLE_",
+  "LMSTUDIO_", "OLLAMA_",
 ];
 
-const PREFIXES: string[] = [
-  // keep ORG_* to allow future feature flags
-  "ORG_",
-];
-
-export function collectForwardEnv(src: NodeJS.ProcessEnv): EnvMap {
+/** Collect a safe pass‑through env from the current process (or a stub). */
+export function collectRuntimeEnv(src: NodeJS.ProcessEnv = process.env): EnvMap {
   const out: EnvMap = {};
-  for (const key of EXACT) {
-    const v = src[key];
-    if (typeof v === "string" && v.length) out[key] = v;
-  }
-  for (const k of Object.keys(src)) {
-    if (PREFIXES.some(p => k.startsWith(p)) && !(k in out)) {
-      const v = src[k];
-      if (typeof v === "string" && v.length) out[k] = v;
-    }
+  for (const [k, v] of Object.entries(src)) {
+    if (typeof v !== "string") continue;
+    if (EXACT_ALLOW.has(k)) { out[k] = v; continue; }
+    if (PREFIX_ALLOW.some(p => k.startsWith(p))) { out[k] = v; continue; }
   }
   return out;
 }
 
-/** Convert to ["-e","KEY=VAL", ...] for tmux new-session */
-export function toTmuxEnvArgs(env: EnvMap): string[] {
-  const args: string[] = [];
-  for (const [k, v] of Object.entries(env)) args.push("-e", `${k}=${v}`);
-  return args;
+/** Convenience: merge overrides on top of collected env. Later keys win. */
+export function mergeEnv(base: EnvMap, extra: EnvMap): EnvMap {
+  return Object.assign({}, base, extra);
 }
 
-/** Convert to ["-e","KEY=VAL", ...] for podman/docker */
-export function toContainerEnvArgs(env: EnvMap): string[] {
+/** Apply env to a tmux session (server‑side), so panes inherit it. */
+export async function applyEnvToTmux(session: string, env: EnvMap): Promise<void> {
+  for (const [k, v] of Object.entries(env)) {
+    // tmux set-environment -t <session> KEY VALUE
+    const p = Bun.spawn(["tmux", "set-environment", "-t", session, k, v]);
+    const code = await p.exited;
+    if (code !== 0) {
+      const err = await new Response(p.stderr!).text();
+      throw new Error(`tmux set-environment failed for ${k} (${code})\n${err}`);
+    }
+  }
+}
+
+/** Turn an env map into podman `-e KEY=VAL` arguments. */
+export function envToPodmanArgs(env: EnvMap): string[] {
   const args: string[] = [];
-  for (const [k, v] of Object.entries(env)) args.push("-e", `${k}=${v}`);
+  for (const [k, v] of Object.entries(env)) {
+    args.push("-e", `${k}=${v}`);
+  }
   return args;
 }
