@@ -6,7 +6,7 @@ import * as path from "path";
 import { spawnSync, spawn } from "child_process";
 import { buildEphemeralTmuxConf } from "./config";
 import { Logger } from "../../logger";
-import { buildExportPrefix } from "./env-bridge";
+import { buildExportPrefix } from "../../runtime/env-bridge";
 import { R } from "../../runtime/runtime";
 
 export type LaunchTmuxUIOpts = {

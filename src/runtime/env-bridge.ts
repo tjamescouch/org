@@ -34,5 +34,5 @@ export function buildExportPrefix(
     pairs.push("TERM='xterm-256color'");
   }
 
-  return pairs.length ? `export ${pairs.join(" ")}; ` : "";
+  return pairs.length ? `export ${pairs.join(" ")}; ` : ""; //Q: do we need to export?
 }
