@@ -6,6 +6,8 @@ import * as path from "path";
 import { spawnSync, spawn } from "child_process";
 import { buildEphemeralTmuxConf } from "./config";
 import { Logger } from "../../logger";
+import { buildExportPrefix } from "./env-bridge";
+import { R } from "../../runtime/runtime";
 
 export type LaunchTmuxUIOpts = {
   // Full argv for the program to run inside tmux
@@ -89,7 +91,7 @@ export async function launchTmuxUI(opts: LaunchTmuxUIOpts): Promise<number> {
   }
 
   // attach
-  const attach = spawn("bash", ["-lc", `tmux -L ${shq(sockName)} attach -t ${shq(sessionName)}`], {
+  const attach = spawn(`${buildExportPrefix(R.env)}bash`, ["-lc", `tmux -L ${shq(sockName)} attach -t ${shq(sessionName)}`], {
     cwd,
     env,
     stdio: "inherit",
