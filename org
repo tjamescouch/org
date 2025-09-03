@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # CWD-agnostic org launcher: always mounts the repo root to /work
 # and runs bun /work/src/app.ts inside the container.
+# Now forwards a curated set of host env vars into the container.
 
 set -Eeuo pipefail
 
 # ---------- resolve real path to this script (portable) ----------
 resolve_realpath() {
-  # Prefer readlink -f if available; fall back to Python
   if command -v readlink >/dev/null 2>&1; then
     readlink -f "$1" 2>/dev/null || python3 - "$1" <<'PY'
 import os, sys; print(os.path.realpath(sys.argv[1]))
@@ -38,14 +38,38 @@ if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "[org] image built: $IMAGE"
 fi
 
+# ---------- env forward (allow-list) ----------
+# We want the app (which runs inside the container) to see important host env:
+#   * ORG_* project flags and ad-hoc vars (e.g., ORG_TEST)
+#   * provider env (OPENAI_ / ANTHROPIC_ / OLLAMA_ / LMSTUDIO_ / AZURE_ / GOOGLE_)
+#   * proxies/locale/terminal
+allow_env() {
+  local k v
+  while IFS='=' read -r k v; do
+    case "$k" in
+      ORG_*|OPENAI_*|ANTHROPIC_*|OLLAMA_*|LMSTUDIO_*|AZURE_*|GOOGLE_*|GROQ_*|GEMINI_*|
+      HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy|
+      LANG|LC_*|TZ|TERM|FORCE_COLOR|NO_COLOR)
+        printf -- "-e %s=%q " "$k" "$v"
+        ;;
+    esac
+  done < <(env)
+}
+
+# Also ensure the app does not try to spawn *another* container from inside:
+# we are already inside a container started by this launcher.
+EXTRA_ENVS="-e ORG_PROJECT_DIR=/work -e TERM=${TERM:-xterm-256color} -e ORG_SANDBOX_BACKEND=none"
+
+ENV_ARGS="$(allow_env)"
+
 # ---------- run bun inside the container, mounting the repo root ----------
 # - Always mount REPO_DIR → /work, regardless of the caller's CWD.
 # - Workdir is /work so /work/src/app.ts is stable.
 # - Pass through your args unchanged.
+# shellcheck disable=SC2086
 exec "$ENGINE" run --rm -it \
   -v "$REPO_DIR:/work:Z" \
   -w /work \
-  -e ORG_PROJECT_DIR=/work \
-  -e TERM="${TERM:-xterm-256color}" \
+  $EXTRA_ENVS \
+  $ENV_ARGS \
   "$IMAGE" bun /work/src/app.ts "$@"
-
