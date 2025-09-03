@@ -1,157 +1,167 @@
 // src/ui/tmux/launcher.ts
+// Minimal, target-safe tmux launcher with robust logging and a sticky session
+// so the pane doesn't vanish when the inner program exits.
+
 import * as fs from "fs";
 import * as fsp from "fs/promises";
-import * as os from "os";
 import * as path from "path";
-import { spawnSync, spawn } from "child_process";
-import { buildEphemeralTmuxConf } from "./config";
+import { spawnSync } from "child_process";
 import { Logger } from "../../logger";
 import { R } from "../../runtime/runtime";
-
-// Keep the launcher’s behavior identical, but pass through a curated
-// environment (same policy we use for sandbox backends).
-import { envToPodmanArgs } from "../../sandbox/utils/env-propagation";
+import { shInteractive } from "../../tools/sandboxed-sh";
 
 export type LaunchTmuxUIOpts = {
-  // Full argv for the program to run inside tmux
-  argv: string[];             // e.g., process.argv (or a reconstructed argv)
+  /** Full argv to (re)run the org CLI inside tmux (we'll rewrite this to `--ui console`). */
+  argv: string[];
+  /** Optional explicit cwd for the tmux session. Defaults to /work inside the container. */
   cwd?: string;
+  /** Extra env to add; merged over process.env. */
   env?: NodeJS.ProcessEnv;
-  // If already inside tmux, open a new-window instead of a new server
-  allowNested?: boolean;      // default: true
-  // Optional: force a session name
+  /** Force a session name (default: "org"). */
   sessionName?: string;
 };
 
+/* ------------------------------ small helpers ------------------------------ */
+
+function shq(s: string): string {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
 function which(cmd: string): string | null {
-  const out = spawnSync("bash", ["-lc", `command -v ${cmd}`], { encoding: "utf8" });
-  const s = out.stdout.trim();
-  return out.status === 0 && s ? s : null;
+  const r = spawnSync("bash", ["-lc", `command -v ${cmd}`], { encoding: "utf8" });
+  return r.status === 0 ? r.stdout.trim() : null;
 }
 
-function detectClipboardHelper(): "pbcopy" | "xclip" | "wl-copy" | null {
-  if (which("pbcopy")) return "pbcopy";
-  if (which("xclip")) return "xclip";
-  if (which("wl-copy")) return "wl-copy";
-  return null;
+async function ensureDir(p: string) {
+  await fsp.mkdir(p, { recursive: true });
 }
 
-async function writeEphemeralConf(opts: { clipboard: "pbcopy" | "xclip" | "wl-copy" | null }): Promise<string> {
-  const dir = path.join(os.tmpdir(), `org-tmux-${process.pid}-${Date.now()}`);
-  await fsp.mkdir(dir, { recursive: true });
-  const conf = buildEphemeralTmuxConf({
-    hint: "prefix C-b | p: patch | m: mouse",
-    clipboardHelper: opts.clipboard,
-    mouse: true,
-  });
-  const confPath = path.join(dir, "tmux.conf");
-  await fsp.writeFile(confPath, conf, "utf8");
-  return confPath;
+function nowISO() {
+  return new Date().toISOString().replace(/[:.]/g, "").replace("Z", "Z");
 }
 
-/** Convert curated env (same policy as podman) into a shell prefix: KEY='val' KEY2='val' ...  */
-function buildEnvPrefix(env: NodeJS.ProcessEnv): string {
-  // `envToPodmanArgs` yields ["-e","K=V","-e","A=B", ...]; convert to KEY='V' form.
-  const args = envToPodmanArgs(env);
-  const kv: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] !== "-e") continue;
-    const pair = args[i + 1] ?? "";
-    const eq = pair.indexOf("=");
-    if (eq > 0) {
-      const k = pair.slice(0, eq);
-      const v = pair.slice(eq + 1);
-      kv.push(`${k}=${shq(v)}`);
-    }
-    i++; // skip value we just consumed
-  }
-  return kv.join(" ");
-}
+/* ------------------------------ tmux launcher ------------------------------ */
 
-/**
- * Launches tmux UI. Behavior:
- *  - If $TMUX is set and allowNested!=false -> create-window in current session.
- *  - Else -> start a new tmux server with a private socket (-L) & ephemeral conf, then attach.
- * The program inside tmux is the *same* org CLI, with env ORG_TMUX=1.
- */
 export async function launchTmuxUI(opts: LaunchTmuxUIOpts): Promise<number> {
-  const cwd = opts.cwd ?? process.cwd();
-  const env = { ...process.env, ...(opts.env || {}), ORG_TMUX: "1" };
-
-  // 1) Ensure tmux exists
   const tmuxPath = which("tmux");
   if (!tmuxPath) {
-    Logger.error("tmux is not installed. Install with `brew install tmux` or `apt-get install tmux`.");
+    Logger.error("tmux is not installed. Please install tmux inside the image.");
     return 127;
   }
 
-  // 2) Build argv for child
-  const childCmd = buildShellQuotedCmd(opts.argv);
+  // Where we write bits the inner script and logs expect.
+  const projectDir = process.env.ORG_PROJECT_DIR || "/work";
+  const runRoot = path.posix.join(projectDir, ".org");
+  const logsDir = path.posix.join(runRoot, "logs");
+  const tmuxLogs = path.posix.join(logsDir, "tmux-logs");
+  const innerPath = path.posix.join(runRoot, "tmux-inner.sh");
 
-  // 2b) Build a shell env prefix (whitelisted like podman)
-  const envPrefix = buildEnvPrefix(env); // "" if nothing to pass
+  await ensureDir(tmuxLogs);
 
-  // 3) Nested? If TMUX set and allowNested(default true) => new-window
-  if (process.env.TMUX && (opts.allowNested ?? true)) {
-    const winName = opts.sessionName || "org";
-    // Inject curated env vars in the inner shell, not the outer tmux process
-    const inner = envPrefix ? `${envPrefix} ${childCmd}` : childCmd;
-    const cmd = `tmux new-window -n ${shq(winName)} "bash -lc ${shq(inner)}"`;
-    const r = spawnSync("bash", ["-lc", cmd], { cwd, env, stdio: "inherit" });
-    return r.status ?? 0;
+  // Record a lightweight launcher log (plain text, easy to tail).
+  const stamp = nowISO();
+  const launchLog = path.posix.join(logsDir, `tmux-launcher-${stamp}.log`);
+  const log = async (line: string) => {
+    try {
+      await fsp.appendFile(launchLog, `[tmux/launcher] ${line}\n`, "utf8");
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const sessionName = (opts.sessionName || "org").trim();
+  const sockLabel = "tmux-0"; // stable label per-process; single sandbox session
+
+  // We always run the *console* UI inside tmux.
+  // Reconstruct `bun /work/src/app.ts --ui console` from argv.
+  const argv = [...opts.argv];
+  const uiIdx = argv.findIndex((a) => a === "--ui");
+  if (uiIdx >= 0 && argv.length > uiIdx + 1) {
+    argv[uiIdx + 1] = "console";
+  } else {
+    argv.push("--ui", "console");
   }
 
-  // 4) New server with private socket + ephemeral conf
-  const clipboardHelper = detectClipboardHelper();
-  const confPath = await writeEphemeralConf({ clipboard: clipboardHelper });
-  const sockName = `org-${process.pid}-${Date.now()}`;
-  const sessionName = opts.sessionName || "org";
+  const childCmd = argv.map(shq).join(" ");
 
-  // Keep tmux runtime logs in a temporary directory for troubleshooting.
-  const logsDir = path.join(os.tmpdir(), "org-tmux-logs");
-  try { await fsp.mkdir(logsDir, { recursive: true }); } catch {}
+  await log(`begin ${new Date().toISOString()}`);
+  await log(`tmux version: ${spawnSync(tmuxPath, ["-V"], { encoding: "utf8" }).stdout.trim()}`);
+  await log(`socket label: ${sockLabel}`);
+  await log(`projectDir: ${projectDir}`);
+  await log(`argv: ${childCmd}`);
 
-  // start detached
-  {
-    const inner = envPrefix ? `${envPrefix} ${childCmd}` : childCmd;
-    const newSessionCmd =
-      `TMUX_TMPDIR=${shq(logsDir)} ` +
-      `tmux -vv -L ${shq(sockName)} -f ${shq(confPath)} ` +
-      `new-session -d -s ${shq(sessionName)} -n main "bash -lc ${shq(inner)}"`;
+  // Compose a here‑doc script we run *interactively inside the sandbox*.
+  // This avoids backslash soup, and keeps everything together for reproduction.
+  const script = [
+    "set -Eeuo pipefail",
+    "umask 0002",
+    "",
+    `export TMUX_LOG_DIR=${shq(tmuxLogs)}`,
+    `export TMUX_SOCK_LABEL=${shq(sockLabel)}`,
+    `export SESSION=${shq(sessionName)}`,
+    `export INNER=${shq(innerPath)}`,
+    `export ORG_PROJECT_DIR=${shq(projectDir)}`,
+    "",
+    // Prepare logs and inner script (print a tiny env header once for forensics)
+    "mkdir -p \"$TMUX_LOG_DIR\"",
+    "mkdir -p \"$(dirname \"$INNER\")\"",
+    "",
+    "cat > \"$INNER\" <<'EOS_INNER'",
+    "#!/usr/bin/env bash",
+    "set -Eeuo pipefail",
+    "umask 0002",
+    "",
+    // helpful one-shot environment banner at pane top
+    "echo \"SHELL:  $SHELL\"",
+    "echo \"TERM_PROGRAM_VERSION: ${TERM_PROGRAM_VERSION-}\"",
+    "echo \"TMUX:   ${TMUX-}\"",
+    "echo \"HOSTNAME: $HOSTNAME\"",
+    "echo \"PWD: $PWD\"",
+    "echo",
+    "",
+    // robust bun discovery
+    "BUN=\"/usr/local/bin/bun\"",
+    "if ! command -v \"$BUN\" >/dev/null 2>&1; then",
+    "  if command -v bun >/dev/null 2>&1; then BUN=\"$(command -v bun)\";",
+    "  elif [ -x /home/ollama/.bun/bin/bun ]; then BUN=/home/ollama/.bun/bin/bun;",
+    "  elif [ -x /root/.bun/bin/bun ]; then BUN=/root/.bun/bin/bun;",
+    "  fi",
+    "fi",
+    "if [ -z \"${BUN:-}\" ] || [ ! -x \"$BUN\" ]; then",
+    "  echo \"[tmux-inner] bun not found\" >&2; exit 127;",
+    "fi",
+    "",
+    "cd \"$ORG_PROJECT_DIR\"",
+    // IMPORTANT: run *console* UI inside tmux
+    `exec ${shq("/usr/bin/env")} -i PATH=\"$PATH\" HOME=\"$HOME\" TERM=\"$TERM\" LC_ALL=\"$LC_ALL\" LANG=\"$LANG\" \"$BUN\" /work/src/app.ts --ui console`,
+    "EOS_INNER",
+    "chmod +x \"$INNER\"",
+    "",
+    // Bring up a *clean* server and set only global options first
+    "tmux -vv -L \"$TMUX_SOCK_LABEL\" start-server",
+    // Do not let the server die under the client while debugging
+    "tmux -vv -L \"$TMUX_SOCK_LABEL\" set -g exit-empty off >/dev/null 2>&1 || true",
+    "tmux -vv -L \"$TMUX_SOCK_LABEL\" set -g exit-unattached off >/dev/null 2>&1 || true",
+    "tmux -vv -L \"$TMUX_SOCK_LABEL\" set -g remain-on-exit on >/dev/null 2>&1 || true",
+    // keep interactions snappy and enable mouse, but avoid any target-dependent commands
+    "tmux -vv -L \"$TMUX_SOCK_LABEL\" set -g escape-time 0 >/dev/null 2>&1 || true",
+    "tmux -vv -L \"$TMUX_SOCK_LABEL\" set -g status-interval 5 >/dev/null 2>&1 || true",
+    "tmux -vv -L \"$TMUX_SOCK_LABEL\" set -g mouse on >/dev/null 2>&1 || true",
+    "",
+    // Create the session if missing, with a *fixed* cwd and the inner script as program
+    "if ! tmux -L \"$TMUX_SOCK_LABEL\" has-session -t \"$SESSION\" 2>/dev/null; then",
+    "  tmux -vv -L \"$TMUX_SOCK_LABEL\" new-session -ds \"$SESSION\" -c \"$ORG_PROJECT_DIR\" -n org \"$INNER\"",
+    "fi",
+    // And attach
+    "exec tmux -vv -L \"$TMUX_SOCK_LABEL\" attach -t \"$SESSION\"",
+  ].join("\n");
 
-    const r = spawnSync(`bash`, ["-lc", newSessionCmd], { cwd, env, stdio: "inherit" });
-    if (r.status !== 0) return r.status ?? 1;
-  }
-
-  // attach
-  const attachCmd = `TMUX_TMPDIR=${shq(logsDir)} tmux -L ${shq(sockName)} attach -t ${shq(sessionName)}`;
-  const attach = spawn(`bash`, ["-lc", attachCmd], {
-    cwd,
-    env,
-    stdio: "inherit",
+  // Run interactively inside the sandbox.
+  const { code } = await shInteractive(["bash", "-lc", script], {
+    projectDir,
+    agentSessionId: "default",
   });
 
-  return await new Promise<number>((resolve) => {
-    attach.on("exit", async (code) => {
-      // Best-effort cleanup: kill session; ignore errors (user may have killed already)
-      spawnSync("bash", ["-lc", `tmux -L ${shq(sockName)} kill-session -t ${shq(sessionName)} >/dev/null 2>&1 || true`], {
-        cwd,
-        env,
-        stdio: "ignore",
-      });
-      try { await fsp.unlink(confPath); } catch {}
-      resolve(code ?? 0);
-    });
-  });
-}
-
-function buildShellQuotedCmd(argv: string[]): string {
-  // Recreate a shell command from argv, quoting each component.
-  // Example: bun /path/to/app.js --foo "bar baz"
-  return argv.map(a => shq(a)).join(" ");
-}
-
-// Simple single-quote shell quoting
-function shq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
+  await log(`end ${new Date().toISOString()} rc=${code ?? 0}`);
+  return code ?? 0;
 }
