@@ -1,5 +1,8 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
+⚠️ This project is under active construction and highly unstable ⚠️
+
+
 # org
 
 _Agentic dev helpers that can "do things" in your repo while you watch, review, and approve every change._
