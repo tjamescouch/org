@@ -44,9 +44,7 @@ env_allow() {
   local k v
   while IFS='=' read -r k v; do
     case "$k" in
-      ORG_*|OPENAI_*|ANTHROPIC_*|OLLAMA_*|LMSTUDIO_*|AZURE_*|GOOGLE_*|GROQ_*|GEMINI_*|
-      HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy|
-      LANG|LC_*|TZ|TERM|FORCE_COLOR|NO_COLOR)
+      ORG_*|OPENAI_*|ANTHROPIC_*|OLLAMA_*|LMSTUDIO_*|AZURE_*|GOOGLE_*|GROQ_*|GEMINI_*|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy|LANG|LC_*|TZ|TERM|FORCE_COLOR|NO_COLOR)
         ENV_ARR+=("-e" "${k}=${v}")
         ;;
     esac
