@@ -30,7 +30,6 @@ function resolveStepsHostDir(session: StepsDirCarrier, fallbackRoot?: string): s
   if (typeof fallbackRoot === "string" && fallbackRoot.length > 0) {
     return path.join(fallbackRoot, "steps");
   }
-  // Last resort: a deterministic path under the CWD (keeps tests deterministic).
   return path.resolve(".org", "runs", "current", "steps");
 }
 
@@ -48,28 +47,18 @@ interface ToolCtx {
 }
 
 let HEARTBEAT_MUTED = false;
-
-function setShHeartbeatMuted(muted: boolean) {
-  HEARTBEAT_MUTED = muted;
-}
-
-/** Handy helper so callers can do: `await withMutedShHeartbeat(async () => { ... })` */
+function setShHeartbeatMuted(muted: boolean) { HEARTBEAT_MUTED = muted; }
 export async function withMutedShHeartbeat<T>(fn: () => Promise<T>): Promise<T> {
   const prev = HEARTBEAT_MUTED;
   HEARTBEAT_MUTED = true;
-  try { return await fn(); }
-  finally { HEARTBEAT_MUTED = prev; }
+  try { return await fn(); } finally { HEARTBEAT_MUTED = prev; }
 }
 
-/* -----------------------------------------------------------------------------
- * Small helpers
- * ---------------------------------------------------------------------------*/
+/* -------------------------------------------------------------------------- */
 
 function trace(...a: any[]) {
   if (R.env.DEBUG || R.env.ORG_TRACE) Logger.info("[sandboxed-sh]", ...a);
 }
-
-/** If `child` is inside `parent`, return the relative; otherwise return "" */
 function relIfInside(parent: string, child: string): string {
   const p = path.resolve(parent);
   const c = path.resolve(child);
@@ -78,9 +67,7 @@ function relIfInside(parent: string, child: string): string {
   return path.relative(p, c);
 }
 
-/* -----------------------------------------------------------------------------
- * Sandbox manager lookup/creation (one per {projectDir, runRoot})
- * ---------------------------------------------------------------------------*/
+/* sandbox manager ---------------------------------------------------------- */
 async function getManager(key: string, projectDir: string, runRoot?: string) {
   let m = sandboxMangers.get(key);
   if (!m) {
@@ -90,7 +77,7 @@ async function getManager(key: string, projectDir: string, runRoot?: string) {
   return m;
 }
 
-/** Determine the next step index by scanning existing `step-*` files. */
+/* steps scanning ----------------------------------------------------------- */
 async function computeNextStepIdx(stepsDir: string): Promise<number> {
   try {
     await fsp.mkdir(stepsDir, { recursive: true });
@@ -106,7 +93,7 @@ async function computeNextStepIdx(stepsDir: string): Promise<number> {
   }
 }
 
-/** Tail a file as it grows. Polling is robust across container/host boundaries. */
+/* tail helpers ------------------------------------------------------------- */
 function tailFile(
   filePath: string,
   onChunk: (s: string) => void,
@@ -116,7 +103,6 @@ function tailFile(
   let pos = 0;
   let stopped = false;
   const pollMs = Math.max(100, opts?.pollMs ?? 150);
-
   const tick = async () => {
     if (stopped) return;
     try {
@@ -124,28 +110,18 @@ function tailFile(
       if (st.size > pos) {
         await new Promise<void>((done, fail) => {
           const stream = fs.createReadStream(filePath, { start: pos, end: st.size - 1 });
-          stream.on("data", (b: Buffer) => {
-            onSeenOutput();
-            onChunk(b.toString("utf8"));
-          });
-          stream.on("end", () => {
-            pos = st.size;
-            done();
-          });
+          stream.on("data", (b) => { onSeenOutput(); onChunk(b.toString("utf8")); });
+          stream.on("end", () => { pos = st.size; done(); });
           stream.on("error", fail);
         });
       }
-    } catch {
-      // file not there yet
-    }
+    } catch {}
     setTimeout(tick, pollMs);
   };
-
   tick();
   return { stop: () => { stopped = true; } };
 }
 
-/** Tail any new step files created after `startMs` (handles stamp-based filenames). */
 function tailStepsDir(
   stepsDir: string,
   startMs: number,
@@ -156,7 +132,6 @@ function tailStepsDir(
 ) {
   const pollMs = Math.max(100, opts?.pollMs ?? 150);
   let stopped = false;
-
   const tracked = new Map<string, { stop: () => void; kind: "out" | "err" }>();
   const pattern = /^step-.*\.(out|err)$/;
 
@@ -182,20 +157,14 @@ function tailStepsDir(
         if (tracked.has(full)) continue;
         try {
           const st = await fsp.stat(full);
-          const recentEnough =
-            st.mtimeMs >= startMs - 10 ||
-            st.ctimeMs >= startMs - 10;
+          const recentEnough = st.mtimeMs >= startMs - 10 || st.ctimeMs >= startMs - 10;
           if (recentEnough) {
             const kind: "out" | "err" = name.endsWith(".out") ? "out" : "err";
             await attachTailer(full, kind);
           }
-        } catch {
-          // ignore races
-        }
+        } catch {}
       }
-    } catch {
-      // stepsDir may not exist yet
-    }
+    } catch {}
     setTimeout(tick, pollMs);
   };
 
@@ -205,7 +174,7 @@ function tailStepsDir(
     stop: () => {
       stopped = true;
       for (const [, v] of tracked) {
-        try { v.stop(); } catch { }
+        try { v.stop(); } catch {}
       }
       tracked.clear();
     }
@@ -238,7 +207,7 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   trace("exec command:", fullCmd);
 
   // Baseline: make sure the directory exists; streaming handler tolerates absence.
-  try { await fsp.mkdir(stepsHostDir, { recursive: true }); } catch { }
+  try { await fsp.mkdir(stepsHostDir, { recursive: true }); } catch {}
 
   // Streaming banner + heartbeat
   R.stderr.write(`sh: ${args.cmd} -> `);
@@ -285,9 +254,7 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
     if (!printedHeartbeat && step?.ok && !hasOut && !hasErr) {
       R.stderr.write("\n");
     }
-  } catch {
-    // ignore
-  }
+  } catch {}
 
   // Read the final results from the step artifacts the way the rest of the system expects.
   const out = (step?.stdoutFile && fs.existsSync(step.stdoutFile)) ? fs.readFileSync(step.stdoutFile, "utf8") : (step?.stdout ?? "");
@@ -358,7 +325,7 @@ export async function shCapture(
 
 function findEngine(): "podman" | "docker" | null {
   for (const e of ["podman", "docker"] as const) {
-    try { const r = spawnSync(e, ["--version"], { stdio: "ignore" }); if (r.status === 0) return e; } catch { }
+    try { const r = spawnSync(e, ["--version"], { stdio: "ignore" }); if (r.status === 0) return e; } catch {}
   }
   return null;
 }
@@ -405,10 +372,9 @@ export async function shInteractive(
   const fullScript = `${prefix}${script}`;
   trace("shInteractive", { projectDir, userCwd, cwdRel, fullScript });
 
+  // --- Path A: session backend supports interactive exec directly.
   const mgr = await getManager(opts.agentSessionId, projectDir, R.cwd());
   const session = await mgr.getOrCreate(opts.agentSessionId);
-
-  // --- Path A: session backend supports interactive exec directly.
   const runInteractive =
     (session && typeof (session as any).execInteractive === "function")
       ? (session as any).execInteractive.bind(session)
@@ -422,9 +388,8 @@ export async function shInteractive(
     });
   }
 
-  // --- Path B: we are already *inside* the app container; run a local shell.
-  //   - The launcher sets ORG_SANDBOX_BACKEND=none for the app container, or
-  //     we can detect containerization via /run/.containerenv (podman) heuristics.
+  // --- Path B: inside the app container (launcher sets ORG_SANDBOX_BACKEND=none),
+  //             or detect with /run/.containerenv -> run local shell.
   const insideContainer =
     process.env.ORG_SANDBOX_BACKEND === "none" ||
     fs.existsSync("/run/.containerenv");
@@ -438,19 +403,17 @@ export async function shInteractive(
     });
   }
 
-  // --- Path C: if in tmux UI and the pane is ready, we can send keys to the current pane.
+  // --- Path C: if tmux UI (ORG_TMUX=1), send to current pane (no local spawn).
   if (process.env.ORG_TMUX === "1") {
     const target = process.env.ORG_TMUX_SESSION ? `${process.env.ORG_TMUX_SESSION}:.` : ".";
     const sockArg = process.env.ORG_TMUX_SOCKET ? `-L ${shq(process.env.ORG_TMUX_SOCKET)}` : "";
     const tmuxCmd = `tmux ${sockArg} send-keys -t ${shq(target)} ${shq(fullScript)} C-m`;
     const r = spawnSync("/bin/sh", ["-lc", tmuxCmd], { stdio: "inherit" });
-    if ((r.status ?? 0) !== 0) {
-      throw new Error(`tmux send-keys failed (${r.status ?? 0})`);
-    }
+    if ((r.status ?? 0) !== 0) throw new Error(`tmux send-keys failed (${r.status ?? 0})`);
     return { code: 0 };
   }
 
-  // --- Path D: fallback to engine/container exec (host side); do NOT require bash.
+  // --- Path D: fallback to engine/container exec (host side); use /bin/sh not bash.
   const engine = findEngine();
   const cname = getContainerName(session);
   if (!engine || !cname) {
@@ -473,7 +436,8 @@ export async function shInteractive(
   });
 }
 
-// simple single-quote shell quoting
+/* utils -------------------------------------------------------------------- */
+
 function shq(s: string): string {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
