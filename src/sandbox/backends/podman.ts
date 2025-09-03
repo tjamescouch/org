@@ -250,9 +250,7 @@ export class PodmanSession implements ISandboxSession {
             ...collectRuntimeEnv(R.env ?? process.env),
         };
 
-        if ((R.env ?? process.env).ORG_DEBUG_ENV === "1") {
-            Logger.info("env being sent to container:", Object.keys(env).filter(k => k.startsWith("ORG_")).sort().join(", "));
-        }
+        Logger.info("env being sent to container:", R.env ?? process.env);
 
         const run = await this.execInEnv(env, `/work/.org/org-step.sh ${this.shQ(cmd)}`);
 
