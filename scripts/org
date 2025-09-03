@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# scripts/org
+# Repo-local wrapper that the image installs into /usr/local/bin/org.
+# Subcommands:
+#   org tmux    → writes /work/.org/{tmux.conf, tmux-inner.sh} then launches tmux
+#   org console → runs Bun console UI and logs to /work/.org/logs/console.log
+
+set -Eeuo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage:
+  org tmux
+  org console
+
+Env:
+  ORG_BUN_BIN   (default: /usr/local/bin/bun)
+  ORG_TMUX_BIN  (default: /usr/bin/tmux)
+USAGE
+}
+
+subcmd="${1:-console}"
+
+ORG_DIR="/work/.org"
+LOG_DIR="${ORG_DIR}/logs"
+TMUX_CONF="${ORG_DIR}/tmux.conf"
+INNER_SH="${ORG_DIR}/tmux-inner.sh"
+
+BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"
+TMUX_BIN="${ORG_TMUX_BIN:-/usr/bin/tmux}"
+APP_ENTRY="/work/src/app.ts"
+
+ensure_dirs() {
+  mkdir -p "${LOG_DIR}"
+  chmod 700 "${ORG_DIR}" || true
+}
+
+write_tmux_files() {
+  ensure_dirs
+
+  # tmux.conf (sentinel comment for sanity checks)
+  cat > "${TMUX_CONF}" <<'TMUX_EOF'
+# org-tmux-conf v1 — container-local runtime
+set -g mouse on
+set -g history-limit 100000
+set -g default-terminal "screen-256color"
+set -g escape-time 0
+set -g detach-on-destroy off
+setw -g remain-on-exit on
+TMUX_EOF
+  chmod 600 "${TMUX_CONF}"
+
+  # inner runner: executes the app, logs, and keeps the pane up with tail -f
+  cat > "${INNER_SH}" <<'INNER_EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+LOG_DIR="/work/.org/logs"
+LOG_FILE="${LOG_DIR}/tmux-inner.log"
+APP_ENTRY="/work/src/app.ts"
+BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"
+
+mkdir -p "${LOG_DIR}"
+
+if [[ ! -f "${APP_ENTRY}" ]]; then
+  echo "ERROR: entrypoint not found: ${APP_ENTRY}" | tee -a "${LOG_FILE}" >&2
+  echo "Hint: run inside a repo mounted at /work with src/app.ts present." | tee -a "${LOG_FILE}" >&2
+  echo "Press Ctrl+C to exit tmux pane." | tee -a "${LOG_FILE}" >&2
+  tail -n +1 -f "${LOG_FILE}"
+  exit 42
+fi
+
+{
+  echo "===== org tmux-inner start: $(date -Is) ====="
+  echo "cmd: ${BUN_BIN} ${APP_ENTRY} --ui console"
+} | tee -a "${LOG_FILE}"
+
+set +e
+"${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | tee -a "${LOG_FILE}"
+APP_CODE=${PIPESTATUS[0]}
+set -e
+
+echo "===== org tmux-inner exit code: ${APP_CODE} @ $(date -Is) =====" | tee -a "${LOG_FILE}"
+echo "Pane will stay open; tailing log. Press Ctrl+C to exit." | tee -a "${LOG_FILE}"
+
+exec tail -n +1 -f "${LOG_FILE}"
+INNER_EOF
+  chmod 700 "${INNER_SH}"
+}
+
+run_tmux() {
+  [[ -x "${TMUX_BIN}" ]] || { echo "ERROR: tmux not found at ${TMUX_BIN}" >&2; exit 1; }
+  [[ -x "${BUN_BIN}"  ]] || { echo "ERROR: bun not found at ${BUN_BIN}"  >&2; exit 1; }
+  write_tmux_files
+  exec "${TMUX_BIN}" -vv -f "${TMUX_CONF}" -L org new-session -A -s org "/work/.org/tmux-inner.sh"
+}
+
+run_console() {
+  [[ -x "${BUN_BIN}"  ]] || { echo "ERROR: bun not found at ${BUN_BIN}"  >&2; exit 1; }
+  ensure_dirs
+  LOG_FILE="${LOG_DIR}/console.log"
