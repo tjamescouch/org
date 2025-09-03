@@ -333,7 +333,7 @@ export const SANDBOXED_SH_TOOL_SCHEMA = {
 } as const;
 
 /* -----------------------------------------------------------------------------
- * Interactive helpers (session first; engine fallback)
+ * Interactive helpers (session first; engine/tmux-aware fallback)
  * ---------------------------------------------------------------------------*/
 
 export async function shCapture(
@@ -392,7 +392,6 @@ export async function shInteractive(
     if (cmdOrArgv.length >= 2 && cmdOrArgv[0] === "bash" && cmdOrArgv[1] === "-lc") {
       script = cmdOrArgv.slice(2).join(" ");
     } else {
-      // Best-effort for other shapes; assume caller handled quoting.
       script = cmdOrArgv.join(" ");
     }
   } else {
@@ -409,6 +408,7 @@ export async function shInteractive(
   const mgr = await getManager(opts.agentSessionId, projectDir, R.cwd());
   const session = await mgr.getOrCreate(opts.agentSessionId);
 
+  // 1) Best path: the session backend itself supports interactive exec.
   const runInteractive =
     (session && typeof (session as any).execInteractive === "function")
       ? (session as any).execInteractive.bind(session)
@@ -422,7 +422,20 @@ export async function shInteractive(
     });
   }
 
-  // Fallback to engine interactive exec. Use /bin/sh -c to avoid requiring bash.
+  // 2) If we're in tmux UI, send the command to the current pane instead of spawning a shell.
+  if (process.env.ORG_TMUX === "1") {
+    // If you plumb socket/session via env (e.g. ORG_TMUX_SOCKET/ORG_TMUX_SESSION), apply them here.
+    const target = process.env.ORG_TMUX_SESSION ? `${process.env.ORG_TMUX_SESSION}:.` : ".";
+    const sockArg = process.env.ORG_TMUX_SOCKET ? `-L ${shq(process.env.ORG_TMUX_SOCKET)}` : "";
+    const tmuxCmd = `tmux ${sockArg} send-keys -t ${shq(target)} ${shq(fullScript)} C-m`;
+    const r = spawnSync("/bin/sh", ["-lc", tmuxCmd], { stdio: "inherit" });
+    if ((r.status ?? 0) !== 0) {
+      throw new Error(`tmux send-keys failed (${r.status ?? 0})`);
+    }
+    return { code: 0 };
+  }
+
+  // 3) Fallback to container engine interactive exec; do NOT require bash.
   const engine = findEngine();
   const cname = getContainerName(session);
   if (!engine || !cname) {
@@ -435,7 +448,7 @@ export async function shInteractive(
     );
   }
 
-  const argv = ["exec", "-it", cname, "/bin/sh", "-c", fullScript];
+  const argv = ["exec", "-it", cname, "/bin/sh", "-lc", fullScript];
   Logger.info(`[sandboxed-sh] fallback interactive via ${engine}: ${argv.join(" ")}`);
 
   const child = spawn(engine, argv, { stdio: "inherit" });
