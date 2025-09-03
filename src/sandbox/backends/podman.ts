@@ -197,6 +197,16 @@ export class PodmanSession implements ISandboxSession {
         const hostOrgBin = path.join(this.spec.workHostDir, ".org", "bin");
         await fsp.mkdir(hostOrgBin, { recursive: true });
 
+        // Host side directories that back /work/.org/*
+        const hostOrgDir = path.join(this.spec.workHostDir, ".org");
+        await fsp.mkdir(hostOrgDir, { recursive: true });
+
+        // Always (re)write the step runner so edits take effect immediately
+        const runnerSrc = path.resolve(process.cwd(), "scripts", "org-step.sh"); // adjust if your path differs
+        const runnerDst = path.join(hostOrgDir, "org-step.sh");
+        await fsp.copyFile(runnerSrc, runnerDst);
+        await fsp.chmod(runnerDst, 0o755);
+
         // /work/.org/bin/apply_patch
         await fsp.writeFile(path.join(hostOrgBin, "apply_patch"), HARNESSED_APPLY_PATCH_SCRIPT, { mode: 0o755 });
         // /work/.org/bin/git
