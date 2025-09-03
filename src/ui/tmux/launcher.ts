@@ -52,9 +52,6 @@ async function writeEphemeralConf(opts: { clipboard: "pbcopy" | "xclip" | "wl-co
 function buildTmuxEnvArray(env: NodeJS.ProcessEnv): string[] {
   const args = envToPodmanArgs(env);
   // args look like ["-e","OPENAI_BASE_URL=...","-e","FOO=bar", ...]
-  // We only need the KEY=VAL parts to construct shell `export` statements when desired,
-  // but for tmux we will inject env by running the full command in the pane
-  // (no need to set tmux server env globally).
   const kv: string[] = [];
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "-e") {
@@ -69,14 +66,20 @@ function buildTmuxEnvArray(env: NodeJS.ProcessEnv): string[] {
 /** Convert curated env into `export KEY='VAL'; export KEY2='VAL'; ...` */
 function buildEnvExports(env: NodeJS.ProcessEnv): string {
   const kv = buildTmuxEnvArray(env);
-  if (kv.length === 0) return "";
-  const exports = kv.map((pair) => {
+  const exports: string[] = [];
+
+  // Always mark that we are running inside tmux (the pane) so interactive
+  // helpers can send keys without spawning a local shell.
+  exports.push("export ORG_TMUX='1';");
+
+  for (const pair of kv) {
     const eq = pair.indexOf("=");
-    if (eq <= 0) return "";
+    if (eq <= 0) continue;
     const k = pair.slice(0, eq);
     const v = pair.slice(eq + 1);
-    return `export ${k}=${shq(v)};`;
-  }).filter(Boolean);
+    exports.push(`export ${k}=${shq(v)};`);
+  }
+
   return exports.join(" ");
 }
 
@@ -106,7 +109,7 @@ export async function launchTmuxUI(opts: LaunchTmuxUIOpts): Promise<number> {
   const childCmd = buildShellQuotedCmd(opts.argv);
 
   // 2b) Prepare env exports (whitelisted like podman) to inject *inside* the pane
-  const envExports = buildEnvExports(env); // e.g., "export OPENAI_BASE_URL='...'; export ORG_TEST='1'; ..."
+  const envExports = buildEnvExports(env); // e.g., "export ORG_TMUX='1'; export OPENAI_BASE_URL='...'; ..."
   const inner = envExports ? `${envExports} ${childCmd}` : childCmd;
 
   // 3) Nested? If TMUX set and allowNested(default true) => new-window
