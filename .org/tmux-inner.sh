@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+{
+  echo "[tmux-inner] $(date -Is) starting"
+  echo "[tmux-inner] PATH=$PATH"
+  command -v bun || echo "[tmux-inner] bun not in PATH"
+} >> /work/.org/logs/tmux-inner.log 2>&1
+
+
 umask 0002
 
 export TERM=xterm-256color

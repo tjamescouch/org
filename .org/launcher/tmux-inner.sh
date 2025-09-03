@@ -2,6 +2,13 @@
 # org/launcher/tmux-inner.sh
 # (Static copy; tmux.sh writes an updated version at runtime.)
 set -Eeuo pipefail
+{
+  echo "[tmux-inner] $(date -Is) starting"
+  echo "[tmux-inner] PATH=$PATH"
+  command -v bun || echo "[tmux-inner] bun not in PATH"
+} >> /work/.org/logs/tmux-inner.log 2>&1
+
+
 umask 0002
 
 export PATH="/home/ollama/.bun/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
