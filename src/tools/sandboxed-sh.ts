@@ -333,7 +333,7 @@ export const SANDBOXED_SH_TOOL_SCHEMA = {
 } as const;
 
 /* -----------------------------------------------------------------------------
- * Interactive helpers (tmux first; engine fallback; no 'bash' requirement)
+ * Interactive helpers (tmux/inside-container first; engine fallback)
  * ---------------------------------------------------------------------------*/
 
 export async function shCapture(
@@ -405,7 +405,40 @@ export async function shInteractive(
   const fullScript = `${prefix}${script}`;
   trace("shInteractive", { projectDir, userCwd, cwdRel, fullScript });
 
-  // 1) If we're in tmux UI, send the command to the current pane (no local spawn).
+  const mgr = await getManager(opts.agentSessionId, projectDir, R.cwd());
+  const session = await mgr.getOrCreate(opts.agentSessionId);
+
+  // --- Path A: session backend supports interactive exec directly.
+  const runInteractive =
+    (session && typeof (session as any).execInteractive === "function")
+      ? (session as any).execInteractive.bind(session)
+      : null;
+
+  if (runInteractive) {
+    const child = runInteractive(fullScript);
+    return await new Promise<{ code: number }>((resolve) => {
+      child.on("close", (code: number | null) => resolve({ code: code ?? 0 }));
+      child.on("exit",  (code: number | null) => resolve({ code: code ?? 0 }));
+    });
+  }
+
+  // --- Path B: we are already *inside* the app container; run a local shell.
+  //   - The launcher sets ORG_SANDBOX_BACKEND=none for the app container, or
+  //     we can detect containerization via /run/.containerenv (podman) heuristics.
+  const insideContainer =
+    process.env.ORG_SANDBOX_BACKEND === "none" ||
+    fs.existsSync("/run/.containerenv");
+
+  if (insideContainer) {
+    const shell = process.env.SHELL || "/bin/sh";
+    const child = spawn(shell, ["-lc", fullScript], { stdio: "inherit" });
+    return await new Promise<{ code: number }>((resolve) => {
+      child.on("close", (code) => resolve({ code: code ?? 0 }));
+      child.on("exit",  (code) => resolve({ code: code ?? 0 }));
+    });
+  }
+
+  // --- Path C: if in tmux UI and the pane is ready, we can send keys to the current pane.
   if (process.env.ORG_TMUX === "1") {
     const target = process.env.ORG_TMUX_SESSION ? `${process.env.ORG_TMUX_SESSION}:.` : ".";
     const sockArg = process.env.ORG_TMUX_SOCKET ? `-L ${shq(process.env.ORG_TMUX_SOCKET)}` : "";
@@ -417,9 +450,7 @@ export async function shInteractive(
     return { code: 0 };
   }
 
-  // 2) Otherwise, attempt engine fallback (exec into the container); do NOT require bash.
-  const mgr = await getManager(opts.agentSessionId, projectDir, R.cwd());
-  const session = await mgr.getOrCreate(opts.agentSessionId);
+  // --- Path D: fallback to engine/container exec (host side); do NOT require bash.
   const engine = findEngine();
   const cname = getContainerName(session);
   if (!engine || !cname) {
