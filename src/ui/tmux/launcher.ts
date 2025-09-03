@@ -42,13 +42,13 @@ export async function launchTmuxUI(argv: string[], _scope: Scope = "container"):
   const tmuxScript = [
     // --- write tmux.conf ---
     "mkdir -p /work/.org/logs /work/.org/tmp",
-    "cat > /work/.org/tmux.conf <<'EOF_TMUX_CONF'",
+    "cat > /work/.org/tmux.conf <<'EOF_TMUX_CONF_PROBE'",
     'set -s exit-empty off',
     'set -g default-terminal "tmux-256color"',
     'set -as terminal-overrides ",xterm-256color:Tc,tmux-256color:Tc"',
     'set -g focus-events on',
     'set -s quiet on',
-    "EOF_TMUX_CONF",                 // <-- terminator must be alone
+    "EOF_TMUX_CONF_PROBE",                 // <-- terminator must be alone
 
     // --- write tmux-inner.sh ---
     "cat > /work/.org/tmux-inner.sh <<'EOF_INNER'",
