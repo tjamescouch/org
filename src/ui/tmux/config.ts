@@ -1,61 +1,119 @@
-// src/ui/tmux/config.ts
-import * as os from "os";
-import * as path from "path";
+// src/ui/tmux/index.ts
+/* tmux UI launcher — simple, robust, no backslash soup */
 
-export type TmuxConfigOptions = {
-  // Show a mild help in the statusline
-  hint?: string;
-  // Clipboard helpers discovered by launcher (pbcopy/xclip/wl-copy present?)
-  clipboardHelper?: "pbcopy" | "xclip" | "wl-copy" | null;
-  // Default mouse on/off
-  mouse?: boolean;
-};
+import * as fs from "fs";
+import { Logger } from "../../logger";
+import { shInteractive } from "../../tools/sandboxed-sh";
 
-export function buildEphemeralTmuxConf(opts: TmuxConfigOptions = {}): string {
-  const mouse = opts.mouse ?? true;
-  const hint = opts.hint ?? "prefix: C-b | p: patch popup | m: toggle mouse";
-  const termOverrides = '",*:Tc"'; // truecolor
-  const home = os.homedir();
-  const sockInfo = path.join(home, ".cache", "org"); // just a note in status-right if you want
+type Scope = "container" | "host";
 
-  // Clipboard bindings
-  let copyBinding = "";
-  if (opts.clipboardHelper === "pbcopy") {
-    copyBinding =
-      'bind y run "tmux save-buffer - | pbcopy" \\; display-message \\"Copied to system clipboard\\"';
-  } else if (opts.clipboardHelper === "xclip") {
-    copyBinding =
-      'bind y run "tmux save-buffer - | xclip -selection clipboard -in" \\; display-message \\"Copied to clipboard (xclip)\\"';
-  } else if (opts.clipboardHelper === "wl-copy") {
-    copyBinding =
-      'bind y run "tmux save-buffer - | wl-copy" \\; display-message \\"Copied to clipboard (wl-copy)\\"';
-  } else {
-    // Fallback: rely on OSC52 when supported
-    copyBinding = 'bind y display-message "Copy: rely on OSC52 (terminal dependent)"';
+function insideContainer(): boolean {
+  if (process.env.ORG_SANDBOX_BACKEND === "none") return true;
+  try { if (fs.existsSync("/run/.containerenv")) return true; } catch {}
+  return false;
+}
+
+function resolveProjectDir(): string {
+  // IMPORTANT: when we’re in the app container, the mounted repo is /work.
+  if (insideContainer()) {
+    try { if (fs.existsSync("/work")) return "/work"; } catch {}
+  }
+  return process.env.ORG_PROJECT_DIR || process.cwd();
+}
+
+/**
+ * Launch the tmux UI inside the sandbox.
+ * - Writes a tiny /work/.org/tmux-inner.sh via here-doc (no escaping games).
+ * - Ensures tmux exists (doctorTmux).
+ * - Uses a stable bun path (/usr/local/bin/bun) with sensible fallbacks.
+ */
+export async function launchTmuxUI(argv: string[], scope: Scope = "container"): Promise<number> {
+  const projectDir = resolveProjectDir();
+  const agentSessionId = process.env.ORG_AGENT_SESSION_ID ?? "default";
+
+  const entry = "/work/src/app.ts";
+
+  Logger.info("[org/tmux] launcher start", {
+    projectDir,
+    agentSessionId,
+    entry,
+  });
+
+  // doctor: make sure tmux is available where we're about to run it
+  const rc = await doctorTmux(scope, projectDir, agentSessionId);
+  Logger.info("[org/tmux] tmux check (interactive rc)", { code: rc });
+  if (rc !== 0) {
+    throw new Error(
+      "tmux not found in the sandbox image. Please add tmux to the image used for the sandbox.",
+    );
   }
 
-  return [
-    // --- sensible defaults for good visuals/clipboard ---
-    "set -g assume-paste-time 0",
-    "set -g base-index 1",
-    "set -g pane-base-index 1",
-    "set -g history-limit 100000",
-    `set -ag terminal-overrides ${termOverrides}`,
-    "set -g set-clipboard on",
-    `set -g mouse ${mouse ? "on" : "off"}`,
-
-    // Toggle mouse quickly if users want terminal-native selection
-    'bind m set -g mouse \\; display-message "mouse: #{?mouse,on,off}"',
-
-    // Clipboard helper binding
-    copyBinding,
-
-    // Patch popup: the app can provide a command in $ORG_PATCH_POPUP_CMD
-    // If not set, just print a message.
-    'bind p if -F "#{?env:ORG_PATCH_POPUP_CMD,1,0}" "display-popup -E \\"sh -lc \'$ORG_PATCH_POPUP_CMD\'\\"" "display-message \\"No patch popup command configured\\""',
-
-    // Statusline with a hint
-    'set -g status-interval 2',
-    `set -g status-right "#[fg=cyan]${hint} #[fg=white]| #[fg=yellow]#{session_name}"`,
+  // NOTE: This wrapper must be POSIX-sh compatible (dash). Avoid pipefail/-E.
+  const tmuxScript = [
+    "set -eu",
+    'if [ -n "${ORG_TMUX_DEBUG:-}" ]; then set -x; fi',
+    "umask 0002",
+    "",
+    "mkdir -p /work/.org/logs/tmux-logs",
+    "",
+    "cat > /work/.org/tmux-inner.sh <<'EOS'",
+    "#!/usr/bin/env bash",
+    "set -Eeuo pipefail",
+    "umask 0002",
+    "",
+    "export TERM=xterm-256color",
+    "export LANG=en_US.UTF-8",
+    "export ORG_TMUX=1",
+    "",
+    'BUN="/usr/local/bin/bun"',
+    'if ! command -v "$BUN" >/dev/null 2>&1; then',
+    "  if command -v bun >/dev/null 2>&1; then",
+    '    BUN="$(command -v bun)"',
+    "  elif [ -x /home/ollama/.bun/bin/bun ]; then",
+    '    BUN="/home/ollama/.bun/bin/bun"',
+    "  elif [ -x /root/.bun/bin/bun ]; then",
+    '    BUN="/root/.bun/bin/bun"',
+    "  fi",
+    "fi",
+    "",
+    'if [ -z "${BUN:-}" ] || [ ! -x "$BUN" ]; then',
+    '  echo "[tmux-inner] bun not found" >&2',
+    "  exit 127",
+    "fi",
+    "",
+    "cd /work",
+    'exec "$BUN" /work/src/app.ts --ui console',
+    "EOS",
+    "",
+    "chmod +x /work/.org/tmux-inner.sh",
+    "",
+    "export TMUX_TMPDIR=/work/.org/logs/tmux-logs",
+    "",
+    "exec /usr/bin/tmux -vv new-session -A -s org /work/.org/tmux-inner.sh",
   ].join("\n");
+
+  // Execute interactively inside the sandbox
+  const { code } = await shInteractive(tmuxScript, {
+    projectDir,
+    agentSessionId,
+  });
+
+  return code ?? 0;
+}
+
+/**
+ * Minimal tmux presence check where we're about to run it.
+ * IMPORTANT: use interactive exec (capture is not implemented in Podman session).
+ */
+async function doctorTmux(
+  _scope: Scope,
+  projectDir: string,
+  agentSessionId: string
+): Promise<number> {
+  // We only care about an exit status; suppress output
+  const { code } = await shInteractive(
+    'command -v tmux >/dev/null 2>&1',
+    { projectDir, agentSessionId },
+  );
+  return code ?? 127;
 }
