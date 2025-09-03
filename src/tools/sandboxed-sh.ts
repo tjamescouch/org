@@ -1,3 +1,4 @@
+// src/tools/sandboxed-sh.ts
 import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
@@ -332,7 +333,7 @@ export const SANDBOXED_SH_TOOL_SCHEMA = {
 } as const;
 
 /* -----------------------------------------------------------------------------
- * Interactive helpers (session first; podman/docker fallback)
+ * Interactive helpers (session first; engine fallback)
  * ---------------------------------------------------------------------------*/
 
 export async function shCapture(
@@ -421,7 +422,7 @@ export async function shInteractive(
     });
   }
 
-  // Fallback to container engine.
+  // Fallback to engine interactive exec. Use /bin/sh -c to avoid requiring bash.
   const engine = findEngine();
   const cname = getContainerName(session);
   if (!engine || !cname) {
@@ -434,7 +435,7 @@ export async function shInteractive(
     );
   }
 
-  const argv = ["exec", "-it", cname, "bash", "-lc", fullScript];
+  const argv = ["exec", "-it", cname, "/bin/sh", "-c", fullScript];
   Logger.info(`[sandboxed-sh] fallback interactive via ${engine}: ${argv.join(" ")}`);
 
   const child = spawn(engine, argv, { stdio: "inherit" });
