@@ -333,7 +333,7 @@ export const SANDBOXED_SH_TOOL_SCHEMA = {
 } as const;
 
 /* -----------------------------------------------------------------------------
- * Interactive helpers (session first; engine/tmux-aware fallback)
+ * Interactive helpers (tmux first; engine fallback; no 'bash' requirement)
  * ---------------------------------------------------------------------------*/
 
 export async function shCapture(
@@ -403,28 +403,10 @@ export async function shInteractive(
   const cwdRel = relIfInside(projectDir, userCwd);
   const prefix = cwdRel ? `cd ${JSON.stringify(cwdRel)} && ` : "";
   const fullScript = `${prefix}${script}`;
-  Logger.info("shInteractive", { projectDir, userCwd, cwdRel, fullScript });
+  trace("shInteractive", { projectDir, userCwd, cwdRel, fullScript });
 
-  const mgr = await getManager(opts.agentSessionId, projectDir, R.cwd());
-  const session = await mgr.getOrCreate(opts.agentSessionId);
-
-  // 1) Best path: the session backend itself supports interactive exec.
-  const runInteractive =
-    (session && typeof (session as any).execInteractive === "function")
-      ? (session as any).execInteractive.bind(session)
-      : null;
-
-  if (runInteractive) {
-    const child = runInteractive(fullScript);
-    return await new Promise<{ code: number }>((resolve) => {
-      child.on("close", (code: number | null) => resolve({ code: code ?? 0 }));
-      child.on("exit",  (code: number | null) => resolve({ code: code ?? 0 }));
-    });
-  }
-
-  // 2) If we're in tmux UI, send the command to the current pane instead of spawning a shell.
+  // 1) If we're in tmux UI, send the command to the current pane (no local spawn).
   if (process.env.ORG_TMUX === "1") {
-    // If you plumb socket/session via env (e.g. ORG_TMUX_SOCKET/ORG_TMUX_SESSION), apply them here.
     const target = process.env.ORG_TMUX_SESSION ? `${process.env.ORG_TMUX_SESSION}:.` : ".";
     const sockArg = process.env.ORG_TMUX_SOCKET ? `-L ${shq(process.env.ORG_TMUX_SOCKET)}` : "";
     const tmuxCmd = `tmux ${sockArg} send-keys -t ${shq(target)} ${shq(fullScript)} C-m`;
@@ -435,7 +417,9 @@ export async function shInteractive(
     return { code: 0 };
   }
 
-  // 3) Fallback to container engine interactive exec; do NOT require bash.
+  // 2) Otherwise, attempt engine fallback (exec into the container); do NOT require bash.
+  const mgr = await getManager(opts.agentSessionId, projectDir, R.cwd());
+  const session = await mgr.getOrCreate(opts.agentSessionId);
   const engine = findEngine();
   const cname = getContainerName(session);
   if (!engine || !cname) {
@@ -456,4 +440,9 @@ export async function shInteractive(
     child.on("close", (code) => resolve({ code: code ?? 0 }));
     child.on("exit",  (code) => resolve({ code: code ?? 0 }));
   });
+}
+
+// simple single-quote shell quoting
+function shq(s: string): string {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
