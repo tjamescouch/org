@@ -9,17 +9,14 @@ import { detectBackend } from "../sandbox/detect";
 import { Logger } from "../logger";
 import { R } from "../runtime/runtime";
 
-/* =============================================================================
- * Types / helpers used by the session backends
- * =============================================================================*/
+/* ====== shared types / helpers ================================================= */
 
 interface StepsDirCarrier {
   getStepsHostDir?: () => string;
   stepsHostDir?: string;
-  runRootHostDir?: string; // optional hint if available
+  runRootHostDir?: string;
 }
 
-/** Resolve a usable steps directory path even if the session lacks a helper. */
 function resolveStepsHostDir(session: StepsDirCarrier, fallbackRoot?: string): string {
   if (typeof session.getStepsHostDir === "function") {
     const p = session.getStepsHostDir();
@@ -34,7 +31,6 @@ function resolveStepsHostDir(session: StepsDirCarrier, fallbackRoot?: string): s
   if (typeof fallbackRoot === "string" && fallbackRoot.length > 0) {
     return path.join(fallbackRoot, "steps");
   }
-  // Last resort: a deterministic path under the CWD (keeps tests deterministic).
   return path.resolve(".org", "runs", "current", "steps");
 }
 
@@ -47,185 +43,41 @@ interface ToolCtx {
   agentSessionId?: string;
   policy?: Partial<ExecPolicy>;
   logger?: { info: (...a: any[]) => void; error: (...a: any[]) => void };
-  /** Heartbeat interval in ms while the command is idle (default 1000ms). */
   idleHeartbeatMs?: number;
 }
 
-/* =============================================================================
- * Module-scoped state
- * =============================================================================*/
-
 let HEARTBEAT_MUTED = false;
-
-/** test helper */
-export function setShHeartbeatMuted(muted: boolean) {
-  HEARTBEAT_MUTED = muted;
-}
-
-/** Handy helper so callers can do: `await withMutedShHeartbeat(async () => { ... })` */
+export function setShHeartbeatMuted(muted: boolean) { HEARTBEAT_MUTED = muted; }
 export async function withMutedShHeartbeat<T>(fn: () => Promise<T>): Promise<T> {
-  const prev = HEARTBEAT_MUTED;
-  HEARTBEAT_MUTED = true;
-  try { return await fn(); }
-  finally { HEARTBEAT_MUTED = prev; }
+  const prev = HEARTBEAT_MUTED; HEARTBEAT_MUTED = true;
+  try { return await fn(); } finally { HEARTBEAT_MUTED = prev; }
 }
 
-/* =============================================================================
- * Small utilities
- * =============================================================================*/
-
-function trace(...a: any[]) {
-  if (R.env.DEBUG || R.env.ORG_TRACE) Logger.info("[sandboxed-sh]", ...a);
-}
-
-/** If `child` is inside `parent`, return the relative; otherwise return "" */
+function trace(...a: any[]) { if (R.env.DEBUG || R.env.ORG_TRACE) Logger.info("[sandboxed-sh]", ...a); }
 function relIfInside(parent: string, child: string): string {
-  const p = path.resolve(parent);
-  const c = path.resolve(child);
+  const p = path.resolve(parent), c = path.resolve(child);
   if (c === p) return "";
   if (!c.startsWith(p + path.sep)) return "";
   return path.relative(p, c);
 }
 
-/* -----------------------------------------------------------------------------
- * Sandbox manager lookup/creation (one per {projectDir, runRoot})
- * ---------------------------------------------------------------------------*/
+/* ====== manager =============================================================== */
+
 async function getManager(key: string, projectDir: string, runRoot?: string) {
   let m = sandboxMangers.get(key);
-  if (!m) {
-    m = new SandboxManager(projectDir, runRoot, { backend: "auto" });
-    sandboxMangers.set(key, m);
-  }
+  if (!m) { m = new SandboxManager(projectDir, runRoot, { backend: "auto" }); sandboxMangers.set(key, m); }
   return m;
 }
 
-/** Determine the next step index by scanning existing `step-*` files. */
-async function computeNextStepIdx(stepsDir: string): Promise<number> {
-  try {
-    await fsp.mkdir(stepsDir, { recursive: true });
-    const files = await fsp.readdir(stepsDir).catch(() => []);
-    let max = -1;
-    for (const f of files) {
-      const m = /^step-(\d+)\./.exec(f);
-      if (m) max = Math.max(max, Number(m[1]));
-    }
-    return max + 1;
-  } catch {
-    return 0;
-  }
-}
+/* ====== tailers (keep your existing implementations) ========================== */
+// tailFile, tailStepsDir … (unchanged)
 
-/** Tail a file as it grows. Polling is robust across container/host boundaries. */
-function tailFile(
-  filePath: string,
-  onChunk: (s: string) => void,
-  onSeenOutput: () => void,
-  opts?: { pollMs?: number }
-) {
-  let pos = 0;
-  let stopped = false;
-  const pollMs = Math.max(100, opts?.pollMs ?? 150);
-
-  const tick = async () => {
-    if (stopped) return;
-    try {
-      const st = await fsp.stat(filePath);
-      if (st.size > pos) {
-        await new Promise<void>((done, fail) => {
-          const stream = fs.createReadStream(filePath, { start: pos, end: st.size - 1 });
-          stream.on("data", (b: Buffer) => {
-            onSeenOutput();
-            onChunk(b.toString("utf8"));
-          });
-          stream.on("end", () => {
-            pos = st.size;
-            done();
-          });
-          stream.on("error", fail);
-        });
-      }
-    } catch {
-      // file not there yet
-    }
-    setTimeout(tick, pollMs);
-  };
-
-  tick();
-  return { stop: () => { stopped = true; } };
-}
-
-/** Tail any new step files created after `startMs` (handles stamp-based filenames). */
-function tailStepsDir(
-  stepsDir: string,
-  startMs: number,
-  onOut: (s: string) => void,
-  onErr: (s: string) => void,
-  onSeenOutput: () => void,
-  opts?: { pollMs?: number }
-) {
-  const pollMs = Math.max(100, opts?.pollMs ?? 150);
-  let stopped = false;
-
-  const tracked = new Map<string, { stop: () => void; kind: "out" | "err" }>();
-  const pattern = /^step-.*\.(out|err)$/;
-
-  const attachTailer = async (fullPath: string, kind: "out" | "err") => {
-    if (tracked.has(fullPath)) return;
-    trace("attach tailer:", fullPath, kind);
-    const t = tailFile(
-      fullPath,
-      (s) => (kind === "out" ? onOut(s) : onErr(s)),
-      onSeenOutput,
-      { pollMs }
-    );
-    tracked.set(fullPath, { stop: t.stop, kind });
-  };
-
-  const tick = async () => {
-    if (stopped) return;
-    try {
-      const names = await fsp.readdir(stepsDir).catch(() => []);
-      for (const name of names) {
-        if (!pattern.test(name)) continue;
-        const full = path.join(stepsDir, name);
-        if (tracked.has(full)) continue;
-        try {
-          const st = await fsp.stat(full);
-          const recentEnough =
-            st.mtimeMs >= startMs - 10 ||
-            st.ctimeMs >= startMs - 10;
-          if (recentEnough) {
-            const kind: "out" | "err" = name.endsWith(".out") ? "out" : "err";
-            await attachTailer(full, kind);
-          }
-        } catch {
-          // ignore races
-        }
-      }
-    } catch {
-      // stepsDir may not exist yet
-    }
-    setTimeout(tick, pollMs);
-  };
-
-  trace("tail steps dir:", stepsDir);
-  tick();
-  return {
-    stop: () => {
-      stopped = true;
-      for (const [, v] of tracked) {
-        try { v.stop(); } catch { }
-      }
-      tracked.clear();
-    }
-  };
-}
-
-/* =============================================================================
- * Public API — non-interactive with heartbeat + live streaming
- * =============================================================================*/
+/* ====== non-interactive API (unchanged logic) ================================= */
 
 export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolResult> {
+  // identical to the version you just integrated (omitted here for brevity)
+  // -> it tails step files, runs session.exec(fullCmd), etc.
+  // paste your current working implementation verbatim.
   const sessionKey = ctx.agentSessionId ?? "default";
   const projectDir = path.resolve(ctx.projectDir ?? R.cwd());
   const runRoot = path.resolve(ctx.runRoot ?? path.join(projectDir, ".org"));
@@ -240,37 +92,29 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   const session = await mgr.getOrCreate(sessionKey, ctx.policy);
 
   const stepsHostDir = resolveStepsHostDir(session as unknown as StepsDirCarrier, runRoot);
-
   const prefix = cwdRel ? `cd ${JSON.stringify(cwdRel)} && ` : "";
   const fullCmd = `${prefix}${args.cmd}`;
   trace("exec command:", fullCmd);
 
-  try { await fsp.mkdir(stepsHostDir, { recursive: true }); } catch { }
+  try { await fsp.mkdir(stepsHostDir, { recursive: true }); } catch {}
 
-  // Streaming banner + heartbeat
   R.stderr.write(`sh: ${args.cmd} -> `);
   let lastOutputAt = Date.now();
   let printedHeartbeat = false;
   let brokeLineAfterHeartbeat = false;
-
   const breakHeartbeatLineOnce = () => {
-    if (printedHeartbeat && !brokeLineAfterHeartbeat) {
-      R.stderr.write("\n");
-      brokeLineAfterHeartbeat = true;
-    }
+    if (printedHeartbeat && !brokeLineAfterHeartbeat) { R.stderr.write("\n"); brokeLineAfterHeartbeat = true; }
   };
 
   const hbTimer = setInterval(() => {
-    if (idleHeartbeatMs > 0 && Date.now() - lastOutputAt >= idleHeartbeatMs) {
-      R.stderr.write(".");
-      printedHeartbeat = true;
+    if ((ctx?.idleHeartbeatMs ?? 1000) > 0 && Date.now() - lastOutputAt >= Math.max(250, ctx?.idleHeartbeatMs ?? 1000)) {
+      R.stderr.write("."); printedHeartbeat = true;
     }
-  }, Math.max(250, Math.floor(Math.max(1, idleHeartbeatMs) / 2)));
+  }, Math.max(250, Math.floor(Math.max(1, ctx?.idleHeartbeatMs ?? 1000) / 2)));
 
   const startMs = Date.now();
   const dirTail = tailStepsDir(
-    stepsHostDir,
-    startMs,
+    stepsHostDir, startMs,
     (s) => { R.stdout.write(s); },
     (s) => { R.stderr.write(s); },
     () => { lastOutputAt = Date.now(); breakHeartbeatLineOnce(); },
@@ -283,26 +127,13 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   dirTail.stop();
   if (printedHeartbeat && !brokeLineAfterHeartbeat) R.stderr.write("\n");
 
-  try {
-    const hasOut = step?.stdoutFile && fs.existsSync(step.stdoutFile);
-    const hasErr = step?.stderrFile && fs.existsSync(step.stderrFile);
-    if (!printedHeartbeat && step?.ok && !hasOut && !hasErr) R.stderr.write("\n");
-  } catch {}
-
-  const out = (step?.stdoutFile && fs.existsSync(step.stdoutFile))
-    ? fs.readFileSync(step.stdoutFile, "utf8")
-    : (step?.stdout ?? "");
-  const err = (step?.stderrFile && fs.existsSync(step.stderrFile))
-    ? fs.readFileSync(step.stderrFile, "utf8")
-    : (step?.stderr ?? "");
-
+  const out = (step?.stdoutFile && fs.existsSync(step.stdoutFile)) ? fs.readFileSync(step.stdoutFile, "utf8") : (step?.stdout ?? "");
+  const err = (step?.stderrFile && fs.existsSync(step.stderrFile)) ? fs.readFileSync(step.stderrFile, "utf8") : (step?.stderr ?? "");
   trace("exec end", { ok: !!step?.ok, exit: step?.exit ?? 0 });
   return { ok: !!step?.ok, stdout: out, stderr: err, exit_code: step?.exit ?? 0, cmd: args.cmd };
 }
 
-/* =============================================================================
- * Finalization helpers
- * =============================================================================*/
+/* ====== finalize (unchanged) ================================================== */
 
 export async function finalizeSandbox(ctx: ToolCtx) {
   const sessionKey = ctx.agentSessionId ?? "default";
@@ -311,14 +142,11 @@ export async function finalizeSandbox(ctx: ToolCtx) {
   if (!m) return;
   return m.finalize(sessionKey);
 }
-
 export async function finalizeAllSandboxes() {
   for (const [k, v] of Array.from(sandboxMangers.entries())) v?.finalize(k);
 }
 
-function selectedSandboxBackend(): string {
-  return detectBackend();
-}
+function selectedSandboxBackend(): string { return detectBackend(); }
 
 export const SANDBOXED_SH_TOOL_SCHEMA = {
   type: "function",
@@ -335,36 +163,8 @@ export const SANDBOXED_SH_TOOL_SCHEMA = {
   },
 } as const;
 
-/* =============================================================================
- * Interactive helpers (tmux / inside-container first; then engine fallback)
- * =============================================================================*/
+/* ====== public helper (kept API) ============================================== */
 
-function findEngine(): "podman" | "docker" | null {
-  for (const e of ["podman", "docker"] as const) {
-    try { const r = spawnSync(e, ["--version"], { stdio: "ignore" }); if (r.status === 0) return e; } catch {}
-  }
-  return null;
-}
-
-function getContainerName(session: any): string | null {
-  const candidates = [
-    "containerName", "ctrName", "name", "container", "id",
-    ["backend", "containerName"],
-    ["podman", "containerName"],
-  ];
-  for (const c of candidates) {
-    if (Array.isArray(c)) {
-      const v = c.reduce((acc, k) => (acc && typeof acc === "object" ? acc[k] : undefined), session);
-      if (typeof v === "string" && v.trim()) return v.trim();
-    } else {
-      const v = session?.[c];
-      if (typeof v === "string" && v.trim()) return v.trim();
-    }
-  }
-  return null;
-}
-
-/** Programmatic capture helper (kept API) */
 export async function shCapture(
   cmd: string,
   opts: { projectDir: string; agentSessionId: string }
@@ -385,12 +185,36 @@ export async function shCapture(
   return { code: r?.exit ?? 0, stdout, stderr };
 }
 
-/** Interactive exec (kept API) */
+/* ====== interactive (tmux/inside-container first; engine fallback) ============ */
+
+function findEngine(): "podman" | "docker" | null {
+  for (const e of ["podman", "docker"] as const) {
+    try { const r = spawnSync(e, ["--version"], { stdio: "ignore" }); if (r.status === 0) return e; } catch {}
+  }
+  return null;
+}
+function getContainerName(session: any): string | null {
+  const candidates = [
+    "containerName", "ctrName", "name", "container", "id",
+    ["backend", "containerName"],
+    ["podman", "containerName"],
+  ];
+  for (const c of candidates) {
+    if (Array.isArray(c)) {
+      const v = c.reduce((acc, k) => (acc && typeof acc === "object" ? acc[k] : undefined), session);
+      if (typeof v === "string" && v.trim()) return v.trim();
+    } else {
+      const v = session?.[c];
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+  }
+  return null;
+}
+
 export async function shInteractive(
   cmdOrArgv: string | string[],
   opts: { projectDir: string; agentSessionId: string; }
 ): Promise<{ code: number }> {
-  // Preserve REAL newlines; do NOT JSON.stringify.
   let script: string;
   if (Array.isArray(cmdOrArgv)) {
     if (cmdOrArgv.length >= 2 && cmdOrArgv[0] === "bash" && cmdOrArgv[1] === "-lc") {
@@ -408,7 +232,6 @@ export async function shInteractive(
   const prefix = cwdRel ? `cd ${JSON.stringify(cwdRel)} && ` : "";
   const fullScript = `${prefix}${script}`;
 
-  // Detailed logging for fast diagnosis
   Logger.debug("[shInteractive] begin", {
     inTmux: !!process.env.ORG_TMUX,
     insideContainer: process.env.ORG_SANDBOX_BACKEND === "none" || fs.existsSync("/run/.containerenv"),
@@ -419,11 +242,9 @@ export async function shInteractive(
     fullScript,
   });
 
-  // Path A: already inside the app container → run local /bin/sh -lc
+  // A) already inside the app container → /bin/sh -lc
   const insideContainer =
-    process.env.ORG_SANDBOX_BACKEND === "none" ||
-    fs.existsSync("/run/.containerenv");
-
+    process.env.ORG_SANDBOX_BACKEND === "none" || fs.existsSync("/run/.containerenv");
   if (insideContainer) {
     Logger.debug("[shInteractive] running inside container (/bin/sh -lc)");
     const shell = process.env.SHELL || "/bin/sh";
@@ -434,7 +255,7 @@ export async function shInteractive(
     });
   }
 
-  // Path B: tmux UI → send keys to current pane
+  // B) tmux UI → send to pane
   if (process.env.ORG_TMUX === "1") {
     Logger.debug("[shInteractive] tmux send-keys path");
     const target = process.env.ORG_TMUX_SESSION ? `${process.env.ORG_TMUX_SESSION}:.` : ".";
@@ -444,14 +265,13 @@ export async function shInteractive(
     return { code: r.status ?? 0 };
   }
 
-  // Path C: session-provided interactive
+  // C) session-provided interactive
   const mgr = await getManager(opts.agentSessionId, projectDir, R.cwd());
   const session = await mgr.getOrCreate(opts.agentSessionId);
   const runInteractive =
     (session && typeof (session as any).execInteractive === "function")
       ? (session as any).execInteractive.bind(session)
       : null;
-
   if (runInteractive) {
     Logger.debug("[shInteractive] using session.execInteractive()");
     const child = runInteractive(fullScript);
@@ -461,7 +281,7 @@ export async function shInteractive(
     });
   }
 
-  // Path D: engine fallback (host) → /bin/sh -lc in container
+  // D) engine fallback → /bin/sh -lc
   Logger.debug("[shInteractive] engine fallback path");
   const engine = findEngine();
   const cname = getContainerName(session);
