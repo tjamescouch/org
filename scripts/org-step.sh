@@ -30,7 +30,6 @@ start_ts="$(date -Is)"
 
 # Run the command; capture stdout/stderr; create the files even if empty
 set +e
-printenv
 setsid bash -lc "$CMD" >"$OUT_FILE" 2>"$ERR_FILE" &
 pid="$!"
 wait "$pid"

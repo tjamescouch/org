@@ -48,27 +48,36 @@ async function writeEphemeralConf(opts: { clipboard: "pbcopy" | "xclip" | "wl-co
   return confPath;
 }
 
-/** Convert curated env (same policy as podman) into a shell prefix: KEY='val' KEY2='val' ...  */
-function buildEnvPrefix(env: NodeJS.ProcessEnv): string {
-  // Reuse the podman whitelist/normalization so tmux child has identical env
+/** Convert curated env (same policy as podman) into an array: ["-e","KEY=VAL", ...]  */
+function buildTmuxEnvArray(env: NodeJS.ProcessEnv): string[] {
   const args = envToPodmanArgs(env);
   // args look like ["-e","OPENAI_BASE_URL=...","-e","FOO=bar", ...]
+  // We only need the KEY=VAL parts to construct shell `export` statements when desired,
+  // but for tmux we will inject env by running the full command in the pane
+  // (no need to set tmux server env globally).
   const kv: string[] = [];
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "-e") {
       const pair = args[i + 1] ?? "";
-      const eq = pair.indexOf("=");
-      if (eq > 0) {
-        const k = pair.slice(0, eq);
-        const v = pair.slice(eq + 1);
-        kv.push(`${k}=${shq(v)}`);
-      }
-      i++; // skip the value we consumed
+      kv.push(pair);
+      i++; // skip consumed value
     }
   }
-  // Join as a prefix that we place before `bun ./src/app.ts ...`
-  // e.g., OPENAI_BASE_URL='http://...' OPENAI_MODEL='xxx'
-  return kv.join(" ");
+  return kv;
+}
+
+/** Convert curated env into `export KEY='VAL'; export KEY2='VAL'; ...` */
+function buildEnvExports(env: NodeJS.ProcessEnv): string {
+  const kv = buildTmuxEnvArray(env);
+  if (kv.length === 0) return "";
+  const exports = kv.map((pair) => {
+    const eq = pair.indexOf("=");
+    if (eq <= 0) return "";
+    const k = pair.slice(0, eq);
+    const v = pair.slice(eq + 1);
+    return `export ${k}=${shq(v)};`;
+  }).filter(Boolean);
+  return exports.join(" ");
 }
 
 /**
@@ -76,6 +85,11 @@ function buildEnvPrefix(env: NodeJS.ProcessEnv): string {
  *  - If $TMUX is set and allowNested!=false -> create-window in current session.
  *  - Else -> start a new tmux server with a private socket (-L) & ephemeral conf, then attach.
  * The program inside tmux is the *same* org CLI, with env ORG_TMUX=1.
+ *
+ * NOTE: We avoid spawning an extra `bash -lc` inside the pane. Instead, we
+ * run the full child command directly as the pane program with tmux. If you do
+ * need a shell for any reason, switch the `inner` string below to
+ * `${SHELL:-/bin/sh} -lc ${shq(inner)}`.
  */
 export async function launchTmuxUI(opts: LaunchTmuxUIOpts): Promise<number> {
   const cwd = opts.cwd ?? process.cwd();
@@ -88,18 +102,18 @@ export async function launchTmuxUI(opts: LaunchTmuxUIOpts): Promise<number> {
     return 127;
   }
 
-  // 2) Build argv for child
+  // 2) Build argv for child (the same program the user invoked)
   const childCmd = buildShellQuotedCmd(opts.argv);
 
-  // 2b) Build a shell env prefix (whitelisted like podman)
-  const envPrefix = buildEnvPrefix(env); // "" if nothing to pass
+  // 2b) Prepare env exports (whitelisted like podman) to inject *inside* the pane
+  const envExports = buildEnvExports(env); // e.g., "export OPENAI_BASE_URL='...'; export ORG_TEST='1'; ..."
+  const inner = envExports ? `${envExports} ${childCmd}` : childCmd;
 
   // 3) Nested? If TMUX set and allowNested(default true) => new-window
   if (process.env.TMUX && (opts.allowNested ?? true)) {
     const winName = opts.sessionName || "org";
-    // Inject curated env vars in the inner shell, not the outer tmux process
-    const inner = envPrefix ? `${envPrefix} ${childCmd}` : childCmd;
-    const cmd = `tmux new-window -n ${shq(winName)} "bash -lc ${shq(inner)}"`;
+    // Run the full command directly as the pane program (no extra bash hop)
+    const cmd = `tmux new-window -n ${shq(winName)} ${shq(inner)}`;
     const r = spawnSync("bash", ["-lc", cmd], { cwd, env, stdio: "inherit" });
     return r.status ?? 0;
   }
@@ -110,12 +124,11 @@ export async function launchTmuxUI(opts: LaunchTmuxUIOpts): Promise<number> {
   const sockName = `org-${process.pid}-${Date.now()}`;
   const sessionName = opts.sessionName || "org";
 
-  // start detached
+  // start detached: run the full command directly in the pane
   {
-    const inner = envPrefix ? `${envPrefix} ${childCmd}` : childCmd;
     const newSessionCmd =
       `tmux -L ${shq(sockName)} -f ${shq(confPath)} ` +
-      `new-session -d -s ${shq(sessionName)} -n main "bash -lc ${shq(inner)}"`;
+      `new-session -d -s ${shq(sessionName)} -n main ${shq(inner)}`;
 
     const r = spawnSync(`bash`, ["-lc", newSessionCmd], { cwd, env, stdio: "inherit" });
     if (r.status !== 0) return r.status ?? 1;
