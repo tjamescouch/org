@@ -1,119 +1,125 @@
-/* tmux UI launcher — instrumented for robust debugging */
+/* tmux UI launcher — simple, robust, no backslash soup
+ *
+ * - Runs tmux inside the sandbox (no extra container hop).
+ * - Writes a tiny /work/.org/tmux-inner.sh that runs the app and keeps
+ *   the pane open on exit (remain-on-exit + prompt), teeing output to a log.
+ * - Puts tmux client/server logs under /work/.org/logs/tmux-logs/tmux-0.
+ */
 
 import { Logger } from "../../logger";
 import { shInteractive, shCapture } from "../../tools/sandboxed-sh";
 
 type Scope = "container" | "host";
 
-/**
- * Launch the tmux UI inside the sandbox (the app container).
- *
- * This version adds heavy instrumentation so we can see exactly why the pane
- * process exits. It:
- *  - Creates /work/.org/tmux-inner.sh with tracing + exit logging
- *  - Writes /work/.org/tmux.conf with remain-on-exit, exit-empty=off, etc.
- *  - Uses tmux -vv and a stable -L socket so logs always land in
- *    /work/.org/logs/tmux-logs/tmux-0/ (server + client logs).
- */
-export async function launchTmuxUI(argv: string[], _scope: Scope = "container"): Promise<number> {
-  // In our containerized layout, /work is the repo root.
-  // We force this to avoid leaking the *host* path when the UI was launched
-  // from a nested cwd (this was a source of earlier confusion).
-  const projectDir = "/work";
-  const agentSessionId = "default";
+/** Launch the tmux UI inside the sandbox. */
+export async function launchTmuxUI(argv: string[], scope: Scope = "container"): Promise<number> {
+  // Always prefer /work if the wrapper script exported it; otherwise fall back.
+  const projectDir = process.env.ORG_PROJECT_DIR || "/work";
+  const agentSessionId = process.env.ORG_AGENT_SESSION_ID || "default";
+
   const entry = "/work/src/app.ts";
 
-  const LOG_DIR = "/work/.org/logs";
-  const TMUX_LOG_DIR = `${LOG_DIR}/tmux-logs`;
-  const RUN_LOG = `${LOG_DIR}/tmux-run.log`;
-  const TMUX_SOCKET_NAME = "tmux-0";             // stable label for log placement
-  const TMUX_CONF = "/work/.org/tmux.conf";
-  const INNER = "/work/.org/tmux-inner.sh";
-
-  Logger.info("[org/tmux] launcher start", { projectDir, agentSessionId, entry });
+  Logger.info("[org/tmux] launcher start", {
+    projectDir,
+    agentSessionId,
+    entry,
+  });
 
   // doctor: make sure tmux is available where we're about to run it
-  const rc = await doctorTmux(projectDir, agentSessionId);
+  const rc = await doctorTmux(scope, projectDir, agentSessionId);
   Logger.info("[org/tmux] tmux check (interactive rc)", { code: rc });
   if (rc !== 0) {
-    throw new Error("tmux not found in the sandbox image. Please add tmux to the image used for the sandbox.");
+    throw new Error(
+      "tmux not found in the sandbox image. Please add tmux to the image used for the sandbox.",
+    );
   }
 
-  // One interactive script that:
-  //  1) Makes log dirs
-  //  2) Writes tmux-inner.sh (logs start/exit, finds bun, execs org --ui console)
-  //  3) Writes tmux.conf with remain-on-exit etc.
-  //  4) Starts a new-session with -vv and attaches; we annotate attach rc.
-  const script = [
+  // Build the script without template literals so ${…} stays literal bash.
+  // We also keep it entirely self-contained to avoid quoting surprises.
+  const tmuxScript = [
     "set -Eeuo pipefail",
-    `mkdir -p ${TMUX_LOG_DIR} ${LOG_DIR}`,
-    `echo "[tmux/launcher] begin $(date -Is)" >> ${RUN_LOG}`,
-
-    // Inner runner — logs start/exit so we know if the pane process crashes
-    `cat > ${INNER} <<'EOS'`,
+    "umask 0002",
+    "",
+    'LOG_DIR="/work/.org/logs"',
+    'TMUX_DIR="$LOG_DIR/tmux-logs"',
+    'CONF="/work/.org/tmux.conf"',
+    'INNER="/work/.org/tmux-inner.sh"',
+    'SOCK_LABEL="tmux-0"',
+    "",
+    'mkdir -p "$TMUX_DIR" "$LOG_DIR"',
+    "",
+    'echo "[tmux/launcher] begin $(date -Is)"',
+    'echo "[tmux/launcher] tmux version: $(/usr/bin/tmux -V 2>/dev/null || tmux -V || echo unknown)"',
+    'echo "[tmux/launcher] socket label: $SOCK_LABEL"',
+    'echo "[tmux/launcher] conf: $CONF"',
+    'echo "[tmux/launcher] inner: $INNER"',
+    "",
+    "# --- Write tmux.conf with deterministic settings ---",
+    'cat > "$CONF" <<\'CONF\'',
+    'set -g default-terminal "xterm-256color"',
+    "set -g mouse on",
+    "set -g escape-time 0",
+    "set -g remain-on-exit on           # keep pane visible after app exits",
+    "set -g detach-on-destroy off       # don’t drop the server if a client detaches",
+    "# Keep the default prefix (C-b). Feel free to add your custom binds here.",
+    "CONF",
+    "",
+    "# --- Write the inner runner that starts the app and keeps the pane open ---",
+    'cat > "$INNER" <<\'INN\'',
     "#!/usr/bin/env bash",
     "set -Eeuo pipefail",
     "umask 0002",
-    `RUN_LOG="${RUN_LOG}"`,
-    `echo "[tmux-inner] start $(date -Is)" >> "$RUN_LOG"`,
     "",
-    // Keep TERM sane
     "export TERM=xterm-256color",
     "export LANG=en_US.UTF-8",
     "",
-    // Resolve bun robustly
+    '# Find bun deterministically (prefer /usr/local/bin/bun; fall back to PATH)',
     'BUN="/usr/local/bin/bun"',
-    'if ! command -v "$BUN" >/dev/null 2>&1; then',
-    '  if command -v bun >/dev/null 2>&1; then',
-    '    BUN="$(command -v bun)"',
-    "  elif [ -x /home/ollama/.bun/bin/bun ]; then",
-    '    BUN="/home/ollama/.bun/bin/bun"',
-    "  elif [ -x /root/.bun/bin/bun ]; then",
-    '    BUN="/root/.bun/bin/bun"',
-    "  fi",
-    "fi",
-    'if [ -z "${BUN:-}" ] || [ ! -x "$BUN" ]; then',
-    '  echo "[tmux-inner] bun not found" >> "$RUN_LOG"',
-    "  exit 127",
+    'if ! command -v \"$BUN\" >/dev/null 2>&1; then',
+    '  BUN=\"$(command -v bun || true)\"',
     "fi",
     "",
-    // Always run from /work
     "cd /work",
-    // Exit tracer
-    'trap \'ec=$?; echo "[tmux-inner] exit ${ec} $(date -Is)" >> "$RUN_LOG"; exit $ec\' EXIT',
-    'echo "[tmux-inner] exec $BUN /work/src/app.ts --ui console" >> "$RUN_LOG"',
-    'exec "$BUN" /work/src/app.ts --ui console',
-    "EOS",
-    `chmod +x ${INNER}`,
-
-    // Tmux config — keep pane when command exits; do not kill server/client on destroy.
-    `cat > ${TMUX_CONF} <<'EOF'`,
-    "set -g mouse on",
-    "set -g remain-on-exit on",
-    "set -g detach-on-destroy off",
-    "set -g exit-empty off",
-    // A tiny hint in the status so we know we're on the right socket/session
-    'set -g status-left "org #[fg=yellow]#{session_name}#[default] #{pane_title}"',
-    "EOF",
-
-    // Version + socket path breadcrumbs
-    `echo "[tmux/launcher] tmux version: $(/usr/bin/tmux -V 2>&1)" >> ${RUN_LOG}`,
-    `echo "[tmux/launcher] socket label: ${TMUX_SOCKET_NAME}" >> ${RUN_LOG}`,
-    `echo "[tmux/launcher] conf: ${TMUX_CONF}" >> ${RUN_LOG}`,
-    `echo "[tmux/launcher] inner: ${INNER}" >> ${RUN_LOG}`,
-
-    // NEW SESSION (detached) with -vv to ensure logs are written, then attach.
-    // We deliberately do *not* '|| true' around new-session; if that fails we want the error.
-    `/usr/bin/tmux -vv -f ${TMUX_CONF} -L ${TMUX_SOCKET_NAME} new-session -d -s org -n console ${INNER}`,
-    `echo "[tmux/launcher] new-session rc=$? $(date -Is)" >> ${RUN_LOG}`,
-    // Attach; we annotate rc explicitly so we can distinguish ESC/exit vs. error
-    `/usr/bin/tmux -L ${TMUX_SOCKET_NAME} attach -t org`,
-    `echo "[tmux/launcher] attach rc=$? $(date -Is)" >> ${RUN_LOG}`,
+    'logdir="/work/.org/logs"',
+    'mkdir -p \"$logdir\"',
+    'ts=\"$(date -Is | tr -d \':-\')\"',
+    'applog=\"$logdir/org-app-$ts.log\"',
+    'echo \"[tmux-inner] exec $BUN /work/src/app.ts --ui console\" | tee -a \"$applog\"',
+    "",
+    '# Run the app; tee output to the log and preserve the app exit code.',
+    '$BUN /work/src/app.ts --ui console 2>&1 | tee -a \"$applog\"',
+    'ec=${PIPESTATUS[0]}',
+    'echo \"[tmux-inner] app exit=$ec, log=$applog\" | tee -a \"$applog\"',
+    "",
+    "# Keep pane visible so the user can read the tail or copy the log path.",
+    'echo \"[tmux-inner] press any key to close this pane\"',
+    'stty -echo -icanon time 0 min 0 2>/dev/null || true',
+    'dd bs=1 count=1 of=/dev/null 2>/dev/null || true',
+    "exit \"$ec\"",
+    "INN",
+    "chmod +x \"$INNER\"",
+    "",
+    "# --- Run tmux (labelled socket; explicit conf; working dir /work) ---",
+    'export TMUX_TMPDIR=\"$TMUX_DIR\"',
+    "",
+    '# -vv on the *first* command ensures client/server logs appear in $PWD',
+    'echo \"[tmux/launcher] new-session begin $(date -Is)\"',
+    '/usr/bin/tmux -vv -L \"$SOCK_LABEL\" -f \"$CONF\" new-session -d -s org -c /work \"$INNER\"',
+    'rc=$?',
+    'echo \"[tmux/launcher] new-session rc=$rc $(date -Is)\"',
+    "",
+    '# Attach (no -vv needed here; logs are already open).',
+    '/usr/bin/tmux -L \"$SOCK_LABEL\" attach -t org',
+    "",
   ].join("\n");
 
-  const { code } = await shInteractive(["bash", "-lc", script], { projectDir, agentSessionId });
+  // Execute interactively inside the sandbox (preserves the user’s TTY).
+  const { code } = await shInteractive(["bash", "-lc", tmuxScript], {
+    projectDir,
+    agentSessionId,
+  });
 
-  Logger.info("[org/tmux] launcher end", { code });
+  Logger.info("[org/tmux] launcher end", { code: code ?? 0 });
   return code ?? 0;
 }
 
@@ -121,10 +127,15 @@ export async function launchTmuxUI(argv: string[], _scope: Scope = "container"):
  * Minimal tmux presence check where we're about to run it.
  * IMPORTANT: use interactive exec (capture is not implemented in Podman session).
  */
-async function doctorTmux(projectDir: string, agentSessionId: string): Promise<number> {
-  const { code } = await shInteractive(['bash', '-lc', 'command -v tmux >/dev/null 2>&1'], {
-    projectDir,
-    agentSessionId,
-  });
+async function doctorTmux(
+  _scope: Scope,
+  projectDir: string,
+  agentSessionId: string
+): Promise<number> {
+  // We only care about an exit status; suppress output.
+  const { code } = await shInteractive(
+    ['bash', '-lc', 'command -v tmux >/dev/null 2>&1 || /usr/bin/tmux -V >/dev/null 2>&1'],
+    { projectDir, agentSessionId },
+  );
   return code ?? 127;
 }
