@@ -403,7 +403,7 @@ export async function shInteractive(
   const cwdRel = relIfInside(projectDir, userCwd);
   const prefix = cwdRel ? `cd ${JSON.stringify(cwdRel)} && ` : "";
   const fullScript = `${prefix}${script}`;
-  trace("shInteractive", { projectDir, userCwd, cwdRel, fullScript });
+  Logger.info("shInteractive", { projectDir, userCwd, cwdRel, fullScript });
 
   const mgr = await getManager(opts.agentSessionId, projectDir, R.cwd());
   const session = await mgr.getOrCreate(opts.agentSessionId);
