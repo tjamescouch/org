@@ -1,9 +1,35 @@
+// src/ui/tmux/index.ts
 /* tmux UI launcher — simple, robust, no backslash soup */
 
+import * as fs from "fs";
 import { Logger } from "../../logger";
 import { shInteractive } from "../../tools/sandboxed-sh";
 
 type Scope = "container" | "host";
+
+/**
+ * Detect whether we are already running **inside** the app container.
+ * - The launcher sets ORG_SANDBOX_BACKEND=none inside the container.
+ * - Podman also drops /run/.containerenv.
+ */
+function insideContainer(): boolean {
+  if (process.env.ORG_SANDBOX_BACKEND === "none") return true;
+  try { if (fs.existsSync("/run/.containerenv")) return true; } catch {}
+  return false;
+}
+
+/**
+ * Resolve the project directory used by interactive helpers.
+ * Inside the container this **must** be /work so that subdirectory
+ * resolution and cd-prefix logic are correct.
+ */
+function resolveProjectDir(): string {
+  if (insideContainer()) {
+    // Prefer /work if it exists; otherwise fall back to env/cwd.
+    try { if (fs.existsSync("/work")) return "/work"; } catch {}
+  }
+  return process.env.ORG_PROJECT_DIR || process.cwd();
+}
 
 /**
  * Launch the tmux UI inside the sandbox.
@@ -12,9 +38,11 @@ type Scope = "container" | "host";
  * - Uses a stable bun path (/usr/local/bin/bun) with sensible fallbacks.
  */
 export async function launchTmuxUI(argv: string[], scope: Scope = "container"): Promise<number> {
-  const projectDir = process.env.ORG_PROJECT_DIR ?? process.cwd();
+  const projectDir = resolveProjectDir();
   const agentSessionId = process.env.ORG_AGENT_SESSION_ID ?? "default";
 
+  // In both host and container scopes, we want the inner process to start the app’s
+  // console UI; this script is executed **inside** the sandbox via shInteractive().
   const entry = "/work/src/app.ts";
 
   Logger.info("[org/tmux] launcher start", {
@@ -46,6 +74,7 @@ export async function launchTmuxUI(argv: string[], scope: Scope = "container"): 
     "",
     "export TERM=xterm-256color",
     "export LANG=en_US.UTF-8",
+    "export ORG_TMUX=1",
     "",
     'BUN=\"/usr/local/bin/bun\"',
     'if ! command -v \"$BUN\" >/dev/null 2>&1; then',
@@ -74,8 +103,11 @@ export async function launchTmuxUI(argv: string[], scope: Scope = "container"): 
     "exec /usr/bin/tmux -vv new-session -A -s org /work/.org/tmux-inner.sh",
   ].join("\n");
 
-  // Execute interactively inside the sandbox
-  const { code } = await shInteractive(["bash", "-lc", tmuxScript], {
+  // Execute interactively inside the sandbox.
+  // IMPORTANT:
+  //   - We call shInteractive **with projectDir='/work' when inside the container**.
+  //   - We do **not** pass 'bash' explicitly; shInteractive handles the shell details.
+  const { code } = await shInteractive(tmuxScript, {
     projectDir,
     agentSessionId,
   });
@@ -94,9 +126,8 @@ async function doctorTmux(
 ): Promise<number> {
   // We only care about an exit status; suppress output
   const { code } = await shInteractive(
-    ['bash', '-lc', 'command -v tmux >/dev/null 2>&1'],
+    'command -v tmux >/dev/null 2>&1',
     { projectDir, agentSessionId },
   );
   return code ?? 127;
 }
-
