@@ -17,7 +17,7 @@ export function buildTmuxConf(): string {
     'set -g default-terminal "tmux-256color"',
     'set -as terminal-overrides ",xterm-256color:Tc,tmux-256color:Tc"',
     'set -g focus-events on',
-    'set -s quiet on',
+    //'set -s quiet on',
     // Minimal status (helps debugging)
     'set -g status on',
     'set -g status-interval 2',
