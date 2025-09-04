@@ -84,7 +84,6 @@ function buildInnerScript(entryCmd: string): string {
 
   Logger.info("TMUX INNER", result);
 
-
   return result;
 }
 
@@ -124,13 +123,14 @@ export async function launchTmuxUI(argv: string[], _scope: Scope = "container"):
   // 1) Write files (here-doc via interactive exec to keep quoting sane)
   const writeFiles = [
     // tmux.conf
-    //`cat > /work/.org/tmux.3.conf <<'EOF_TMUX_CONF'\n${conf}\nEOF_TMUX_CONF`,
+    "cat > /work/.org/tmux.conf <<'EOF_TMUX_CONF'\n${conf}\n'EOF_TMUX_CONF'\n",
     // tmux-inner.sh
-    "cat > /work/.org/tmux-inner.sh <<'EOF_INNER'\n" + inner + "\nEOF_INNER\n",
+    "cat > /work/.org/tmux-inner.sh <<'EOF_INNER'\n" + inner + "\n'EOF_INNER'\n",
     "chmod +x /work/.org/tmux-inner.sh",
   ].join("\n");
 
   {
+    Logger.info("[org/mux] writeFiles", writeFiles)
     const { code } = await shInteractive(["bash", "-lc", writeFiles], {
       projectDir,
       agentSessionId,
@@ -161,11 +161,13 @@ export async function launchTmuxUI(argv: string[], _scope: Scope = "container"):
       // mark the end in the launcher log
       `echo "[tmux/launcher] end $(date -Is)" | tee -a /work/.org/logs/tmux-launcher.log >/dev/null`,
     ].join(" && ");
+  Logger.info("[org/mux] cmd", cmd);
 
   const { code } = await shInteractive(["bash", "-lc", cmd], {
     projectDir,
     agentSessionId,
   });
+  Logger.info("[org/mux] exit code", code);
 
   return code ?? 0;
 }
