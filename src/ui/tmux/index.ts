@@ -163,7 +163,7 @@ export async function launchTmuxUI(argv: string[], _scope: Scope = "container"):
     ].join(" && ");
   Logger.info("[org/mux] cmd", cmd);
 
-  const { code } = await shInteractive(["bash", "-lc", cmd], {
+  const { code } = await shInteractive(["bash", "-lcv", cmd], {
     projectDir,
     agentSessionId,
   });
