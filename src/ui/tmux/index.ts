@@ -52,10 +52,10 @@ function buildInnerScript(entryCmd: string): string {
     "} | tee \"$ENV_LOG\" >/dev/null",
     "",
     // Find bun if not forced by the entry command (we still allow override)
-    'BUN_CANDIDATES=("/usr/local/bin/bun" "$(command -v bun || true)" "/home/ollama/.bun/bin/bun" "/root/.bun/bin/bun")',
-    "if [[ \"$entryCmd\" == *\"/work/src/app.ts\"* || \"$entryCmd\" == *\" --ui \"* ]]; then",
-    "  : # likely our app; try to locate bun when entryCmd uses it implicitly",
-    "fi",
+    // 'BUN_CANDIDATES=("/usr/local/bin/bun" "$(command -v bun || true)" "/home/ollama/.bun/bin/bun" "/root/.bun/bin/bun")',
+    // "if [[ \"$entryCmd\" == *\"/work/src/app.ts\"* || \"$entryCmd\" == *\" --ui \"* ]]; then",
+    // "  : # likely our app; try to locate bun when entryCmd uses it implicitly",
+    // "fi",
     "",
     // If `script` is present we can capture a typescript without breaking TTY
     "use_script=0",
@@ -143,7 +143,7 @@ export async function launchTmuxUI(argv: string[], _scope: Scope = "container"):
   const cmd =
     [
       // diagnose: print a small banner to the app log as well
-      //`echo "[tmux/launcher] begin $(date -Is)" | tee -a /work/.org/logs/tmux-launcher.log >/dev/null`,
+      `echo "[tmux/launcher] begin $(date -Is)" | tee -a /work/.org/logs/tmux-launcher.log >/dev/null`,
       `tmux -V | sed 's/^/[tmux\\/launcher] tmux version: /' | tee -a /work/.org/logs/tmux-launcher.log >/dev/null`,
       `echo "[tmux/launcher] socket label: tmux-0" | tee -a /work/.org/logs/tmux-launcher.log >/dev/null`,
       `echo "[tmux/launcher] conf: /work/.org/tmux.conf" | tee -a /work/.org/logs/tmux-launcher.log >/dev/null`,
