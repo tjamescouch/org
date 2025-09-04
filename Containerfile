@@ -18,6 +18,10 @@ RUN apt-get update \
 RUN sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
+# installs the launcher trio into the image
+COPY scripts/ /tmp/org-scripts/
+RUN bash /tmp/org-scripts/install-org-binaries.sh
+
 # Safe default TERM inside the container
 ENV TERM=xterm-256color
 

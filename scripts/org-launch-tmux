@@ -1,61 +1,80 @@
 #!/usr/bin/env bash
 # scripts/org-launch-tmux
-# Writes /work/.org/tmux.conf and /work/.org/tmux-inner.sh at runtime.
-# Launches tmux with a private socket; streams app logs to /work/.org/logs/tmux-inner.log.
+# Writes /work/.org/{tmux.conf, tmux-inner.sh} safely (no heredocs) and starts tmux.
 
 set -Eeuo pipefail
 
-ORG_DIR="/work/.org"
+ORG_DIR="${ORG_RUNTIME_DIR:-/work/.org}"
 LOG_DIR="${ORG_DIR}/logs"
-TMUX_CONF="${ORG_DIR}/tmux2.conf"
+TMUX_CONF="${ORG_DIR}/tmux.conf"
 INNER_SH="${ORG_DIR}/tmux-inner.sh"
+
 BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"
 TMUX_BIN="${ORG_TMUX_BIN:-/usr/bin/tmux}"
 APP_ENTRY="/work/src/app.ts"
 
-mkdir -p "${LOG_DIR}"
-chmod 700 "${ORG_DIR}" || true
-
-# Prevent nested sandboxing & suppress any internal tmux bootstrap path in the app.
+# Disable nested sandboxing and the internal tmux bootstrap path in app
 export SANDBOX_BACKEND="${SANDBOX_BACKEND:-none}"
 export ORG_SANDBOX_BACKEND="${ORG_SANDBOX_BACKEND:-none}"
 export ORG_EXTERNAL_TMUX_BOOTSTRAP=1
-# Make bootstrap non-interactive if the app tries to open an editor
+
+# Avoid accidental editor invocation during bootstrap
 export EDITOR=true VISUAL=true GIT_EDITOR=true PAGER=cat
+
+mkdir -p "${LOG_DIR}"
+chmod 700 "${ORG_DIR}" || true
+
+write_tmux_conf() {
+  {
+    printf '%s\n' '# org-tmux-conf v4 (shell launcher sentinel)'
+    printf '%s\n' 'set -s exit-empty off'     # keep server up if last session dies
+    printf '%s\n' 'setw -g remain-on-exit on'  # keep pane visible on app exit
+    printf '%s\n' 'set -g mouse on'
+    printf '%s\n' 'set -g history-limit 100000'
+    printf '%s\n' 'set -g default-terminal "tmux-256color"'
+    printf '%s\n' 'set -as terminal-overrides ",xterm-256color:Tc,tmux-256color:Tc"'
+    printf '%s\n' 'set -g focus-events on'
+    printf '%s\n' 'set -s escape-time 0'
+    printf '%s\n' 'set -s quiet on'
+  } > "${TMUX_CONF}"
+  chmod 600 "${TMUX_CONF}"
+}
+
+write_inner_sh() {
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' 'set -Eeuo pipefail'
+    printf '%s\n' 'LOG_DIR="/work/.org/logs"'
+    printf '%s\n' 'LOG_FILE="${LOG_DIR}/tmux-inner.log"'
+    printf '%s\n' 'APP_ENTRY="/work/src/app.ts"'
+    printf '%s\n' 'BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"'
+    printf '%s\n' 'export ORG_EXTERNAL_TMUX_BOOTSTRAP=1'
+    printf '%s\n' 'mkdir -p "${LOG_DIR}"'
+    printf '%s\n' 'load_org_env() {'
+    printf '%s\n' '  if [[ -f /work/.org/env ]]; then set -a; . /work/.org/env; set +a; fi'
+    printf '%s\n' '  if compgen -G "/work/.org/env.d/*.env" >/dev/null; then'
+    printf '%s\n' '    for f in /work/.org/env.d/*.env; do [[ -f "$f" ]] && { set -a; . "$f"; set +a; }; done'
+    printf '%s\n' '  fi'
+    printf '%s\n' '}'
+    printf '%s\n' 'load_org_env'
+    printf '%s\n' 'echo "===== org tmux-inner start: $(date -Is) =====" | tee -a "${LOG_FILE}"'
+    printf '%s\n' 'set +e'
+    printf '%s\n' '"${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | tee -a "${LOG_FILE}"'
+    printf '%s\n' 'APP_CODE=${PIPESTATUS[0]}'
+    printf '%s\n' 'set -e'
+    printf '%s\n' 'exit "${APP_CODE}"'
+  } > "${INNER_SH}"
+  chmod 700 "${INNER_SH}"
+}
 
 [[ -x "${TMUX_BIN}" ]] || { echo "ERROR: tmux not found at ${TMUX_BIN}" >&2; exit 1; }
 [[ -x "${BUN_BIN}"  ]] || { echo "ERROR: bun not found at ${BUN_BIN}"  >&2; exit 1; }
+[[ -f "${APP_ENTRY}" ]] || { echo "ERROR: entrypoint not found: ${APP_ENTRY}" >&2; exit 42; }
 
-# Write tmux.conf (sentinel helps sanity checks)
-{
-  printf '# org-tmux-conf v3 baked\n'
-  printf 'set -g mouse on\n'
-  printf 'set -g history-limit 100000\n'
-  printf 'set -g default-terminal "screen-256color"\n'
-  printf 'set -g escape-time 0\n'
-  printf 'set -g detach-on-destroy on\n'
-  printf 'set -g exit-empty off\n'
-  printf 'setw -g remain-on-exit on\n'
-} > "${TMUX_CONF}"
-chmod 600 "${TMUX_CONF}"
+write_tmux_conf
+write_inner_sh
 
-# Inner runner
-{
-  printf '#!/usr/bin/env bash\n'
-  printf 'set -Eeuo pipefail\n'
-  printf 'LOG_DIR="/work/.org/logs"\n'
-  printf 'LOG_FILE="${LOG_DIR}/tmux-inner.log"\n'
-  printf 'APP_ENTRY="/work/src/app.ts"\n'
-  printf 'BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"\n'
-  printf 'mkdir -p "${LOG_DIR}"\n'
-  printf '[[ -f "${APP_ENTRY}" ]] || { echo "ERROR: entrypoint not found: ${APP_ENTRY}" | tee -a "${LOG_FILE}" >&2; exit 42; }\n'
-  printf '{ echo "===== org tmux-inner start: $(date -Is) ====="; echo "cmd: ${BUN_BIN} ${APP_ENTRY} --ui console"; } | tee -a "${LOG_FILE}"\n'
-  printf 'set +e\n'
-  printf '"${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | tee -a "${LOG_FILE}"\n'
-  printf 'APP_CODE=${PIPESTATUS[0]}\n'
-  printf 'set -e\n'
-  printf 'exit "${APP_CODE}"\n'
-} > "${INNER_SH}"
-chmod 700 "${INNER_SH}"
-
-exec "${TMUX_BIN}" -vv -f "${TMUX_CONF}" -L org new-session -s org "/work/.org/tmux-inner.sh"
+# Start tmux with private socket, then attach
+"${TMUX_BIN}" -vv -f "${TMUX_CONF}" -L org \
+  new-session -d -s org -n main "bash -lc '/work/.org/tmux-inner.sh'"
+"${TMUX_BIN}" -L org attach -t org

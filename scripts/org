@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # scripts/org
-# Strict grammar:
+# Grammar:
 #   org                -> console (default)
 #   org --ui console   -> console
 #   org --ui tmux      -> tmux
 #
-# Delegates to /usr/local/libexec/org/launch-console or launch-tmux
-# No heredocs. No tmux logic in here.
+# No positional 'tmux'/'console' allowed to avoid grammar conflicts.
 
 set -Eeuo pipefail
 
@@ -23,14 +22,15 @@ mode="console"   # default
 rest=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --ui)       shift; [[ "${1-}" ]] || { echo "ERROR: --ui requires tmux|console"; usage; exit 2; }; mode="$1"; shift ;;
+    --ui)       shift; [[ "${1-}" != "" ]] || { echo "ERROR: --ui requires tmux|console"; usage; exit 2; }; mode="$1"; shift ;;
     --ui=*)     mode="${1#--ui=}"; shift ;;
     tmux|console)
-      echo "ERROR: positional '$1' is not supported; use --ui $1" >&2; usage; exit 2 ;;
+      echo "ERROR: positional '$1' not supported; use --ui $1" >&2; usage; exit 2 ;;
     -h|--help|help) usage; exit 0 ;;
     *) rest+=("$1"); shift ;;
   esac
 done
+
 [[ "${mode}" == "tmux" || "${mode}" == "console" ]] || { echo "ERROR: --ui must be tmux|console"; exit 2; }
 
 case "${mode}" in

@@ -1,30 +1,40 @@
 #!/usr/bin/env bash
 # scripts/org-launch-console
-# Runs the console UI directly; logs to /work/.org/logs/console.log
+# Runs the app in console mode and logs to /work/.org/logs/console.log.
 
 set -Eeuo pipefail
 
-ORG_DIR="/work/.org"
+ORG_DIR="${ORG_RUNTIME_DIR:-/work/.org}"
 LOG_DIR="${ORG_DIR}/logs"
+LOG_FILE="${LOG_DIR}/console.log"
 BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"
 APP_ENTRY="/work/src/app.ts"
-LOG_FILE="${LOG_DIR}/console.log"
 
-mkdir -p "${LOG_DIR}"
-chmod 700 "${ORG_DIR}" || true
-
-# Same safety/env defaults as tmux path
+# Disable nested sandboxing and internal tmux bootstrap
 export SANDBOX_BACKEND="${SANDBOX_BACKEND:-none}"
 export ORG_SANDBOX_BACKEND="${ORG_SANDBOX_BACKEND:-none}"
 export ORG_EXTERNAL_TMUX_BOOTSTRAP=1
 export EDITOR=true VISUAL=true GIT_EDITOR=true PAGER=cat
 
+mkdir -p "${LOG_DIR}"
+chmod 700 "${ORG_DIR}" || true
+
 [[ -x "${BUN_BIN}"  ]] || { echo "ERROR: bun not found at ${BUN_BIN}"  >&2; exit 1; }
 [[ -f "${APP_ENTRY}" ]] || { echo "ERROR: entrypoint not found: ${APP_ENTRY}" >&2; exit 42; }
+
+# Source optional env
+if [[ -f /work/.org/env ]]; then set -a; . /work/.org/env; set +a; fi
+if compgen -G "/work/.org/env.d/*.env" >/dev/null; then
+  for f in /work/.org/env.d/*.env; do [[ -f "$f" ]] && { set -a; . "$f"; set +a; }; done
+fi
 
 {
   echo "===== org console start: $(date -Is) ====="
   echo "cmd: ${BUN_BIN} ${APP_ENTRY} --ui console"
 } | tee -a "${LOG_FILE}"
 
-exec "${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | tee -a "${LOG_FILE}"
+set +e
+"${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | tee -a "${LOG_FILE}"
+code=${PIPESTATUS[0]}
+set -e
+exit "${code}"
