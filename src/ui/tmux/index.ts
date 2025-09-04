@@ -120,7 +120,7 @@ export async function launchTmuxUI(argv: string[], _scope: Scope = "container"):
     // tmux.conf
     //`cat > /work/.org/tmux.3.conf <<'EOF_TMUX_CONF'\n${conf}\nEOF_TMUX_CONF`,
     // tmux-inner.sh
-    `cat > /work/.org/tmux-inner.sh <<'EOF_INNER'\n${inner}\nEOF_INNER`,
+    "cat > /work/.org/tmux-inner.sh <<'EOF_INNER'\n${inner}\nEOF_INNER\n",
     "chmod +x /work/.org/tmux-inner.sh",
   ].join(" && ");
 
