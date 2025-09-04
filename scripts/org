@@ -5,8 +5,7 @@
 #   org --ui console
 #   org --ui tmux
 #
-# Positional 'tmux'/'console' is NOT supported.
-# Writes /work/.org/{tmux.conf, tmux-inner.sh} at runtime. No heredocs.
+# Writes /work/.org/{tmux.conf, tmux-inner.sh} at runtime (no heredocs).
 
 set -Eeuo pipefail
 
@@ -21,44 +20,24 @@ Env:
   ORG_BUN_BIN         (default: /usr/local/bin/bun)
   ORG_TMUX_BIN        (default: /usr/bin/tmux)
   ORG_TMUX_STAY_OPEN  (never|onerror|always; default: never)
-  SANDBOX_BACKEND     (default: none)        # disable nested sandboxing
-  ORG_SANDBOX_BACKEND (default: none)
-  ORG_EXTERNAL_TMUX_BOOTSTRAP is forced to 1 in tmux mode
 USAGE
 }
 
-# -------- parse args (only --ui allowed) ----------
+# ---- parse args (only --ui allowed) ----
 mode="console"   # default
 rest=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --ui)
-      shift
-      [[ "${1-}" != "" ]] || { echo "ERROR: --ui requires value (tmux|console)"; usage; exit 2; }
-      mode="$1"; shift
-      ;;
-    --ui=*)
-      mode="${1#--ui=}"; shift
-      ;;
-    tmux|console)
-      echo "ERROR: positional '$1' is not supported. Use: org --ui $1" >&2
-      usage; exit 2
-      ;;
-    -h|--help|help)
-      usage; exit 0
-      ;;
-    *)
-      rest+=("$1"); shift
-      ;;
+    --ui) shift; [[ "${1-}" != "" ]] || { echo "ERROR: --ui requires tmux|console"; usage; exit 2; }; mode="$1"; shift ;;
+    --ui=*) mode="${1#--ui=}"; shift ;;
+    tmux|console) echo "ERROR: positional '$1' is not supported. Use: org --ui $1"; usage; exit 2 ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) rest+=("$1"); shift ;;
   esac
 done
+[[ "${mode}" == "tmux" || "${mode}" == "console" ]] || { echo "ERROR: --ui ${mode} (must be tmux|console)"; exit 2; }
 
-if [[ "${mode}" != "tmux" && "${mode}" != "console" ]]; then
-  echo "ERROR: unknown --ui value '${mode}' (must be tmux|console)" >&2
-  usage; exit 2
-fi
-
-# -------- paths & bins ----------
+# ---- paths & bins ----
 ORG_DIR="/work/.org"
 LOG_DIR="${ORG_DIR}/logs"
 TMUX_CONF="${ORG_DIR}/tmux.conf"
@@ -69,14 +48,7 @@ TMUX_BIN="${ORG_TMUX_BIN:-/usr/bin/tmux}"
 APP_ENTRY="/work/src/app.ts"
 STAY_OPEN="${ORG_TMUX_STAY_OPEN:-never}"   # never|onerror|always
 
-# Disable nested sandboxing by default (prevents "podman not found")
-export SANDBOX_BACKEND="${SANDBOX_BACKEND:-none}"
-export ORG_SANDBOX_BACKEND="${ORG_SANDBOX_BACKEND:-none}"
-
-ensure_dirs() {
-  mkdir -p "${LOG_DIR}"
-  chmod 700 "${ORG_DIR}" || true
-}
+ensure_dirs() { mkdir -p "${LOG_DIR}"; chmod 700 "${ORG_DIR}" || true; }
 
 write_tmux_conf() {
   {
@@ -87,8 +59,8 @@ write_tmux_conf() {
     printf 'set -g escape-time 0\n'
     printf 'set -g detach-on-destroy on\n'
     printf 'set -g exit-empty on\n'        # tmux exits when last window ends
-    printf 'setw -g remain-on-exit off\n'  # no "dead" pane
-  } >"${TMUX_CONF}"
+    printf 'setw -g remain-on-exit off\n'  # no dead pane
+  } > "${TMUX_CONF}"
   chmod 600 "${TMUX_CONF}"
 }
 
@@ -101,11 +73,41 @@ write_inner_sh() {
     printf 'APP_ENTRY="/work/src/app.ts"\n'
     printf 'BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"\n'
     printf 'STAY_OPEN="${ORG_TMUX_STAY_OPEN:-never}"\n'
-    # Hard-stop the internal heredoc writer in the Node app:
+    # Disable the app's internal tmux heredoc writer:
     printf 'export ORG_EXTERNAL_TMUX_BOOTSTRAP=1\n'
-    # Also ensure nested sandboxing is off in the child process:
-    printf 'export SANDBOX_BACKEND="${SANDBOX_BACKEND:-none}"\n'
-    printf 'export ORG_SANDBOX_BACKEND="${ORG_SANDBOX_BACKEND:-none}"\n'
     printf 'mkdir -p "${LOG_DIR}"\n'
-    printf 'if [[ ! -f "${APP_ENTRY}" ]]; then echo "ERROR: entrypoint not found: ${APP_ENTRY}" | tee -a "${LOG_FILE}" >&2; exit 42; fi\n'
-    printf '{ echo "===== org tmux-inner start: $(date -Is) ====="; echo "cmd: ${BUN_BIN} $_
+    printf '[[ -f "${APP_ENTRY}" ]] || { echo "ERROR: entrypoint not found: ${APP_ENTRY}" | tee -a "${LOG_FILE}" >&2; exit 42; }\n'
+    printf '{ echo "===== org tmux-inner start: $(date -Is) ====="; echo "cmd: ${BUN_BIN} ${APP_ENTRY} --ui console"; } | tee -a "${LOG_FILE}"\n'
+    printf 'set +e\n'
+    printf '"${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | tee -a "${LOG_FILE}"\n'
+    printf 'APP_CODE=${PIPESTATUS[0]}\n'
+    printf 'set -e\n'
+    printf 'case "${STAY_OPEN}" in\n'
+    printf '  always)  echo "App exited (${APP_CODE}). Keeping pane (always)."  | tee -a "${LOG_FILE}"; exec tail -f /dev/null ;;\n'
+    printf '  onerror) if [[ ${APP_CODE} -ne 0 ]]; then echo "App failed (${APP_CODE}). Keeping pane (onerror)." | tee -a "${LOG_FILE}"; exec tail -f /dev/null; fi ;;\n'
+    printf 'esac\n'
+    printf 'exit "${APP_CODE}"\n'
+  } > "${INNER_SH}"
+  chmod 700 "${INNER_SH}"
+}
+
+run_tmux() {
+  [[ -x "${TMUX_BIN}" ]] || { echo "ERROR: tmux not found at ${TMUX_BIN}" >&2; exit 1; }
+  [[ -x "${BUN_BIN}"  ]] || { echo "ERROR: bun not found at ${BUN_BIN}"  >&2; exit 1; }
+  ensure_dirs; write_tmux_conf; write_inner_sh
+  exec "${TMUX_BIN}" -vv -f "${TMUX_CONF}" -L org new-session -A -s org "/work/.org/tmux-inner.sh"
+}
+
+run_console() {
+  [[ -x "${BUN_BIN}"  ]] || { echo "ERROR: bun not found at ${BUN_BIN}"  >&2; exit 1; }
+  ensure_dirs; LOG_FILE="${LOG_DIR}/console.log"
+  [[ -f "${APP_ENTRY}" ]] || { echo "ERROR: entrypoint not found: ${APP_ENTRY}" >&2; exit 42; }
+  export ORG_EXTERNAL_TMUX_BOOTSTRAP=1
+  { echo "===== org console start: $(date -Is) ====="; echo "cmd: ${BUN_BIN} ${APP_ENTRY} --ui console"; } | tee -a "${LOG_FILE}"
+  exec "${BUN_BIN}" "${APP_ENTRY}" --ui console "${rest[@]}" 2>&1 | tee -a "${LOG_FILE}"
+}
+
+case "${mode}" in
+  tmux) run_tmux ;;
+  console) run_console ;;
+esac

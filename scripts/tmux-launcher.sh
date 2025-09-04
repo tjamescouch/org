@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 # scripts/tmux-launcher.sh
-# Host helper. Mounts the target repo at /work and passes env to disable nested sandbox
-# and the internal tmux bootstrap.
+# Host helper for development:
+# - Mounts the TARGET REPO at /work
+# - Also bind-mounts the repo's scripts/org -> /usr/local/bin/org (fresh every run)
 #
 # Examples:
-#   ./scripts/tmux-launcher.sh                      # use $PWD → /work, UI=tmux
-#   ./scripts/tmux-launcher.sh --ui console         # UI=console
-#   ./scripts/tmux-launcher.sh --repo owner/repo    # clone into .org/workspaces and use it
+#   ./scripts/tmux-launcher.sh                    # use $PWD as /work, UI=tmux
+#   ./scripts/tmux-launcher.sh --ui console       # UI=console
+#   ./scripts/tmux-launcher.sh --repo owner/repo  # clone into .org/workspaces and use it
 #   ./scripts/tmux-launcher.sh --repo https://github.com/oven-sh/bun.git --branch main
 #
 # Env:
-#   SANDBOX_BACKEND=podman|docker|none (default: none)
-#   ORG_SANDBOX_BACKEND                (default: none)
 #   ORG_IMAGE=localhost/org-build:debian-12
-#   SANDBOX_BACKEND selects the host engine ONLY for this launcher (still default none)
+#   SANDBOX_BACKEND=podman|docker (default: podman)  # this is the host engine used to run the container
 
 set -Eeuo pipefail
 
@@ -22,7 +21,8 @@ IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
 MODE="tmux"
 REPO_SPEC=""
 BRANCH=""
-HOST_ROOT="${ORG_PROJECT_DIR:-$PWD}"
+# The repo that *contains this launcher* (for the fresh org wrapper bind-mount)
+SELF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ---- parse args ----
 while [[ $# -gt 0 ]]; do
@@ -42,10 +42,10 @@ H
   esac
 done
 
+[[ -x "${SELF_ROOT}/scripts/org" ]] || { echo "ERROR: ${SELF_ROOT}/scripts/org not found or not executable"; exit 1; }
+
 slugify() {
-  printf "%s" "$1" \
-  | tr '[:upper:]' '[:lower:]' \
-  | sed -E 's#^https?://##; s#\.git$##; s#[^a-z0-9]+#-#g; s#^-+##; s#-+$##'
+  printf "%s" "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's#^https?://##; s#\.git$##; s#[^a-z0-9]+#-#g; s#^-+##; s#-+$##'
 }
 
 ensure_repo_dir() {
@@ -58,7 +58,7 @@ ensure_repo_dir() {
   fi
 }
 
-TARGET_DIR="${HOST_ROOT}"
+TARGET_DIR="$PWD"
 if [[ -n "${REPO_SPEC}" ]]; then
   if [[ "${REPO_SPEC}" =~ ^(https?://|git@) ]]; then
     REPO_URL="${REPO_SPEC}"
@@ -66,7 +66,7 @@ if [[ -n "${REPO_SPEC}" ]]; then
     REPO_URL="https://github.com/${REPO_SPEC}.git"
   fi
   SLUG="$(slugify "${REPO_URL}")"
-  WORKSPACES="${HOST_ROOT}/.org/workspaces"
+  WORKSPACES="${PWD}/.org/workspaces"
   TARGET_DIR="${WORKSPACES}/${SLUG}"
   ensure_repo_dir "${TARGET_DIR}" "${REPO_URL}"
 fi
@@ -74,13 +74,12 @@ fi
 case "${MODE}" in
   tmux|console) ;;
   *) echo "ERROR: --ui must be tmux or console"; exit 2 ;;
-esac
+endac
 
-# We intentionally pass env to the container to disable nested sandboxing
-# and to suppress the internal tmux heredoc writer.
-exec podman run --rm -it \
-  -v "${TARGET_DIR}:/work" -w /work \
-  -e SANDBOX_BACKEND="${SANDBOX_BACKEND:-none}" \
-  -e ORG_SANDBOX_BACKEND="${ORG_SANDBOX_BACKEND:-none}" \
+# Bind-mount the fresh org wrapper from this repo over the image's copy.
+exec "${ENGINE}" run --rm -it \
+  -v "${TARGET_DIR}:/work" \
+  -v "${SELF_ROOT}/scripts/org:/usr/local/bin/org:ro" \
+  -w /work \
   -e ORG_EXTERNAL_TMUX_BOOTSTRAP=1 \
   "${IMAGE}" org --ui "${MODE}"
