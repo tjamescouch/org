@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# scripts/org-launch-tmux
+# Writes /work/.org/tmux.conf and /work/.org/tmux-inner.sh at runtime.
+# Launches tmux with a private socket; streams app logs to /work/.org/logs/tmux-inner.log.
+
+set -Eeuo pipefail
+
+ORG_DIR="/work/.org"
+LOG_DIR="${ORG_DIR}/logs"
+TMUX_CONF="${ORG_DIR}/tmux.conf"
+INNER_SH="${ORG_DIR}/tmux-inner.sh"
+BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"
+TMUX_BIN="${ORG_TMUX_BIN:-/usr/bin/tmux}"
+APP_ENTRY="/work/src/app.ts"
+
+mkdir -p "${LOG_DIR}"
+chmod 700 "${ORG_DIR}" || true
+
+# Prevent nested sandboxing & suppress any internal tmux bootstrap path in the app.
+export SANDBOX_BACKEND="${SANDBOX_BACKEND:-none}"
+export ORG_SANDBOX_BACKEND="${ORG_SANDBOX_BACKEND:-none}"
+export ORG_EXTERNAL_TMUX_BOOTSTRAP=1
+# Make bootstrap non-interactive if the app tries to open an editor
+export EDITOR=true VISUAL=true GIT_EDITOR=true PAGER=cat
+
+[[ -x "${TMUX_BIN}" ]] || { echo "ERROR: tmux not found at ${TMUX_BIN}" >&2; exit 1; }
+[[ -x "${BUN_BIN}"  ]] || { echo "ERROR: bun not found at ${BUN_BIN}"  >&2; exit 1; }
+
+# Write tmux.conf (sentinel helps sanity checks)
+{
+  printf '# org-tmux-conf v3 baked\n'
+  printf 'set -g mouse on\n'
+  printf 'set -g history-limit 100000\n'
+  printf 'set -g default-terminal "screen-256color"\n'
+  printf 'set -g escape-time 0\n'
+  printf 'set -g detach-on-destroy on\n'
+  printf 'set -g exit-empty on\n'       # exit when last pane dies
+  printf 'setw -g remain-on-exit off\n' # no dead panes
+} > "${TMUX_CONF}"
+chmod 600 "${TMUX_CONF}"
+
+# Inner runner
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'set -Eeuo pipefail\n'
+  printf 'LOG_DIR="/work/.org/logs"\n'
+  printf 'LOG_FILE="${LOG_DIR}/tmux-inner.log"\n'
+  printf 'APP_ENTRY="/work/src/app.ts"\n'
+  printf 'BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"\n'
+  printf 'mkdir -p "${LOG_DIR}"\n'
+  printf '[[ -f "${APP_ENTRY}" ]] || { echo "ERROR: entrypoint not found: ${APP_ENTRY}" | tee -a "${LOG_FILE}" >&2; exit 42; }\n'
+  printf '{ echo "===== org tmux-inner start: $(date -Is) ====="; echo "cmd: ${BUN_BIN} ${APP_ENTRY} --ui console"; } | tee -a "${LOG_FILE}"\n'
+  printf 'set +e\n'
+  printf '"${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | tee -a "${LOG_FILE}"\n'
+  printf 'APP_CODE=${PIPESTATUS[0]}\n'
+  printf 'set -e\n'
+  printf 'exit "${APP_CODE}"\n'
+} > "${INNER_SH}"
+chmod 700 "${INNER_SH}"
+
+exec "${TMUX_BIN}" -vv -f "${TMUX_CONF}" -L org new-session -s org "/work/.org/tmux-inner.sh"

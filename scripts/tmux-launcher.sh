@@ -74,7 +74,7 @@ fi
 case "${MODE}" in
   tmux|console) ;;
   *) echo "ERROR: --ui must be tmux or console"; exit 2 ;;
-endac
+esac
 
 # Bind-mount the fresh org wrapper from this repo over the image's copy.
 exec "${ENGINE}" run --rm -it \

@@ -40,7 +40,6 @@ RUN set -eux; \
   /usr/local/bin/delta --version || true
 
 # ---------- Bun: install to a fixed, root-owned path ----------
-# (So we never depend on $HOME/.bun and can hard-code it safely)
 ARG BUN_VERSION=1.2.19
 RUN set -eux; \
   arch="$(dpkg --print-architecture)"; \
@@ -56,75 +55,45 @@ RUN set -eux; \
   rm -rf /tmp/bun /tmp/bun.zip; \
   /usr/local/bin/bun --version
 
-# Hard-coded paths we’ll reference from the app
+# Hard-coded paths the app expects
 ENV ORG_BUN_BIN=/usr/local/bin/bun
 ENV ORG_TMUX_BIN=/usr/bin/tmux
 ENV ORG_DEFAULT_CWD=/work
 
-# --- Portable apply_patch helper (no heredocs) ---
+# --- Portable apply_patch helper (unchanged from your base) ---
 RUN set -eux; \
   printf '%s\n' \
 '#!/usr/bin/env bash' \
 'set -euo pipefail' \
-'# If project provides its own helper, defer to it:' \
-'if [ -x /work/.org/bin/apply_patch ]; then' \
-'  exec /work/.org/bin/apply_patch "$@"' \
-'fi' \
-'' \
-'# Otherwise accept unified diff from stdin or -f <file> and apply safely.' \
+'if [ -x /work/.org/bin/apply_patch ]; then exec /work/.org/bin/apply_patch "$@"; fi' \
 'WORK_ROOT="${ORG_WORK:-/work}"' \
 'PATCH_FILE=""' \
-'while [ $# -gt 0 ]; do' \
-'  case "$1" in' \
-'    -f|--file) PATCH_FILE="$2"; shift 2;;' \
-'    -) PATCH_FILE="-"; shift;;' \
-'    *) echo "apply_patch: unknown arg: $1" >&2; exit 2;;' \
-'  esac' \
-'done' \
-'' \
+'while [ $# -gt 0 ]; do case "$1" in -f|--file) PATCH_FILE="$2"; shift 2;; -) PATCH_FILE="-"; shift;; *) echo "apply_patch: unknown arg: $1" >&2; exit 2;; esac; done' \
 'tmp_patch="/tmp/ap.$$.patch"' \
-'if [ -z "$PATCH_FILE" ] || [ "$PATCH_FILE" = "-" ]; then' \
-'  cat > "$tmp_patch"' \
-'else' \
-'  cp "$PATCH_FILE" "$tmp_patch"' \
-'fi' \
-'' \
-'# Extract candidate paths (from diff --git ... b/...) and police them.' \
+'if [ -z "$PATCH_FILE" ] || [ "$PATCH_FILE" = "-" ]; then cat > "$tmp_patch"; else cp "$PATCH_FILE" "$tmp_patch"; fi' \
 'mapfile -t paths < <(awk '\''/^diff --git a\\//{print $4}'\'' "$tmp_patch" | sed -E '\''s#^b/##'\'')' \
-'if [ "${#paths[@]}" -eq 0 ]; then' \
-'  echo "apply_patch: no file paths detected (expects unified diff)." >&2' \
-'  exit 1' \
-'fi' \
+'if [ "${#paths[@]}" -eq 0 ]; then echo "apply_patch: no file paths detected (expects unified diff)." >&2; exit 1; fi' \
 "deny_regex='^(\\.git/|\\.org/|/|\\.{2}(/|$)|.*\\x00.*)'" \
 'viol=""' \
-'for p in "${paths[@]}"; do' \
-'  p="${p#./}"' \
-'  if [[ "$p" =~ $deny_regex ]]; then' \
-'    viol+="$p\n"' \
-'  fi' \
-'done' \
-'if [ -n "$viol" ]; then' \
-'  printf '\''apply_patch: path policy violation(s):\n%s'\'' "$viol" >&2' \
-'  exit 3' \
-'fi' \
-'' \
-'# Dry-run first; then apply.' \
+'for p in "${paths[@]}"; do p="${p#./}"; [[ "$p" =~ $deny_regex ]] && viol+="$p\n"; done' \
+'if [ -n "$viol" ]; then printf '\''apply_patch: path policy violation(s):\n%s'\'' "$viol" >&2; exit 3; fi' \
 'git -C "$WORK_ROOT" apply --index --whitespace=nowarn --check "$tmp_patch"' \
 'git -C "$WORK_ROOT" apply --index --whitespace=nowarn "$tmp_patch"' \
 'echo "apply_patch: OK"' \
 > /usr/local/bin/apply_patch \
  && chmod +x /usr/local/bin/apply_patch
 
-# Optional: patch viewer command (for tmux popup or scripts)
 ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (command -v delta >/dev/null && delta -s --paging=never .org/last-session.patch || (echo; echo \"(delta not found; showing raw patch)\"; echo; cat .org/last-session.patch)); else echo \"No session patch found.\"; fi; echo; read -p \"Enter to close...\" _"'
 
-# --- Robust networking defaults for UI processes (console + tmux) ---
+# Networking defaults
 ENV ORG_HOST_ALIAS=host.containers.internal
 ENV ORG_OPENAI_BASE_DEFAULT=http://host.containers.internal:11434/v1
 ENV NO_PROXY=localhost,127.0.0.1,::1,host.containers.internal,192.168.56.1
 ENV PATH="/root/.bun/bin:/home/ollama/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-# --- Install the repo’s org wrapper into the image ---
-# NOTE: build context must include ./scripts/org
-COPY scripts/org /usr/local/bin/org
-RUN chmod 0755 /usr/local/bin/org
+# --- Install the thin wrapper + launchers from the repo (LF-normalized) ---
+COPY scripts/org                /usr/local/bin/org
+COPY scripts/org-launch-tmux    /usr/local/libexec/org/launch-tmux
+COPY scripts/org-launch-console /usr/local/libexec/org/launch-console
+RUN sed -i 's/\r$//' /usr/local/bin/org /usr/local/libexec/org/launch-tmux /usr/local/libexec/org/launch-console \
+ && chmod 0755 /usr/local/bin/org /usr/local/libexec/org/launch-tmux /usr/local/libexec/org/launch-console
