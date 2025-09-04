@@ -80,8 +80,9 @@ RUN set -eux; \
 'git -C "$WORK_ROOT" apply --index --whitespace=nowarn --check "$tmp_patch"' \
 'git -C "$WORK_ROOT" apply --index --whitespace=nowarn "$tmp_patch"' \
 'echo "apply_patch: OK"' \
-> /usr/local/bin/apply_patch \
- && chmod +x /usr/local/bin/apply_patch
+> /usr/local/bin/apply_patch
+
+RUN chmod +x /usr/local/bin/apply_patch
 
 ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (command -v delta >/dev/null && delta -s --paging=never .org/last-session.patch || (echo; echo \"(delta not found; showing raw patch)\"; echo; cat .org/last-session.patch)); else echo \"No session patch found.\"; fi; echo; read -p \"Enter to close...\" _"'
 
