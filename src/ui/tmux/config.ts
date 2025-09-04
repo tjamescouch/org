@@ -1,54 +1,57 @@
-// Simple, shell-free tmux.conf generator.
+// src/ui/tmux/config.ts
+// Helpers to build tmux runtime files without shell quoting hazards.
 
+/** Build a conservative tmux.conf suitable for starting the server. */
 export function buildTmuxConf(): string {
-  // tmux syntax ONLY — no shell fragments, no EOF markers, no comments that start with '#!'
+  // tmux syntax ONLY — no shell fragments.
   return [
+    // Keep the server alive even if the last session dies.
     'set -s exit-empty off',
+    // Do not instantly drop escape sequences.
+    'set -s escape-time 0',
+    // Usability
+    'set -g mouse on',
+    // Keep pane visible on errors so you can attach and inspect.
+    'setw -g remain-on-exit on',
+    // Term / colors
     'set -g default-terminal "tmux-256color"',
     'set -as terminal-overrides ",xterm-256color:Tc,tmux-256color:Tc"',
     'set -g focus-events on',
     'set -s quiet on',
-
-    // A minimal status line (optional; keeps errors visible if any)
-    'set -g status-left "[org] #{session_name}:#{window_index}.#{pane_index} "',
+    // Minimal status (helps debugging)
+    'set -g status on',
+    'set -g status-interval 2',
+    'set -g status-left "[org] #{session_name}.#{window_index}.#{pane_index} "',
   ].join('\n') + '\n';
 }
 
-/**
- * Build the inner script that runs inside the tmux pane.
- * Keep it bash-only; no dependence on tmux here.
- */
+/** Return the /work/.org/tmux-inner.sh body. */
 export function buildInnerScript(entryCmd: string): string {
+  // Single-quote the command for shell; escape single quotes defensively.
+  const q = (s: string) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+
   return [
     '#!/usr/bin/env bash',
     'set -Eeuo pipefail',
-    'umask 0002',
+    'umask 002',
     '',
-    'export TERM=xterm-256color',
-    'export LANG=en_US.UTF-8',
+    'ORG_DIR="/work/.org"',
+    'LOG_DIR="${ORG_DIR}/logs"',
+    'APP_LOG="${LOG_DIR}/tmux-inner.log"',
+    'mkdir -p "${LOG_DIR}" "${LOG_DIR}/tmux-logs"',
     '',
-    'LOG_DIR="/work/.org/logs"',
-    'mkdir -p "$LOG_DIR" "$LOG_DIR/tmux-logs"',
-    'APP_LOG="$LOG_DIR/org-app-$(date -Is).log"',
-    '',
-    '# Pick bun if needed for the entryCmd',
-    'if ! command -v bun >/dev/null 2>&1; then',
-    '  if [ -x /usr/local/bin/bun ]; then PATH="/usr/local/bin:$PATH"; fi',
-    '  if [ -x /home/ollama/.bun/bin/bun ]; then PATH="/home/ollama/.bun/bin:$PATH"; fi',
-    '  if [ -x /root/.bun/bin/bun ]; then PATH="/root/.bun/bin:$PATH"; fi',
-    'fi',
-    '',
-    'cd /work',
-    'echo "[tmux-inner] start $(date -Is)"   | tee -a "$APP_LOG" >/dev/null',
-    'stty -a | sed "s/.*/[tmux-inner] stty: &/g" | tee -a "$APP_LOG" >/dev/null || true',
-    'env | sort | sed "s/.*/[tmux-inner] env: &/g" | tee -a "$APP_LOG" >/dev/null || true',
+    'echo "[tmux-inner] start $(date -Is)"   | tee -a "${APP_LOG}" >/dev/null',
+    'echo "[tmux-inner] cwd: $(pwd) user=$(id -u):$(id -g)" | tee -a "${APP_LOG}" >/dev/null',
+    'stty -a   | sed "s/.*/[tmux-inner] stty: &/g" | tee -a "${APP_LOG}" >/dev/null || true',
+    'env | sort | sed "s/.*/[tmux-inner] env: &/g"  | tee -a "${APP_LOG}" >/dev/null || true',
     '',
     '# Prefer util-linux `script` to keep a PTY and preserve exit code',
     'if command -v script >/dev/null 2>&1; then',
-    `  exec script -qfe -c '${entryCmd}' "$APP_LOG"`,
+    `  exec script -qfe -c ${q(entryCmd)} "${'$'}{APP_LOG}"`,
     'else',
-    `  exec bash -lc '${entryCmd} 2>&1 | tee -a "$APP_LOG"; test ${PIPESTATUS[0]} -eq 0'`,
+    // Keep the child exit code even though we tee logs.
+    `  exec bash -lc ${q(entryCmd + ' 2>&1 | tee -a "$APP_LOG"; exit ${PIPESTATUS[0]}')}`,
     'fi',
     '',
-  ].join('\n');
+  ].join('\n') + '\n';
 }
