@@ -18,7 +18,11 @@ RUN apt-get update \
 RUN sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
-# installs the launcher trio into the image
+# ---- Install our launcher trio early (bust cache if scripts change) ----
+ARG ORG_BUILD_STAMP=dev
+ENV ORG_BUILD_STAMP=$ORG_BUILD_STAMP
+LABEL org.wrapper_version=$ORG_BUILD_STAMP
+
 COPY scripts/ /tmp/org-scripts/
 RUN bash /tmp/org-scripts/install-org-binaries.sh
 
@@ -84,9 +88,8 @@ RUN set -eux; \
 'git -C "$WORK_ROOT" apply --index --whitespace=nowarn --check "$tmp_patch"' \
 'git -C "$WORK_ROOT" apply --index --whitespace=nowarn "$tmp_patch"' \
 'echo "apply_patch: OK"' \
-> /usr/local/bin/apply_patch
-
-RUN chmod +x /usr/local/bin/apply_patch
+> /usr/local/bin/apply_patch \
+ && chmod +x /usr/local/bin/apply_patch
 
 ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (command -v delta >/dev/null && delta -s --paging=never .org/last-session.patch || (echo; echo \"(delta not found; showing raw patch)\"; echo; cat .org/last-session.patch)); else echo \"No session patch found.\"; fi; echo; read -p \"Enter to close...\" _"'
 
@@ -95,10 +98,3 @@ ENV ORG_HOST_ALIAS=host.containers.internal
 ENV ORG_OPENAI_BASE_DEFAULT=http://host.containers.internal:11434/v1
 ENV NO_PROXY=localhost,127.0.0.1,::1,host.containers.internal,192.168.56.1
 ENV PATH="/root/.bun/bin:/home/ollama/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-# --- Install the thin wrapper + launchers from the repo (LF-normalized) ---
-COPY scripts/org                /usr/local/bin/org
-COPY scripts/org-launch-tmux    /usr/local/libexec/org/launch-tmux
-COPY scripts/org-launch-console /usr/local/libexec/org/launch-console
-RUN sed -i 's/\r$//' /usr/local/bin/org /usr/local/libexec/org/launch-tmux /usr/local/libexec/org/launch-console \
- && chmod 0755 /usr/local/bin/org /usr/local/libexec/org/launch-tmux /usr/local/libexec/org/launch-console
