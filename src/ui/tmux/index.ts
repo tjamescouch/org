@@ -80,7 +80,7 @@ function buildInnerScript(entryCmd: string): string {
     `  exec ${shq(entryCmd)}`,
     "fi",
     "",
-  ].join("\n").replace("\$entryCmd", entryCmd);
+  ].join("\n").replaceAll("\$entryCmd", entryCmd);
 
   Logger.info("TMUX INNER", result);
 
