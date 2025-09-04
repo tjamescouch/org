@@ -147,7 +147,7 @@ export async function launchTmuxUI(argv: string[], _scope: Scope = "container"):
       `tmux -V | sed 's/^/[tmux\\/launcher] tmux version: /' | tee -a /work/.org/logs/tmux-launcher.log >/dev/null`,
       `echo "[tmux/launcher] socket label: tmux-0" | tee -a /work/.org/logs/tmux-launcher.log >/dev/null`,
       `echo "[tmux/launcher] conf: /work/.org/tmux.conf" | tee -a /work/.org/logs/tmux-launcher.log >/dev/null`,
-      //`echo "[tmux/launcher] conf: \`cat /work/.org/tmux.conf\``,
+      `echo "[tmux/launcher] conf: "\`cat /work/.org/tmux.conf\`"`,
       `echo "[tmux/launcher] inner: /work/.org/tmux-inner.sh" | tee -a /work/.org/logs/tmux-launcher.log >/dev/null`,
 
       // start a server (no-op if already up), then create/replace session
