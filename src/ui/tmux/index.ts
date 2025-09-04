@@ -31,7 +31,7 @@ function buildSafeTmuxConf(): string {
 /** Produce /work/.org/tmux-inner.sh; the child program runs *inside* the pane. */
 function buildInnerScript(entryCmd: string): string {
   // We keep everything extremely portable; no target-dependent tmux here.
-  return [
+  const result = [
     "#!/usr/bin/env bash",
     "set -Eeuo pipefail",
     "umask 0002",
@@ -80,6 +80,11 @@ function buildInnerScript(entryCmd: string): string {
     "fi",
     "",
   ].join("\n").replace("$entryCmd", entryCmd);
+
+  Logger.info("TMUX INNER", result);
+
+
+  return result;
 }
 
 /** Single-quote shell quoting for literals used in bash -lc. */
