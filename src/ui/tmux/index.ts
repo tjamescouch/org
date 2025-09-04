@@ -52,10 +52,10 @@ function buildInnerScript(entryCmd: string): string {
     "} | tee \"$ENV_LOG\" >/dev/null",
     "",
     // Find bun if not forced by the entry command (we still allow override)
-    // 'BUN_CANDIDATES=("/usr/local/bin/bun" "$(command -v bun || true)" "/home/ollama/.bun/bin/bun" "/root/.bun/bin/bun")',
-    // "if [[ \"$entryCmd\" == *\"/work/src/app.ts\"* || \"$entryCmd\" == *\" --ui \"* ]]; then",
-    // "  : # likely our app; try to locate bun when entryCmd uses it implicitly",
-    // "fi",
+    'BUN_CANDIDATES=("/usr/local/bin/bun" "$(command -v bun || true)" "/home/ollama/.bun/bin/bun" "/root/.bun/bin/bun")',
+    'if [[ "$entryCmd" == *"/work/src/app.ts"* || "$entryCmd" == *"--ui "* ]]; then',
+    "  : # likely our app; try to locate bun when entryCmd uses it implicitly",
+    "fi",
     "",
     // If `script` is present we can capture a typescript without breaking TTY
     "use_script=0",
