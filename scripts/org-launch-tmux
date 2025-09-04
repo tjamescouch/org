@@ -34,8 +34,8 @@ export EDITOR=true VISUAL=true GIT_EDITOR=true PAGER=cat
   printf 'set -g default-terminal "screen-256color"\n'
   printf 'set -g escape-time 0\n'
   printf 'set -g detach-on-destroy on\n'
-  printf 'set -g exit-empty on\n'       # exit when last pane dies
-  printf 'setw -g remain-on-exit off\n' # no dead panes
+  printf 'set -g exit-empty off\n'
+  printf 'setw -g remain-on-exit on\n'
 } > "${TMUX_CONF}"
 chmod 600 "${TMUX_CONF}"
 

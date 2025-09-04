@@ -151,7 +151,8 @@ export async function launchTmuxUI(argv: string[], _scope: Scope = "container"):
       // start a server (no-op if already up), then create/replace session
       // -d: detached, -s org: session name, -n main: window name
       // We call inner via bash -lc so PATH/ENV behave the same as our app.
-      `tmux -L tmux-0 -f /work/.org/tmux.conf new-session -d -s org -n main "bash -lc /work/.org/tmux-inner.sh"`,
+      //`tmux -L tmux-0 -f /work/.org/tmux.conf new-session -d -s org -n main "bash -lc /work/.org/tmux-inner.sh"`,
+      `tmux -vv -L tmux-0 -f /work/.org/tmux.conf new-session -d -s org -n main "bash -lc '/work/.org/tmux-inner.sh'"`,
 
       // attach (when this returns, the client has detached or the session closed)
       `tmux -L tmux-0 attach -t org`,
