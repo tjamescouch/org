@@ -82,9 +82,7 @@ function buildInnerScript(entryCmd: string): string {
     "",
   ].join("\n").replaceAll("\$entryCmd", entryCmd);
 
-  Logger.info("TMUX INNER", result);
-
-  return "echo DONE";
+  return result;
 }
 
 /** Single-quote shell quoting for literals used in bash -lc. */
