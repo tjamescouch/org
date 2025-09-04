@@ -10,7 +10,6 @@ LOG_FILE="${LOG_DIR}/console.log"
 BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"
 APP_ENTRY="/work/src/app.ts"
 
-# Disable nested sandboxing and internal tmux bootstrap
 export SANDBOX_BACKEND="${SANDBOX_BACKEND:-none}"
 export ORG_SANDBOX_BACKEND="${ORG_SANDBOX_BACKEND:-none}"
 export ORG_EXTERNAL_TMUX_BOOTSTRAP=1
@@ -22,12 +21,6 @@ chmod 700 "${ORG_DIR}" || true
 [[ -x "${BUN_BIN}"  ]] || { echo "ERROR: bun not found at ${BUN_BIN}"  >&2; exit 1; }
 [[ -f "${APP_ENTRY}" ]] || { echo "ERROR: entrypoint not found: ${APP_ENTRY}" >&2; exit 42; }
 
-# Source optional env
-if [[ -f /work/.org/env ]]; then set -a; . /work/.org/env; set +a; fi
-if compgen -G "/work/.org/env.d/*.env" >/dev/null; then
-  for f in /work/.org/env.d/*.env; do [[ -f "$f" ]] && { set -a; . "$f"; set +a; }; done
-fi
-
 {
   echo "===== org console start: $(date -Is) ====="
   echo "cmd: ${BUN_BIN} ${APP_ENTRY} --ui console"
@@ -37,4 +30,5 @@ set +e
 "${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | tee -a "${LOG_FILE}"
 code=${PIPESTATUS[0]}
 set -e
+echo "===== org console exit: ${code} @ $(date -Is) =====" | tee -a "${LOG_FILE}"
 exit "${code}"

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # scripts/org-launch-tmux
-# Writes /work/.org/{tmux.conf, tmux-inner.sh} safely (no heredocs) and starts tmux.
+# Writes /work/.org/{tmux.conf, tmux-inner.sh} (no heredocs),
+# starts tmux with verbose logs redirected to .org/logs/tmux-logs,
+# and keeps the server/pane up so attach is deterministic.
 
 set -Eeuo pipefail
 
 ORG_DIR="${ORG_RUNTIME_DIR:-/work/.org}"
 LOG_DIR="${ORG_DIR}/logs"
+TMUX_LOG_DIR="${LOG_DIR}/tmux-logs"
 TMUX_CONF="${ORG_DIR}/tmux.conf"
 INNER_SH="${ORG_DIR}/tmux-inner.sh"
 
@@ -13,22 +16,23 @@ BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"
 TMUX_BIN="${ORG_TMUX_BIN:-/usr/bin/tmux}"
 APP_ENTRY="/work/src/app.ts"
 
-# Disable nested sandboxing and the internal tmux bootstrap path in app
+# Disable nested sandboxing + tell app to skip its internal tmux writer
 export SANDBOX_BACKEND="${SANDBOX_BACKEND:-none}"
 export ORG_SANDBOX_BACKEND="${ORG_SANDBOX_BACKEND:-none}"
 export ORG_EXTERNAL_TMUX_BOOTSTRAP=1
-
-# Avoid accidental editor invocation during bootstrap
+# Make sure nothing tries to open editors
 export EDITOR=true VISUAL=true GIT_EDITOR=true PAGER=cat
 
-mkdir -p "${LOG_DIR}"
+mkdir -p "${TMUX_LOG_DIR}"
 chmod 700 "${ORG_DIR}" || true
 
 write_tmux_conf() {
   {
     printf '%s\n' '# org-tmux-conf v4 (shell launcher sentinel)'
-    printf '%s\n' 'set -s exit-empty off'     # keep server up if last session dies
-    printf '%s\n' 'setw -g remain-on-exit on'  # keep pane visible on app exit
+    # Keep the server up even if the child exits; keep pane visible for inspection.
+    printf '%s\n' 'set -s exit-empty off'
+    printf '%s\n' 'setw -g remain-on-exit on'
+    # Usability + color
     printf '%s\n' 'set -g mouse on'
     printf '%s\n' 'set -g history-limit 100000'
     printf '%s\n' 'set -g default-terminal "tmux-256color"'
@@ -50,18 +54,14 @@ write_inner_sh() {
     printf '%s\n' 'BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"'
     printf '%s\n' 'export ORG_EXTERNAL_TMUX_BOOTSTRAP=1'
     printf '%s\n' 'mkdir -p "${LOG_DIR}"'
-    printf '%s\n' 'load_org_env() {'
-    printf '%s\n' '  if [[ -f /work/.org/env ]]; then set -a; . /work/.org/env; set +a; fi'
-    printf '%s\n' '  if compgen -G "/work/.org/env.d/*.env" >/dev/null; then'
-    printf '%s\n' '    for f in /work/.org/env.d/*.env; do [[ -f "$f" ]] && { set -a; . "$f"; set +a; }; done'
-    printf '%s\n' '  fi'
-    printf '%s\n' '}'
-    printf '%s\n' 'load_org_env'
     printf '%s\n' 'echo "===== org tmux-inner start: $(date -Is) =====" | tee -a "${LOG_FILE}"'
+    printf '%s\n' 'echo "[inner] cwd=$(pwd) uid=$(id -u):$(id -g)" | tee -a "${LOG_FILE}"'
+    printf '%s\n' 'if [[ ! -f "${APP_ENTRY}" ]]; then echo "ERROR: ${APP_ENTRY} not found" | tee -a "${LOG_FILE}"; exit 42; fi'
     printf '%s\n' 'set +e'
     printf '%s\n' '"${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | tee -a "${LOG_FILE}"'
     printf '%s\n' 'APP_CODE=${PIPESTATUS[0]}'
     printf '%s\n' 'set -e'
+    printf '%s\n' 'echo "===== org tmux-inner exit: ${APP_CODE} @ $(date -Is) =====" | tee -a "${LOG_FILE}"'
     printf '%s\n' 'exit "${APP_CODE}"'
   } > "${INNER_SH}"
   chmod 700 "${INNER_SH}"
@@ -74,7 +74,39 @@ write_inner_sh() {
 write_tmux_conf
 write_inner_sh
 
-# Start tmux with private socket, then attach
-"${TMUX_BIN}" -vv -f "${TMUX_CONF}" -L org \
-  new-session -d -s org -n main "bash -lc '/work/.org/tmux-inner.sh'"
+# --- Loud, structured launcher log ---
+LAUNCH_LOG="${LOG_DIR}/tmux-launcher.log"
+{
+  echo "[launcher] begin $(date -Is)"
+  echo "[launcher] tmux: $(${TMUX_BIN} -V)"
+  echo "[launcher] socket: org"
+  echo "[launcher] conf:   ${TMUX_CONF}"
+  echo "[launcher] inner:  ${INNER_SH}"
+} | tee -a "${LAUNCH_LOG}" >/dev/null
+
+# tmux -vv writes server/client logs to the current directory → pushd into TMUX_LOG_DIR
+pushd "${TMUX_LOG_DIR}" >/dev/null
+
+# Start a detached session; then attach.
+# Quote the payload so it always runs via bash -lc (PATH semantics).
+set +e
+"${TMUX_BIN}" -vv -L org -f "${TMUX_CONF}" \
+  new-session -d -s org -n main "bash -lc '${INNER_SH}'"
+NEW_CODE=$?
+set -e
+
+popd >/dev/null
+
+if [[ ${NEW_CODE} -ne 0 ]]; then
+  echo "[launcher] tmux new-session failed with ${NEW_CODE}" | tee -a "${LAUNCH_LOG}" >/dev/null
+  echo "[launcher] recent tmux server log:" | tee -a "${LAUNCH_LOG}" >/dev/null
+  tail -n 50 "${TMUX_LOG_DIR}"/tmux-server-*.log 2>/dev/null | sed 's/^/[tmux] /' | tee -a "${LAUNCH_LOG}" >/dev/null || true
+  exit ${NEW_CODE}
+fi
+
+# Attach (this returns when user detaches or session ends)
 "${TMUX_BIN}" -L org attach -t org
+ATTACH_CODE=$?
+
+echo "[launcher] end $(date -Is) attach=${ATTACH_CODE}" | tee -a "${LAUNCH_LOG}" >/dev/null
+exit ${ATTACH_CODE}
