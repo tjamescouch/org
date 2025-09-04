@@ -84,7 +84,7 @@ function buildInnerScript(entryCmd: string): string {
 
   Logger.info("TMUX INNER", result);
 
-  return result;
+  return "echo DONE";
 }
 
 /** Single-quote shell quoting for literals used in bash -lc. */
