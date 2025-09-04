@@ -7,7 +7,7 @@ set -Eeuo pipefail
 
 ORG_DIR="/work/.org"
 LOG_DIR="${ORG_DIR}/logs"
-TMUX_CONF="${ORG_DIR}/tmux2.conf"
+TMUX_CONF="${ORG_DIR}/tmux.conf"
 INNER_SH="${ORG_DIR}/tmux-inner.sh"
 BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"
 TMUX_BIN="${ORG_TMUX_BIN:-/usr/bin/tmux}"

@@ -118,7 +118,7 @@ export async function launchTmuxUI(argv: string[], _scope: Scope = "container"):
   // 1) Write files (here-doc via interactive exec to keep quoting sane)
   const writeFiles = [
     // tmux.conf
-    `cat > /work/.org/tmux.conf <<'EOF_TMUX_CONF'\n${conf}EOF_TMUX_CONF`,
+    `cat > /work/.org/tmux.3.conf <<'EOF_TMUX_CONF'\n${conf}\nEOF_TMUX_CONF`,
     // tmux-inner.sh
     `cat > /work/.org/tmux-inner.sh <<'EOF_INNER'\n${inner}EOF_INNER`,
     "chmod +x /work/.org/tmux-inner.sh",
