@@ -33,6 +33,7 @@ function buildInnerScript(entryCmd: string): string {
   // We keep everything extremely portable; no target-dependent tmux here.
   const result = [
     "#!/usr/bin/env bash",
+    "set -v",
     "set -Eeuo pipefail",
     "umask 0002",
     "",
