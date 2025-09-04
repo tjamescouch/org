@@ -1,86 +1,87 @@
 #!/usr/bin/env bash
 # scripts/tmux-launcher.sh
-# Host-or-container bootstrap. On host, it runs the image; in-container, it writes
-# /work/.org/tmux.conf and /work/.org/tmux-inner.sh and execs tmux.
+# Host helper. Runs the image and mounts the **target repo** at /work.
+#
+# Examples:
+#   ./scripts/tmux-launcher.sh                              # use $PWD as repo → /work, tmux UI
+#   ./scripts/tmux-launcher.sh --ui console                 # console UI
+#   ./scripts/tmux-launcher.sh --repo owner/repo            # clone into .org/workspaces/… and use it
+#   ./scripts/tmux-launcher.sh --repo https://github.com/…  # full URL; optional --branch dev
+#
+# Env:
+#   SANDBOX_BACKEND=podman|docker  (default: podman)
+#   ORG_IMAGE=localhost/org-build:debian-12
+#   ORG_PROJECT_DIR=/path/to/base   (workspace root; default $PWD)
 
 set -Eeuo pipefail
 
-if [[ ! -d /work ]]; then
-  ENGINE="${SANDBOX_BACKEND:-podman}"
-  IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
-  PROJECT_DIR="${ORG_PROJECT_DIR:-$PWD}"
+ENGINE="${SANDBOX_BACKEND:-podman}"
+IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
+MODE="tmux"
+REPO_SPEC=""
+BRANCH=""
+HOST_ROOT="${ORG_PROJECT_DIR:-$PWD}"
 
-  if ! command -v "${ENGINE}" >/dev/null 2>&1; then
-    echo "ERROR: ${ENGINE} not found on host. Set SANDBOX_BACKEND=podman and install Podman." >&2
-    exit 1
+# ---- parse args ----
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ui)      shift; MODE="${1:-tmux}"; shift || true ;;
+    --ui=*)    MODE="${1#--ui=}"; shift ;;
+    --repo)    shift; REPO_SPEC="${1:-}"; shift || true ;;
+    --repo=*)  REPO_SPEC="${1#--repo=}"; shift ;;
+    --branch)  shift; BRANCH="${1:-}"; shift || true ;;
+    --branch=*)BRANCH="${1#--branch=}"; shift ;;
+    -h|--help|help)
+      cat >&2 <<'H'
+Usage: scripts/tmux-launcher.sh [--ui tmux|console] [--repo <url|owner/repo>] [--branch <name>]
+H
+      exit 0 ;;
+    *)
+      echo "WARN: ignoring arg: $1" >&2; shift ;;
+  esac
+done
+
+if ! command -v "${ENGINE}" >/dev/null 2>&1; then
+  echo "ERROR: ${ENGINE} not found on host." >&2
+  exit 1
+fi
+
+slugify() {
+  # filesystem-safe slug
+  printf "%s" "$1" \
+  | tr '[:upper:]' '[:lower:]' \
+  | sed -E 's#^https?://##; s#\.git$##; s#[^a-z0-9]+#-#g; s#^-+##; s#-+$##'
+}
+
+ensure_repo_dir() {
+  local target="$1" url="$2"
+  mkdir -p "$(dirname "$target")"
+  if [[ ! -d "$target/.git" ]]; then
+    local branch_opt=()
+    [[ -n "${BRANCH}" ]] && branch_opt=(--branch "${BRANCH}")
+    git clone --depth 1 "${branch_opt[@]}" "$url" "$target"
   fi
+}
 
-  exec "${ENGINE}" run --rm -it \
-    -v "${PROJECT_DIR}:/work" -w /work \
-    "${IMAGE}" /usr/local/bin/org tmux
+TARGET_DIR="${HOST_ROOT}"
+
+if [[ -n "${REPO_SPEC}" ]]; then
+  if [[ "${REPO_SPEC}" =~ ^(https?://|git@) ]]; then
+    REPO_URL="${REPO_SPEC}"
+  else
+    REPO_URL="https://github.com/${REPO_SPEC}.git"
+  fi
+  SLUG="$(slugify "${REPO_URL}")"
+  WORKSPACES="${HOST_ROOT}/.org/workspaces"
+  TARGET_DIR="${WORKSPACES}/${SLUG}"
+  ensure_repo_dir "${TARGET_DIR}" "${REPO_URL}"
 fi
 
-# In-container pathing
-ORG_DIR="/work/.org"
-LOG_DIR="${ORG_DIR}/logs"
-TMUX_CONF="${ORG_DIR}/tmux.conf"
-INNER_SH="${ORG_DIR}/tmux-inner.sh"
+case "${MODE}" in
+  tmux|console) ;;
+  *) echo "ERROR: --ui must be tmux or console"; exit 2 ;;
+esac
 
-BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"
-TMUX_BIN="${ORG_TMUX_BIN:-/usr/bin/tmux}"
-
-mkdir -p "${LOG_DIR}"
-chmod 700 "${ORG_DIR}" || true
-
-[[ -x "${BUN_BIN}" ]]  || { echo "ERROR: bun not found at ${BUN_BIN}"  >&2; exit 1; }
-[[ -x "${TMUX_BIN}" ]] || { echo "ERROR: tmux not found at ${TMUX_BIN}" >&2; exit 1; }
-
-# tmux.conf (sentinel comment for sanity checks)
-cat > "${TMUX_CONF}" <<'TMUX_EOF'
-# org-tmux-conf v1 — container-local runtime
-set -g mouse on
-set -g history-limit 100000
-set -g default-terminal "screen-256color"
-set -g escape-time 0
-set -g detach-on-destroy off
-setw -g remain-on-exit on
-TMUX_EOF
-chmod 600 "${TMUX_CONF}"
-
-# inner runner
-cat > "${INNER_SH}" <<'INNER_EOF'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-LOG_DIR="/work/.org/logs"
-LOG_FILE="${LOG_DIR}/tmux-inner.log"
-APP_ENTRY="/work/src/app.ts"
-BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"
-
-mkdir -p "${LOG_DIR}"
-
-if [[ ! -f "${APP_ENTRY}" ]]; then
-  echo "ERROR: entrypoint not found: ${APP_ENTRY}" | tee -a "${LOG_FILE}" >&2
-  echo "Hint: run inside a repo mounted at /work with src/app.ts present." | tee -a "${LOG_FILE}" >&2
-  echo "Press Ctrl+C to exit tmux pane." | tee -a "${LOG_FILE}" >&2
-  tail -n +1 -f "${LOG_FILE}"
-  exit 42
-fi
-
-{
-  echo "===== org tmux-inner start: $(date -Is) ====="
-  echo "cmd: ${BUN_BIN} ${APP_ENTRY} --ui console"
-} | tee -a "${LOG_FILE}"
-
-set +e
-"${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | tee -a "${LOG_FILE}"
-APP_CODE=${PIPESTATUS[0]}
-set -e
-
-echo "===== org tmux-inner exit code: ${APP_CODE} @ $(date -Is) =====" | tee -a "${LOG_FILE}"
-echo "Pane will stay open; tailing log. Press Ctrl+C to exit." | tee -a "${LOG_FILE}"
-
-exec tail -n +1 -f "${LOG_FILE}"
-INNER_EOF
-chmod 700 "${INNER_SH}"
-
-exec "${TMUX_BIN}" -vv -f "${TMUX_CONF}" -L org new-session -A -s org "/work/.org/tmux-inner.sh"
+exec "${ENGINE}" run --rm -it \
+  -v "${TARGET_DIR}:/work" -w /work \
+  "${IMAGE}" org --ui "${MODE}"
