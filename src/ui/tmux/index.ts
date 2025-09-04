@@ -122,7 +122,7 @@ export async function launchTmuxUI(argv: string[], _scope: Scope = "container"):
     // tmux-inner.sh
     "cat > /work/.org/tmux-inner.sh <<'EOF_INNER'\n" + inner + "\nEOF_INNER\n",
     "chmod +x /work/.org/tmux-inner.sh",
-  ].join(" && ");
+  ].join("\n");
 
   {
     const { code } = await shInteractive(["bash", "-lc", writeFiles], {
