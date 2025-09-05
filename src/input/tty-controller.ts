@@ -21,6 +21,7 @@
 import type { Writable } from "node:stream";
 import { R } from "../runtime/runtime";
 import { ESC_PRESSED_MSG, I_PRESSED_MSG } from "../constants";
+import { Logger } from "../logger";
 
 /* ------------------------------ TTY primitives ----------------------------- */
 
@@ -250,6 +251,9 @@ export class TtyController {
             this.feedback.write(
               ESC_PRESSED_MSG + "\n",
             );
+
+            Logger.debug("ESC");
+
             void this.finalizeThenExit();
             // resolve an empty string to unblock any awaiting callers
             return resolve("");
