@@ -49,15 +49,15 @@ write_tmux_conf() {
 write_inner_sh() {
   {
     printf '%s\n' '#!/usr/bin/env bash'
-    printf '%s\n' 'set -v'
     printf '%s\n' 'set -Eeuo pipefail'
+    printf '%s\n' 'set -x'
     printf '%s\n' 'LOG_DIR="/work/.org/logs"'
     printf '%s\n' 'LOG_FILE="${LOG_DIR}/tmux-inner.log"'
     printf '%s\n' 'APP_ENTRY="/work/src/app.ts"'
     printf '%s\n' 'BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"'
     printf '%s\n' 'export ORG_EXTERNAL_TMUX_BOOTSTRAP=1'
-    printf '%s\n' 'mkdir -p "${LOG_DIR}"'
-    printf '%s\n' 'touch "${LOG_FILE}"'
+    printf '%s\n' 'mkdir -p /work/.org/logs/tmux-inner.log'
+    printf '%s\n' 'touch /work/.org/logs/tmux-inner.log'
     printf '%s\n' 'echo "===== org tmux-inner start: $(date -Is) =====" | tee -a "${LOG_FILE}"'
     printf '%s\n' 'echo "[inner] cwd=$(pwd) uid=$(id -u):$(id -g)" | tee -a "${LOG_FILE}"'
     printf '%s\n' 'if [[ ! -f "${APP_ENTRY}" ]]; then echo "ERROR: ${APP_ENTRY} not found" | tee -a "${LOG_FILE}"; exit 42; fi'
