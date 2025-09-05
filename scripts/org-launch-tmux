@@ -96,5 +96,7 @@ fi
 # If a pipe-pane got disabled somehow, ensure it's on (idempotent).
 tmux -L "$ORG_TMUX_SOCKET" pipe-pane -t "$ORG_TMUX_SESSION:$ORG_TMUX_WINDOW.$ORG_TMUX_PANE" -o "ts %H:%M:%.S >> \"$PANE_LOG\"" || true
 
-# -------- Attach --------------------------------------------------------------
+# -------- Attach with Ctrl+C handling ----------------------------------------
+trap 'tmux -L "$ORG_TMUX_SOCKET" kill-session -t "$ORG_TMUX_SESSION" 2>/dev/null; exit 130' INT
+
 exec tmux -L "$ORG_TMUX_SOCKET" attach -t "$ORG_TMUX_SESSION"
