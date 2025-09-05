@@ -57,6 +57,7 @@ write_inner_sh() {
     printf '%s\n' 'export ORG_EXTERNAL_TMUX_BOOTSTRAP=1'
     printf '%s\n' 'mkdir -p "${LOG_DIR}"'
     printf '%s\n' 'touch "${LOG_FILE}"'
+    printf '%s\n' 'cat "${LOG_FILE}"'
     printf '%s\n' 'echo "===== org tmux-inner start: $(date -Is) =====" | tee -a "${LOG_FILE}"'
     printf '%s\n' 'echo "[inner] cwd=$(pwd) uid=$(id -u):$(id -g)" | tee -a "${LOG_FILE}"'
     printf '%s\n' 'if [[ ! -f "${APP_ENTRY}" ]]; then echo "ERROR: ${APP_ENTRY} not found" | tee -a "${LOG_FILE}"; exit 42; fi'
