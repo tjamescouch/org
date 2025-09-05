@@ -46,7 +46,7 @@ export function installTtyGuard(): void {
   const unwind = () => {
     const c = R.ttyController;
     if (!c) return;
-    c.unwind().catch((e) => Logger.error(e));
+    c.unwind?.()
   };
 
   R.on("SIGINT", () => { unwind(); Logger.error?.("SIGINT"); R.exit(130); });
