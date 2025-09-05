@@ -168,22 +168,19 @@ export function makeStreamingOpenAiLmStudio(cfg: OpenAiDriverConfig): ChatDriver
 
         // Content tokens (may arrive as large CoT chunks; stream cooperatively)
         if (typeof delta.content === "string" && delta.content.length) {
-          fullText += delta.content;
-          if (typeof delta.content === "string" && delta.content.length) {
-            const clean = delta.content;
-            fullText += clean;
-            if (onToken) {
-              // break very large slices so UI can breathe
-              let s = delta.content;
-              while (s.length) {
-                const piece = s.slice(0, 512);
-                s = s.slice(512);
-                try { onToken(piece); } catch { /* ignore sink errors */ }
-                await yb.maybe(piece.length);
-              }
-            } else {
-              await yb.maybe(delta.content.length);
+          const clean = delta.content;
+          fullText += clean;
+          if (onToken) {
+            // break very large slices so UI can breathe
+            let s = delta.content;
+            while (s.length) {
+              const piece = s.slice(0, 512);
+              s = s.slice(512);
+              try { onToken(piece); } catch { /* ignore sink errors */ }
+              await yb.maybe(piece.length);
             }
+          } else {
+            await yb.maybe(delta.content.length);
           }
         }
 

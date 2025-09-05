@@ -317,8 +317,7 @@ async function main() {
   const scheduler: IScheduler = new RandomScheduler({
     agents,
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
-    onAskUser: (fromAgent: string, content: string) =>
-      R.ttyController?.askUser(fromAgent, content) ?? Promise.resolve(undefined),
+    onAskUser: async (_: string, content: string) => R.ttyController?.askUser(),
     projectDir, // repo root to copy/sync into /work
     reviewMode,
     promptEnabled:
@@ -326,10 +325,10 @@ async function main() {
         : kickoff ? false
           : R.stdin.isTTY,
     // Bridge: scheduler keeps the logic; controller renders & collects the line.
-    readUserLine: () => R.ttyController!.readUserLine(),
+    readUserLine: async () => R.ttyController!.readUserLine(),
     // STREAM DEFERRAL: bracket every chattering section
-    onStreamStart: () => R.ttyController?.onStreamStart(),
-    onStreamEnd: () => R.ttyController?.onStreamEnd(),
+    onStreamStart: async () => R.ttyController?.onStreamStart(),
+    onStreamEnd: async () => R.ttyController?.onStreamEnd(),
   });
 
   // Build input (controller binds raw mode & keys; loop owned by scheduler)

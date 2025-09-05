@@ -3,7 +3,6 @@ import { detectBackend, Backend } from "./detect";
 import { ExecPolicy } from "./policy";
 import { LocalSession } from "./backends/local";
 import { PodmanSession } from "./backends/podman";
-import { Logger } from "../logger";
 
 type ManagerOpts = {
   backend?: "auto" | Backend;
@@ -42,7 +41,6 @@ export class SandboxManager {
   }
 
   private createSessionFor(key: string): SessionLike {
-    Logger.info(`Creating session for key=${key}`);
     const backend = this.selectBackend();
 
     if (backend === "local") {

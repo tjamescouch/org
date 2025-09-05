@@ -1,6 +1,5 @@
 import { C, Logger } from "../logger";
 import { R } from "../runtime/runtime";
-import { StreamingTagProtector } from "../utils/tag-protect";
 import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
 import { AgentMemory } from "../memory";
 import { GuardRail } from "../guardrails/guardrail";
@@ -183,20 +182,15 @@ export class LlmAgent extends Agent {
       debugStreaming = true;
     }
 
-    // Same pipeline as post-turn
-    const tagProtector = new StreamingTagProtector();
-    // -----------------------------------------------------------------------
-
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
       tools: this.tools,
       onReasoningToken: t => {
-        if (R.env.HIDE_COT) {
+        if (R.env.ORG_HIDE_COT) {
           Logger.streamInfo(C.cyan('.'));
           return;
         }
         Logger.streamInfo(C.cyan(t))
-        //Logger.streamInfo(C.cyan('.'));
       },
       onToken: t => {
         if (streamState !== "content") {
@@ -204,25 +198,14 @@ export class LlmAgent extends Agent {
           streamState = "content";
         }
 
-        //if (debugStreaming) {
-        //  // RAW streaming
-        //  Logger.streamInfo(C.bold(t));
-        //} else {
-          // FILTERED streaming with tag preservation
-          //if(t) Logger.streamInfo(C.gray(t));
-          const cleaned = this.streamFilter.feed(t);
-          if (cleaned) Logger.streamInfo(C.bold(cleaned));
-        //}
+        const cleaned = this.streamFilter.feed(t);
+        if (cleaned) Logger.streamInfo(C.bold(cleaned));
       },
       onToolCallDelta
     });
 
-    // --- Correct flush order: protector → filter → unprotect ---
-    //if (!debugStreaming) {
-      const tail = this.streamFilter.flush();                            // then flush filter
-      if (tail) Logger.streamInfo(C.bold(tail) + "\n");
-    //}
-    // -----------------------------------------------------------
+    const tail = this.streamFilter.flush();                            // then flush filter
+    if (tail) Logger.streamInfo(C.bold(tail) + "\n");
 
     Logger.info('');
     Logger.debug(`${this.id} chat <-`, { ms: Date.now() - t0, textChars: (out.text || "").length, toolCalls: out.toolCalls?.length || 0 });
@@ -231,7 +214,7 @@ export class LlmAgent extends Agent {
       Logger.debug(`${this.id} empty-output`);
     }
 
-    const finalText = sanitizeContent((out.text || "").trim());
+    const finalText = ((out.text || "").trim());
     const allReasoning = out?.reasoning || "";
 
     // Inform guard rail about this assistant turn (before routing)
