@@ -34,6 +34,7 @@ export async function launchTmuxUI(_argv: string[]): Promise<number> {
   await fsp.writeFile(path.join(ORG_DIR, "tmux-inner.sh"), inner, { encoding: "utf8", mode: 0o700 });
 
   const prelude = [
+    `touch ${LOG_DIR}/tmux-launcher.log >/dev/null`,
     `echo "[tmux/launcher] begin $(date -Is)" | tee -a ${LOG_DIR}/tmux-launcher.log >/dev/null`,
     `${tmuxBin()} -V | sed 's/^/[tmux\\/launcher] tmux version: /' | tee -a ${LOG_DIR}/tmux-launcher.log >/dev/null`,
     `echo "[tmux/launcher] socket label: tmux-0" | tee -a ${LOG_DIR}/tmux-launcher.log >/dev/null`,
