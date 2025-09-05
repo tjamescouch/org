@@ -56,7 +56,7 @@ export function routeWithTags(raw: string, agentTokens: string[]): RouteOutcome 
   return {
     deliveries,
     yieldForUser: sawUser,
-    yieldForGroup: sawGroup,
+    yieldForGroup: sawGroup && !sawUser,
     sawTags: { user: sawUser, group: sawGroup, file: sawFile, agent: sawAgent },
   };
 }
