@@ -18,7 +18,7 @@ TOOLS (function calling)
 TAGS (for routing and files)
 - "@@group <text>" → speak to everyone (broadcast). The default if you do not include any tag.
 - "@@user <text>"  → yield the floor to the human user (stop your turn and wait for input).
-- "@@<agent> <text>" → direct message a specific agent (e.g., "@alice do X").
+- "@@<agent> <text>" → direct message a specific agent (e.g., "@@alice do X").
 - "##file:<filename> <content lines...>" → write <content> to file <path>.
   e.g., "##file:filename ...".
   When using file tags, put ONLY the file content after the tag until the next tag or end of message.

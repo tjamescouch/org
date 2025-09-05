@@ -317,8 +317,7 @@ async function main() {
   const scheduler: IScheduler = new RandomScheduler({
     agents,
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
-    onAskUser: (fromAgent: string, content: string) =>
-      R.ttyController?.askUser(fromAgent, content) ?? Promise.resolve(undefined),
+    onAskUser: async (_: string, content: string) => R.ttyController?.askUser(),
     projectDir, // repo root to copy/sync into /work
     reviewMode,
     promptEnabled:
@@ -346,7 +345,7 @@ async function main() {
       waitSuppressOutput: true,
       stdin: R.stdin,
       stdout: R.stdout,
-      prompt: String(args["banner"] ?? "user: "),
+      prompt: String(args["banner"] ?? "user:  "),
       interjectKey: String(args["interject-key"] ?? "i"),
       interjectBanner: String(args["banner"] ?? "user: "),
       // ESC path ends up here: stop → drain → review/apply
