@@ -4,7 +4,6 @@
 # starts tmux with verbose logs redirected to .org/logs/tmux-logs,
 # and keeps the server/pane up so attach is deterministic.
 
-set -v
 set -Eeuo pipefail
 
 ORG_DIR="${ORG_RUNTIME_DIR:-/work/.org}"
@@ -59,13 +58,13 @@ write_inner_sh() {
     printf '%s\n' 'touch "${LOG_FILE}"'
     printf '%s\n' 'cat "${LOG_FILE}"'
     printf '%s\n' 'echo "===== org tmux-inner start: $(date -Is) =====" | tee -a ${LOG_FILE}'
-    printf '%s\n' 'echo "[inner] cwd=$(pwd) uid=$(id -u):$(id -g)" | tee -a "${LOG_FILE}"'
-    printf '%s\n' 'if [[ ! -f "${APP_ENTRY}" ]]; then echo "ERROR: ${APP_ENTRY} not found" | tee -a "${LOG_FILE}"; exit 42; fi'
+    printf '%s\n' 'echo "[inner] cwd=$(pwd) uid=$(id -u):$(id -g)" | tee -a ${LOG_FILE}'
+    printf '%s\n' 'if [[ ! -f "${APP_ENTRY}" ]]; then echo "ERROR: ${APP_ENTRY} not found" | tee -a ${LOG_FILE}; exit 42; fi'
     printf '%s\n' 'set +e'
-    printf '%s\n' '"${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | sed -e "s/$(printf '\''\x1b'\'')\[[0-9;]*c//g" | tee -a \"${LOG_FILE}\"'
+    printf '%s\n' '"${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | sed -e "s/$(printf '\''\x1b'\'')\[[0-9;]*c//g" | tee -a ${LOG_FILE}'
     printf '%s\n' 'APP_CODE=${PIPESTATUS[0]}'
     printf '%s\n' 'set -e'
-    printf '%s\n' 'echo "===== org tmux-inner exit: ${APP_CODE} @ $(date -Is) =====" | tee -a "${LOG_FILE}"'
+    printf '%s\n' 'echo "===== org tmux-inner exit: ${APP_CODE} @ $(date -Is) =====" | tee -a ${LOG_FILE}'
     printf '%s\n' 'exit "${APP_CODE}"'
   } > "${INNER_SH}"
   chmod 700 "${INNER_SH}"

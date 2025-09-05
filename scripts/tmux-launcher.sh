@@ -2,7 +2,6 @@
 # scripts/tmux-launcher.sh
 # Runs the container with the repo's wrapper overlay-mounted.
 # Env forwarding: ORG_*, OPENAI_*, OLLAMA_*, ANTHROPIC_*, AZURE_*, HF_* and proxies.
-set -v
 set -Eeuo pipefail
 
 ENGINE="${ORG_CONTAINER_ENGINE:-}"

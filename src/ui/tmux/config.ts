@@ -32,7 +32,6 @@ export function buildInnerScript(entryCmd: string): string {
 
   return [
     '#!/usr/bin/env bash',
-    'set -v',
     'set -Eeuo pipefail',
     'umask 002',
     '',
