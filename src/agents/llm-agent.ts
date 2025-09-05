@@ -127,7 +127,7 @@ export class LlmAgent extends Agent {
   async respond(messages: ChatMessage[], maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply[]> {
     Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
     if (abortCallback?.()) {
-      Logger.error("Aborted turn");
+      Logger.debug("Aborted turn");
       return [{ message: "Turn aborted.", toolsUsed: 0 }];
     }
 
