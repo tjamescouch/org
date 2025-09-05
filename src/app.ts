@@ -325,10 +325,10 @@ async function main() {
         : kickoff ? false
           : R.stdin.isTTY,
     // Bridge: scheduler keeps the logic; controller renders & collects the line.
-    readUserLine: () => R.ttyController!.readUserLine(),
+    readUserLine: async () => R.ttyController!.readUserLine(),
     // STREAM DEFERRAL: bracket every chattering section
-    onStreamStart: () => R.ttyController?.onStreamStart(),
-    onStreamEnd: () => R.ttyController?.onStreamEnd(),
+    onStreamStart: async () => R.ttyController?.onStreamStart(),
+    onStreamEnd: async () => R.ttyController?.onStreamEnd(),
   });
 
   // Build input (controller binds raw mode & keys; loop owned by scheduler)

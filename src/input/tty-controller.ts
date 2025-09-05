@@ -226,7 +226,6 @@ export class TtyController {
   /** prompt helper used in both idle-'i' and deferred interjection */
   async askUser(banner = this.interjectBanner) {
     const line = await this.readUserLine(banner);
-    console.log("READ LINE", line);
     this.enqueue(line);
   }
 
