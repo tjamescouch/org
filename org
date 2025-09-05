@@ -66,4 +66,4 @@ exec "$ENGINE" run --rm -it \
   -v "$REPO_DIR:/work:Z" \
   -w /work \
   "${ENV_ARR[@]}" \
-  "$IMAGE" bun /work/src/app.ts "$@"
+  "$IMAGE" bun /work/scripts/tmux-launcher.sh "$@"
