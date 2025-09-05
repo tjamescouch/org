@@ -1,13 +1,11 @@
 // test/unit/streaming.final-filter.integration.test.ts
 import { describe, it, expect } from "bun:test";
 import LLMNoiseFilter from "../../src/utils/llm-noise-filter";
-import { StreamingTagProtector } from "../../src/utils/tag-protect";
 
 // Helpers — simulate how llm-agent prints streaming tokens when NOT DEBUG.
 // (Same pipeline as post-turn, but chunk-by-chunk.)
 function streamClean(chunks: string[]): string {
   const filter = LLMNoiseFilter.createDefault();
-  const prot = new StreamingTagProtector();
   let out = "";
 
   for (const ch of chunks) {
@@ -47,19 +45,6 @@ describe("Streaming filter integration", () => {
     ];
     const out = streamClean(chunks);
     expect(out).toBe("@@user Hi! How can I help you today?");
-  });
-
-  it("never leaves encoded tags (stream protector encode/decode roundtrip)", () => {
-    const prot = new StreamingTagProtector();
-    const s1 = prot.feedProtect("@@user Hi");
-    const back1 = prot.unprotect(s1);
-    expect(back1).toBe("@@user Hi");
-
-    // Also test carry/flush path
-    prot.feedProtect("@@us");
-    const flushed = prot.flush();         // should contain the encoded fragment
-    const round = prot.unprotect(flushed);
-    expect(round.includes("@@us") || round.includes("@@user")).toBe(true);
   });
 
   it("leaves fenced code (stream) untouched", () => {

@@ -206,7 +206,6 @@ export class RandomScheduler {
               didWork = true;
 
               if (askedUser) {
-                Logger.info("ASKED USER");
                 if (this.promptEnabled) {
                   // interactive: open prompt as before
                   this.lastUserDMTarget = a.id;
