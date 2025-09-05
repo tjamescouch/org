@@ -19,6 +19,9 @@ if [[ ! -d "$ORG_WORKDIR" ]]; then
   ORG_WORKDIR="$PWD"
 fi
 
+ORG_SCRIPTS_DIR="$ORG_WORKDIR/scripts"
+TMUX_CONF="$ORG_SCRIPTS_DIR/tmux.conf"
+
 # State and logs live under .org/
 ORG_STATE_DIR="${ORG_STATE_DIR:-$ORG_WORKDIR/.org}"
 ORG_LOG_DIR="$ORG_STATE_DIR/logs"
@@ -79,22 +82,22 @@ export ORG_LOG_DIR ORG_TMUX_LOG_DIR INNER_LOG="$INNER_LOG" ORG_ENTRY="$ORG_ENTRY
 
 # -------- tmux bootstrap ------------------------------------------------------
 export TMUX_TMPDIR="${TMUX_TMPDIR:-/tmp}"
-tmux -L "$ORG_TMUX_SOCKET" start-server
+tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" start-server
 
 # Create session if it doesn't exist yet
 if ! tmux -L "$ORG_TMUX_SOCKET" has-session -t "$ORG_TMUX_SESSION" 2>/dev/null; then
   # Start the session detached running our inner runner
-  tmux -L "$ORG_TMUX_SOCKET" new-session -d -s "$ORG_TMUX_SESSION" -n main "exec \"$INNER_RUNNER\""
+  tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" new-session -d -s "$ORG_TMUX_SESSION" -n main "exec \"$INNER_RUNNER\""
   # Keep pane visible after exit for debugging
-  tmux -L "$ORG_TMUX_SOCKET" set-option -t "$ORG_TMUX_SESSION" remain-on-exit on
+  tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" set-option -t "$ORG_TMUX_SESSION" remain-on-exit on
 
   # Mirror pane output to a timestamped log (does not break TTY)
   # `-o` only starts piping if not already active (idempotent).
-  tmux -L "$ORG_TMUX_SOCKET" pipe-pane -t "$ORG_TMUX_SESSION:$ORG_TMUX_WINDOW.$ORG_TMUX_PANE" -o "ts %H:%M:%.S >> \"$PANE_LOG\""
+  tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" pipe-pane -t "$ORG_TMUX_SESSION:$ORG_TMUX_WINDOW.$ORG_TMUX_PANE" -o "ts %H:%M:%.S >> \"$PANE_LOG\""
 fi
 
 # If a pipe-pane got disabled somehow, ensure it's on (idempotent).
-tmux -L "$ORG_TMUX_SOCKET" pipe-pane -t "$ORG_TMUX_SESSION:$ORG_TMUX_WINDOW.$ORG_TMUX_PANE" -o "ts %H:%M:%.S >> \"$PANE_LOG\"" || true
+tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" pipe-pane -t "$ORG_TMUX_SESSION:$ORG_TMUX_WINDOW.$ORG_TMUX_PANE" -o "ts %H:%M:%.S >> \"$PANE_LOG\"" || true
 
 # -------- Attach --------------------------------------------------------------
-exec tmux -L "$ORG_TMUX_SOCKET" attach -t "$ORG_TMUX_SESSION"
+exec tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" attach -t "$ORG_TMUX_SESSION"
