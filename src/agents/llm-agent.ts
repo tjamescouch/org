@@ -136,7 +136,7 @@ export class LlmAgent extends Agent {
 
     const ms = [...messages];//.reverse();
     for (const message of ms) {
-      await this.memory.addIfNotExists(message);
+      await this.memory.add(message);
     }
 
     let hop = 0;
