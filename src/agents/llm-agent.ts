@@ -127,16 +127,15 @@ export class LlmAgent extends Agent {
   async respond(messages: ChatMessage[], maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply[]> {
     Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
     if (abortCallback?.()) {
-      Logger.debug("Aborted turn");
+      Logger.error("Aborted turn");
       return [{ message: "Turn aborted.", toolsUsed: 0 }];
     }
 
     // Initialize per-turn thresholds/counters in the guard rail.
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
 
-    const ms = [...messages];//.reverse();
-    for (const message of ms) {
-      await this.memory.add(message);
+    for (const message of messages) {
+      await this.memory.addIfNotExists(message);
     }
 
     let hop = 0;
