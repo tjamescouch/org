@@ -183,10 +183,6 @@ export class LlmAgent extends Agent {
       debugStreaming = true;
     }
 
-    // Same pipeline as post-turn
-    const tagProtector = new StreamingTagProtector();
-    // -----------------------------------------------------------------------
-
     const out = await this.driver.chat(this.memory.messages().map(m => this.formatMessage(m)), {
       model: this.model,
       tools: this.tools,
