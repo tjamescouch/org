@@ -4,6 +4,7 @@
 # starts tmux with verbose logs redirected to .org/logs/tmux-logs,
 # and keeps the server/pane up so attach is deterministic.
 
+set -v
 set -Eeuo pipefail
 
 ORG_DIR="${ORG_RUNTIME_DIR:-/work/.org}"
@@ -32,8 +33,8 @@ write_tmux_conf() {
   {
     printf '%s\n' '# org-tmux-conf v4 (shell launcher sentinel)'
     # Keep the server up even if the child exits; keep pane visible for inspection.
-    printf '%s\n' 'set -s exit-empty off'
-    printf '%s\n' 'setw -g remain-on-exit on'
+    printf '%s\n' 'set -s exit-empty on'
+    printf '%s\n' 'setw -g remain-on-exit off'
     # Usability + color
     printf '%s\n' 'set -g mouse on'
     printf '%s\n' 'set -g history-limit 100000'
