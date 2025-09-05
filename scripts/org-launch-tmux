@@ -3,17 +3,17 @@
 # Single-command tmux launcher for org that preserves a real TTY and logs pane output.
 # Usage: org --ui tmux [app-args...]
 #
-# Behavior:
+# Key features:
 # - Creates/attaches a tmux session.
 # - Runs the app inside a PTY (via `script`) so stdout/stderr are interactive & visible.
-# - Pipes the pane to a rotating log file without breaking TTY.
-# - Keeps the pane on screen after exit (remain-on-exit) for postmortem.
+# - Pipes the pane to a log file without breaking TTY.
+# - Configurable tmux behavior via env vars (see "Configurable options" below).
 
 set -Eeuo pipefail
 
-# -------- Config (override via environment if needed) -------------------------
+# -------- Configurable options (override via env) -----------------------------
 # Preferred working directory inside the container; falls back to $PWD on host.
-ORG_WORKDIR_DEFAULT="/work"
+ORG_WORKDIR_DEFAULT="${ORG_WORKDIR_DEFAULT:-/work}"
 ORG_WORKDIR="${ORG_WORKDIR:-${ORG_WORKDIR_DEFAULT}}"
 if [[ ! -d "$ORG_WORKDIR" ]]; then
   ORG_WORKDIR="$PWD"
@@ -35,13 +35,35 @@ ORG_TMUX_PANE="${ORG_TMUX_PANE:-0}"
 ORG_ENTRY_BASE="${ORG_ENTRY_BASE:-bun $ORG_WORKDIR/src/app.ts --ui console}"
 ORG_ENTRY="$ORG_ENTRY_BASE ${*:-}"
 
-# Log files
-PANE_LOG="$ORG_LOG_DIR/pane-0.log"
-INNER_LOG="$ORG_LOG_DIR/tmux-inner.log"
+# Logging
+PANE_LOG="${PANE_LOG:-$ORG_LOG_DIR/pane-0.log}"
+INNER_LOG="${INNER_LOG:-$ORG_LOG_DIR/tmux-inner.log}"
 
 # Tools
-SHELL_BIN="${SHELL:-/bin/bash}"
+SHELL_BIN="${SHELL_BIN:-${SHELL:-/bin/bash}}"
 SCRIPT_BIN="$(command -v script || true)"
+
+# ---------------- tmux behavior toggles (defaults chosen for dev) -------------
+# Show final pane after the process exits (good for postmortem). off = vanish.
+ORG_TMUX_REMAIN_ON_EXIT="${ORG_TMUX_REMAIN_ON_EXIT:-on}"     # on|off (session option)
+
+# Kill the session automatically when the *pane* (your app) exits/dies.
+# This is often what you want in CI or “single-app” UX.
+ORG_TMUX_EXIT_ON_PANE_CLOSE="${ORG_TMUX_EXIT_ON_PANE_CLOSE:-off}"  # on|off
+
+# Make the tmux server exit when it has no sessions left.
+ORG_TMUX_EXIT_EMPTY="${ORG_TMUX_EXIT_EMPTY:-on}"             # on|off (global)
+
+# Detach clients instead of killing them when session/window/pane is destroyed.
+ORG_TMUX_DETACH_ON_DESTROY="${ORG_TMUX_DETACH_ON_DESTROY:-on}"  # on|off (global)
+
+# Hide the tmux status bar to give the app more space.
+ORG_TMUX_STATUS="${ORG_TMUX_STATUS:-on}"                     # on|off (session)
+
+# Extra tmux commands (optional). Provide a semicolon-separated list of commands
+# (exact tmux syntax) to run against the session after creation.
+# Example: ORG_TMUX_EXTRA_CMDS='set -t org status-position top; set -t org status-right ""'
+ORG_TMUX_EXTRA_CMDS="${ORG_TMUX_EXTRA_CMDS:-}"
 
 # -------- Prep dirs -----------------------------------------------------------
 mkdir -p "$ORG_STATE_DIR" "$ORG_LOG_DIR" "$ORG_TMUX_LOG_DIR"
@@ -61,7 +83,7 @@ SCRIPT_BIN="${SCRIPT_BIN:-}"
 {
   echo "===== org tmux-inner start: $(date -Is) ====="
   echo "[inner] cwd=$(pwd) uid=$(id -u):$(id -g) PATH=$PATH"
-  echo "[inner] entry: \$ENTRY"
+  echo "[inner] entry: $ENTRY"
 } >>"$APP_LOG" 2>&1
 
 # If util-linux `script` is available, use it to preserve a real PTY while logging.
@@ -75,26 +97,44 @@ EOF
 chmod +x "$INNER_RUNNER"
 
 # Export runtime variables for the inner runner
-export ORG_LOG_DIR ORG_TMUX_LOG_DIR INNER_LOG="$INNER_LOG" ORG_ENTRY="$ORG_ENTRY" SHELL_BIN SCRIPT_BIN
+export ORG_LOG_DIR ORG_TMUX_LOG_DIR INNER_LOG ORG_ENTRY SHELL_BIN SCRIPT_BIN
+
+# -------- helpers -------------------------------------------------------------
+tmuxS() { tmux -L "$ORG_TMUX_SOCKET" "$@"; }
+
+apply_tmux_bool_opt() {
+  # $1 = scope (global|session), $2 = option, $3 = value (on|off), $4 = -t target (optional)
+  local scope="$1" opt="$2" val="$3" tgt="${4:-}"
+  case "$scope" in
+    global)  tmuxS set-option -g "$opt" "$val" ;;
+    session) tmuxS set-option ${tgt:+-t "$tgt"} "$opt" "$val" ;;
+    *)       return 0 ;;
+  esac
+}
 
 # -------- tmux bootstrap ------------------------------------------------------
 export TMUX_TMPDIR="${TMUX_TMPDIR:-/tmp}"
-tmux -L "$ORG_TMUX_SOCKET" start-server
+tmuxS start-server
+
+# Global options first (idempotent)
+apply_tmux_bool_opt global exit-empty         "$ORG_TMUX_EXIT_EMPTY"
+apply_tmux_bool_opt global detach-on-destroy  "$ORG_TMUX_DETACH_ON_DESTROY"
 
 # Create session if it doesn't exist yet
-if ! tmux -L "$ORG_TMUX_SOCKET" has-session -t "$ORG_TMUX_SESSION" 2>/dev/null; then
+if ! tmuxS has-session -t "$ORG_TMUX_SESSION" 2>/dev/null; then
   # Start the session detached running our inner runner
-  tmux -L "$ORG_TMUX_SOCKET" new-session -d -s "$ORG_TMUX_SESSION" -n main "exec \"$INNER_RUNNER\""
-  # Keep pane visible after exit for debugging
-  tmux -L "$ORG_TMUX_SOCKET" set-option -t "$ORG_TMUX_SESSION" remain-on-exit on
+  tmuxS new-session -d -s "$ORG_TMUX_SESSION" -n main "exec \"$INNER_RUNNER\""
+
+  # Session-scoped options
+  apply_tmux_bool_opt session remain-on-exit "$ORG_TMUX_REMAIN_ON_EXIT" -t "$ORG_TMUX_SESSION"
+  apply_tmux_bool_opt session status "$ORG_TMUX_STATUS" -t "$ORG_TMUX_SESSION"
 
   # Mirror pane output to a timestamped log (does not break TTY)
   # `-o` only starts piping if not already active (idempotent).
-  tmux -L "$ORG_TMUX_SOCKET" pipe-pane -t "$ORG_TMUX_SESSION:$ORG_TMUX_WINDOW.$ORG_TMUX_PANE" -o "ts %H:%M:%.S >> \"$PANE_LOG\""
-fi
+  tmuxS pipe-pane -t "$ORG_TMUX_SESSION:$ORG_TMUX_WINDOW.$ORG_TMUX_PANE" -o "ts %H:%M:%.S >> \"$PANE_LOG\""
 
-# If a pipe-pane got disabled somehow, ensure it's on (idempotent).
-tmux -L "$ORG_TMUX_SOCKET" pipe-pane -t "$ORG_TMUX_SESSION:$ORG_TMUX_WINDOW.$ORG_TMUX_PANE" -o "ts %H:%M:%.S >> \"$PANE_LOG\"" || true
-
-# -------- Attach --------------------------------------------------------------
-exec tmux -L "$ORG_TMUX_SOCKET" attach -t "$ORG_TMUX_SESSION"
+  # Exit when the *pane* closes (optional)
+  if [[ "$ORG_TMUX_EXIT_ON_PANE_CLOSE" == "on" ]]; then
+    # Kill the whole session when the main pane exits/dies.
+    # We scope hooks to this session only.
+    tmuxS set-hook -t "$ORG_TMUX_SESSION" pane-exit
