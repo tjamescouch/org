@@ -103,7 +103,7 @@ popd >/dev/null
 if [[ ${NEW_CODE} -ne 0 ]]; then
   echo "[launcher] tmux new-session failed with ${NEW_CODE}" | tee -a "${LAUNCH_LOG}" >/dev/null
   echo "[launcher] recent tmux server log:" | tee -a "${LAUNCH_LOG}" >/dev/null
-  tail -n 50 "${TMUX_LOG_DIR}"/tmux-server-*.log 2>/dev/null | sed 's/^/[tmux] /' | tee -a "${LAUNCH_LOG}" >/dev/null || true
+  tail -nf 100 "${TMUX_LOG_DIR}"/tmux-server-*.log 2>/dev/null | sed 's/^/[tmux] /' | tee -a "${LAUNCH_LOG}" >/dev/null || true
   exit ${NEW_CODE}
 fi
 
