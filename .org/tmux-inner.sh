@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 mkdir -p /work/.org/logs
-touch /work/.org/logs
+touch /work/.org/logs/tmux-inner.log
 
 set -Eeuo pipefail
 {
