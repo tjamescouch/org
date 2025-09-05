@@ -47,7 +47,7 @@ write_tmux_conf() {
 write_inner_sh() {
   {
     printf '%s\n' '#!/usr/bin/env bash'
-    printf '%s\n' 'set -Eeuo pipefail'
+    printf '%s\n' 'set -Eeuov pipefail'
     printf '%s\n' 'LOG_DIR="/work/.org/logs"'
     printf '%s\n' 'LOG_FILE="${LOG_DIR}/tmux-inner.log"'
     printf '%s\n' 'APP_ENTRY="/work/src/app.ts"'
