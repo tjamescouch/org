@@ -10,6 +10,9 @@ LOG_FILE="${LOG_DIR}/console.log"
 BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"
 APP_ENTRY="/work/src/app.ts"
 
+# Forward ALL user args verbatim to the app.
+APP_ARGS=("$@")
+
 export SANDBOX_BACKEND="${SANDBOX_BACKEND:-none}"
 export ORG_SANDBOX_BACKEND="${ORG_SANDBOX_BACKEND:-none}"
 export ORG_EXTERNAL_TMUX_BOOTSTRAP=1
@@ -21,14 +24,23 @@ chmod 700 "${ORG_DIR}" || true
 [[ -x "${BUN_BIN}"  ]] || { echo "ERROR: bun not found at ${BUN_BIN}"  >&2; exit 1; }
 [[ -f "${APP_ENTRY}" ]] || { echo "ERROR: entrypoint not found: ${APP_ENTRY}" >&2; exit 42; }
 
+# Helper to print argv safely for logs
+print_cmd() {
+  printf "%q " "$@"
+  printf "\n"
+}
+
 {
   echo "===== org console start: $(date -Is) ====="
-  echo "cmd: ${BUN_BIN} ${APP_ENTRY} --ui console"
+  printf "cmd: "
+  print_cmd "${BUN_BIN}" "${APP_ENTRY}" --ui console "${APP_ARGS[@]}"
 } | tee -a "${LOG_FILE}"
 
 set +e
-"${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | tee -a "${LOG_FILE}"
+# Run the app, tee output, preserve the app's exit code
+"${BUN_BIN}" "${APP_ENTRY}" --ui console "${APP_ARGS[@]}" 2>&1 | tee -a "${LOG_FILE}"
 code=${PIPESTATUS[0]}
 set -e
+
 echo "===== org console exit: ${code} @ $(date -Is) =====" | tee -a "${LOG_FILE}"
 exit "${code}"
