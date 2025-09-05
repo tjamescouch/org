@@ -4,25 +4,25 @@
 /** Build a conservative tmux.conf suitable for starting the server. */
 export function buildTmuxConf(): string {
   // tmux syntax ONLY — no shell fragments.
-  return [
-    // Keep the server alive even if the last session dies.
-    'set -s exit-empty off',
-    // Do not instantly drop escape sequences.
-    'set -s escape-time 0',
-    // Usability
-    'set -g mouse on',
-    // Keep pane visible on errors so you can attach and inspect.
-    'setw -g remain-on-exit on',
-    // Term / colors
-    'set -g default-terminal "tmux-256color"',
-    'set -as terminal-overrides ",xterm-256color:Tc,tmux-256color:Tc"',
-    'set -g focus-events on',
-    //'set -s quiet on',
-    // Minimal status (helps debugging)
-    'set -g status on',
-    'set -g status-interval 2',
-    'set -g status-left "[org] #{session_name}.#{window_index}.#{pane_index} "',
-  ].join('\n') + '\n';
+  return (
+    `
+# keep server/pane attachable even if the child exits
+set -s exit-empty off
+setw -g remain-on-exit on
+
+# usability & color
+set -g mouse on
+set -g history-limit 100000
+set -g default-terminal "tmux-256color"
+set -as terminal-overrides ",xterm-256color:Tc,tmux-256color:Tc"
+set -g focus-events on
+set -s escape-time 0
+
+# (optional) a tiny status to help debugging
+set -g status on
+set -g status-interval 2
+set -g status-left "[org] #{session_name}.#{window_index}.#{pane_index} " 
+`);
 }
 
 /** Return the /work/.org/tmux-inner.sh body. */
