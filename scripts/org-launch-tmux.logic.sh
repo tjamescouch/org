@@ -85,7 +85,7 @@ export TMUX_TMPDIR="${TMUX_TMPDIR:-/tmp}"
 tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" start-server
 
 # Create session if it doesn't exist yet
-if ! tmux -L "$ORG_TMUX_SOCKET" has-session -t "$ORG_TMUX_SESSION" 2>/dev/null; then
+if ! tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" has-session -t "$ORG_TMUX_SESSION" 2>/dev/null; then
   # Start the session detached running our inner runner
   tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" new-session -d -s "$ORG_TMUX_SESSION" -n main "exec \"$INNER_RUNNER\""
   # Keep pane visible after exit for debugging
