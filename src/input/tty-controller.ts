@@ -233,7 +233,7 @@ export class TtyController {
   readUserLine(label = this.promptLabel): Promise<string> {
     this.inPrompt = true;
     this.modes.toCooked();
-    this.out.write(label);
+    this.out.write("\n" + label);
 
     let buf = "";
     return new Promise<string>((resolve) => {
