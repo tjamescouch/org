@@ -252,7 +252,7 @@ export class TtyController {
               ESC_PRESSED_MSG + "\n",
             );
 
-            Logger.debug("ESC");
+            Logger.info("ESC");
 
             void this.finalizeThenExit();
             // resolve an empty string to unblock any awaiting callers
