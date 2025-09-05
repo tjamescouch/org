@@ -1,102 +1,57 @@
-/* tmux UI launcher — simple, robust, no backslash soup */
+// src/ui/tmux/index.ts
+// Launch the tmux UI by writing /work/.org/{tmux.conf, tmux-inner.sh}
+// and then starting a private tmux server + attaching to it.
 
+import * as fsp from "fs/promises";
+import * as path from "path";
 import { Logger } from "../../logger";
 import { shInteractive } from "../../tools/sandboxed-sh";
+import { buildTmuxConf, buildInnerScript } from "./config";
 
-type Scope = "container" | "host";
+function bunBin(): string { return process.env.ORG_BUN_BIN || "/usr/local/bin/bun"; }
+function tmuxBin(): string { return process.env.ORG_TMUX_BIN || "/usr/bin/tmux"; }
 
-/**
- * Launch the tmux UI inside the sandbox.
- * - Writes a tiny /work/.org/tmux-inner.sh via here-doc (no escaping games).
- * - Ensures tmux exists (doctorTmux).
- * - Uses a stable bun path (/usr/local/bin/bun) with sensible fallbacks.
- */
-export async function launchTmuxUI(argv: string[], scope: Scope = "container"): Promise<number> {
-  const projectDir = process.env.ORG_PROJECT_DIR ?? process.cwd();
-  const agentSessionId = process.env.ORG_AGENT_SESSION_ID ?? "default";
+export async function launchTmuxUI(_argv: string[]): Promise<number> {
+  const projectDir = process.env.ORG_PROJECT_DIR || "/work";
+  const agentSessionId = process.env.ORG_AGENT_SESSION_ID || "default";
 
-  const entry = "/work/src/app.ts";
-
-  Logger.info("[org/tmux] launcher start", {
-    projectDir,
-    agentSessionId,
-    entry,
-  });
-
-  // doctor: make sure tmux is available where we're about to run it
-  const rc = await doctorTmux(scope, projectDir, agentSessionId);
-  Logger.info("[org/tmux] tmux check (interactive rc)", { code: rc });
-  if (rc !== 0) {
-    throw new Error(
-      "tmux not found in the sandbox image. Please add tmux to the image used for the sandbox.",
-    );
+  // If an external bootstrap owns tmux files, do nothing.
+  if (process.env.ORG_EXTERNAL_TMUX_BOOTSTRAP === "1") {
+    Logger.debug("[tmux] external bootstrap set; skipping internal launcher.");
+    return 0;
   }
 
-  // Build the script without template literals so ${…} stays literal bash.
-  const tmuxScript = [
-    "set -Eeuo pipefail",
-    "umask 0002",
-    "",
-    "mkdir -p /work/.org/logs/tmux-logs",
-    "",
-    "cat > /work/.org/tmux-inner.sh <<'EOS'",
-    "#!/usr/bin/env bash",
-    "set -Eeuo pipefail",
-    "umask 0002",
-    "",
-    "export TERM=xterm-256color",
-    "export LANG=en_US.UTF-8",
-    "",
-    'BUN=\"/usr/local/bin/bun\"',
-    'if ! command -v \"$BUN\" >/dev/null 2>&1; then',
-    "  if command -v bun >/dev/null 2>&1; then",
-    '    BUN=\"$(command -v bun)\"',
-    "  elif [ -x /home/ollama/.bun/bin/bun ]; then",
-    '    BUN=\"/home/ollama/.bun/bin/bun\"',
-    "  elif [ -x /root/.bun/bin/bun ]; then",
-    '    BUN=\"/root/.bun/bin/bun\"',
-    "  fi",
-    "fi",
-    "",
-    'if [ -z \"${BUN:-}\" ] || [ ! -x \"$BUN\" ]; then',
-    '  echo \"[tmux-inner] bun not found\" >&2',
-    "  exit 127",
-    "fi",
-    "",
-    "cd /work",
-    'exec \"$BUN\" /work/src/app.ts --ui console',
-    "EOS",
-    "",
-    "chmod +x /work/.org/tmux-inner.sh",
-    "",
-    "export TMUX_TMPDIR=/work/.org/logs/tmux-logs",
-    "",
-    "exec /usr/bin/tmux -vv new-session -A -s org /work/.org/tmux-inner.sh",
-  ].join("\n");
+  const ORG_DIR = "/work/.org";
+  const LOG_DIR = path.join(ORG_DIR, "logs");
+  await fsp.mkdir(LOG_DIR, { recursive: true });
 
-  // Execute interactively inside the sandbox
-  const { code } = await shInteractive(["bash", "-lc", tmuxScript], {
-    projectDir,
-    agentSessionId,
-  });
+  // Build files without heredocs to avoid quoting traps.
+  const conf = buildTmuxConf();
+  const entryCmd = `${bunBin()} /work/src/app.ts --ui console`;
+  const inner = buildInnerScript(entryCmd);
 
+  await fsp.writeFile(path.join(ORG_DIR, "tmux.conf"), conf, { encoding: "utf8", mode: 0o600 });
+  await fsp.writeFile(path.join(ORG_DIR, "tmux-inner.sh"), inner, { encoding: "utf8", mode: 0o700 });
+
+  const prelude = [
+    `echo "[tmux/launcher] begin $(date -Is)" | tee -a ${LOG_DIR}/tmux-launcher.log >/dev/null`,
+    `${tmuxBin()} -V | sed 's/^/[tmux\\/launcher] tmux version: /' | tee -a ${LOG_DIR}/tmux-launcher.log >/dev/null`,
+    `echo "[tmux/launcher] socket label: tmux-0" | tee -a ${LOG_DIR}/tmux-launcher.log >/dev/null`,
+    `echo "[tmux/launcher] conf: ${ORG_DIR}/tmux.conf" | tee -a ${LOG_DIR}/tmux-launcher.log >/dev/null`,
+    `echo "[tmux/launcher] inner: ${ORG_DIR}/tmux-inner.sh" | tee -a ${LOG_DIR}/tmux-launcher.log >/dev/null`,
+  ].join(" && ");
+
+  const tmuxStart = [
+    // Detached session; run inner via bash -lc so PATH/ENV match app shells.
+    `${tmuxBin()} -vv -L tmux-0 -f ${ORG_DIR}/tmux.conf ` +
+      `new-session -d -s org -n main "bash -lc '${ORG_DIR}/tmux-inner.sh'"`,
+    // Attach (returns when the client detaches or session ends).
+    `${tmuxBin()} -L tmux-0 attach -t org`,
+  ].join(" && ");
+
+  const trailer = `echo "[tmux/launcher] end $(date -Is)" | tee -a ${LOG_DIR}/tmux-launcher.log >/dev/null`;
+  const script = [prelude, tmuxStart, trailer].join(" && ");
+
+  const { code } = await shInteractive(["bash", "-lc", script], { projectDir, agentSessionId });
   return code ?? 0;
 }
-
-/**
- * Minimal tmux presence check where we're about to run it.
- * IMPORTANT: use interactive exec (capture is not implemented in Podman session).
- */
-async function doctorTmux(
-  _scope: Scope,
-  projectDir: string,
-  agentSessionId: string
-): Promise<number> {
-  // We only care about an exit status; suppress output
-  const { code } = await shInteractive(
-    ['bash', '-lc', 'command -v tmux >/dev/null 2>&1'],
-    { projectDir, agentSessionId },
-  );
-  return code ?? 127;
-}
-

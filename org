@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # CWD-agnostic org launcher: always mounts the repo root to /work
 # and runs bun /work/src/app.ts inside the container.
+# Forwards a curated set of host env variables into the container.
 
 set -Eeuo pipefail
 
 # ---------- resolve real path to this script (portable) ----------
 resolve_realpath() {
-  # Prefer readlink -f if available; fall back to Python
   if command -v readlink >/dev/null 2>&1; then
     readlink -f "$1" 2>/dev/null || python3 - "$1" <<'PY'
 import os, sys; print(os.path.realpath(sys.argv[1]))
@@ -38,14 +38,32 @@ if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "[org] image built: $IMAGE"
 fi
 
-# ---------- run bun inside the container, mounting the repo root ----------
-# - Always mount REPO_DIR → /work, regardless of the caller's CWD.
-# - Workdir is /work so /work/src/app.ts is stable.
-# - Pass through your args unchanged.
-exec "$ENGINE" run --rm -it \
-  -v "$REPO_DIR:/work:Z" \
-  -w /work \
-  -e ORG_PROJECT_DIR=/work \
-  -e TERM="${TERM:-xterm-256color}" \
-  "$IMAGE" bun /work/src/app.ts "$@"
+# ---------- env forward (allow-list) ----------
+# Build an array of ["-e","KEY=VAL", ...] so we don't rely on word-splitting.
+env_allow() {
+  local k v
+  while IFS='=' read -r k v; do
+    case "$k" in
+      ORG_*|OPENAI_*|ANTHROPIC_*|OLLAMA_*|LMSTUDIO_*|AZURE_*|GOOGLE_*|GROQ_*|GEMINI_*|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy|LANG|LC_*|TZ|TERM|FORCE_COLOR|NO_COLOR)
+        ENV_ARR+=("-e" "${k}=${v}")
+        ;;
+    esac
+  done < <(env)
+}
 
+# 1) always pass project/workdir hints and keep terminal sane
+ENV_ARR=(
+  "-e" "ORG_PROJECT_DIR=/work"
+  "-e" "TERM=${TERM:-xterm-256color}"
+  "-e" "ORG_SANDBOX_BACKEND=none"
+)
+# 2) add allow-listed host env
+env_allow
+
+# ---------- run bun inside the container, mounting the repo root ----------
+# shellcheck disable=SC2086
+ exec "$ENGINE" run --rm -it \
+   -v "$REPO_DIR:/work:Z" \
+   -w /work \
+   "${ENV_ARR[@]}" \
+   "$IMAGE" org "$@"

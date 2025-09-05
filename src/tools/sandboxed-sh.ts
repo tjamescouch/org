@@ -1,3 +1,4 @@
+// src/tools/sandboxed-sh.ts
 import * as fs from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
@@ -8,13 +9,15 @@ import { detectBackend } from "../sandbox/detect";
 import { Logger } from "../logger";
 import { R } from "../runtime/runtime";
 
+/* -----------------------------------------------------------------------------
+ * Small helpers and types
+ * ---------------------------------------------------------------------------*/
+
 interface StepsDirCarrier {
   getStepsHostDir?: () => string;
   stepsHostDir?: string;
   runRootHostDir?: string; // optional hint if available
 }
-
-/** Resolve a usable steps directory path even if the session lacks a helper. */
 function resolveStepsHostDir(session: StepsDirCarrier, fallbackRoot?: string): string {
   if (typeof session.getStepsHostDir === "function") {
     const p = session.getStepsHostDir();
@@ -48,21 +51,14 @@ interface ToolCtx {
 
 let HEARTBEAT_MUTED = false;
 
-function setShHeartbeatMuted(muted: boolean) {
-  HEARTBEAT_MUTED = muted;
-}
+export function setShHeartbeatMuted(muted: boolean) { HEARTBEAT_MUTED = muted; }
 
-/** Handy helper so callers can do: `await withMutedShHeartbeat(async () => { ... })` */
 export async function withMutedShHeartbeat<T>(fn: () => Promise<T>): Promise<T> {
   const prev = HEARTBEAT_MUTED;
   HEARTBEAT_MUTED = true;
   try { return await fn(); }
   finally { HEARTBEAT_MUTED = prev; }
 }
-
-/* -----------------------------------------------------------------------------
- * Small helpers
- * ---------------------------------------------------------------------------*/
 
 function trace(...a: any[]) {
   if (R.env.DEBUG || R.env.ORG_TRACE) Logger.info("[sandboxed-sh]", ...a);
@@ -89,23 +85,10 @@ async function getManager(key: string, projectDir: string, runRoot?: string) {
   return m;
 }
 
-/** Determine the next step index by scanning existing `step-*` files. */
-async function computeNextStepIdx(stepsDir: string): Promise<number> {
-  try {
-    await fsp.mkdir(stepsDir, { recursive: true });
-    const files = await fsp.readdir(stepsDir).catch(() => []);
-    let max = -1;
-    for (const f of files) {
-      const m = /^step-(\d+)\./.exec(f);
-      if (m) max = Math.max(max, Number(m[1]));
-    }
-    return max + 1;
-  } catch {
-    return 0;
-  }
-}
+/* -----------------------------------------------------------------------------
+ * Tailers
+ * ---------------------------------------------------------------------------*/
 
-/** Tail a file as it grows. Polling is robust across container/host boundaries. */
 function tailFile(
   filePath: string,
   onChunk: (s: string) => void,
@@ -144,7 +127,6 @@ function tailFile(
   return { stop: () => { stopped = true; } };
 }
 
-/** Tail any new step files created after `startMs` (handles stamp-based filenames). */
 function tailStepsDir(
   stepsDir: string,
   startMs: number,
@@ -291,7 +273,6 @@ export async function sandboxedSh(args: ToolArgs, ctx: ToolCtx): Promise<ToolRes
   // Read the final results from the step artifacts the way the rest of the system expects.
   const out = (step?.stdoutFile && fs.existsSync(step.stdoutFile)) ? fs.readFileSync(step.stdoutFile, "utf8") : (step?.stdout ?? "");
   const err = (step?.stderrFile && fs.existsSync(step.stderrFile)) ? fs.readFileSync(step.stderrFile, "utf8") : (step?.stderr ?? "");
-
   trace("exec end", { ok: !!step?.ok, exit: step?.exit ?? 0 });
   return { ok: !!step?.ok, stdout: out, stderr: err, exit_code: step?.exit ?? 0, cmd: args.cmd };
 }
@@ -335,6 +316,7 @@ export const SANDBOXED_SH_TOOL_SCHEMA = {
  * Interactive helpers (session first; podman/docker fallback)
  * ---------------------------------------------------------------------------*/
 
+/** Public helper used elsewhere: keep the interface. */
 export async function shCapture(
   cmd: string,
   opts: { projectDir: string; agentSessionId: string }
@@ -391,7 +373,6 @@ export async function shInteractive(
     if (cmdOrArgv.length >= 2 && cmdOrArgv[0] === "bash" && cmdOrArgv[1] === "-lc") {
       script = cmdOrArgv.slice(2).join(" ");
     } else {
-      // Best-effort for other shapes; assume caller handled quoting.
       script = cmdOrArgv.join(" ");
     }
   } else {
@@ -403,8 +384,43 @@ export async function shInteractive(
   const cwdRel = relIfInside(projectDir, userCwd);
   const prefix = cwdRel ? `cd ${JSON.stringify(cwdRel)} && ` : "";
   const fullScript = `${prefix}${script}`;
-  trace("shInteractive", { projectDir, userCwd, cwdRel, fullScript });
 
+  Logger.debug("[shInteractive] begin", {
+    inTmux: !!process.env.ORG_TMUX,
+    insideContainer: process.env.ORG_SANDBOX_BACKEND === "none" || (fs.existsSync("/run/.containerenv")),
+    shell: process.env.SHELL || "/bin/sh",
+    projectDir,
+    userCwd,
+    cwdRel,
+    fullScript,
+  });
+
+  // A) already inside the app container → prefer /bin/bash if available
+  const insideContainer =
+    process.env.ORG_SANDBOX_BACKEND === "none" || fs.existsSync("/run/.containerenv");
+  if (insideContainer) {
+    const shell = fs.existsSync("/bin/bash")
+      ? "/bin/bash"
+      : (process.env.SHELL || "/bin/sh");
+    Logger.debug("[shInteractive] running inside container", { shell });
+    const child = spawn(shell, ["-lc", fullScript], { stdio: "inherit" });
+    return await new Promise<{ code: number }>((resolve) => {
+      child.on("close", (code) => resolve({ code: code ?? 0 }));
+      child.on("exit",  (code) => resolve({ code: code ?? 0 }));
+    });
+  }
+
+  // B) tmux UI → send to pane
+  if (process.env.ORG_TMUX === "1") {
+    Logger.debug("[shInteractive] tmux send-keys path");
+    const target = process.env.ORG_TMUX_SESSION ? `${process.env.ORG_TMUX_SESSION}:.` : ".";
+    const sockArg = process.env.ORG_TMUX_SOCKET ? `-L ${shq(process.env.ORG_TMUX_SOCKET)}` : "";
+    const tmuxCmd = `tmux ${sockArg} send-keys -t ${shq(target)} ${shq(fullScript)} C-m`;
+    const r = spawnSync("/bin/sh", ["-lc", tmuxCmd], { stdio: "inherit" });
+    return { code: r.status ?? 0 };
+  }
+
+  // C) session-provided interactive
   const mgr = await getManager(opts.agentSessionId, projectDir, R.cwd());
   const session = await mgr.getOrCreate(opts.agentSessionId);
 
@@ -414,6 +430,7 @@ export async function shInteractive(
       : null;
 
   if (runInteractive) {
+    Logger.debug("[shInteractive] using session.execInteractive()");
     const child = runInteractive(fullScript);
     return await new Promise<{ code: number }>((resolve) => {
       child.on("close", (code: number | null) => resolve({ code: code ?? 0 }));
@@ -421,7 +438,8 @@ export async function shInteractive(
     });
   }
 
-  // Fallback to container engine.
+  // D) engine fallback
+  Logger.debug("[shInteractive] engine fallback path");
   const engine = findEngine();
   const cname = getContainerName(session);
   if (!engine || !cname) {
@@ -434,7 +452,7 @@ export async function shInteractive(
     );
   }
 
-  const argv = ["exec", "-it", cname, "bash", "-lc", fullScript];
+  const argv = ["exec", "-it", cname, "/bin/sh", "-lc", fullScript];
   Logger.info(`[sandboxed-sh] fallback interactive via ${engine}: ${argv.join(" ")}`);
 
   const child = spawn(engine, argv, { stdio: "inherit" });
@@ -442,4 +460,8 @@ export async function shInteractive(
     child.on("close", (code) => resolve({ code: code ?? 0 }));
     child.on("exit",  (code) => resolve({ code: code ?? 0 }));
   });
+}
+
+function shq(s: string): string {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }

@@ -114,6 +114,8 @@ function makeRuntime(): Runtime {
     }
   };
 
+  console.log(env);
+
   return {
     name,
     argv,

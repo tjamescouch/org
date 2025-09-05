@@ -53,6 +53,7 @@ export function installHotkeys(opts: HotkeysOpts): () => void {
         );
       } catch { /* ignore */ }
 
+      Logger.info("ESC2");
       log("ESC");
       try { await Promise.resolve(opts.onEsc()); } catch {}
       return;

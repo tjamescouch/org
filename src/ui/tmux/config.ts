@@ -1,61 +1,58 @@
 // src/ui/tmux/config.ts
-import * as os from "os";
-import * as path from "path";
+// Helpers to build tmux runtime files without shell quoting hazards.
 
-export type TmuxConfigOptions = {
-  // Show a mild help in the statusline
-  hint?: string;
-  // Clipboard helpers discovered by launcher (pbcopy/xclip/wl-copy present?)
-  clipboardHelper?: "pbcopy" | "xclip" | "wl-copy" | null;
-  // Default mouse on/off
-  mouse?: boolean;
-};
+/** Build a conservative tmux.conf suitable for starting the server. */
+export function buildTmuxConf(): string {
+  // tmux syntax ONLY — no shell fragments.
+  return (
+    `
+# keep server/pane attachable even if the child exits
+set -s exit-empty off
+setw -g remain-on-exit on
 
-export function buildEphemeralTmuxConf(opts: TmuxConfigOptions = {}): string {
-  const mouse = opts.mouse ?? true;
-  const hint = opts.hint ?? "prefix: C-b | p: patch popup | m: toggle mouse";
-  const termOverrides = '",*:Tc"'; // truecolor
-  const home = os.homedir();
-  const sockInfo = path.join(home, ".cache", "org"); // just a note in status-right if you want
+# usability & color
+set -g mouse on
+set -g history-limit 100000
+set -g default-terminal "tmux-256color"
+set -as terminal-overrides ",xterm-256color:Tc,tmux-256color:Tc"
+set -g focus-events on
+set -s escape-time 0
 
-  // Clipboard bindings
-  let copyBinding = "";
-  if (opts.clipboardHelper === "pbcopy") {
-    copyBinding =
-      'bind y run "tmux save-buffer - | pbcopy" \\; display-message \\"Copied to system clipboard\\"';
-  } else if (opts.clipboardHelper === "xclip") {
-    copyBinding =
-      'bind y run "tmux save-buffer - | xclip -selection clipboard -in" \\; display-message \\"Copied to clipboard (xclip)\\"';
-  } else if (opts.clipboardHelper === "wl-copy") {
-    copyBinding =
-      'bind y run "tmux save-buffer - | wl-copy" \\; display-message \\"Copied to clipboard (wl-copy)\\"';
-  } else {
-    // Fallback: rely on OSC52 when supported
-    copyBinding = 'bind y display-message "Copy: rely on OSC52 (terminal dependent)"';
-  }
+# (optional) a tiny status to help debugging
+set -g status on
+set -g status-interval 2
+set -g status-left "[org] #{session_name}.#{window_index}.#{pane_index} " 
+`);
+}
+
+/** Return the /work/.org/tmux-inner.sh body. */
+export function buildInnerScript(entryCmd: string): string {
+  // Single-quote the command for shell; escape single quotes defensively.
+  const q = (s: string) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
   return [
-    // --- sensible defaults for good visuals/clipboard ---
-    "set -g assume-paste-time 0",
-    "set -g base-index 1",
-    "set -g pane-base-index 1",
-    "set -g history-limit 100000",
-    `set -ag terminal-overrides ${termOverrides}`,
-    "set -g set-clipboard on",
-    `set -g mouse ${mouse ? "on" : "off"}`,
-
-    // Toggle mouse quickly if users want terminal-native selection
-    'bind m set -g mouse \\; display-message "mouse: #{?mouse,on,off}"',
-
-    // Clipboard helper binding
-    copyBinding,
-
-    // Patch popup: the app can provide a command in $ORG_PATCH_POPUP_CMD
-    // If not set, just print a message.
-    'bind p if -F "#{?env:ORG_PATCH_POPUP_CMD,1,0}" "display-popup -E \\"sh -lc \'$ORG_PATCH_POPUP_CMD\'\\"" "display-message \\"No patch popup command configured\\""',
-
-    // Statusline with a hint
-    'set -g status-interval 2',
-    `set -g status-right "#[fg=cyan]${hint} #[fg=white]| #[fg=yellow]#{session_name}"`,
-  ].join("\n");
+    '#!/usr/bin/env bash',
+    'set -Eeuo pipefail',
+    'umask 002',
+    '',
+    'ORG_DIR="/work/.org"',
+    'LOG_DIR="${ORG_DIR}/logs"',
+    'APP_LOG="${LOG_DIR}/tmux-inner.log"',
+    'touch "${APP_LOG}"',
+    'mkdir -p "${LOG_DIR}" "${LOG_DIR}/tmux-logs"',
+    '',
+    'echo "[tmux-inner] start $(date -Is)"   | tee -a "${APP_LOG}" >/dev/null',
+    'echo "[tmux-inner] cwd: $(pwd) user=$(id -u):$(id -g)" | tee -a "${APP_LOG}" >/dev/null',
+    'stty -a   | sed "s/.*/[tmux-inner] stty: &/g" | tee -a "${APP_LOG}" >/dev/null || true',
+    'env | sort | sed "s/.*/[tmux-inner] env: &/g"  | tee -a "${APP_LOG}" >/dev/null || true',
+    '',
+    '# Prefer util-linux `script` to keep a PTY and preserve exit code',
+    'if command -v script >/dev/null 2>&1; then',
+    `  exec script -qfe -c ${q(entryCmd)} "${'$'}{APP_LOG}"`,
+    'else',
+    // Keep the child exit code even though we tee logs.
+    `  exec bash -lc ${q(entryCmd + ' 2>&1 | tee -a "$APP_LOG"; exit ${PIPESTATUS[0]}')}`,
+    'fi',
+    '',
+  ].join('\n') + '\n';
 }

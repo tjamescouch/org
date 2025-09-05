@@ -3,7 +3,6 @@ import { makeRouter } from "../routing/route-with-tags";
 import { Logger, C } from "../logger";
 import { ExecutionGate } from "../tools/execution-gate";
 import { FileWriter } from "../io/file-writer";
-import { restoreStdin } from "../utils/restore-stdin";
 import { finalizeAllSandboxes } from "../tools/sandboxed-sh";
 import type { GuardDecision } from "../guardrails/guardrail";
 import type { Responder } from "./types";
