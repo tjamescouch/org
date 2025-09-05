@@ -345,7 +345,7 @@ async function main() {
       waitSuppressOutput: true,
       stdin: R.stdin,
       stdout: R.stdout,
-      prompt: String(args["banner"] ?? "user:  "),
+      prompt: String(args["banner"] ?? "user: "),
       interjectKey: String(args["interject-key"] ?? "i"),
       interjectBanner: String(args["banner"] ?? "user: "),
       // ESC path ends up here: stop → drain → review/apply

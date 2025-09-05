@@ -292,6 +292,7 @@ export class TtyController {
   /* ----------------------------- internal bits ----------------------------- */
 
   private enqueue(line: string) {
+    console.log("enqueue: ", line)
     this.scheduler.enqueueUserInput?.(line);
     this.scheduler.enqueue?.(line);
   }
