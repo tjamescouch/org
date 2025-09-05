@@ -47,7 +47,7 @@ write_tmux_conf() {
 write_inner_sh() {
   {
     printf '%s\n' '#!/usr/bin/env bash'
-    printf '%s\n' 'set -Eeuov pipefail'
+    printf '%s\n' 'set -Eeuo pipefail'
     printf '%s\n' 'LOG_DIR="/work/.org/logs"'
     printf '%s\n' 'LOG_FILE="${LOG_DIR}/tmux-inner.log"'
     printf '%s\n' 'APP_ENTRY="/work/src/app.ts"'
@@ -58,7 +58,7 @@ write_inner_sh() {
     printf '%s\n' 'echo "[inner] cwd=$(pwd) uid=$(id -u):$(id -g)" | tee -a "${LOG_FILE}"'
     printf '%s\n' 'if [[ ! -f "${APP_ENTRY}" ]]; then echo "ERROR: ${APP_ENTRY} not found" | tee -a "${LOG_FILE}"; exit 42; fi'
     printf '%s\n' 'set +e'
-    printf '%s\n' '"${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | tee -a "${LOG_FILE}"'
+    printf '%s\n' '"${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | sed -e "s/$(printf '\''\x1b'\'')\[[0-9;]*c//g" | tee -a \"${LOG_FILE}\"'
     printf '%s\n' 'APP_CODE=${PIPESTATUS[0]}'
     printf '%s\n' 'set -e'
     printf '%s\n' 'echo "===== org tmux-inner exit: ${APP_CODE} @ $(date -Is) =====" | tee -a "${LOG_FILE}"'
