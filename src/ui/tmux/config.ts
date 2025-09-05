@@ -38,6 +38,7 @@ export function buildInnerScript(entryCmd: string): string {
     'ORG_DIR="/work/.org"',
     'LOG_DIR="${ORG_DIR}/logs"',
     'APP_LOG="${LOG_DIR}/tmux-inner.log"',
+    'touch "${APP_LOG}"',
     'mkdir -p "${LOG_DIR}" "${LOG_DIR}/tmux-logs"',
     '',
     'echo "[tmux-inner] start $(date -Is)"   | tee -a "${APP_LOG}" >/dev/null',
