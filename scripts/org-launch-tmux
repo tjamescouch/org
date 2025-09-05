@@ -39,7 +39,6 @@ write_tmux_conf() {
     printf '%s\n' 'set -as terminal-overrides ",xterm-256color:Tc,tmux-256color:Tc"'
     printf '%s\n' 'set -g focus-events on'
     printf '%s\n' 'set -s escape-time 0'
-    printf '%s\n' 'set -s quiet on'
   } > "${TMUX_CONF}"
   chmod 600 "${TMUX_CONF}"
 }
