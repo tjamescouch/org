@@ -231,7 +231,7 @@ export class LlmAgent extends Agent {
       Logger.debug(`${this.id} empty-output`);
     }
 
-    const finalText = sanitizeContent((out.text || "").trim());
+    const finalText = ((out.text || "").trim());
     const allReasoning = out?.reasoning || "";
 
     // Inform guard rail about this assistant turn (before routing)

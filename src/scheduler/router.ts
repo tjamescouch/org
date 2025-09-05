@@ -76,7 +76,6 @@ export async function routeWithSideEffects(
                 process.stdout.write("\n");
                 process.exit(0);
             }
-            Logger.info("onUser");
             deps.setLastUserDMTarget(fromAgent.id);
         },
         onFile: async (_from, name, content) => {
