@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+mkdir -p /work/.org/logs
+touch /work/.org/logs
+
 set -Eeuo pipefail
 {
   echo "[tmux-inner] $(date -Is) starting"
