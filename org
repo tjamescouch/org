@@ -62,11 +62,8 @@ env_allow
 
 # ---------- run bun inside the container, mounting the repo root ----------
 # shellcheck disable=SC2086
-# exec "$ENGINE" run --rm -it \
-#   -v "$REPO_DIR:/work:Z" \
-#   -w /work \
-#   "${ENV_ARR[@]}" \
-#   "$IMAGE" bun /work/src/app.ts "$@"
-
-
-bash -lc 'scripts/org-run-tmux.sh' "$@"
+ exec "$ENGINE" run --rm -it \
+   -v "$REPO_DIR:/work:Z" \
+   -w /work \
+   "${ENV_ARR[@]}" \
+   "$IMAGE" org "$@"
