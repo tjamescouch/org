@@ -69,4 +69,4 @@ env_allow
 #   "$IMAGE" bun /work/src/app.ts "$@"
 
 
-bash -lc 'org-run-tmux.sh' "$@"
+bash -lc 'scripts/org-run-tmux.sh' "$@"
