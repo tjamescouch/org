@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # org/launcher/tmux-inner.sh
 # (Static copy; tmux.sh writes an updated version at runtime.)
+
+mkdir -p /work/.org/logs
+touch /work/.org/logs/tmux-inner.log
+
 set -Eeuo pipefail
 {
   echo "[tmux-inner] $(date -Is) starting"
