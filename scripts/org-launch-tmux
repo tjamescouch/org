@@ -26,6 +26,8 @@ export EDITOR=true VISUAL=true GIT_EDITOR=true PAGER=cat
 mkdir -p "${TMUX_LOG_DIR}"
 chmod 700 "${ORG_DIR}" || true
 
+touch "${LOG_DIR}/tmux-inner.log"
+
 write_tmux_conf() {
   {
     printf '%s\n' '# org-tmux-conf v4 (shell launcher sentinel)'
