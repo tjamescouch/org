@@ -1,115 +1,100 @@
 #!/usr/bin/env bash
-# scripts/org-launch-tmux
-# Writes /work/.org/{tmux.conf, tmux-inner.sh} (no heredocs),
-# starts tmux with verbose logs redirected to .org/logs/tmux-logs,
-# and keeps the server/pane up so attach is deterministic.
+# org-launcher-tmux
+# Single-command tmux launcher for org that preserves a real TTY and logs pane output.
+# Usage: org --ui tmux [app-args...]
+#
+# Behavior:
+# - Creates/attaches a tmux session.
+# - Runs the app inside a PTY (via `script`) so stdout/stderr are interactive & visible.
+# - Pipes the pane to a rotating log file without breaking TTY.
+# - Keeps the pane on screen after exit (remain-on-exit) for postmortem.
 
 set -Eeuo pipefail
 
-ORG_DIR="${ORG_RUNTIME_DIR:-/work/.org}"
-LOG_DIR="${ORG_DIR}/logs"
-TMUX_LOG_DIR="${LOG_DIR}/tmux-logs"
-TMUX_CONF="${ORG_DIR}/tmux.conf"
-INNER_SH="${ORG_DIR}/tmux-inner.sh"
-
-BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"
-TMUX_BIN="${ORG_TMUX_BIN:-/usr/bin/tmux}"
-APP_ENTRY="/work/src/app.ts"
-
-# Disable nested sandboxing + tell app to skip its internal tmux writer
-export SANDBOX_BACKEND="${SANDBOX_BACKEND:-none}"
-export ORG_SANDBOX_BACKEND="${ORG_SANDBOX_BACKEND:-none}"
-export ORG_EXTERNAL_TMUX_BOOTSTRAP=1
-# Make sure nothing tries to open editors
-export EDITOR=true VISUAL=true GIT_EDITOR=true PAGER=cat
-
-mkdir -p "${TMUX_LOG_DIR}"
-chmod 700 "${ORG_DIR}" || true
-
-touch "${LOG_DIR}/tmux-inner.log"
-
-write_tmux_conf() {
-  {
-    printf '%s\n' '# org-tmux-conf v4 (shell launcher sentinel)'
-    # Keep the server up even if the child exits; keep pane visible for inspection.
-    printf '%s\n' 'set -s exit-empty on'
-    printf '%s\n' 'setw -g remain-on-exit off'
-    # Usability + color
-    printf '%s\n' 'set -g mouse on'
-    printf '%s\n' 'set -g history-limit 100000'
-    printf '%s\n' 'set -g default-terminal "tmux-256color"'
-    printf '%s\n' 'set -as terminal-overrides ",xterm-256color:Tc,tmux-256color:Tc"'
-    printf '%s\n' 'set -g focus-events on'
-    printf '%s\n' 'set -s escape-time 0'
-  } > "${TMUX_CONF}"
-  chmod 600 "${TMUX_CONF}"
-}
-
-write_inner_sh() {
-  {
-    printf '%s\n' '#!/usr/bin/env bash'
-    printf '%s\n' 'set -Eeuo pipefail'
-    printf '%s\n' 'LOG_DIR="/work/.org/logs"'
-    printf '%s\n' 'LOG_FILE="${LOG_DIR}/tmux-inner.log"'
-    printf '%s\n' 'APP_ENTRY="/work/src/app.ts"'
-    printf '%s\n' 'BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"'
-    printf '%s\n' 'export ORG_EXTERNAL_TMUX_BOOTSTRAP=1'
-    printf '%s\n' 'mkdir -p "${LOG_DIR}"'
-    printf '%s\n' 'touch "${LOG_FILE}"'
-    printf '%s\n' 'cat "${LOG_FILE}"'
-    printf '%s\n' 'echo "===== org tmux-inner start: $(date -Is) =====" | tee -a ${LOG_FILE}'
-    printf '%s\n' 'echo "[inner] cwd=$(pwd) uid=$(id -u):$(id -g)" | tee -a ${LOG_FILE}'
-    printf '%s\n' 'if [[ ! -f "${APP_ENTRY}" ]]; then echo "ERROR: ${APP_ENTRY} not found" | tee -a ${LOG_FILE}; exit 42; fi'
-    printf '%s\n' 'set +e'
-    printf '%s\n' '"${BUN_BIN}" "${APP_ENTRY}" --ui console 2>&1 | sed -e "s/$(printf '\''\x1b'\'')\[[0-9;]*c//g" | tee -a ${LOG_FILE}'
-    printf '%s\n' 'APP_CODE=${PIPESTATUS[0]}'
-    printf '%s\n' 'set -e'
-    printf '%s\n' 'echo "===== org tmux-inner exit: ${APP_CODE} @ $(date -Is) =====" | tee -a ${LOG_FILE}'
-    printf '%s\n' 'exit "${APP_CODE}"'
-  } > "${INNER_SH}"
-  chmod 700 "${INNER_SH}"
-}
-
-[[ -x "${TMUX_BIN}" ]] || { echo "ERROR: tmux not found at ${TMUX_BIN}" >&2; exit 1; }
-[[ -x "${BUN_BIN}"  ]] || { echo "ERROR: bun not found at ${BUN_BIN}"  >&2; exit 1; }
-[[ -f "${APP_ENTRY}" ]] || { echo "ERROR: entrypoint not found: ${APP_ENTRY}" >&2; exit 42; }
-
-write_tmux_conf
-write_inner_sh
-
-# --- Loud, structured launcher log ---
-LAUNCH_LOG="${LOG_DIR}/tmux-launcher.log"
-{
-  echo "[launcher] begin $(date -Is)"
-  echo "[launcher] tmux: $(${TMUX_BIN} -V)"
-  echo "[launcher] socket: org"
-  echo "[launcher] conf:   ${TMUX_CONF}"
-  echo "[launcher] inner:  ${INNER_SH}"
-} | tee -a "${LAUNCH_LOG}" >/dev/null
-
-# tmux -vv writes server/client logs to the current directory → pushd into TMUX_LOG_DIR
-pushd "${TMUX_LOG_DIR}" >/dev/null
-
-# Start a detached session; then attach.
-# Quote the payload so it always runs via bash -lc (PATH semantics).
-set +e
-"${TMUX_BIN}" -vv -L org -f "${TMUX_CONF}" \
-  new-session -d -s org -n main "bash -lc '${INNER_SH}'"
-NEW_CODE=$?
-set -e
-
-popd >/dev/null
-
-if [[ ${NEW_CODE} -ne 0 ]]; then
-  echo "[launcher] tmux new-session failed with ${NEW_CODE}" | tee -a "${LAUNCH_LOG}" >/dev/null
-  echo "[launcher] recent tmux server log:" | tee -a "${LAUNCH_LOG}" >/dev/null
-  tail -nf 100 "${TMUX_LOG_DIR}"/tmux-server-*.log 2>/dev/null | sed 's/^/[tmux] /' | tee -a "${LAUNCH_LOG}" >/dev/null || true
-  exit ${NEW_CODE}
+# -------- Config (override via environment if needed) -------------------------
+# Preferred working directory inside the container; falls back to $PWD on host.
+ORG_WORKDIR_DEFAULT="/work"
+ORG_WORKDIR="${ORG_WORKDIR:-${ORG_WORKDIR_DEFAULT}}"
+if [[ ! -d "$ORG_WORKDIR" ]]; then
+  ORG_WORKDIR="$PWD"
 fi
 
-# Attach (this returns when user detaches or session ends)
-"${TMUX_BIN}" -L org attach -t org
-ATTACH_CODE=$?
+# State and logs live under .org/
+ORG_STATE_DIR="${ORG_STATE_DIR:-$ORG_WORKDIR/.org}"
+ORG_LOG_DIR="$ORG_STATE_DIR/logs"
+ORG_TMUX_LOG_DIR="$ORG_LOG_DIR/tmux-logs"
 
-echo "[launcher] end $(date -Is) attach=${ATTACH_CODE}" | tee -a "${LAUNCH_LOG}" >/dev/null
-exit ${ATTACH_CODE}
+# tmux identifiers
+ORG_TMUX_SOCKET="${ORG_TMUX_SOCKET:-org}"
+ORG_TMUX_SESSION="${ORG_TMUX_SESSION:-org}"
+ORG_TMUX_WINDOW="${ORG_TMUX_WINDOW:-0}"
+ORG_TMUX_PANE="${ORG_TMUX_PANE:-0}"
+
+# App entry (console UI to render inside tmux)
+# All args passed to this launcher are forwarded to the app.
+ORG_ENTRY_BASE="${ORG_ENTRY_BASE:-bun $ORG_WORKDIR/src/app.ts --ui console}"
+ORG_ENTRY="$ORG_ENTRY_BASE ${*:-}"
+
+# Log files
+PANE_LOG="$ORG_LOG_DIR/pane-0.log"
+INNER_LOG="$ORG_LOG_DIR/tmux-inner.log"
+
+# Tools
+SHELL_BIN="${SHELL:-/bin/bash}"
+SCRIPT_BIN="$(command -v script || true)"
+
+# -------- Prep dirs -----------------------------------------------------------
+mkdir -p "$ORG_STATE_DIR" "$ORG_LOG_DIR" "$ORG_TMUX_LOG_DIR"
+
+# -------- Generate a tiny inner runner (avoids quoting foot-guns) ------------
+INNER_RUNNER="$ORG_STATE_DIR/tmux-inner.sh"
+cat >"$INNER_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+LOG_DIR="${ORG_LOG_DIR:?}"
+APP_LOG="${INNER_LOG:?}"
+ENTRY="${ORG_ENTRY:?}"
+SHELL_BIN="${SHELL_BIN:-/bin/bash}"
+SCRIPT_BIN="${SCRIPT_BIN:-}"
+
+{
+  echo "===== org tmux-inner start: $(date -Is) ====="
+  echo "[inner] cwd=$(pwd) uid=$(id -u):$(id -g) PATH=$PATH"
+  echo "[inner] entry: \$ENTRY"
+} >>"$APP_LOG" 2>&1
+
+# If util-linux `script` is available, use it to preserve a real PTY while logging.
+if [[ -n "$SCRIPT_BIN" ]]; then
+  exec "$SCRIPT_BIN" -qfe -c "$ENTRY" "$APP_LOG"
+fi
+
+# Fallback keeps logs but may reduce interactivity (no PTY).
+exec "$SHELL_BIN" -lc "$ENTRY 2>&1 | tee -a \"$APP_LOG\"; exit \${PIPESTATUS[0]}"
+EOF
+chmod +x "$INNER_RUNNER"
+
+# Export runtime variables for the inner runner
+export ORG_LOG_DIR ORG_TMUX_LOG_DIR INNER_LOG="$INNER_LOG" ORG_ENTRY="$ORG_ENTRY" SHELL_BIN SCRIPT_BIN
+
+# -------- tmux bootstrap ------------------------------------------------------
+export TMUX_TMPDIR="${TMUX_TMPDIR:-/tmp}"
+tmux -L "$ORG_TMUX_SOCKET" start-server
+
+# Create session if it doesn't exist yet
+if ! tmux -L "$ORG_TMUX_SOCKET" has-session -t "$ORG_TMUX_SESSION" 2>/dev/null; then
+  # Start the session detached running our inner runner
+  tmux -L "$ORG_TMUX_SOCKET" new-session -d -s "$ORG_TMUX_SESSION" -n main "exec \"$INNER_RUNNER\""
+  # Keep pane visible after exit for debugging
+  tmux -L "$ORG_TMUX_SOCKET" set-option -t "$ORG_TMUX_SESSION" remain-on-exit on
+
+  # Mirror pane output to a timestamped log (does not break TTY)
+  # `-o` only starts piping if not already active (idempotent).
+  tmux -L "$ORG_TMUX_SOCKET" pipe-pane -t "$ORG_TMUX_SESSION:$ORG_TMUX_WINDOW.$ORG_TMUX_PANE" -o "ts %H:%M:%.S >> \"$PANE_LOG\""
+fi
+
+# If a pipe-pane got disabled somehow, ensure it's on (idempotent).
+tmux -L "$ORG_TMUX_SOCKET" pipe-pane -t "$ORG_TMUX_SESSION:$ORG_TMUX_WINDOW.$ORG_TMUX_PANE" -o "ts %H:%M:%.S >> \"$PANE_LOG\"" || true
+
+# -------- Attach --------------------------------------------------------------
+exec tmux -L "$ORG_TMUX_SOCKET" attach -t "$ORG_TMUX_SESSION"
