@@ -441,7 +441,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
 
     // Fallback: broadcast to group
     for (const a of this.agents) {
-      this.inbox.push(a.id, { content: raw, role: "user", from: "User" });
+      this.inbox.push(a.id, { content: raw.trim(), role: "user", from: "User" });
     }
 
     Logger.debug("End of interjection");
