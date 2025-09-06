@@ -9,8 +9,8 @@ import { sanitizeAndRepairAssistantReply } from "../guard/sanitizer";
 import { AdvancedMemory } from "../memory/advanced-memory";
 import { ToolExecutor } from "../executors/tool-executor";
 import { StandardToolExecutor } from "../executors/standard-tool-executor";
-import { SANDBOXED_SH_TOOL_SCHEMA } from "../tools/sandboxed-sh";
 import { createPDAStreamFilterHeuristic } from "../utils/filter-passes/llm-pda-stream-heuristic";
+import { SH_TOOL_DEF } from "../tools/sh";
 
 interface AgentReply {
   message: string;   // assistant text
@@ -77,7 +77,7 @@ function buildSystemPrompt(id: string): string {
 export class LlmAgent extends Agent {
   private readonly driver: ChatDriver;
   private readonly model: string;
-  private readonly tools = [SANDBOXED_SH_TOOL_SCHEMA];
+  private readonly tools = [SH_TOOL_DEF];
 
   // Memory replaces the old raw history array.
   private readonly memory: AgentMemory;

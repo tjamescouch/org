@@ -3,13 +3,11 @@ import { makeRouter } from "../routing/route-with-tags";
 import { Logger, C } from "../logger";
 import { ExecutionGate } from "../tools/execution-gate";
 import { FileWriter } from "../io/file-writer";
-import { finalizeAllSandboxes } from "../tools/sandboxed-sh";
 import type { GuardDecision } from "../guardrails/guardrail";
 import type { Responder } from "./types";
 import type { ChatMessage } from "../types";
 import { NoiseFilters } from "./filters";
 import { ISandboxSession } from "../sandbox/types";
-import { LockedDownFileWriter } from "../io/locked-down-file-writer";
 
 /** Side-effects required by routing (DMs, group fanout, files, user prompts). */
 interface RouteDeps {
@@ -39,6 +37,8 @@ function looksLikeUserTag(text: string): boolean {
     }
     return false;
 }
+
+const finalizeRepository = async (): Promise<void> => { }
 
 /**
  * Route a model message that may contain @@agent, @@group, @@user, ##file.
@@ -75,7 +75,9 @@ export async function routeWithSideEffects(
             //Logger.info(C.blue(`[@@${from} → @@user]`));
             // In non-interactive mode, an @@user tag should terminate cleanly
             if (!process.stdin.isTTY) {
-                try { await finalizeAllSandboxes(); } catch (e) { Logger.error(e); }
+                Logger.info("Exiting...");
+
+                try { await finalizeRepository(); } catch (e) { Logger.error(e); }
                 process.stdout.write("\n");
                 process.exit(0);
             }
@@ -99,7 +101,7 @@ export async function routeWithSideEffects(
                 }
             }
 
-            const writer = sandbox ? new LockedDownFileWriter(sandbox, { maxBytes: 1_000_000 }) : new FileWriter();
+            const writer = new FileWriter();
             await writer.write(rel, body);
 
             Logger.info(C.magenta(`Written to /work/${rel} (${bytes} bytes)`));
@@ -114,7 +116,8 @@ export async function routeWithSideEffects(
     // Fallback: treat leading-line `@user` as `@@user` (case-insensitive).
     if (!outcome.yieldForUser && looksLikeUserTag(text)) {
         if (!process.stdin.isTTY) {
-            try { await finalizeAllSandboxes(); } catch { }
+            try { await finalizeRepository(); } catch { }
+
             process.stdout.write("\n");
             process.exit(0);
         }

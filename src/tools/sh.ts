@@ -4,7 +4,7 @@ import { ExecutionGate } from "./execution-gate";
 import { C, Logger } from "../logger";
 import { spawnInCleanEnvironment } from "../utils/spawn-clean";
 
-const SH_TOOL_DEF = {
+export const SH_TOOL_DEF = {
   type: "function",
   function: {
     name: "sh",

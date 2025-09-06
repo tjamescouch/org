@@ -4,7 +4,6 @@ import { C, Logger } from "../logger";
 import { NoiseFilters } from "./filters";
 import { Inbox } from "./inbox";
 import { routeWithSideEffects } from "./router";
-import { ReviewManager } from "./review-manager";
 import { TagSplitter, TagPart } from "../utils/tag-splitter";
 import type { GuardDecision } from "../guardrails/guardrail";
 import type { ChatMessage } from "../types";
@@ -61,7 +60,6 @@ export class RandomScheduler {
   private readonly agents: Responder[];
   private readonly maxTools: number;
   private readonly shuffle: <T>(arr: T[]) => T[];
-  private readonly review: ReviewManager;
   private readonly filters = new NoiseFilters();
   private readonly inbox = new Inbox();
 
@@ -95,7 +93,6 @@ export class RandomScheduler {
     this.agents = opts.agents;
     this.maxTools = opts.maxTools;
     this.shuffle = opts.shuffle ?? fisherYatesShuffle;
-    this.review = new ReviewManager(opts.projectDir, opts.reviewMode ?? "ask");
     this.askUser = opts.onAskUser;
 
     this.promptEnabled = !!opts.promptEnabled;
@@ -318,9 +315,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
         this.keepAlive = null;
       }
 
-      // Finalize any dirty sessions and run review/apply once.
-      // Make ReviewManager.finalizeAndReview() idempotent so double-calls are safe.
-      await this.review.finalizeAndReview();
+      // Finalize any dirty sessions and run review/apply once here.
       this.running = false;
     }
   }

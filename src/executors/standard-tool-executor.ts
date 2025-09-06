@@ -3,9 +3,7 @@ import { ChatToolCall } from "../drivers/types";
 import { GuardRail } from "../guardrails/guardrail";
 import { Logger, C } from "../logger";
 import { AgentMemory } from "../memory";
-import { sandboxedSh, ToolResult } from "../tools/sandboxed-sh";
-//import { runVimdiff } from "../tools/vimdiff";
-import { normalizeContent, sanitizeContent } from "../utils/sanitize-content";
+import { runSh, ToolResult } from "../tools/sh";
 import type { ExecuteToolsParams, ExecuteToolsResult } from "./tool-executor";
 import { ToolExecutor } from "./tool-executor";
 
@@ -67,7 +65,7 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
 
     Logger.debug(`${agentId} tool ->`, { name, cmd: cmd.slice(0, 160) });
     const t = Date.now();
-    const result = await sandboxedSh({ cmd }, { agentSessionId: agentId, projectDir: args.cwd ?? process.cwd() ?? ".", policy: { image: "localhost/org-build:debian-12" } })
+    const result = await runSh(cmd)
     Logger.info(C.bold(formatToolResult(result)) );
     Logger.debug(`${agentId} tool <-`, { name, ms: Date.now() - t, exit: result.exit_code, outChars: result.stdout.length, errChars: result.stderr.length });
 
