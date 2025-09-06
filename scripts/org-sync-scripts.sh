@@ -1,32 +1,19 @@
 #!/usr/bin/env bash
-# org-sync-scripts.sh — copy project scripts into /scripts if present.
+# Copy the project's canonical scripts dir into /scripts (DEV only).
+# Single source of truth: /project/scripts (no alternate paths).
 set -Eeuo pipefail
 shopt -s nullglob
 
+SRC="/project/scripts"
 DEST="/scripts"
-mkdir -p "$DEST"
 
-# Search common layouts in priority order
-CANDIDATES=(
-  "/project/org/scripts"
-  "/project/scripts"
-  "/project/.org/scripts"
-)
-
-SYNCED=0
-for SRC in "${CANDIDATES[@]}"; do
-  if [[ -d "$SRC" ]]; then
-    rsync -a --delete "$SRC"/ "$DEST"/
-    # Ensure .sh are executable
-    find "$DEST" -type f -name "*.sh" -exec chmod +x {} +
-    echo "org-sync-scripts: synced from $SRC -> $DEST"
-    SYNCED=1
-    break
-  fi
-done
-
-if [[ $SYNCED -eq 0 ]]; then
-  echo "org-sync-scripts: no scripts directory found in project; leaving /scripts as-is." >&2
+if [[ ! -d "$SRC" ]]; then
+  echo "org-sync-scripts: /project/scripts not found; skipping sync." >&2
+  exit 0
 fi
 
-exit 0
+mkdir -p "$DEST"
+rsync -a --delete "$SRC"/ "$DEST"/
+# Ensure shell scripts are executable
+find "$DEST" -type f -name "*.sh" -exec chmod +x {} +
+echo "org-sync-scripts: synced /project/scripts -> /scripts"

@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
-# baked: /usr/local/libexec/org/launch-tmux
+# baked tmux wrapper
+# DEV  -> rsync /project/scripts -> /scripts ; exec /scripts/org-launch-tmux
+# PROD -> exec /usr/local/libexec/org/org-launch-tmux
 set -Eeuo pipefail
 
-if [[ "${BUILD_MODE:-development}" == "development" && -z "${ORG_NO_RSYNC:-}" ]]; then
-  org-sync-scripts.sh || true
+MODE="${BUILD_MODE:-development}"
+
+if [[ "$MODE" == "development" ]]; then
+  if command -v org-sync-scripts.sh >/dev/null 2>&1; then
+    org-sync-scripts.sh || true
+  fi
+  target="/scripts/org-launch-tmux"
+else
+  target="/usr/local/libexec/org/org-launch-tmux"
 fi
 
-if [[ -x /scripts/org-launch-tmux.logic.sh ]]; then
-  exec /scripts/org-launch-tmux.logic.sh "$@"
+if [[ ! -x "$target" ]]; then
+  echo "org(launch-tmux): launcher not found or not executable: $target" >&2
+  echo "mode=$MODE  (set BUILD_MODE=development to pull from /project/scripts)" >&2
+  exit 127
 fi
 
-if [[ -x /usr/local/libexec/org/org-launch-tmux.logic.sh ]]; then
-  exec /usr/local/libexec/org/org-launch-tmux.logic.sh "$@"
-fi
-
-echo "org: no tmux logic found at /scripts/org-launch-tmux.logic.sh or /usr/local/libexec/org/org-launch-tmux.logic.sh" >&2
-exit 127
+exec "$target" "$@"
