@@ -53,7 +53,7 @@ env_allow() {
 
 # 1) always pass project/workdir hints and keep terminal sane
 ENV_ARR=(
-  "-e" "ORG_PROJECT_DIR=/application"   # << changed from /work
+  "-e" "ORG_PROJECT_DIR=/application"
   "-e" "TERM=${TERM:-xterm-256color}"
   "-e" "ORG_SANDBOX_BACKEND=none"
 )
@@ -65,6 +65,6 @@ env_allow
  exec "$ENGINE" run --rm -it \
    -v "$REPO_DIR:/work:Z" \
    -v "$REPO_DIR:/application:Z" \
-   -w /application \                    # << changed from /work
+   -w /application \
    "${ENV_ARR[@]}" \
    "$IMAGE" org "$@"
