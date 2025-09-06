@@ -54,7 +54,7 @@ env_allow() {
 
 # 1) always pass project/workdir hints and keep terminal sane
 ENV_ARR=(
-  "-e" "ORG_PROJECT_DIR=/work"
+  "-e" "ORG_PROJECT_DIR=/project"
   "-e" "TERM=${TERM:-xterm-256color}"
   "-e" "ORG_SANDBOX_BACKEND=none"
 )
