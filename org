@@ -17,6 +17,8 @@ PY
   fi
 }
 
+
+ORG_WORK_DIR="$PWD"
 SCRIPT_PATH="$(resolve_realpath "$0")"
 REPO_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 
