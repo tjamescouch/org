@@ -127,16 +127,25 @@ env_allow
   ' org "${ARGS[@]}"
 status=$?
 
-# -------- Host-side patch review (opt-in, no behavior change by default) ---
-# Gate by explicit env to avoid surprises. You can also gate by ORG_REVIEW_MODE=review if desired.
-if [[ "${ORG_HOST_REVIEW:-}" == "1" || "${ORG_REVIEW_MODE:-}" == "review" ]]; then
-  PATCH_HOST_PATH="$REPO_DIR/.org/last-session.patch"   # /work/.org/... in the container
-  if [[ -f "$PATCH_HOST_PATH" ]]; then
+# ---- Host-side patch review (opt-in or review mode) ----
+# Use the parsed shell var (REVIEW_MODE); still allow explicit ORG_HOST_REVIEW=1.
+if [[ "${ORG_HOST_REVIEW:-}" == "1" || "$(printf '%s' "$REVIEW_MODE" | tr '[:upper:]' '[:lower:]')" == "review" ]]; then
+  PATCH_HOST_PATH=""
+
+  # 1) legacy single-file path (if you ever write it)
+  if [[ -f "$REPO_DIR/.org/last-session.patch" ]]; then
+    PATCH_HOST_PATH="$REPO_DIR/.org/last-session.patch"
+  else
+    # 2) the canonical location: newest .org/runs/*/session.patch
+    PATCH_HOST_PATH="$(ls -t "$REPO_DIR"/.org/runs/*/session.patch 2>/dev/null | head -n1 || true)"
+  fi
+
+  if [[ -n "$PATCH_HOST_PATH" && -f "$PATCH_HOST_PATH" ]]; then
     "$REPO_DIR/scripts/host-patch-review.sh" \
       --patch "$PATCH_HOST_PATH" \
       --project "$REPO_DIR" || true
   else
-    echo "[org] (host-review) patch not found: $PATCH_HOST_PATH"
+    echo "[org] (host-review) no patch found under $REPO_DIR/.org"
   fi
 fi
 
