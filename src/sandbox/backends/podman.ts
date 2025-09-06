@@ -261,7 +261,6 @@ export class PodmanSession implements ISandboxSession {
         };
 
         const s = "env being sent to container: " + JSON.stringify(process.env, null, 2);
-        throw new Error(s);
 
         const run = await this.execInEnv(env, `/work/.org/org-step.sh ${this.shQ(cmd)}`);
 

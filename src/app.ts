@@ -281,11 +281,11 @@ async function main() {
       : path.resolve((R.env.PWD && R.env.PWD.trim()) ? R.env.PWD : R.cwd());
 
   // Resolve repo root from that frozen starting directory.
-  const projectDir = resolveProjectDir(hostStartDir);
+  const projectDir = resolveProjectDir(R.cwd());
 
   // Helpful banner (diagnostics)
   Logger.info(`[org] host cwd = ${hostStartDir}`);
-  Logger.info(`[org] repo  dir = ${projectDir}`);
+  Logger.info(`[org] repo dir = ${projectDir}`);
   Logger.info(`[org] R.cwd = ${R.cwd()}  PWD=${R.env.PWD ?? ""}`);
 
   const recipeName = (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
