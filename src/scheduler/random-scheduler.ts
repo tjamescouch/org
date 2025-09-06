@@ -232,7 +232,7 @@ export class RandomScheduler {
             }
           }
         } finally {
-          if (totalToolsUsed > 0) this.review.markDirty(agent.id);
+          if (totalToolsUsed > 0) { /*this.review.markDirty(agent.id);*/ }
         }
       }
 
