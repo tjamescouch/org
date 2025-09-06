@@ -281,7 +281,8 @@ async function main() {
       : path.resolve((R.env.PWD && R.env.PWD.trim()) ? R.env.PWD : R.cwd());
 
   // Resolve repo root from that frozen starting directory.
-  const projectDir = resolveProjectDir(hostStartDir);
+  Logger.error("hostStartDir", hostStartDir);
+  const projectDir = '/work';//resolveProjectDir(hostStartDir);
 
   // Helpful banner (diagnostics)
   Logger.info(`[org] host cwd = ${hostStartDir}`);
