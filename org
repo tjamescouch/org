@@ -64,6 +64,7 @@ env_allow
 # shellcheck disable=SC2086
  exec "$ENGINE" run --rm -it \
    -v "$REPO_DIR:/work:Z" \
+   -v "$REPO_DIR:/application:Z" \
    -w /work \
    "${ENV_ARR[@]}" \
    "$IMAGE" org "$@"
