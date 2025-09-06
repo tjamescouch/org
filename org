@@ -60,12 +60,17 @@ while [[ $# -gt 0 ]]; do
     --) ARGS+=("$@"); break;;
     *)  ARGS+=("$1"); shift; continue;;
   esac
-  # normalize
+  # normalize & map
   lc="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')"
   case "$lc" in
-    yes|y|true|1|review) REVIEW_MODE="review" ;;
-    no|n|false|0|live)   REVIEW_MODE="live"   ;;
-    *) echo "org: invalid --review value: $val (use yes|no)" >&2; exit 2 ;;
+    # gated/review mode
+    yes|y|true|on|review|0)  REVIEW_MODE="review" ;;
+    # live/pass-through (old behavior)
+    no|n|false|off|live|apply|1) REVIEW_MODE="live" ;;
+    *)
+      echo "org: invalid --review value: $val (use yes|no|1|0|live|review)" >&2
+      exit 2
+      ;;
   esac
   shift
 done
