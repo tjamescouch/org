@@ -27,9 +27,6 @@ ENGINE="${ORG_ENGINE:-podman}"   # set ORG_ENGINE=docker if you prefer
 IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
 FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
 
-# ---------- host-side work mount (project/scratch) ----------
-WORK_SCRATCH="${ORG_WORK_DIR:-$PWD}"
-mkdir -p "$WORK_SCRATCH"
 
 echo "[org] engine      = $ENGINE"
 echo "[org] image       = $IMAGE"
@@ -77,6 +74,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "[org] review = $REVIEW_MODE"
+
+# REVIEW_MODE may be "live" or "review" (default live)
+mode="$(printf '%s' "${REVIEW_MODE:-live}" | tr '[:upper:]' '[:lower:]')"
+
+if [[ -n "${ORG_WORK_DIR:-}" ]]; then
+  WORK_SCRATCH="$ORG_WORK_DIR"
+elif [[ "$mode" == "review" ]]; then
+  WORK_SCRATCH="$PWD/.org/work"
+else
+  WORK_SCRATCH="$PWD"
+fi
+
+mkdir -p "$WORK_SCRATCH"
 
 # ---------- env forward (allow-list) ----------
 # Build an array of ["-e","KEY=VAL", ...] so we don't rely on word-splitting.
