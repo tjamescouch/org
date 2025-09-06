@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
-exec /work/scripts/org-launch-tmux.logic.sh "$@"
-
+set -Eeuo pipefail
+exec /usr/local/libexec/org/org-launch-tmux "$@"
