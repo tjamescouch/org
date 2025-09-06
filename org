@@ -31,11 +31,12 @@ FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
 WORK_SCRATCH="${ORG_WORK_DIR:-$PWD/.org/work}"
 mkdir -p "$WORK_SCRATCH"
 
-echo "[org] engine = $ENGINE"
-echo "[org] image  = $IMAGE"
-echo "[org] file   = $FILE"
-echo "[org] repo   = $REPO_DIR"
-echo "[org] work   = $WORK_SCRATCH -> /work (rw)"
+echo "[org] engine      = $ENGINE"
+echo "[org] image       = $IMAGE"
+echo "[org] file        = $FILE"
+echo "[org] repo        = $REPO_DIR"
+echo "[org] work        = $WORK_SCRATCH -> /work (rw)"
+echo "[org] project(ro) = $PWD          -> /project (ro)"
 
 # ---------- ensure image exists (build if missing) ----------
 if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
@@ -104,6 +105,7 @@ env_allow
 exec "$ENGINE" run --rm -it \
   -v "$WORK_SCRATCH:/work:Z" \
   -v "$REPO_DIR:/application:Z" \
+  -v "$PWD:/project:Z,ro" \
   -w /work \
   "${ENV_ARR[@]}" \
   "$IMAGE" org "${ARGS[@]}"
