@@ -1,24 +1,31 @@
 #!/usr/bin/env bash
-# baked tmux wrapper
-# DEV  -> rsync /project/scripts -> /scripts ; exec /scripts/org-launch-tmux
-# PROD -> exec /usr/local/libexec/org/org-launch-tmux
+# baked tmux wrapper (public interface frozen)
+# DEV: must exec /scripts/org-launch-tmux after syncing. No fallback.
+# PROD: exec baked runtime only.
+
 set -Eeuo pipefail
 
-MODE="${BUILD_MODE:-development}"
+MODE="${ORG_BUILD_MODE:-${BUILD_MODE:-development}}"
 
 if [[ "$MODE" == "development" ]]; then
   if command -v org-sync-scripts.sh >/dev/null 2>&1; then
     org-sync-scripts.sh || true
   fi
-  target="/scripts/org-launch-tmux"
+
+  runtime="/scripts/org-launch-tmux"
+  if [[ ! -x "$runtime" ]]; then
+    echo "org(launch-tmux): DEV mode requires project runtime at $runtime" >&2
+    echo "  - Ensure your repo contains scripts/org-launch-tmux (executable)" >&2
+    echo "  - Or switch to production mode: ORG_BUILD_MODE=production org …" >&2
+    exit 127
+  fi
+
+  exec "$runtime" "$@"
 else
-  target="/usr/local/libexec/org/org-launch-tmux"
+  baked="/usr/local/libexec/org/org-launch-tmux"
+  if [[ ! -x "$baked" ]]; then
+    echo "org(launch-tmux): baked launcher not found: $baked" >&2
+    exit 127
+  fi
+  exec "$baked" "$@"
 fi
-
-if [[ ! -x "$target" ]]; then
-  echo "org(launch-tmux): launcher not found or not executable: $target" >&2
-  echo "mode=$MODE  (set BUILD_MODE=development to pull from /project/scripts)" >&2
-  exit 127
-fi
-
-exec "$target" "$@"

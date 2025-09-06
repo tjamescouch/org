@@ -1,24 +1,33 @@
 #!/usr/bin/env bash
-# baked console wrapper
-# DEV  -> rsync /project/scripts -> /scripts ; exec /scripts/org-launch-console
-# PROD -> exec /usr/local/libexec/org/org-launch-console
+# baked console wrapper (public interface frozen)
+# DEV: must exec /scripts/org-launch-console after syncing. No fallback.
+# PROD: exec baked runtime only.
+
 set -Eeuo pipefail
 
-MODE="${BUILD_MODE:-development}"
+# Prefer ORG_* (propagates across container/tmux). Fall back to BUILD_MODE for convenience.
+MODE="${ORG_BUILD_MODE:-${BUILD_MODE:-development}}"
 
 if [[ "$MODE" == "development" ]]; then
+  # rsync project scripts -> /scripts (no-op if helper missing)
   if command -v org-sync-scripts.sh >/dev/null 2>&1; then
     org-sync-scripts.sh || true
   fi
-  target="/scripts/org-launch-console"
+
+  runtime="/scripts/org-launch-console"
+  if [[ ! -x "$runtime" ]]; then
+    echo "org(launch-console): DEV mode requires project runtime at $runtime" >&2
+    echo "  - Ensure your repo contains scripts/org-launch-console (executable)" >&2
+    echo "  - Or switch to production mode: ORG_BUILD_MODE=production org …" >&2
+    exit 127
+  fi
+
+  exec "$runtime" "$@"
 else
-  target="/usr/local/libexec/org/org-launch-console"
+  baked="/usr/local/libexec/org/org-launch-console"
+  if [[ ! -x "$baked" ]]; then
+    echo "org(launch-console): baked launcher not found: $baked" >&2
+    exit 127
+  fi
+  exec "$baked" "$@"
 fi
-
-if [[ ! -x "$target" ]]; then
-  echo "org(launch-console): launcher not found or not executable: $target" >&2
-  echo "mode=$MODE  (set BUILD_MODE=development to pull from /project/scripts)" >&2
-  exit 127
-fi
-
-exec "$target" "$@"
