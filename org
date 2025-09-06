@@ -36,7 +36,7 @@ if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
 fi
 
 # ---------- parse CLI (NEW: --review <yes|no>) ----------
-REVIEW_MODE="${ORG_REVIEW_MODE:-live}"   # default preserves current behavior
+REVIEW_MODE="${ORG_REVIEW_MODE:-review}"   # default preserves current behavior
 ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -111,10 +111,25 @@ env_allow
 
 # ---------- run inside the container ----------
 # shellcheck disable=SC2086
+#exec "$ENGINE" run --rm -it \
+#  -v "$WORK_SCRATCH:/work:Z" \
+#  -v "$PWD:/project:Z,ro" \
+#  -v "$REPO_DIR:/application:Z" \
+#  -w /work \
+#  "${ENV_ARR[@]}" \
+#  "$IMAGE" org "${ARGS[@]}"
+
 exec "$ENGINE" run --rm -it \
   -v "$WORK_SCRATCH:/work:Z" \
-  -v "$REPO_DIR:/application:Z" \
   -v "$PWD:/project:Z,ro" \
+  -v "$REPO_DIR:/application:Z" \
   -w /work \
   "${ENV_ARR[@]}" \
-  "$IMAGE" org "${ARGS[@]}"
+  "$IMAGE" bash -lc '
+    set -Eeuo pipefail
+    if [ "${ORG_REVIEW_MODE:-live}" = review ]; then
+      # one-liner stage: copy project → work, keep /work/.org, drop .git
+      rsync -a --delete --exclude ".git" --exclude ".org" /project/ /work/
+    fi
+    exec org "$@"
+  ' org "${ARGS[@]}"
