@@ -1,3 +1,9 @@
 #!/usr/bin/env bash
+# baked wrapper: sync scripts, then run logic from /scripts
+set -Eeuo pipefail
 
-exec /work/scripts/org-launch-console.logic.sh "$@"
+# Make sure /scripts contains the latest project-provided logic.
+org-sync-scripts.sh || true
+
+# Defer to runtime script (copied from project into /scripts)
+exec /scripts/org-launch-console.logic.sh "$@"

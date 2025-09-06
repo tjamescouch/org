@@ -4,103 +4,59 @@ import * as fsp from "fs/promises";
 import * as path from "path";
 import { execFileSync, spawn } from "child_process";
 import { C, Logger } from "../logger";
-import { withCookedTTY } from "../input/tty-guard";
-import { sandboxMangers } from "../sandbox/session";
+import { withCookedTTY } from "../input/tty-controller";
 import type { RoundRobinScheduler } from "../scheduler";
 import { ReviewManager } from "../scheduler/review-manager";
 
 async function listRecentSessionPatches(projectDir: string, minutes = 120): Promise<string[]> {
-  const root = path.join(projectDir, ".org", "runs");
+  const root = path.join(projectDir, ".org");
+  const candidates = ["last-session.patch"]; // single, canonical patch
   const out: string[] = [];
-  try {
-    const entries = await fsp.readdir(root);
-    const cutoff = Date.now() - minutes * 60_000;
-    for (const d of entries) {
-      const patch = path.join(root, d, "session.patch");
-      try {
-        const st = await fsp.stat(patch);
-        if (st.isFile() && st.size > 0 && st.mtimeMs >= cutoff) out.push(patch);
-      } catch {}
-    }
-  } catch {}
-  // newest last
-  return out.sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
+  const now = Date.now();
+  for (const name of candidates) {
+    const p = path.join(root, name);
+    try {
+      const st = await fsp.stat(p);
+      if (st.isFile() && (now - st.mtimeMs) <= minutes * 60_000) out.push(p);
+    } catch {}
+  }
+  return out;
 }
 
-async function openPager(filePath: string) {
-  await withCookedTTY(async () => {
-    await new Promise<void>((resolve) => {
-      const pager = process.env.ORG_PAGER || "delta -s || less -R || cat";
-      const p = spawn("sh", ["-lc", `${pager} ${JSON.stringify(filePath)}`], { stdio: "inherit" });
-      p.on("exit", () => resolve());
-    });
+function hasBin(bin: string): boolean {
+  try { execFileSync(bin, ["--version"], { stdio: "ignore" }); return true; } catch { return false; }
+}
+
+function spawnPager(cmd: string, args: string[], cwd: string): Promise<number> {
+  return new Promise((resolve) => {
+    const p = spawn(cmd, args, { cwd, stdio: "inherit" });
+    p.on("close", (code) => resolve(code ?? 0));
   });
 }
 
-async function askYesNo(prompt: string): Promise<boolean> {
-  const rl = await import("node:readline");
-  return await new Promise<boolean>((resolve) => {
-    const rli = rl.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-    rli.question(`${prompt} `, (ans) => {
-      rli.close();
-      const a = String(ans || "").trim().toLowerCase();
-      resolve(a === "y" || a === "yes");
-    });
-  });
-}
-
-function applyPatch(projectDir: string, patchPath: string) {
-  execFileSync("git", ["-C", projectDir, "apply", "--index", patchPath], { stdio: "inherit" });
+async function showPatch(projectDir: string, patchPath: string) {
+  const delta = hasBin("delta");
+  if (delta) await spawnPager("delta", ["--24-bit-color=never", patchPath], projectDir);
+  else       await spawnPager("less",  ["-R", patchPath],         projectDir);
 }
 
 export async function finalizeRun(
-  scheduler: RoundRobinScheduler,
-  reviewManager: ReviewManager,
+  _scheduler: RoundRobinScheduler,
+  _reviewManager: ReviewManager,
   projectDir: string,
   reviewMode: "ask" | "auto" | "never"
 ) {
-  Logger.info(C.magenta('\nFinalizing run...\n'));
-  try { await scheduler?.drain?.(); } catch {}
-  try { await reviewManager.finalizeAndReview(); } catch {}
-  try { await (sandboxMangers as any)?.finalizeAll?.(); } catch {}
-  try { scheduler?.stop?.(); } catch {}
-
-  const patches = await listRecentSessionPatches(projectDir, 120);
+  // In container-first mode we do not apply patches here.
+  const patches = await listRecentSessionPatches(projectDir, 240);
   if (patches.length === 0) {
     Logger.info("No patch produced.");
     return;
   }
-
-  const isTTY = process.stdout.isTTY;
-
-  for (const patch of patches) {
-    Logger.info(`Patch ready: ${patch}`);
-
-    if (reviewMode === "never") continue;
-
-    if (reviewMode === "auto" || !isTTY) {
-      try {
-        applyPatch(projectDir, patch);
-        Logger.info("Patch auto-applied.");
-      } catch (e: any) {
-        Logger.error("Auto-apply failed:", e?.message || e);
-        Logger.info(`Manual apply: git -C ${projectDir} apply --index ${patch}`);
-      }
-      continue;
-    }
-
-    await openPager(patch);
-    const yes = await askYesNo("Apply this patch? [y/N]");
-    if (yes) {
-      try {
-        applyPatch(projectDir, patch);
-        Logger.info("Patch applied.");
-      } catch (e: any) {
-        Logger.error("Apply failed:", e?.message || e);
-        Logger.info(`Manual apply: git -C ${projectDir} apply --index ${patch}`);
-      }
-    } else {
-      Logger.info("Patch NOT applied.");
-    }
+  if (reviewMode === "never") {
+    Logger.info(`Patch ready: ${patches[0]}`);
+    return;
   }
+  Logger.info(`Patch ready: ${patches[0]}`);
+  await withCookedTTY(async () => { await showPatch(projectDir, patches[0]); });
+  Logger.info("Container mode: skipping in-process apply; use host patch-apply.");
 }

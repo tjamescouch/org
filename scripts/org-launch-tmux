@@ -1,3 +1,5 @@
 #!/usr/bin/env bash
-exec /work/scripts/org-launch-tmux.logic.sh "$@"
-
+# baked wrapper: sync scripts, then run logic from /scripts
+set -Eeuo pipefail
+org-sync-scripts.sh || true
+exec /scripts/org-launch-tmux.logic.sh "$@"
