@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
-# Host-side org launcher: unchanged behavior + duplicate mount for org scripts.
-
 set -Eeuo pipefail
 
-ENGINE="${ORG_ENGINE:-podman}"                       # podman|docker
-IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"  # built by your installer
+ENGINE="${ORG_ENGINE:-podman}"
+IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
 
-# The target project you want the agent to operate on (unchanged)
 PROJECT="${ORG_PROJECT_DIR:-$PWD}"
 WORKDIR="${ORG_WORK_DIR:-$PROJECT/.org/work}"
 RUNTIME_ORG_DIR="$PROJECT/.org"
-
 mkdir -p "$WORKDIR" "$RUNTIME_ORG_DIR"
 
-# Resolve the *org tool repo* from this script's location (not CWD)
+# Resolve org repo (where this script lives), not CWD
 SELF="${BASH_SOURCE[0]}"
 while [ -h "$SELF" ]; do
   DIR="$(cd -P "$(dirname "$SELF")" && pwd)"
@@ -25,7 +21,6 @@ ORG_SCRIPTS_DIR="$ORG_REPO_DIR/scripts"
 
 if [[ ! -d "$ORG_SCRIPTS_DIR" ]]; then
   echo "[org] error: expected org scripts dir not found: $ORG_SCRIPTS_DIR" >&2
-  echo "       Create it or restore your repo; mounting scripts is required." >&2
   exit 2
 fi
 
@@ -33,39 +28,24 @@ echo "[org] engine = $ENGINE"
 echo "[org] image  = $IMAGE"
 echo "[org] file   = $PROJECT/Containerfile"
 echo "[org] repo   = $PROJECT"
-echo "[org] org-scripts = $ORG_SCRIPTS_DIR -> /scripts (ro) and /work/scripts (ro)"
+echo "[org] org-scripts = $ORG_SCRIPTS_DIR -> /scripts (ro)"
 
-# Pass only ORG_* vars through
+# Pass only ORG_* through
 mapfile -t ORG_ENV_FLAGS < <(env | awk -F= '/^ORG_[A-Z0-9_]+=/{print "--env="$1}')
 
-# Mounts: existing ones + both /scripts and /work/scripts (RO)
 MOUNTS=(
   -v "$PROJECT":/project:ro
   -v "$WORKDIR":/work:rw
   -v "$RUNTIME_ORG_DIR":/work/.org:rw
-  -v "$ORG_SCRIPTS_DIR":/scripts:ro
-  -v "$ORG_SCRIPTS_DIR":/work/scripts:ro
+  -v "$ORG_SCRIPTS_DIR":/scripts:ro          # keep this
+  # -v "$ORG_SCRIPTS_DIR":/work/scripts:ro    # ← removed: breaks rsync to /work
 )
 
-COMMON=(
-  --rm -it
-  --name "org-$RANDOM"
-  --network=none
-  --pids-limit=512
-  --cpus=2
-  --memory=2g
-)
+COMMON=( --rm -it --name "org-$RANDOM" --network=none --pids-limit=512 --cpus=2 --memory=2g )
 
 case "$ENGINE" in
   podman|docker)
-    exec "$ENGINE" run \
-      "${COMMON[@]}" \
-      "${MOUNTS[@]}" \
-      "${ORG_ENV_FLAGS[@]}" \
-      "$IMAGE" org "$@"
+    exec "$ENGINE" run "${COMMON[@]}" "${MOUNTS[@]}" "${ORG_ENV_FLAGS[@]}" "$IMAGE" org "$@"
     ;;
-  *)
-    echo "Unsupported engine: $ENGINE" >&2
-    exit 2
-    ;;
+  *) echo "Unsupported engine: $ENGINE" >&2; exit 2;;
 esac
