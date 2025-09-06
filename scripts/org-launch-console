@@ -1,9 +1,32 @@
 #!/usr/bin/env bash
-# baked wrapper: sync scripts, then run logic from /scripts
+# baked console wrapper (public interface frozen)
+# DEV: must exec /scripts/org-launch-console after syncing. No fallback.
+# PROD: exec baked runtime only.
+
 set -Eeuo pipefail
 
-# Make sure /scripts contains the latest project-provided logic.
-org-sync-scripts.sh || true
+MODE="${BUILD_MODE:-development}"
 
-# Defer to runtime script (copied from project into /scripts)
-exec /scripts/org-launch-console.logic.sh "$@"
+if [[ "$MODE" == "development" ]]; then
+  # rsync project scripts -> /scripts (no-op if helper missing)
+  if command -v org-sync-scripts.sh >/dev/null 2>&1; then
+    org-sync-scripts.sh || true
+  fi
+
+  runtime="/scripts/org-launch-console"
+  if [[ ! -x "$runtime" ]]; then
+    echo "org(launch-console): DEV mode requires project runtime at $runtime" >&2
+    echo "  - Ensure your repo contains scripts/org-launch-console (executable)" >&2
+    echo "  - Or switch to production mode: BUILD_MODE=production org …" >&2
+    exit 127
+  fi
+
+  exec "$runtime" "$@"
+else
+  baked="/usr/local/libexec/org/org-launch-console"
+  if [[ ! -x "$baked" ]]; then
+    echo "org(launch-console): baked launcher not found: $baked" >&2
+    exit 127
+  fi
+  exec "$baked" "$@"
+fi
