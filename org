@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# CWD-agnostic org launcher: always mounts the repo root to /work
-# and runs bun /work/src/app.ts inside the container.
-# Forwards a curated set of host env variables into the container.
+# CWD-agnostic org launcher: mounts a clean scratch to /work (agents' CWD)
+# and runs the application from /application. Forwards a curated env allowlist.
 
 set -Eeuo pipefail
 
+# ---------- resolve real path to this script (portable) ----------
 resolve_realpath() {
   if command -v readlink >/dev/null 2>&1; then
     readlink -f "$1" 2>/dev/null || python3 - "$1" <<'PY'
@@ -20,21 +20,30 @@ PY
 SCRIPT_PATH="$(resolve_realpath "$0")"
 REPO_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 
+# ---------- engine/image/file ----------
 ENGINE="${ORG_ENGINE:-podman}"   # set ORG_ENGINE=docker if you prefer
 IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
 FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
+
+# ---------- host-side scratch for agents (NEW) ----------
+WORK_SCRATCH="${ORG_WORK_DIR:-$PWD/.org/work}"
+mkdir -p "$WORK_SCRATCH"
 
 echo "[org] engine = $ENGINE"
 echo "[org] image  = $IMAGE"
 echo "[org] file   = $FILE"
 echo "[org] repo   = $REPO_DIR"
+echo "[org] work   = $WORK_SCRATCH -> /work (rw)"
 
+# ---------- ensure image exists (build if missing) ----------
 if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "[org] building image with $ENGINE (this can take a while)..."
   "$ENGINE" build -t "$IMAGE" -f "$FILE" "$REPO_DIR"
   echo "[org] image built: $IMAGE"
 fi
 
+# ---------- env forward (allow-list) ----------
+# Build an array of ["-e","KEY=VAL", ...] so we don't rely on word-splitting.
 env_allow() {
   local k v
   while IFS='=' read -r k v; do
@@ -46,18 +55,19 @@ env_allow() {
   done < <(env)
 }
 
-# Agents operate in /work; app code path is /application/src/app.ts
+# 1) agents operate in /work; app entry configured by image wrapper (ORG_APP_ENTRY)
 ENV_ARR=(
   "-e" "ORG_PROJECT_DIR=/work"
-  "-e" "ORG_APP_ENTRY=/application/src/app.ts"
   "-e" "TERM=${TERM:-xterm-256color}"
   "-e" "ORG_SANDBOX_BACKEND=none"
 )
+# 2) add allow-listed host env
 env_allow
 
+# ---------- run inside the container ----------
 # shellcheck disable=SC2086
 exec "$ENGINE" run --rm -it \
-  -v "$REPO_DIR:/work:Z" \
+  -v "$WORK_SCRATCH:/work:Z" \
   -v "$REPO_DIR:/application:Z" \
   -w /work \
   "${ENV_ARR[@]}" \
