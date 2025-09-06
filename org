@@ -20,7 +20,7 @@ PY
 
 SCRIPT_PATH="$(resolve_realpath "$0")"
 REPO_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
-echo $PWD
+export ORG_PROJECT_CWD=$PWD
 
 # ---------- engine/image/file ----------
 ENGINE="${ORG_ENGINE:-podman}"   # set ORG_ENGINE=docker if you prefer
