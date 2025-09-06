@@ -1,3 +1,6 @@
 #!/usr/bin/env bash
-exec /work/scripts/org-launch-tmux.logic.sh "$@"
+# Tmux runtime wrapper inside the image.
+set -Eeuo pipefail
 
+APP_ENTRY="${ORG_APP_ENTRY:-/work/src/app.ts}"
+exec /usr/local/bin/bun "$APP_ENTRY" --ui tmux "$@"
