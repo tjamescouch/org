@@ -53,11 +53,11 @@ export async function routeWithSideEffects(
 ): Promise<boolean> {
     const router = makeRouter({
         onAgent: async (from, to, cleaned) => {
-            Logger.info(C.blue(`[@@${from} → @@${to}]`));
+            //Logger.info(C.blue(`[@@${from} → @@${to}]`));
             deps.setRespondingAgent(to);
             if (cleaned) deps.enqueue(to, { role: "user", from: fromAgent.id, content: cleaned });
         },
-        onGroup: async (_from, cleaned) => {
+        onGroup: async (from, cleaned) => {
             const peers = deps.agents.map(a => a.id);
             const dec = fromAgent.guardCheck?.("group", cleaned, peers) || null;
             if (dec) await deps.applyGuard(fromAgent, dec);
@@ -65,14 +65,14 @@ export async function routeWithSideEffects(
                 Logger.debug(`suppress @@group from ${fromAgent.id}`);
                 return;
             }
-            Logger.info(C.blue(`[user → @@${from}] ${to}`));
+            //Logger.info(C.blue(`[user → @@${from}] @@group`));
             for (const a of deps.agents) {
                 if (a.id === fromAgent.id) continue;
                 if (cleaned) deps.enqueue(a.id, { role: "user", from: fromAgent.id, content: cleaned });
             }
         },
         onUser: async (from, _content) => {
-            Logger.info(C.blue(`[@@${from} → @@user]`));
+            //Logger.info(C.blue(`[@@${from} → @@user]`));
             // In non-interactive mode, an @@user tag should terminate cleanly
             if (!process.stdin.isTTY) {
                 try { await finalizeAllSandboxes(); } catch (e) { Logger.error(e); }
