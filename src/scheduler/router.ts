@@ -38,7 +38,7 @@ function looksLikeUserTag(text: string): boolean {
     return false;
 }
 
-const finalizeRepository = async (): Promise<void> { }
+const finalizeRepository = async (): Promise<void> => { }
 
 /**
  * Route a model message that may contain @@agent, @@group, @@user, ##file.
