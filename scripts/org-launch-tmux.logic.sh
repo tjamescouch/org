@@ -11,6 +11,8 @@
 
 set -Eeuo pipefail
 
+APP_ENTRY="${ORG_APP_ENTRY:-/application/src/app.ts}"
+
 # -------- Config (override via environment if needed) -------------------------
 # Preferred working directory inside the container; falls back to $PWD on host.
 ORG_WORKDIR_DEFAULT="/work"
@@ -35,7 +37,7 @@ ORG_TMUX_PANE="${ORG_TMUX_PANE:-0}"
 
 # App entry (console UI to render inside tmux)
 # All args passed to this launcher are forwarded to the app.
-ORG_ENTRY_BASE="${ORG_ENTRY_BASE:-bun $ORG_WORKDIR/src/app.ts --ui console}"
+ORG_ENTRY_BASE="${APP_ENTRY:-bun $ORG_WORKDIR/src/app.ts --ui console}"
 ORG_ENTRY="$ORG_ENTRY_BASE ${*:-}"
 
 # Log files

@@ -4,11 +4,12 @@
 
 set -Eeuo pipefail
 
+
 ORG_DIR="${ORG_RUNTIME_DIR:-/work/.org}"
 LOG_DIR="${ORG_DIR}/logs"
 LOG_FILE="${LOG_DIR}/console.log"
 BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"
-APP_ENTRY="/work/src/app.ts"
+APP_ENTRY="${ORG_APP_ENTRY:-/application/src/app.ts}"
 
 # Forward ALL user args verbatim to the app.
 APP_ARGS=("$@")
