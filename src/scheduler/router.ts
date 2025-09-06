@@ -75,6 +75,8 @@ export async function routeWithSideEffects(
             //Logger.info(C.blue(`[@@${from} → @@user]`));
             // In non-interactive mode, an @@user tag should terminate cleanly
             if (!process.stdin.isTTY) {
+                Logger.info("Exiting...");
+
                 try { await finalizeAllSandboxes(); } catch (e) { Logger.error(e); }
                 process.stdout.write("\n");
                 process.exit(0);
@@ -99,7 +101,7 @@ export async function routeWithSideEffects(
                 }
             }
 
-            const writer = sandbox ? new LockedDownFileWriter(sandbox, { maxBytes: 1_000_000 }) : new FileWriter();
+            const writer = new FileWriter();
             await writer.write(rel, body);
 
             Logger.info(C.magenta(`Written to /work/${rel} (${bytes} bytes)`));
