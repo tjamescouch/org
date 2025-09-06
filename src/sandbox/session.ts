@@ -1,8 +1,7 @@
 import * as path from "path";
-import { detectBackend, Backend } from "./detect";
+import { Backend } from "./detect";
 import { ExecPolicy } from "./policy";
 import { LocalSession } from "./backends/local";
-import { PodmanSession } from "./backends/podman";
 
 type ManagerOpts = {
   backend?: "auto" | Backend;
@@ -17,12 +16,6 @@ type SessionLike = {
   finalize?: (key?: string) => void;
 };
 
-function defaultImageTag(): string {
-  // Allow override; otherwise match the Containerfile naming we've been using.
-  // Keep this here to avoid importing any helper from podman.ts.
-  return process.env.ORG_IMAGE?.trim() || "localhost/org-build:debian-12";
-}
-
 export class SandboxManager {
   readonly projectDir: string;
   readonly runRoot: string;
@@ -35,30 +28,7 @@ export class SandboxManager {
     this.opts = opts ?? { backend: "auto" };
   }
 
-  private selectBackend(): Backend {
-    const b = this.opts.backend ?? "auto";
-    return b === "auto" ? detectBackend() : (b as Backend);
-  }
-
   private createSessionFor(key: string): SessionLike {
-    const backend = this.selectBackend();
-
-    if (backend === "local") {
-      return new LocalSession(this.projectDir, key);
-    }
-
-    if (backend === "podman") {
-      // No sandboxImageTag import — compute default here.
-      return new PodmanSession(defaultImageTag(), this.projectDir, key);
-    }
-
-    if (backend === "docker") {
-      // If you later add a DockerSession, wire it here.
-      // For now, local works well when already inside a container/VM.
-      return new LocalSession(this.projectDir, key);
-    }
-
-    // Final fallback — never return a mock session silently.
     return new LocalSession(this.projectDir, key);
   }
 

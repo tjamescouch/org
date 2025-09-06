@@ -101,9 +101,13 @@ function parseArgs(argv: string[]) {
 
 function assertIsRepository(p: string): string {
   let d = path.resolve(p);
-  if (fs.existsSync(path.join(d, ".git"))) return true;
+  if (fs.existsSync(path.join(d, ".git"))) return d;
 
   throw new Error(`Not a git repository.`);
+}
+
+function resolvePath(p: string): string {
+  return path.resolve(p);
 }
 
 function enableDebugIfRequested(args: Record<string, string | boolean>) {
@@ -162,8 +166,8 @@ function parseAgents(
 // Review helpers (pager + apply)
 // ───────────────────────────────────────────────────────────────────────────────
 
-async function listRecentSessionPatches(projectDir: string, minutes = 20): Promise<string[]> {
-  const root = path.join(projectDir, ".org", "runs");
+async function listRecentSessionPatches(workDir: string, minutes = 20): Promise<string[]> {
+  const root = path.join(workDir, ".org", "runs");
   const out: string[] = [];
   try {
     const entries = await fsp.readdir(root);
@@ -201,17 +205,17 @@ async function askYesNo(prompt: string): Promise<boolean> {
   });
 }
 
-function applyPatch(projectDir: string, patchPath: string) {
-  execFileSync("git", ["-C", projectDir, "apply", "--index", patchPath], { stdio: "inherit" });
+function applyPatch(workDir: string, patchPath: string) {
+  execFileSync("git", ["-C", workDir, "apply", "--index", patchPath], { stdio: "inherit" });
 }
 
-async function finalizeOnce(scheduler: SchedulerLike | null, projectDir: string, reviewMode: "ask" | "auto" | "never") {
+async function finalizeOnce(scheduler: SchedulerLike | null, workDir: string, reviewMode: "ask" | "auto" | "never") {
   // Ensure tools/sandboxes are finalized before we exit
   try { await (sandboxMangers as { finalizeAll?: () => Promise<void> }).finalizeAll?.(); } catch { /* ignore */ }
   try { await scheduler?.stop?.(); } catch { /* ignore */ }
   try { await scheduler?.drain?.(); } catch { /* ignore */ }
 
-  const patches = await listRecentSessionPatches(projectDir, 120);
+  const patches = await listRecentSessionPatches(workDir, 120);
   if (patches.length === 0) {
     Logger.info("No patch produced.");
     return;
@@ -222,16 +226,16 @@ async function finalizeOnce(scheduler: SchedulerLike | null, projectDir: string,
     if (reviewMode === "never") continue;
 
     if (reviewMode === "auto" || !R.stdout.isTTY) {
-      try { applyPatch(projectDir, patch); Logger.info("Patch auto-applied."); }
-      catch (e) { const msg = e instanceof Error ? e.message : String(e); Logger.error("Auto-apply failed:", msg); Logger.info(`You can apply manually: git -C ${projectDir} apply --index ${patch}`); }
+      try { applyPatch(workDir, patch); Logger.info("Patch auto-applied."); }
+      catch (e) { const msg = e instanceof Error ? e.message : String(e); Logger.error("Auto-apply failed:", msg); Logger.info(`You can apply manually: git -C ${workDir} apply --index ${patch}`); }
       continue;
     }
 
     await openPager(patch);
     const yes = await askYesNo("Apply this patch? [y/N]");
     if (yes) {
-      try { applyPatch(projectDir, patch); Logger.info("Patch applied."); }
-      catch (e) { const msg = e instanceof Error ? e.message : String(e); Logger.error("Apply failed:", msg); Logger.info(`You can apply manually: git -C ${projectDir} apply --index ${patch}`); }
+      try { applyPatch(workDir, patch); Logger.info("Patch applied."); }
+      catch (e) { const msg = e instanceof Error ? e.message : String(e); Logger.error("Apply failed:", msg); Logger.info(`You can apply manually: git -C ${workDir} apply --index ${patch}`); }
     } else {
       Logger.info("Patch NOT applied.");
     }
@@ -273,12 +277,14 @@ async function main() {
       : path.resolve((R.env.PWD && R.env.PWD.trim()) ? R.env.PWD : R.cwd());
 
   // Resolve repo root from that frozen starting directory.
-  const projectDir = assertIsRepository('/work');
+  const projectDir = assertIsRepository('/project');
+  const workDir = resolvePath('/work');
 
   // Helpful banner (diagnostics)
   Logger.info(`[org] host cwd = ${hostStartDir}`);
-  Logger.info(`[org] repo  dir = ${projectDir}`);
-  Logger.info(`[org] R.cwd = ${R.cwd()}  PWD=${R.env.PWD ?? ""}`);
+  Logger.info(`[org] proj dir = ${projectDir}`);
+  Logger.info(`[org] work dir = ${workDir}`);
+  Logger.info(`[org] R.cwd    = ${R.cwd()} PWD=${R.env.PWD ?? ""}`);
 
   const recipeName = (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
   const recipe = getRecipe(recipeName || null);
@@ -310,7 +316,7 @@ async function main() {
     agents,
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
     onAskUser: async (_: string, content: string) => R.ttyController?.askUser(),
-    projectDir, // repo root to copy/sync into /work
+    workDir, // repo root to copy/sync into /work
     reviewMode,
     promptEnabled:
       typeof args["prompt"] === "boolean" ? (args["prompt"] as boolean)
@@ -341,7 +347,7 @@ async function main() {
       interjectKey: String(args["interject-key"] ?? "i"),
       interjectBanner: String(args["banner"] ?? "user: "),
       // ESC path ends up here: stop → drain → review/apply
-      finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
+      finalizer: async () => { await finalizeOnce(scheduler, workDir, reviewMode); },
       // Let the scheduler drive the idle loop
       loopMode: "external",
     });
@@ -356,7 +362,7 @@ async function main() {
       stdin: R.stdin,
       stdout: R.stdout,
       scheduler,
-      finalizer: async () => { await finalizeOnce(scheduler, projectDir, reviewMode); },
+      finalizer: async () => { await finalizeOnce(scheduler, workDir, reviewMode); },
     });
   }
 
