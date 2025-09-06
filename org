@@ -109,27 +109,26 @@ ENV_ARR=(
 )
 env_allow
 
-# ---------- run inside the container ----------
+# ---------- run bun inside the container, mounting the repo root ----------
 # shellcheck disable=SC2086
-#exec "$ENGINE" run --rm -it \
-#  -v "$WORK_SCRATCH:/work:Z" \
-#  -v "$PWD:/project:Z,ro" \
-#  -v "$REPO_DIR:/application:Z" \
-#  -w /work \
-#  "${ENV_ARR[@]}" \
-#  "$IMAGE" org "${ARGS[@]}"
-
-exec "$ENGINE" run --rm -it \
-  -v "$WORK_SCRATCH:/work:Z" \
-  -v "$PWD:/project:Z,ro" \
-  -v "$REPO_DIR:/application:Z" \
+"$ENGINE" run --rm -it \
+  -v "$REPO_DIR:/work:Z" \
   -w /work \
   "${ENV_ARR[@]}" \
-  "$IMAGE" bash -lc '
-    set -Eeuo pipefail
-    if [ "${ORG_REVIEW_MODE:-live}" = review ]; then
-      # one-liner stage: copy project → work, keep /work/.org, drop .git
-      rsync -a --delete --exclude ".git" --exclude ".org" /project/ /work/
-    fi
-    exec org "$@"
-  ' org "${ARGS[@]}"
+  "$IMAGE" org "$@"
+status=$?
+
+# -------- Host-side patch review (opt-in, no behavior change by default) ---
+# Gate by explicit env to avoid surprises. You can also gate by ORG_REVIEW_MODE=review if desired.
+if [[ "${ORG_HOST_REVIEW:-}" == "1" || "${ORG_REVIEW_MODE:-}" == "review" ]]; then
+  PATCH_HOST_PATH="$REPO_DIR/.org/last-session.patch"   # /work/.org/... in the container
+  if [[ -f "$PATCH_HOST_PATH" ]]; then
+    "$REPO_DIR/scripts/host-patch-review.sh" \
+      --patch "$PATCH_HOST_PATH" \
+      --project "$REPO_DIR" || true
+  else
+    echo "[org] (host-review) patch not found: $PATCH_HOST_PATH"
+  fi
+fi
+
+exit "$status"
