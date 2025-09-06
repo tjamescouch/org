@@ -55,19 +55,17 @@ env_allow() {
   done < <(env)
 }
 
-# 1) agents operate in /work; app entry configured by image wrapper (ORG_APP_ENTRY)
 ENV_ARR=(
   "-e" "ORG_PROJECT_DIR=/work"
+  "-e" "ORG_APP_ENTRY=/application/src/app.ts"
   "-e" "TERM=${TERM:-xterm-256color}"
   "-e" "ORG_SANDBOX_BACKEND=none"
 )
-# 2) add allow-listed host env
 env_allow
 
-# ---------- run inside the container ----------
 # shellcheck disable=SC2086
 exec "$ENGINE" run --rm -it \
-  -v "$WORK_SCRATCH:/work:Z" \
+  -v "$REPO_DIR:/work:Z" \
   -v "$REPO_DIR:/application:Z" \
   -w /work \
   "${ENV_ARR[@]}" \
