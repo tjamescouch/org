@@ -163,6 +163,8 @@ export class PodmanSession implements ISandboxSession {
             "-v", `${this.spec.workHostDir}:/work:rw`,
         ];
 
+        Logger.info("Mounts: ", mounts);
+
         // Create container
         const create = await sh(this.tool, [
             "create",
