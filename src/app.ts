@@ -281,7 +281,8 @@ async function main() {
       : path.resolve((R.env.PWD && R.env.PWD.trim()) ? R.env.PWD : R.cwd());
 
   // Resolve repo root from that frozen starting directory.
-  const projectDir = R.env.ORG_PROJECT_CWD ?? '/home/ollama/dev/ai-workspace';//resolveProjectDir(hostStartDir);
+  Logger.info("ORG_PROJECT_CWD", R.env.ORG_PROJECT_CWD);
+  const projectDir = resolveProjectDir(R.env.ORG_PROJECT_CWD as string);
 
   // Helpful banner (diagnostics)
   Logger.info(`[org] host cwd = ${hostStartDir}`);
