@@ -365,11 +365,6 @@ All agents are idle. Provide the next concrete instruction or question.`;
     });
   }
 
-  /** Alias for compatibility with newer callers; routes to interject(). */
-  async enqueueUserText(text: string): Promise<void> {
-    await this.interject(text);
-  }
-
   async finalizeAndReview(): Promise<void> {
     Logger.info("\n👀 Finalize and review all ...");
     try {
@@ -446,7 +441,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
 
     // Fallback: broadcast to group
     for (const a of this.agents) {
-      this.inbox.push(a.id, { content: raw, role: "user", from: "User" });
+      this.inbox.push(a.id, { content: raw.trim(), role: "user", from: "User" });
     }
 
     Logger.debug("End of interjection");

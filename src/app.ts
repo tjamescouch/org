@@ -370,7 +370,7 @@ async function main() {
 
   // Seed a kickoff message if provided
   if (typeof kickoff === "string" && kickoff.length > 0) {
-    await scheduler.enqueueUserText(kickoff);
+    await scheduler.interject(kickoff);
   }
 
   // Start the scheduler loop. IMPORTANT: do NOT finalize here.

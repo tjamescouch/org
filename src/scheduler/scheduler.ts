@@ -20,6 +20,8 @@ export interface IScheduler {
   /** Drain outstanding work, then stop. */
   drain(): Promise<void>;
 
+  interject(s: string): Promise<string>;
+
   /** Enqueue a user text message. Scheduler converts text into ChatMessage. */
   enqueueUserText(text: string, opts?: { to?: string; from?: string }): Promise<void>;
 }
