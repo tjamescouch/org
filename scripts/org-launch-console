@@ -1,3 +1,5 @@
 #!/usr/bin/env bash
 
+trap '/usr/local/bin/org-patch-create || true' EXIT
+
 exec /application/scripts/org-launch-console.logic.sh "$@"
