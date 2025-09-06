@@ -18,13 +18,28 @@ RUN apt-get update \
 RUN sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
-# ---- Install our launcher trio early (bust cache if scripts change) ----
+# ---- Build stamp + wrappers (bust cache if scripts change) ----
 ARG ORG_BUILD_STAMP=dev
 ENV ORG_BUILD_STAMP=$ORG_BUILD_STAMP
 LABEL org.wrapper_version=$ORG_BUILD_STAMP
 
+# Copy your repo's scripts (wrappers, installers, runtime logic) into build context
 COPY scripts/ /tmp/org-scripts/
+
+# Install the CLI shims/wrappers that you already have
+# (kept as-is to avoid regressions; this typically installs /usr/local/bin/org, etc.)
 RUN bash /tmp/org-scripts/install-org-binaries.sh
+
+# --- NEW: provide a stable runtime landing zone for synced scripts ---
+# We make /scripts now so your dev-mode rsync has a canonical target.
+RUN mkdir -p /scripts
+
+# --- NEW: install small baked helpers if present (safe, no-op if missing) ---
+# These support the dev flow: rsync project org/scripts -> /scripts, and /work bootstrap.
+RUN set -eux; \
+  for f in org-sync-scripts.sh workdir-sync-from-project.sh org-launch-console org-launch-tmux; do \
+    if [ -f "/tmp/org-scripts/$f" ]; then install -m 0755 "/tmp/org-scripts/$f" "/usr/local/bin/$f"; fi; \
+  done
 
 # Safe default TERM inside the container
 ENV TERM=xterm-256color
@@ -92,6 +107,13 @@ RUN set -eux; \
  && chmod +x /usr/local/bin/apply_patch
 
 ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (command -v delta >/dev/null && delta -s --paging=never .org/last-session.patch || (echo; echo \"(delta not found; showing raw patch)\"; echo; cat .org/last-session.patch)); else echo \"No session patch found.\"; fi; echo; read -p \"Enter to close...\" _"'
+
+# --- Runtime mode switch (DEV vs PROD) ---
+# DEV: rsync org/scripts -> /scripts at startup (fast iteration, no rebuilds)
+# PROD: baked scripts only; rsync skipped. You can override at runtime.
+ENV BUILD_MODE=development
+# Hard kill-switch to bypass rsync even in development (optional)
+ENV ORG_NO_RSYNC=
 
 # Networking defaults
 ENV ORG_HOST_ALIAS=host.containers.internal
