@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-exec /work/scripts/org-launch-console.logic.sh "$@"
+exec /application/scripts/org-launch-console.logic.sh "$@"

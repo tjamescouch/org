@@ -21,7 +21,7 @@ if [[ ! -d "$ORG_WORKDIR" ]]; then
   ORG_WORKDIR="$PWD"
 fi
 
-ORG_SCRIPTS_DIR="$ORG_WORKDIR/scripts"
+ORG_SCRIPTS_DIR="/application/scripts"
 TMUX_CONF="$ORG_SCRIPTS_DIR/tmux.conf"
 
 # State and logs live under .org/
