@@ -1,21 +1,19 @@
 #!/usr/bin/env bash
-# Host-side org launcher: same behavior as before + ONE new mount (/scripts).
+# Host-side org launcher: unchanged behavior + duplicate mount for org scripts.
 
 set -Eeuo pipefail
 
-# ---- Engine & image (unchanged) ----
 ENGINE="${ORG_ENGINE:-podman}"                       # podman|docker
 IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"  # built by your installer
 
-# ---- Project (the repo you want to operate on; unchanged) ----
+# The target project you want the agent to operate on (unchanged)
 PROJECT="${ORG_PROJECT_DIR:-$PWD}"
 WORKDIR="${ORG_WORK_DIR:-$PROJECT/.org/work}"
 RUNTIME_ORG_DIR="$PROJECT/.org"
 
 mkdir -p "$WORKDIR" "$RUNTIME_ORG_DIR"
 
-# ---- NEW: resolve the *org tool* repo (where this script resides) ----
-# We do not rely on CWD. We resolve the real path of this script and take its dir.
+# Resolve the *org tool repo* from this script's location (not CWD)
 SELF="${BASH_SOURCE[0]}"
 while [ -h "$SELF" ]; do
   DIR="$(cd -P "$(dirname "$SELF")" && pwd)"
@@ -25,29 +23,28 @@ done
 ORG_REPO_DIR="$(cd -P "$(dirname "$SELF")" && pwd)"
 ORG_SCRIPTS_DIR="$ORG_REPO_DIR/scripts"
 
-# Fail fast if the canonical scripts dir doesn't exist.
 if [[ ! -d "$ORG_SCRIPTS_DIR" ]]; then
   echo "[org] error: expected org scripts dir not found: $ORG_SCRIPTS_DIR" >&2
-  echo "       Create it or restore your repo; mounting /scripts is required." >&2
+  echo "       Create it or restore your repo; mounting scripts is required." >&2
   exit 2
 fi
 
-# ---- Visibility (unchanged + a new line for /scripts) ----
 echo "[org] engine = $ENGINE"
 echo "[org] image  = $IMAGE"
 echo "[org] file   = $PROJECT/Containerfile"
 echo "[org] repo   = $PROJECT"
-echo "[org] org-scripts = $ORG_SCRIPTS_DIR -> /scripts (ro)"
+echo "[org] org-scripts = $ORG_SCRIPTS_DIR -> /scripts (ro) and /work/scripts (ro)"
 
-# ---- Only pass through ORG_* (unchanged, deterministic) ----
+# Pass only ORG_* vars through
 mapfile -t ORG_ENV_FLAGS < <(env | awk -F= '/^ORG_[A-Z0-9_]+=/{print "--env="$1}')
 
-# ---- Mounts (unchanged + ONE new mount to /scripts) ----
+# Mounts: existing ones + both /scripts and /work/scripts (RO)
 MOUNTS=(
   -v "$PROJECT":/project:ro
   -v "$WORKDIR":/work:rw
   -v "$RUNTIME_ORG_DIR":/work/.org:rw
-  -v "$ORG_SCRIPTS_DIR":/scripts:ro      # <-- NEW
+  -v "$ORG_SCRIPTS_DIR":/scripts:ro
+  -v "$ORG_SCRIPTS_DIR":/work/scripts:ro
 )
 
 COMMON=(
@@ -59,7 +56,6 @@ COMMON=(
   --memory=2g
 )
 
-# ---- Launch container (unchanged) ----
 case "$ENGINE" in
   podman|docker)
     exec "$ENGINE" run \
