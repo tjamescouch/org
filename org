@@ -28,13 +28,6 @@ IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
 FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
 
 
-echo "[org] engine      = $ENGINE"
-echo "[org] image       = $IMAGE"
-echo "[org] file        = $FILE"
-echo "[org] repo        = $REPO_DIR"
-echo "[org] work        = $WORK_SCRATCH -> /work (rw)"
-echo "[org] project(ro) = $PWD          -> /project (ro)"
-
 # ---------- ensure image exists (build if missing) ----------
 if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "[org] building image with $ENGINE (this can take a while)..."
@@ -73,8 +66,6 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-echo "[org] review = $REVIEW_MODE"
-
 # REVIEW_MODE may be "live" or "review" (default live)
 mode="$(printf '%s' "${REVIEW_MODE:-live}" | tr '[:upper:]' '[:lower:]')"
 
@@ -87,6 +78,14 @@ else
 fi
 
 mkdir -p "$WORK_SCRATCH"
+
+echo "[org] review      = $REVIEW_MODE"
+echo "[org] engine      = $ENGINE"
+echo "[org] image       = $IMAGE"
+echo "[org] file        = $FILE"
+echo "[org] repo        = $REPO_DIR"
+echo "[org] work        = $WORK_SCRATCH -> /work (rw)"
+echo "[org] project(ro) = $PWD          -> /project (ro)"
 
 # ---------- env forward (allow-list) ----------
 # Build an array of ["-e","KEY=VAL", ...] so we don't rely on word-splitting.
