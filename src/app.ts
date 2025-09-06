@@ -99,19 +99,11 @@ function parseArgs(argv: string[]) {
   return out;
 }
 
-function resolveProjectDir(seed: string): string {
-  try {
-    const out = execFileSync("git", ["-C", seed, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
-    if (out) return out;
-  } catch { /* ignore */ }
-  let d = path.resolve(seed);
-  while (true) {
-    if (fs.existsSync(path.join(d, ".git"))) return d;
-    const up = path.dirname(d);
-    if (up === d) break;
-    d = up;
-  }
-  throw new Error(`Could not locate project root from ${seed}. Pass --project <dir> or run inside the repo.`);
+function assertIsRepository(p: string): string {
+  let d = path.resolve(p);
+  if (fs.existsSync(path.join(d, ".git"))) return true;
+
+  throw new Error(`Not a git repository.`);
 }
 
 function enableDebugIfRequested(args: Record<string, string | boolean>) {
@@ -281,8 +273,7 @@ async function main() {
       : path.resolve((R.env.PWD && R.env.PWD.trim()) ? R.env.PWD : R.cwd());
 
   // Resolve repo root from that frozen starting directory.
-  Logger.error("hostStartDir", hostStartDir);
-  const projectDir = '/work';//resolveProjectDir(hostStartDir);
+  const projectDir = assertIsRepository('/work');
 
   // Helpful banner (diagnostics)
   Logger.info(`[org] host cwd = ${hostStartDir}`);
