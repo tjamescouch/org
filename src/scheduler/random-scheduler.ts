@@ -365,11 +365,6 @@ All agents are idle. Provide the next concrete instruction or question.`;
     });
   }
 
-  /** Alias for compatibility with newer callers; routes to interject(). */
-  async enqueueUserText(text: string): Promise<void> {
-    await this.interject(text);
-  }
-
   async finalizeAndReview(): Promise<void> {
     Logger.info("\n👀 Finalize and review all ...");
     try {

@@ -40,8 +40,7 @@ type WritableLike = Pick<Writable, "write"> & { write(chunk: any): any };
 
 type SchedulerLike = {
   /** test fakes tend to expose one (or both) of these; call both if present */
-  enqueue?: (line: string) => void;
-  enqueueUserInput?: (line: string) => void;
+  interject: (text: string) => string;
 };
 
 /* --------------------------------- Options -------------------------------- */
@@ -292,8 +291,7 @@ export class TtyController {
   /* ----------------------------- internal bits ----------------------------- */
 
   private enqueue(line: string) {
-    this.scheduler.enqueueUserInput?.(line);
-    this.scheduler.enqueue?.(line);
+    this.scheduler.interject(line);
   }
 
   private async finalizeThenExit() {
