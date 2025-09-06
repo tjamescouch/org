@@ -101,9 +101,13 @@ function parseArgs(argv: string[]) {
 
 function assertIsRepository(p: string): string {
   let d = path.resolve(p);
-  if (fs.existsSync(path.join(d, ".git"))) return true;
+  if (fs.existsSync(path.join(d, ".git"))) return d;
 
   throw new Error(`Not a git repository.`);
+}
+
+function resolvePath(p: string): string {
+  return path.resolve(p);
 }
 
 function enableDebugIfRequested(args: Record<string, string | boolean>) {
@@ -274,7 +278,7 @@ async function main() {
 
   // Resolve repo root from that frozen starting directory.
   const projectDir = assertIsRepository('/project');
-  const workDir = '/work';
+  const workDir = resolvePath('/work');
 
   // Helpful banner (diagnostics)
   Logger.info(`[org] host cwd = ${hostStartDir}`);
