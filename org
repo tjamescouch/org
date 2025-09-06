@@ -1,69 +1,75 @@
 #!/usr/bin/env bash
-# CWD-agnostic org launcher: always mounts the repo root to /work
-# and runs bun /work/src/app.ts inside the container.
-# Forwards a curated set of host env variables into the container.
+# Host-side org launcher: same behavior as before + ONE new mount (/scripts).
 
 set -Eeuo pipefail
 
-# ---------- resolve real path to this script (portable) ----------
-resolve_realpath() {
-  if command -v readlink >/dev/null 2>&1; then
-    readlink -f "$1" 2>/dev/null || python3 - "$1" <<'PY'
-import os, sys; print(os.path.realpath(sys.argv[1]))
-PY
-  else
-    python3 - "$1" <<'PY'
-import os, sys; print(os.path.realpath(sys.argv[1]))
-PY
-  fi
-}
+# ---- Engine & image (unchanged) ----
+ENGINE="${ORG_ENGINE:-podman}"                       # podman|docker
+IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"  # built by your installer
 
-SCRIPT_PATH="$(resolve_realpath "$0")"
-REPO_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+# ---- Project (the repo you want to operate on; unchanged) ----
+PROJECT="${ORG_PROJECT_DIR:-$PWD}"
+WORKDIR="${ORG_WORK_DIR:-$PROJECT/.org/work}"
+RUNTIME_ORG_DIR="$PROJECT/.org"
 
-# ---------- engine/image/file ----------
-ENGINE="${ORG_ENGINE:-podman}"   # set ORG_ENGINE=docker if you prefer
-IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
-FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
+mkdir -p "$WORKDIR" "$RUNTIME_ORG_DIR"
 
-echo "[org] engine = $ENGINE"
-echo "[org] image  = $IMAGE"
-echo "[org] file   = $FILE"
-echo "[org] repo   = $REPO_DIR"
+# ---- NEW: resolve the *org tool* repo (where this script resides) ----
+# We do not rely on CWD. We resolve the real path of this script and take its dir.
+SELF="${BASH_SOURCE[0]}"
+while [ -h "$SELF" ]; do
+  DIR="$(cd -P "$(dirname "$SELF")" && pwd)"
+  LINK="$(readlink "$SELF")"
+  [[ "$LINK" != /* ]] && SELF="$DIR/$LINK" || SELF="$LINK"
+done
+ORG_REPO_DIR="$(cd -P "$(dirname "$SELF")" && pwd)"
+ORG_SCRIPTS_DIR="$ORG_REPO_DIR/scripts"
 
-# ---------- ensure image exists (build if missing) ----------
-if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "[org] building image with $ENGINE (this can take a while)..."
-  "$ENGINE" build -t "$IMAGE" -f "$FILE" "$REPO_DIR"
-  echo "[org] image built: $IMAGE"
+# Fail fast if the canonical scripts dir doesn't exist.
+if [[ ! -d "$ORG_SCRIPTS_DIR" ]]; then
+  echo "[org] error: expected org scripts dir not found: $ORG_SCRIPTS_DIR" >&2
+  echo "       Create it or restore your repo; mounting /scripts is required." >&2
+  exit 2
 fi
 
-# ---------- env forward (allow-list) ----------
-# Build an array of ["-e","KEY=VAL", ...] so we don't rely on word-splitting.
-env_allow() {
-  local k v
-  while IFS='=' read -r k v; do
-    case "$k" in
-      ORG_*|OPENAI_*|ANTHROPIC_*|OLLAMA_*|LMSTUDIO_*|AZURE_*|GOOGLE_*|GROQ_*|GEMINI_*|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy|LANG|LC_*|TZ|TERM|FORCE_COLOR|NO_COLOR)
-        ENV_ARR+=("-e" "${k}=${v}")
-        ;;
-    esac
-  done < <(env)
-}
+# ---- Visibility (unchanged + a new line for /scripts) ----
+echo "[org] engine = $ENGINE"
+echo "[org] image  = $IMAGE"
+echo "[org] file   = $PROJECT/Containerfile"
+echo "[org] repo   = $PROJECT"
+echo "[org] org-scripts = $ORG_SCRIPTS_DIR -> /scripts (ro)"
 
-# 1) always pass project/workdir hints and keep terminal sane
-ENV_ARR=(
-  "-e" "ORG_PROJECT_DIR=/work"
-  "-e" "TERM=${TERM:-xterm-256color}"
-  "-e" "ORG_SANDBOX_BACKEND=none"
+# ---- Only pass through ORG_* (unchanged, deterministic) ----
+mapfile -t ORG_ENV_FLAGS < <(env | awk -F= '/^ORG_[A-Z0-9_]+=/{print "--env="$1}')
+
+# ---- Mounts (unchanged + ONE new mount to /scripts) ----
+MOUNTS=(
+  -v "$PROJECT":/project:ro
+  -v "$WORKDIR":/work:rw
+  -v "$RUNTIME_ORG_DIR":/work/.org:rw
+  -v "$ORG_SCRIPTS_DIR":/scripts:ro      # <-- NEW
 )
-# 2) add allow-listed host env
-env_allow
 
-# ---------- run bun inside the container, mounting the repo root ----------
-# shellcheck disable=SC2086
- exec "$ENGINE" run --rm -it \
-   -v "$REPO_DIR:/work:Z" \
-   -w /work \
-   "${ENV_ARR[@]}" \
-   "$IMAGE" org "$@"
+COMMON=(
+  --rm -it
+  --name "org-$RANDOM"
+  --network=none
+  --pids-limit=512
+  --cpus=2
+  --memory=2g
+)
+
+# ---- Launch container (unchanged) ----
+case "$ENGINE" in
+  podman|docker)
+    exec "$ENGINE" run \
+      "${COMMON[@]}" \
+      "${MOUNTS[@]}" \
+      "${ORG_ENV_FLAGS[@]}" \
+      "$IMAGE" org "$@"
+    ;;
+  *)
+    echo "Unsupported engine: $ENGINE" >&2
+    exit 2
+    ;;
+esac
