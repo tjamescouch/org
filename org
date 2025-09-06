@@ -28,7 +28,7 @@ IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
 FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
 
 # ---------- host-side work mount (project/scratch) ----------
-WORK_SCRATCH="${ORG_WORK_DIR:-$PWD}
+WORK_SCRATCH="${ORG_WORK_DIR:-$PWD}"
 mkdir -p "$WORK_SCRATCH"
 
 echo "[org] engine      = $ENGINE"
