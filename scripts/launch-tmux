@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# baked: /usr/local/libexec/org/launch-tmux
+set -Eeuo pipefail
+
+if [[ "${BUILD_MODE:-development}" == "development" && -z "${ORG_NO_RSYNC:-}" ]]; then
+  org-sync-scripts.sh || true
+fi
+
+if [[ -x /scripts/org-launch-tmux.logic.sh ]]; then
+  exec /scripts/org-launch-tmux.logic.sh "$@"
+fi
+
+if [[ -x /usr/local/libexec/org/org-launch-tmux.logic.sh ]]; then
+  exec /usr/local/libexec/org/org-launch-tmux.logic.sh "$@"
+fi
+
+echo "org: no tmux logic found at /scripts/org-launch-tmux.logic.sh or /usr/local/libexec/org/org-launch-tmux.logic.sh" >&2
+exit 127

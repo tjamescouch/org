@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# baked: /usr/local/libexec/org/launch-console
+set -Eeuo pipefail
+
+# Optional dev sync (guarded by env)
+if [[ "${BUILD_MODE:-development}" == "development" && -z "${ORG_NO_RSYNC:-}" ]]; then
+  org-sync-scripts.sh || true
+fi
+
+# Prefer runtime logic (rsynced into /scripts), else baked fallback
+if [[ -x /scripts/org-launch-console.logic.sh ]]; then
+  exec /scripts/org-launch-console.logic.sh "$@"
+fi
+
+if [[ -x /usr/local/libexec/org/org-launch-console.logic.sh ]]; then
+  exec /usr/local/libexec/org/org-launch-console.logic.sh "$@"
+fi
+
+echo "org: no console logic found at /scripts/org-launch-console.logic.sh or /usr/local/libexec/org/org-launch-console.logic.sh" >&2
+exit 127
