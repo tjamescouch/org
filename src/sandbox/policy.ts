@@ -85,7 +85,7 @@ function toSpec(p: ExecPolicy): ExecSpec {
             : path.join(os.tmpdir(), "org-sessions");
 
     const workHostDir = path.join(scratchBase, `session-${id}`);
-    return {
+    const result = {
         id,
         image: p.image,
         projectDir: p.projectDir,
@@ -95,6 +95,10 @@ function toSpec(p: ExecPolicy): ExecSpec {
         limits: p.limits,
         write: p.write,
     };
+
+    console.log('policy result', result);
+
+    return result;
 }
 
 type ExecPolicy2 = {
