@@ -5,7 +5,6 @@
 
 set -Eeuo pipefail
 
-# ---------- resolve real path to this script (portable) ----------
 resolve_realpath() {
   if command -v readlink >/dev/null 2>&1; then
     readlink -f "$1" 2>/dev/null || python3 - "$1" <<'PY'
@@ -21,7 +20,6 @@ PY
 SCRIPT_PATH="$(resolve_realpath "$0")"
 REPO_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 
-# ---------- engine/image/file ----------
 ENGINE="${ORG_ENGINE:-podman}"   # set ORG_ENGINE=docker if you prefer
 IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
 FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
@@ -31,15 +29,12 @@ echo "[org] image  = $IMAGE"
 echo "[org] file   = $FILE"
 echo "[org] repo   = $REPO_DIR"
 
-# ---------- ensure image exists (build if missing) ----------
 if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "[org] building image with $ENGINE (this can take a while)..."
   "$ENGINE" build -t "$IMAGE" -f "$FILE" "$REPO_DIR"
   echo "[org] image built: $IMAGE"
 fi
 
-# ---------- env forward (allow-list) ----------
-# Build an array of ["-e","KEY=VAL", ...] so we don't rely on word-splitting.
 env_allow() {
   local k v
   while IFS='=' read -r k v; do
@@ -51,20 +46,19 @@ env_allow() {
   done < <(env)
 }
 
-# 1) always pass project/workdir hints and keep terminal sane
+# Agents operate in /work; app code path is /application/src/app.ts
 ENV_ARR=(
   "-e" "ORG_PROJECT_DIR=/work"
+  "-e" "ORG_APP_ENTRY=/application/src/app.ts"
   "-e" "TERM=${TERM:-xterm-256color}"
   "-e" "ORG_SANDBOX_BACKEND=none"
 )
-# 2) add allow-listed host env
 env_allow
 
-# ---------- run bun inside the container, mounting the repo root ----------
 # shellcheck disable=SC2086
- exec "$ENGINE" run --rm -it \
-   -v "$REPO_DIR:/work:Z" \
-   -v "$REPO_DIR:/application:Z" \
-   -w /work \
-   "${ENV_ARR[@]}" \
-   "$IMAGE" org "$@"
+exec "$ENGINE" run --rm -it \
+  -v "$REPO_DIR:/work:Z" \
+  -v "$REPO_DIR:/application:Z" \
+  -w /work \
+  "${ENV_ARR[@]}" \
+  "$IMAGE" org "$@"
