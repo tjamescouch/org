@@ -119,8 +119,11 @@ env_allow
   "${ENV_ARR[@]}" \
   "$IMAGE" bash -lc '
     set -Eeuo pipefail
+    # always ensure the run metadata root exists in the staging area
+    mkdir -p /work/.org
+  
     if [ "${ORG_REVIEW_MODE:-live}" = review ]; then
-      # one-liner stage: copy project → work, keep /work/.org, drop .git
+      # stage: copy project → work, keep /work/.org, drop .git
       rsync -a --delete --exclude ".git" --exclude ".org" /project/ /work/
     fi
     exec org "$@"
