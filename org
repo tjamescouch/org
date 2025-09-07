@@ -95,8 +95,27 @@ ENV_ARR=(
 env_allow
 
 # ---------- run inside the container ----------
-# (Surgical change) — run container in background so we can catch Ctrl+C and skip pager.
-got_int=0
+# In review: stage /project -> /work (keep /work/.org; do not copy .git). Also create a .git pointer
+# so /work is recognized as a repo (gitdir: /project/.git). Then exec the in-image 'org'.
+"$ENGINE" run --rm -it \
+  -v "$WORK_SCRATCH:/work:Z" \
+  -v "$PWD:/project:Z,ro" \
+  -v "$REPO_DIR:/application:Z" \
+  -w /work \
+  "${ENV_ARR[@]}" \
+  "$IMAGE" bash -lc '
+    set -Eeuo pipefail
+    mkdir -p /work/.org
+    if [ "${ORG_REVIEW_MODE:-live}" = review ]; then
+      rsync -a --delete --exclude ".git" --exclude ".org" /project/ /work/
+      rm -rf /work/.git 2>/dev/null || true
+      printf "gitdir: /project/.git\n" > /work/.git
+      git config --global --add safe.directory /project >/dev/null 2>&1 || true
+      git config --global --add safe.directory /work    >/dev/null 2>&1 || true
+    fi
+    exec org "$@"
+  ' org "${ARGS[@]}"
+# ---------- run inside the container (foreground) ----------
 set +e
 "$ENGINE" run --rm -it \
   -v "$WORK_SCRATCH:/work:Z" \
@@ -115,14 +134,36 @@ set +e
       git config --global --add safe.directory /work    >/dev/null 2>&1 || true
     fi
     exec org "$@"
-  ' org "${ARGS[@]}" &
-child=$!
-
-# Catch Ctrl+C: forward to container, remember INT so we skip pager later.
-trap 'got_int=1; kill -INT "$child" 2>/dev/null || true' INT
-wait "$child"; status=$?
-trap - INT
+  ' org "${ARGS[@]}"
+status=$?
+# ---------- run inside the container (foreground) ----------
+set +e
+"$ENGINE" run --rm -it \
+  -v "$WORK_SCRATCH:/work:Z" \
+  -v "$PWD:/project:Z,ro" \
+  -v "$REPO_DIR:/application:Z" \
+  -w /work \
+  "${ENV_ARR[@]}" \
+  "$IMAGE" bash -lc '
+    set -Eeuo pipefail
+    mkdir -p /work/.org
+    if [ "${ORG_REVIEW_MODE:-live}" = review ]; then
+      rsync -a --delete --exclude ".git" --exclude ".org" /project/ /work/
+      rm -rf /work/.git 2>/dev/null || true
+      printf "gitdir: /project/.git\n" > /work/.git
+      git config --global --add safe.directory /project >/dev/null 2>&1 || true
+      git config --global --add safe.directory /work    >/dev/null 2>&1 || true
+    fi
+    exec org "$@"
+  ' org "${ARGS[@]}"
+status=$?
 set -e
+
+# If the foreground container was interrupted with Ctrl+C, its exit is 130.
+got_int=0
+if [[ "$status" -eq 130 ]]; then
+  got_int=1
+fi
 
 # ---------- Host-side patch review (review mode only) ----------
 if [[ "$mode" == "review" ]]; then
