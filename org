@@ -64,6 +64,29 @@ else
 fi
 mkdir -p "$WORK_SCRATCH"
 
+# ---- upfront repo cleanliness check ----
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if [[ -n "$(git status --porcelain)" ]]; then
+    echo "[org] repo is dirty. Please fix before running review mode."
+    echo
+    echo "To save your current work:"
+    echo "    git add -A"
+    echo "    git commit -m 'WIP: save dirty state before org run'"
+    echo
+    echo "Or to throw away changes:"
+    echo "    git restore --staged ."
+    echo "    git restore ."
+    exit 1
+  fi
+else
+  echo "[org] This directory is not a Git repo."
+  echo "To initialize one and capture your current files:"
+  echo "    git init"
+  echo "    git add ."
+  echo "    git commit -m 'Initial commit'"
+  exit 1
+fi
+
 echo "[org] review      = $REVIEW_MODE"
 echo "[org] engine      = $ENGINE"
 echo "[org] image       = $IMAGE"
