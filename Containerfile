@@ -26,6 +26,9 @@ LABEL org.wrapper_version=$ORG_BUILD_STAMP
 COPY scripts/ /tmp/org-scripts/
 RUN bash /tmp/org-scripts/install-org-binaries.sh
 
+COPY scripts/org-patch-create /usr/local/bin/org-patch-create
+RUN chmod 0755 /usr/local/bin/org-patch-create
+
 # Safe default TERM inside the container
 ENV TERM=xterm-256color
 
