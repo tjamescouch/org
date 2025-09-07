@@ -38,8 +38,6 @@ This prints a summary to stdout (and may emit V8 JSON coverage artifacts dependi
 
 ### Unit
 
-* **LLMNoiseFilter**: single & cross-chunk sentinels, fenced blocks, **no duplication on flush**.
-* **LockedDownFileWriter**: relative-only paths, traversal rejection, `.org/.git` denial, atomic write, size caps.
 * **Tag/command parsing utilities** (where applicable): allowlists, Unicode/whitespace behaviors.
 
 ### Integration

@@ -240,6 +240,7 @@ export class TtyController {
         // When prompting, we deliberately ignore the global hotkey handler,
         // except for ESC which cancels and finalizes (as the test expects).
         const s = bufferToString(chunk);
+
         for (const ch of s) {
           const code = ch.charCodeAt(0);
           if (code === 0x1b) {

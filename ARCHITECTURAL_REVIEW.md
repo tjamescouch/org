@@ -17,7 +17,7 @@ The repository implements a **CLI tool** (`org`) that lets AI agents act on a co
 | `src/guardrails/` | `advanced-guardrail.ts`, `guardrail.ts` | Provides per‑agent safety checks (loop detection, tool‑use limits, content validation). |
 | `src/scheduler/` | `random-scheduler.ts`, `round-robin-scheduler.ts`, `review-manager.ts` | Decouples **task routing** from agents; decides which agent processes a message, handles idle fallback via guard rails. |
 | `src/input/` | TTY adapters/controllers (`tty-controller.ts`, etc.) | Manages interactive vs raw terminal modes, passes user prompts to the scheduler and receives agent output. |
-| `src/io/` | `file-writer.ts`, `locked-down-file-writer.ts` | Abstracted file‑write API that respects sandbox policies and creates **git patches** instead of direct writes. |
+| `src/io/` | `file-writer.ts`| Abstracted file‑write API that respects sandbox policies and creates **git patches** instead of direct writes. |
 | `src/memory/` | Various memory implementations (`advanced-memory.ts`, `summary-memory.ts`, etc.) | Stores conversation context per agent, supports summarisation to keep token usage bounded. |
 | `src/ui/` | Console & tmux front‑ends (`console/index.ts`, `tmux/*`) | Presents prompts, progress bars and patch diffs to the human operator. |
 | `src/config/` | Config loading (`config.ts`, `paths.ts`) | Reads `.org` configuration files (runtime safety flags, allowed tools, etc.). |
@@ -32,7 +32,7 @@ The repository implements a **CLI tool** (`org`) that lets AI agents act on a co
 5. **Execution Gate Setup** – Configures safe mode, interactive flag and optional tool whitelist.
 6. **Input Loop** – The `TtyController` reads user prompts (`withCookedTTY`) and forwards them to the scheduler via the routing layer (`route-with-tags.ts`).
 7. **Agent Processing** – An agent receives a batch of `ChatMessage`s, runs its guard rail (`guardCheck`), may call tools (e.g., `sh`, `sandboxed‑sh`). Tool calls go through `ExecutionGate` → `SandboxSession` → the chosen backend.
-8. **File Changes** – All writes are funneled through `LockedDownFileWriter`, which records an *atomic git patch* (`session.patch`) under `.org/runs/<run-id>/`. No file is modified on disk until a human approves.
+8. **File Changes** – All writes record an *atomic git patch* (`session.patch`) under `.org/runs/<run-id>/`. No file is modified on disk until a human approves.
 9. **Review Phase** – When the run ends (or on user request), `finalizeOnce()` collects recent patches, presents them via pager or auto‑applies depending on `reviewMode` (`ask|auto|never`).
 10. **Cleanup** – Scheduler drains, sandbox sessions finalize, and the process exits with a proper code.
 
