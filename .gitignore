@@ -74,6 +74,7 @@ logs/
 
 # If you keep helper scripts in .org, allow them:
 !/.org/*.sh
+!/.org/*.env
 
 # Ignore runtime artifacts under .org
 /.org/logs/
