@@ -3,7 +3,7 @@
 # Deterministic: no fallbacks. Requires explicit --patch and --project.
 
 set -Eeuo pipefail
-set -v
+# set -v
 
 usage() {
   cat >&2 <<'USAGE'

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -v
+# set -v
 
 /application/scripts/org-launch-console.logic.sh "$@"
 rc=$?

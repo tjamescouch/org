@@ -10,7 +10,7 @@
 # - Keeps the pane on screen after exit (remain-on-exit) for postmortem.
 
 set -Eeuo pipefail
-set -v
+# set -v
 
 APP_ENTRY="${ORG_APP_ENTRY:-/application/src/app.ts}"
 
