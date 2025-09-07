@@ -71,6 +71,10 @@ ENV ORG_BUN_BIN=/usr/local/bin/bun
 ENV ORG_TMUX_BIN=/usr/bin/tmux
 ENV ORG_DEFAULT_CWD=/work
 
+# Ensure /work exists as a mountpoint for the host bind
+RUN mkdir -p /work
+
+
 # --- Portable apply_patch helper (unchanged from your base) ---
 RUN set -eux; \
   printf '%s\n' \
