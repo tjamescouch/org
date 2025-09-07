@@ -17,10 +17,13 @@ function getTty() {
 export function printInitCard(title: string, rows: Row[]): void {
   const { tty, columns } = getTty();
 
+  Logger.info("here")
   if (!tty) {
+  Logger.info("here 2")
     for (const r of rows) Logger.info(`[${title}] ${r.label} = ${r.value}`);
     return;
   }
+  Logger.info("here 3")
 
   const border = "─".repeat(columns - 2);
   const maxLabel = rows.reduce((m, r) => Math.max(m, r.label.length), 0);
