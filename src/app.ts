@@ -266,10 +266,11 @@ async function main() {
 
   // Pretty, TTY-aware banner (falls back to simple lines if not a TTY)
   printInitCard("org", [
-    { label: "host cwd", value: C.bold(hostStartDir) },
-    { label: "proj dir", value: C.bold(projectDir) },
-    { label: "work dir", value: C.bold(workDir) },
-    { label: "R.cwd",    value: `${C.bold(R.cwd())} ${C.gray(`PWD=${R.env.PWD ?? ""}`)}` },
+    { label: "host cwd",   value: C.bold(hostStartDir) },
+    { label: "proj dir",   value: C.bold(projectDir) },
+    { label: "work dir",   value: C.bold(workDir) },
+    { label: "R.cwd",      value: `${C.bold(R.cwd())}` },
+    { label: "R.env.PWD",  value: `${C.bold(R.env.PWD as string)}` },
   ]);
 
   const recipeName = (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
