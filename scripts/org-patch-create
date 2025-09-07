@@ -6,6 +6,7 @@
 #   review : /work is a staged copy; .git is on /project (RO)
 
 set -Eeuo pipefail
+set -v
 
 ROOT="/work"
 mkdir -p "$ROOT/.org/runs"
