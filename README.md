@@ -1,6 +1,5 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-⚠️ This project is under active construction and highly unstable ⚠️
 
 
 # org
