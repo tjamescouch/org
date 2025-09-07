@@ -15,7 +15,7 @@ import { execFileSync, spawn } from "child_process";
 import { R } from "./runtime/runtime";
 import { ExecutionGate } from "./tools/execution-gate";
 import { loadConfig } from "./config/config";
-import { Logger } from "./logger";
+import { C, Logger } from "./logger";
 import RandomScheduler from "./scheduler/random-scheduler";
 import type { IScheduler, SchedulerLike } from "./scheduler/scheduler";
 import { LlmAgent } from "./agents/llm-agent";
@@ -27,6 +27,7 @@ import { TtyController } from "./input/tty-controller";
 import Passthrough from "./input/passthrough";
 import { createFeedbackController } from "./ui/feedback";
 import { installHotkeys } from "./runtime/hotkeys";
+import { printInitCard } from "./ui/pretty";
 
 let paused = false;
 export const setOutputPaused = (v: boolean) => {
@@ -56,7 +57,7 @@ export function installTtyGuard(): void {
 }
 
 installTtyGuard();
-Logger.info("Installing hotkeys 🔥");
+Logger.info("[org] Installing hotkeys 🔥");
 const uninstallHotkeys = installHotkeys({
   stdin: R.stdin as any,
   onEsc: async () => { await R.ttyController?.unwind(); /* finalizer handles review+exit */ },
@@ -268,7 +269,10 @@ async function main() {
   enableDebugIfRequested(args);
   computeMode({ allowTools: getRecipe(null)?.allowTools });
 
-  Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
+  Logger.info(
+    `${C.gray("Press ")}${C.bold("Esc")} ${C.gray("to gracefully exit (saves sandbox patches).")} ` +
+    `${C.bold("Ctrl+C")} ${C.gray("for immediate exit.")}`
+  );
 
   // Host starting directory (prefer an explicit host hint if provided).
   const hostStartDir =
@@ -280,11 +284,13 @@ async function main() {
   const projectDir = assertIsRepository('/project');
   const workDir = resolvePath('/work');
 
-  // Helpful banner (diagnostics)
-  Logger.info(`[org] host cwd = ${hostStartDir}`);
-  Logger.info(`[org] proj dir = ${projectDir}`);
-  Logger.info(`[org] work dir = ${workDir}`);
-  Logger.info(`[org] R.cwd    = ${R.cwd()} PWD=${R.env.PWD ?? ""}`);
+  // Pretty, TTY-aware banner (falls back to simple lines if not a TTY)
+  printInitCard("org", [
+    { label: "host cwd", value: C.bold(hostStartDir) },
+    { label: "proj dir", value: C.bold(projectDir) },
+    { label: "work dir", value: C.bold(workDir) },
+    { label: "R.cwd",    value: `${C.bold(R.cwd())} ${C.gray(`PWD=${R.env.PWD ?? ""}`)}` },
+  ]);
 
   const recipeName = (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
   const recipe = getRecipe(recipeName || null);
