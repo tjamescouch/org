@@ -3,6 +3,7 @@
 // needs @types/node or bun types if you don't want them.
 
 import { TtyController } from "../input/tty-controller";
+import { Logger } from "../logger";
 
 type Env = Record<string, string | undefined>;
 
@@ -114,7 +115,7 @@ function makeRuntime(): Runtime {
     }
   };
 
-  console.log(env);
+  Logger.debug(env);
 
   return {
     name,
