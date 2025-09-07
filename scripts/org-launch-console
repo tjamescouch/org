@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
-trap '/usr/local/bin/org-patch-create || true' EXIT
+/application/scripts/org-launch-console.logic.sh "$@"
+rc=$?
 
-exec /application/scripts/org-launch-console.logic.sh "$@"
+# After app exits, write a patch (best-effort)
+if command -v /usr/local/bin/org-patch-create >/dev/null 2>&1; then
+  /usr/local/bin/org-patch-create || true
+fi
+
+exit "$rc"

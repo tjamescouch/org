@@ -1,133 +1,65 @@
 #!/usr/bin/env bash
-# CWD-agnostic org launcher.
-# - Agents work in /work (host path configurable via ORG_WORK_DIR).
-# - App code mounts at /application.
-# - --review <yes|no> and ORG_REVIEW_MODE control live vs review-gated mode.
+# Create a patch for this session.
+# Writes to: /work/.org/runs/<timestamp-$$>/session.patch
+# Backends:
+#   live   : /work is a real repo     → git -C /work diff --binary HEAD …
+#   review : repo metadata on /project (RO), worktree at /work
+#            → temporary index in /work/.org/tmp/, include new/deleted files.
 
 set -Eeuo pipefail
 
-# ---------- resolve real path to this script (portable) ----------
-resolve_realpath() {
-  if command -v readlink >/dev/null 2>&1; then
-    readlink -f "$1" 2>/dev/null || python3 - "$1" <<'PY'
-import os, sys; print(os.path.realpath(sys.argv[1]))
-PY
-  else
-    python3 - "$1" <<'PY'
-import os, sys; print(os.path.realpath(sys.argv[1]))
-PY
-  fi
-}
+ROOT="/work"
+RUNS_DIR="$ROOT/.org/runs"
+TMP_DIR="$ROOT/.org/tmp"
+mkdir -p "$RUNS_DIR" "$TMP_DIR"
 
-SCRIPT_PATH="$(resolve_realpath "$0")"
-REPO_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+id="$(date -u +%Y%m%d%H%M%S)-$$"
+run_dir="$RUNS_DIR/$id"
+patch="$run_dir/session.patch"
+mkdir -p "$run_dir"
 
-# ---------- engine/image/file ----------
-ENGINE="${ORG_ENGINE:-podman}"                # set ORG_ENGINE=docker if preferred
-IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
-FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
+mode="$(printf '%s' "${ORG_REVIEW_MODE:-live}" | tr '[:upper:]' '[:lower:]')"
 
-# ---------- ensure image exists (build if missing) ----------
-if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "[org] building image with $ENGINE (this can take a while)..."
-  "$ENGINE" build -t "$IMAGE" -f "$FILE" "$REPO_DIR"
-  echo "[org] image built: $IMAGE"
-fi
+echo "[org-patch-create] mode=${mode}"
 
-# ---------- parse CLI (NEW: --review <yes|no>) ----------
-REVIEW_MODE="${ORG_REVIEW_MODE:-review}"      # keep your current default
-ARGS=()
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --review)   shift; val="${1:-}"; [[ -z "$val" ]] && { echo "org: --review requires a value (yes|no)" >&2; exit 2; } ;;
-    --review=*) val="${1#*=}" ;;
-    --) ARGS+=("$@"); break;;
-    *)  ARGS+=("$1"); shift; continue;;
-  esac
-  lc="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')"
-  case "$lc" in
-    yes|y|true|on|review|0)      REVIEW_MODE="review" ;;   # gated
-    no|n|false|off|live|apply|1) REVIEW_MODE="live"   ;;   # write-through
-    *) echo "org: invalid --review value: $val (use yes|no|1|0|live|review)" >&2; exit 2 ;;
-  esac
-  shift
-done
+# Silence "unsafe repository" warnings (best-effort)
+git config --global --add safe.directory /project >/dev/null 2>&1 || true
+git config --global --add safe.directory /work    >/dev/null 2>&1 || true
 
-# ---------- choose /work host path (ORG_WORK_DIR overrides) ----------
-mode="$(printf '%s' "${REVIEW_MODE:-live}" | tr '[:upper:]' '[:lower:]')"
-if [[ -n "${ORG_WORK_DIR:-}" ]]; then
-  WORK_SCRATCH="$ORG_WORK_DIR"
-elif [[ "$mode" == "review" ]]; then
-  WORK_SCRATCH="$PWD/.org/work"
+if [[ "$mode" = review ]]; then
+  # Validate /project repo (read-only)
+  git -C /project rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || { echo "org-patch-create: /project is not a git repo" >&2; : > "$patch"; exit 0; }
+
+  # Wire git to use project metadata (RO) + staged copy at /work
+  export GIT_DIR=/project/.git
+  export GIT_WORK_TREE=/work
+
+  # Use a throwaway index so we never touch /project/.git
+  export GIT_INDEX_FILE="$TMP_DIR/index.$$"
+  trap 'rm -f "$GIT_INDEX_FILE" 2>/dev/null || true' EXIT
+
+  # Reset temp index to HEAD (no checkout)
+  : > "$GIT_INDEX_FILE"
+  git read-tree -m HEAD
+
+  # Stage all changes from /work into the temp index, excluding runtime state
+  git add -A -- . ':(exclude).org/**'
+
+  # Compare temp index vs HEAD; write a binary-safe patch
+  git -c color.ui=false --no-pager \
+    diff-index --cached --binary HEAD -- . ':(exclude).org/**' > "$patch" || true
+
 else
-  WORK_SCRATCH="$PWD"
-fi
-mkdir -p "$WORK_SCRATCH"
+  # LIVE: /work must be a repo
+  git -C /work rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || { echo "org-patch-create: /work is not a git repo" >&2; : > "$patch"; exit 0; }
 
-echo "[org] review      = $REVIEW_MODE"
-echo "[org] engine      = $ENGINE"
-echo "[org] image       = $IMAGE"
-echo "[org] file        = $FILE"
-echo "[org] repo        = $REPO_DIR"
-echo "[org] work        = $WORK_SCRATCH -> /work (rw)"
-echo "[org] project(ro) = $PWD          -> /project (ro)"
-echo "[org] app         = $REPO_DIR     -> /application"
-
-# ---------- env forward (allow-list) ----------
-env_allow() {
-  local k v
-  while IFS='=' read -r k v; do
-    case "$k" in
-      ORG_*|OPENAI_*|ANTHROPIC_*|OLLAMA_*|LMSTUDIO_*|AZURE_*|GOOGLE_*|GROQ_*|GEMINI_*|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy|LANG|LC_*|TZ|TERM|FORCE_COLOR|NO_COLOR)
-        ENV_ARR+=("-e" "${k}=${v}")
-        ;;
-    esac
-  done < <(env)
-}
-
-ENV_ARR=(
-  "-e" "ORG_PROJECT_DIR=/work"
-  "-e" "ORG_APP_ENTRY=/application/src/app.ts"   # image wrappers honor this
-  "-e" "ORG_REVIEW_MODE=${REVIEW_MODE}"
-  "-e" "TERM=${TERM:-xterm-256color}"
-  "-e" "ORG_SANDBOX_BACKEND=none"
-)
-env_allow
-
-# ---------- run inside the container ----------
-# In review: stage /project -> /work (keep /work/.org; do not copy .git). Also create a .git pointer
-# so /work is recognized as a repo (gitdir: /project/.git). Then exec the in-image 'org'.
-"$ENGINE" run --rm -it \
-  -v "$WORK_SCRATCH:/work:Z" \
-  -v "$PWD:/project:Z,ro" \
-  -v "$REPO_DIR:/application:Z" \
-  -w /work \
-  "${ENV_ARR[@]}" \
-  "$IMAGE" bash -lc '
-    set -Eeuo pipefail
-    mkdir -p /work/.org
-    if [ "${ORG_REVIEW_MODE:-live}" = review ]; then
-      rsync -a --delete --exclude ".git" --exclude ".org" /project/ /work/
-      rm -rf /work/.git 2>/dev/null || true
-      printf "gitdir: /project/.git\n" > /work/.git
-      git config --global --add safe.directory /project >/dev/null 2>&1 || true
-      git config --global --add safe.directory /work    >/dev/null 2>&1 || true
-    fi
-    exec org "$@"
-  ' org "${ARGS[@]}"
-status=$?
-
-# ---------- Host-side patch review (review mode only) ----------
-if [[ "$mode" == "review" ]]; then
-  PATCH_ROOT="$WORK_SCRATCH/.org"   # mirror of /work/.org
-  PATCH_HOST_PATH="$(ls -t "$PATCH_ROOT"/runs/*/session.patch 2>/dev/null | head -n1 || true)"
-  if [[ -n "$PATCH_HOST_PATH" && -f "$PATCH_HOST_PATH" ]]; then
-    "$REPO_DIR/scripts/host-patch-review.sh" \
-      --patch   "$PATCH_HOST_PATH" \
-      --project "$PWD" || true
-  else
-    echo "[org] (host-review) no patch found under $PATCH_ROOT"
-  fi
+  git -C /work -c color.ui=false --no-pager \
+    diff --binary HEAD -- . ':(exclude).org/**' > "$patch" || true
 fi
 
-exit "$status"
+# Ensure the file exists even if no hunks (deterministic)
+: > "$patch"
+
+echo "[org-patch-create] wrote: $patch"
