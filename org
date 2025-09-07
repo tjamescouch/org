@@ -116,6 +116,7 @@ ENV_ARR=(
   "-e" "ORG_SANDBOX_BACKEND=none"
 )
 env_allow
+
 # ---------- run inside the container (foreground) ----------
 set +e
 "$ENGINE" run --rm -it \
@@ -150,7 +151,9 @@ if [[ "$mode" == "review" ]]; then
   PATCH_ROOT="$WORK_SCRATCH/.org"   # mirror of /work/.org
   PATCH_HOST_PATH="$(ls -t "$PATCH_ROOT"/runs/*/session.patch 2>/dev/null | head -n1 || true)"
   if [[ -n "$PATCH_HOST_PATH" && -f "$PATCH_HOST_PATH" ]]; then
-    if [[ "$got_int" == "1" ]]; then
+    if [[ ! -s "$PATCH_HOST_PATH" ]]; then
+      echo "[org] (host-review) patch is empty; skipping review."
+    elif [[ "$got_int" == "1" ]]; then
       echo "[org] (host-review) patch written: $PATCH_HOST_PATH"
       echo "[org] (host-review) Ctrl+C received; skipping pager."
     else
