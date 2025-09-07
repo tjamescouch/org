@@ -22,18 +22,19 @@ mode="console"   # default
 rest=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --ui)       shift; [[ "${1-}" != "" ]] || { echo "ERROR: --ui requires tmux|console"; usage; exit 2; }; mode="$1"; shift ;;
+    --ui)       shift; [[ "${1-}" != "" ]] || { echo "ERROR: --ui requires tmux|console|rich"; usage; exit 2; }; mode="$1"; shift ;;
     --ui=*)     mode="${1#--ui=}"; shift ;;
-    tmux|console)
+    tmux|console|rich)
       echo "ERROR: positional '$1' not supported; use --ui $1" >&2; usage; exit 2 ;;
     -h|--help|help) usage; exit 0 ;;
     *) rest+=("$1"); shift ;;
   esac
 done
 
-[[ "${mode}" == "tmux" || "${mode}" == "console" ]] || { echo "ERROR: --ui must be tmux|console"; exit 2; }
+[[ "${mode}" == "tmux" || "${mode}" == "console" || "${mode}" == "rich"  ]] || { echo "ERROR: --ui must be tmux|console|rich"; exit 2; }
 
 case "${mode}" in
   tmux)    exec /usr/local/libexec/org/launch-tmux    "${rest[@]}" ;;
+  rich)    exec /usr/local/libexec/org/launch-rich    "${rest[@]}" ;;
   console) exec /usr/local/libexec/org/launch-console "${rest[@]}" ;;
 esac

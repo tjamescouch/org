@@ -32,16 +32,16 @@ print_cmd() {
 }
 
 {
-  echo "===== org console start: $(date -Is) ====="
+  echo "===== org rich console start: $(date -Is) ====="
   printf "cmd: "
-  print_cmd "${BUN_BIN}" "${APP_ENTRY}" --ui console "${APP_ARGS[@]}"
+  print_cmd "${BUN_BIN}" "${APP_ENTRY}" --ui rich "${APP_ARGS[@]}"
 } | tee -a "${LOG_FILE}"
 
 set +e
 # Run the app, tee output, preserve the app's exit code
-"${BUN_BIN}" "${APP_ENTRY}" --ui console "${APP_ARGS[@]}" 2>&1 | tee -a "${LOG_FILE}"
+"${BUN_BIN}" "${APP_ENTRY}" --ui rich "${APP_ARGS[@]}" 2>&1 | tee -a "${LOG_FILE}"
 code=${PIPESTATUS[0]}
 set -e
 
-echo "===== org console exit: ${code} @ $(date -Is) =====" | tee -a "${LOG_FILE}"
+echo "===== org rich console exit: ${code} @ $(date -Is) =====" | tee -a "${LOG_FILE}"
 exit "${code}"

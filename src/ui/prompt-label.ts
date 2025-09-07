@@ -1,14 +1,11 @@
-import { R } from "../runtime/runtime";
-
 // src/ui/prompt-label.ts
-interface PromptLabelOptions {
-  username?: string;   // default 'user'
-  separator?: string;  // default ': '
-}
+import { R } from "../runtime/runtime";
+import { C } from "../logger";
 
-/** Resolve the username from env or default, and format as "<username>: ". */
-export function formatPromptLabel(opts?: PromptLabelOptions): string {
-  const username = (opts?.username ?? R.env.ORG_USERNAME ?? "user").trim() || "user";
-  const separator = opts?.separator ?? ": ";
-  return `${username}${separator}`;
+export function formatPromptLabel(username?: string, separator = ": "): string {
+  const name = (username ?? R.env.ORG_USERNAME ?? "user").trim() || "user";
+  const plain = `${name}${separator}`;
+  const pretty = R.env.ORG_PRETTY_PROMPT === "1";
+  const tty = !!(R.stdout as any)?.isTTY;
+  return pretty && tty ? C.bold(C.green(name)) + C.gray(separator) : plain;
 }

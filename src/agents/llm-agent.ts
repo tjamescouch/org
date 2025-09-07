@@ -176,7 +176,7 @@ export class LlmAgent extends Agent {
 
     // --- Streaming filter: RAW when DEBUG=1/true/yes; FILTERED otherwise ---
     const dbg = (R.env.DEBUG ?? "").trim().toLowerCase();
-    const dbg2 = (process.env.LOG_LEVEL || '').toUpperCase() === 'DEBUG';
+    const dbg2 = (R.env.LOG_LEVEL || '').toUpperCase() === 'DEBUG';
     let debugStreaming = (dbg === "1") || (dbg === "true") || (dbg === "yes");
     if (dbg2) {
       debugStreaming = true;
@@ -186,7 +186,8 @@ export class LlmAgent extends Agent {
       model: this.model,
       tools: this.tools,
       onReasoningToken: t => {
-        if (R.env.ORG_HIDE_COT) {
+        const hideCot = !R.env.ORG_HIDE_COT && (String(R.env.DEBUG || "").trim() !== "1");
+        if (hideCot) {
           Logger.streamInfo(C.cyan('.'));
           return;
         }

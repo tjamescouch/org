@@ -12,10 +12,11 @@ import * as fsp from "fs/promises";
 import * as path from "path";
 import { execFileSync, spawn } from "child_process";
 
+
 import { R } from "./runtime/runtime";
 import { ExecutionGate } from "./tools/execution-gate";
 import { loadConfig } from "./config/config";
-import { Logger } from "./logger";
+import { C, Logger } from "./logger";
 import RandomScheduler from "./scheduler/random-scheduler";
 import type { IScheduler, SchedulerLike } from "./scheduler/scheduler";
 import { LlmAgent } from "./agents/llm-agent";
@@ -27,6 +28,7 @@ import { TtyController } from "./input/tty-controller";
 import Passthrough from "./input/passthrough";
 import { createFeedbackController } from "./ui/feedback";
 import { installHotkeys } from "./runtime/hotkeys";
+import { printInitCard } from "./ui/pretty";
 
 let paused = false;
 export const setOutputPaused = (v: boolean) => {
@@ -56,13 +58,13 @@ export function installTtyGuard(): void {
 }
 
 installTtyGuard();
-Logger.info("Installing hotkeys 🔥");
+Logger.info("[org] Installing hotkeys 🔥");
 const uninstallHotkeys = installHotkeys({
   stdin: R.stdin as any,
   onEsc: async () => { await R.ttyController?.unwind(); /* finalizer handles review+exit */ },
   onCtrlC: () => { Logger.error("SIGINT"); R.exit(130); },
-  feedback: process.stderr,
-  debug: !!process.env.DEBUG,
+  feedback: R.stderr,
+  debug: !!R.env.DEBUG,
 });
 
 /** Scoped helpers that return promises (safe to `await`). */
@@ -77,27 +79,6 @@ export async function withRawTTY<T>(f: () => Promise<T> | T): Promise<T> {
   return ctl.withRawTTY(f);
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
-// Args & config
-// ───────────────────────────────────────────────────────────────────────────────
-
-function parseArgs(argv: string[]) {
-  const out: Record<string, string | boolean> = {};
-  let key: string | null = null;
-  for (const a of argv) {
-    if (a.startsWith("--")) {
-      const [k, v] = a.slice(2).split("=", 2);
-      if (typeof v === "string") out[k] = v;
-      else { key = k; out[k] = true; }
-    } else if (key) {
-      out[key] = a; key = null;
-    } else {
-      if (!("prompt" in out)) out["prompt"] = a;
-      else out[`arg${Object.keys(out).length}`] = a;
-    }
-  }
-  return out;
-}
 
 function assertIsRepository(p: string): string {
   let d = path.resolve(p);
@@ -248,8 +229,8 @@ async function finalizeOnce(scheduler: SchedulerLike | null, workDir: string, re
 
 async function main() {
   const cfg = loadConfig();
-  const argv = ((globalThis as unknown as { Bun?: unknown }).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
-  const args = parseArgs(argv);
+  const argv = R.argv.slice(2);
+  const args = R.args;
 
   // tmux handoff
   if (args["ui"] === "tmux" && R.env.ORG_TMUX !== "1") {
@@ -268,7 +249,10 @@ async function main() {
   enableDebugIfRequested(args);
   computeMode({ allowTools: getRecipe(null)?.allowTools });
 
-  Logger.info("Press Esc to gracefully exit (saves sandbox patches). Use Ctrl+C for immediate exit.");
+  Logger.info(
+    `${C.gray("Press ")}${C.bold("Esc")} ${C.gray("to gracefully exit (saves sandbox patches).")} ` +
+    `${C.bold("Ctrl+C")} ${C.gray("for immediate exit.")}`
+  );
 
   // Host starting directory (prefer an explicit host hint if provided).
   const hostStartDir =
@@ -280,11 +264,14 @@ async function main() {
   const projectDir = assertIsRepository('/project');
   const workDir = resolvePath('/work');
 
-  // Helpful banner (diagnostics)
-  Logger.info(`[org] host cwd = ${hostStartDir}`);
-  Logger.info(`[org] proj dir = ${projectDir}`);
-  Logger.info(`[org] work dir = ${workDir}`);
-  Logger.info(`[org] R.cwd    = ${R.cwd()} PWD=${R.env.PWD ?? ""}`);
+  // Pretty, TTY-aware banner (falls back to simple lines if not a TTY)
+  printInitCard("org", [
+    { label: "host cwd",   value: C.bold(hostStartDir) },
+    { label: "proj dir",   value: C.bold(projectDir) },
+    { label: "work dir",   value: C.bold(workDir) },
+    { label: "R.cwd",      value: `${C.bold(R.cwd())}` },
+    { label: "R.env.PWD",  value: `${C.bold(R.env.PWD as string)}` },
+  ]);
 
   const recipeName = (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
   const recipe = getRecipe(recipeName || null);
