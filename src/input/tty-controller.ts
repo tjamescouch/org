@@ -243,7 +243,6 @@ export class TtyController {
 
         for (const ch of s) {
           const code = ch.charCodeAt(0);
-          Logger.error('code', code);
           if (code === 0x1b) {
             // ESC during prompt -> cancel prompt, restore RAW, finalize+exit
             this.tty.off("data", handler);
