@@ -41,5 +41,5 @@ fi
 git_diff diff --binary HEAD -- . ":(exclude).org/**" > "$patch" || true
 
 # Ensure the file exists even if empty
-: > "$patch"
+test -s "$patch" || : > "$patch"
 echo "[org-patch-create] wrote: $patch"
