@@ -2,12 +2,4 @@
 
 trap '/usr/local/bin/org-patch-create || true' EXIT
 
-/application/scripts/org-launch-console.logic.sh "$@"
-rc=$?
-
-# After the app exits, write a patch (best-effort; never block exit)
-if command -v /usr/local/bin/org-patch-create >/dev/null 2>&1; then
-  /usr/local/bin/org-patch-create || true
-fi
-
-exit "$rc"
+exec /application/scripts/org-launch-console.logic.sh "$@"
