@@ -57,9 +57,24 @@ read -r -p "Apply this patch to '$PROJECT'? [y/N] " ans
 case "$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')" in
   y|yes)
     echo "[host-review] applying..."
-    git -C "$PROJECT" apply --index --whitespace=nowarn --check "$PATCH"
-    git -C "$PROJECT" apply --index --whitespace=nowarn "$PATCH"
-    echo "[host-review] apply: OK"
+
+    # 0) Refresh index timestamps (avoid false negatives)
+    git -C "$PROJECT" update-index -q --refresh || true
+
+    # 1) Strict check against index
+    if git -C "$PROJECT" apply --index --whitespace=nowarn --check "$PATCH"; then
+      git -C "$PROJECT" apply --index --whitespace=nowarn "$PATCH"
+      echo "[host-review] apply: OK"
+    else
+      echo "[host-review] index mismatch; attempting 3-way apply..."
+      if git -C "$PROJECT" apply --index --3way --whitespace=nowarn "$PATCH"; then
+        echo "[host-review] apply (3-way): OK"
+      else
+        echo "[host-review] apply failed. Your repo has drifted:"
+        git -C "$PROJECT" --no-pager status --porcelain || true
+        exit 1
+      fi
+    fi
     ;;
   *)
     echo "[host-review] skipped (no changes applied)."
