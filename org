@@ -2,7 +2,7 @@
 # CWD-agnostic org launcher.
 # - Agents work in /work (host path configurable via ORG_WORK_DIR).
 # - App code mounts at /application.
-# - NEW: ORG_REVIEW_MODE env + --review <yes|no> CLI (live vs review-gated).
+# - --review <yes|no> and ORG_REVIEW_MODE control live vs review-gated mode.
 
 set -Eeuo pipefail
 
@@ -23,10 +23,9 @@ SCRIPT_PATH="$(resolve_realpath "$0")"
 REPO_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 
 # ---------- engine/image/file ----------
-ENGINE="${ORG_ENGINE:-podman}"   # set ORG_ENGINE=docker if you prefer
+ENGINE="${ORG_ENGINE:-podman}"                # set ORG_ENGINE=docker if preferred
 IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
 FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
-
 
 # ---------- ensure image exists (build if missing) ----------
 if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
@@ -36,39 +35,26 @@ if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
 fi
 
 # ---------- parse CLI (NEW: --review <yes|no>) ----------
-REVIEW_MODE="${ORG_REVIEW_MODE:-review}"   # default preserves current behavior
+REVIEW_MODE="${ORG_REVIEW_MODE:-review}"      # keep your current default
 ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --review)
-      shift
-      val="${1:-}"
-      [[ -z "$val" ]] && { echo "org: --review requires a value (yes|no)" >&2; exit 2; }
-      ;;
-    --review=*)
-      val="${1#*=}"
-      ;;
+    --review)   shift; val="${1:-}"; [[ -z "$val" ]] && { echo "org: --review requires a value (yes|no)" >&2; exit 2; } ;;
+    --review=*) val="${1#*=}" ;;
     --) ARGS+=("$@"); break;;
     *)  ARGS+=("$1"); shift; continue;;
   esac
-  # normalize & map
   lc="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')"
   case "$lc" in
-    # gated/review mode
-    yes|y|true|on|review|0)  REVIEW_MODE="review" ;;
-    # live/pass-through (old behavior)
-    no|n|false|off|live|apply|1) REVIEW_MODE="live" ;;
-    *)
-      echo "org: invalid --review value: $val (use yes|no|1|0|live|review)" >&2
-      exit 2
-      ;;
+    yes|y|true|on|review|0)      REVIEW_MODE="review" ;;   # gated
+    no|n|false|off|live|apply|1) REVIEW_MODE="live"   ;;   # write-through
+    *) echo "org: invalid --review value: $val (use yes|no|1|0|live|review)" >&2; exit 2 ;;
   esac
   shift
 done
 
-# REVIEW_MODE may be "live" or "review" (default live)
+# ---------- choose /work host path (ORG_WORK_DIR overrides) ----------
 mode="$(printf '%s' "${REVIEW_MODE:-live}" | tr '[:upper:]' '[:lower:]')"
-
 if [[ -n "${ORG_WORK_DIR:-}" ]]; then
   WORK_SCRATCH="$ORG_WORK_DIR"
 elif [[ "$mode" == "review" ]]; then
@@ -76,7 +62,6 @@ elif [[ "$mode" == "review" ]]; then
 else
   WORK_SCRATCH="$PWD"
 fi
-
 mkdir -p "$WORK_SCRATCH"
 
 echo "[org] review      = $REVIEW_MODE"
@@ -86,9 +71,9 @@ echo "[org] file        = $FILE"
 echo "[org] repo        = $REPO_DIR"
 echo "[org] work        = $WORK_SCRATCH -> /work (rw)"
 echo "[org] project(ro) = $PWD          -> /project (ro)"
+echo "[org] app         = $REPO_DIR     -> /application"
 
 # ---------- env forward (allow-list) ----------
-# Build an array of ["-e","KEY=VAL", ...] so we don't rely on word-splitting.
 env_allow() {
   local k v
   while IFS='=' read -r k v; do
@@ -102,15 +87,16 @@ env_allow() {
 
 ENV_ARR=(
   "-e" "ORG_PROJECT_DIR=/work"
-  "-e" "ORG_APP_ENTRY=/application/src/app.ts"
-  "-e" "ORG_REVIEW_MODE=${REVIEW_MODE}"   # NEW
+  "-e" "ORG_APP_ENTRY=/application/src/app.ts"   # image wrappers honor this
+  "-e" "ORG_REVIEW_MODE=${REVIEW_MODE}"
   "-e" "TERM=${TERM:-xterm-256color}"
   "-e" "ORG_SANDBOX_BACKEND=none"
 )
 env_allow
 
-# ---------- run bun inside the container, mounting the repo root ----------
-# shellcheck disable=SC2086
+# ---------- run inside the container ----------
+# In review: stage /project -> /work (keep /work/.org; do not copy .git). Also create a .git pointer
+# so /work is recognized as a repo (gitdir: /project/.git). Then exec the in-image 'org'.
 "$ENGINE" run --rm -it \
   -v "$WORK_SCRATCH:/work:Z" \
   -v "$PWD:/project:Z,ro" \
@@ -119,34 +105,26 @@ env_allow
   "${ENV_ARR[@]}" \
   "$IMAGE" bash -lc '
     set -Eeuo pipefail
-    # always ensure the run metadata root exists in the staging area
     mkdir -p /work/.org
-  
     if [ "${ORG_REVIEW_MODE:-live}" = review ]; then
-      # stage: copy project → work, keep /work/.org, drop .git
       rsync -a --delete --exclude ".git" --exclude ".org" /project/ /work/
+      rm -rf /work/.git 2>/dev/null || true
+      printf "gitdir: /project/.git\n" > /work/.git
+      git config --global --add safe.directory /project >/dev/null 2>&1 || true
+      git config --global --add safe.directory /work    >/dev/null 2>&1 || true
     fi
     exec org "$@"
   ' org "${ARGS[@]}"
 status=$?
 
-# ---- Host-side patch review (opt-in or review mode) ----
-if [[ "${ORG_HOST_REVIEW:-}" == "1" || "$(printf '%s' "$REVIEW_MODE" | tr '[:upper:]' '[:lower:]')" == "review" ]]; then
-  PATCH_ROOT="$WORK_SCRATCH/.org"   # <— this mirrors /work/.org inside the container
-  PATCH_HOST_PATH=""
-
-  # legacy single-file path (if present)
-  if [[ -f "$PATCH_ROOT/last-session.patch" ]]; then
-    PATCH_HOST_PATH="$PATCH_ROOT/last-session.patch"
-  else
-    # canonical: newest .org/runs/*/session.patch
-    PATCH_HOST_PATH="$(ls -t "$PATCH_ROOT"/runs/*/session.patch 2>/dev/null | head -n1 || true)"
-  fi
-
+# ---------- Host-side patch review (review mode only) ----------
+if [[ "$mode" == "review" ]]; then
+  PATCH_ROOT="$WORK_SCRATCH/.org"   # mirror of /work/.org
+  PATCH_HOST_PATH="$(ls -t "$PATCH_ROOT"/runs/*/session.patch 2>/dev/null | head -n1 || true)"
   if [[ -n "$PATCH_HOST_PATH" && -f "$PATCH_HOST_PATH" ]]; then
     "$REPO_DIR/scripts/host-patch-review.sh" \
-      --patch "$PATCH_HOST_PATH" \
-      --project "$WORK_SCRATCH" || true
+      --patch   "$PATCH_HOST_PATH" \
+      --project "$PWD" || true
   else
     echo "[org] (host-review) no patch found under $PATCH_ROOT"
   fi
