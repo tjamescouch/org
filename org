@@ -95,8 +95,9 @@ ENV_ARR=(
 env_allow
 
 # ---------- run inside the container ----------
-# In review: stage /project -> /work (keep /work/.org; do not copy .git). Also create a .git pointer
-# so /work is recognized as a repo (gitdir: /project/.git). Then exec the in-image 'org'.
+# (Surgical change) — run container in background so we can catch Ctrl+C and skip pager.
+got_int=0
+set +e
 "$ENGINE" run --rm -it \
   -v "$WORK_SCRATCH:/work:Z" \
   -v "$PWD:/project:Z,ro" \
@@ -114,17 +115,28 @@ env_allow
       git config --global --add safe.directory /work    >/dev/null 2>&1 || true
     fi
     exec org "$@"
-  ' org "${ARGS[@]}"
-status=$?
+  ' org "${ARGS[@]}" &
+child=$!
+
+# Catch Ctrl+C: forward to container, remember INT so we skip pager later.
+trap 'got_int=1; kill -INT "$child" 2>/dev/null || true' INT
+wait "$child"; status=$?
+trap - INT
+set -e
 
 # ---------- Host-side patch review (review mode only) ----------
 if [[ "$mode" == "review" ]]; then
   PATCH_ROOT="$WORK_SCRATCH/.org"   # mirror of /work/.org
   PATCH_HOST_PATH="$(ls -t "$PATCH_ROOT"/runs/*/session.patch 2>/dev/null | head -n1 || true)"
   if [[ -n "$PATCH_HOST_PATH" && -f "$PATCH_HOST_PATH" ]]; then
-    "$REPO_DIR/scripts/host-patch-review.sh" \
-      --patch   "$PATCH_HOST_PATH" \
-      --project "$PWD" || true
+    if [[ "$got_int" == "1" ]]; then
+      echo "[org] (host-review) patch written: $PATCH_HOST_PATH"
+      echo "[org] (host-review) Ctrl+C received; skipping pager."
+    else
+      "$REPO_DIR/scripts/host-patch-review.sh" \
+        --patch   "$PATCH_HOST_PATH" \
+        --project "$PWD" || true
+    fi
   else
     echo "[org] (host-review) no patch found under $PATCH_ROOT"
   fi
