@@ -31,9 +31,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ "${mode}" == "tmux" || "${mode}" == "console" ]] || { echo "ERROR: --ui must be tmux|console"; exit 2; }
+[[ "${mode}" == "tmux" || "${mode}" == "console" || "${mode}" == "rich"  ]] || { echo "ERROR: --ui must be tmux|console|rich"; exit 2; }
 
 case "${mode}" in
   tmux)    exec /usr/local/libexec/org/launch-tmux    "${rest[@]}" ;;
+  rich)    exec /usr/local/libexec/org/launch-console "${rest[@]}" ;;
   console) exec /usr/local/libexec/org/launch-console "${rest[@]}" ;;
 esac
