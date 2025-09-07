@@ -30,14 +30,16 @@ The vision is simple: **an agent CLI that feels like a real teammate — fast, o
 ## Quick Start
 
 ```bash
-# 1) From a working repo with a clean git tree:
-git status
+# Install
+brew tap tjamescouch/org
+brew install org
+brew install --cask virtualbox     # VM provider (install once, approve kext if macOS asks)
+orgctl vm init                     # creates a minimal Ubuntu VM and sets up basics
+orgctl app install --from host     # sync your current repo into the VM & run install.sh
 
-# 2) Start an agent (uses your local LLM by default)
-org --agents "alice:lmstudio" --max-tools 20
-
-# 3) Ask for something small
-@alice write "hello world" to a file named hello/hello-world.txt
+# Test
+org
+@@alice write "hello world" to a file named hello/hello-world.txt
 ```
 
 When the tool wants to touch the filesystem, it first produces a **patch**. You can read, approve, or reject it. After approval, the agent continues.
