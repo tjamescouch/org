@@ -79,27 +79,6 @@ export async function withRawTTY<T>(f: () => Promise<T> | T): Promise<T> {
   return ctl.withRawTTY(f);
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
-// Args & config
-// ───────────────────────────────────────────────────────────────────────────────
-
-function parseArgs(argv: string[]) {
-  const out: Record<string, string | boolean> = {};
-  let key: string | null = null;
-  for (const a of argv) {
-    if (a.startsWith("--")) {
-      const [k, v] = a.slice(2).split("=", 2);
-      if (typeof v === "string") out[k] = v;
-      else { key = k; out[k] = true; }
-    } else if (key) {
-      out[key] = a; key = null;
-    } else {
-      if (!("prompt" in out)) out["prompt"] = a;
-      else out[`arg${Object.keys(out).length}`] = a;
-    }
-  }
-  return out;
-}
 
 function assertIsRepository(p: string): string {
   let d = path.resolve(p);
@@ -251,7 +230,7 @@ async function finalizeOnce(scheduler: SchedulerLike | null, workDir: string, re
 async function main() {
   const cfg = loadConfig();
   const argv = R.argv.slice(2);
-  const args = parseArgs(argv);
+  const args = R.args;
 
   // tmux handoff
   if (args["ui"] === "tmux" && R.env.ORG_TMUX !== "1") {

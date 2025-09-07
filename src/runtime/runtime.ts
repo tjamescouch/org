@@ -11,7 +11,11 @@ type RuntimeName = "bun" | "node" | "unknown";
 
 
 interface Runtime {
-  ttyController: TtyController | undefined;
+  args:  Record<string, string | boolean>,
+
+  ttyController?: TtyController | undefined;
+
+  isPretty(): boolean;
 
   /** Which runtime we detected */
   name: RuntimeName;
@@ -38,7 +42,7 @@ interface Runtime {
 
   /** Minimal process-like 'on' for events you already use */
   on(event: "beforeExit" | "uncaughtException" | "unhandledRejection" | "SIGINT" | "SIGTERM",
-     handler: (...args: any[]) => void): void;
+    handler: (...args: any[]) => void): void;
 
   /** Remove listener; no-op if unsupported */
   off(event: string, handler: (...args: any[]) => void): void;
@@ -52,16 +56,16 @@ function makeRuntime(): Runtime {
   // Prefer Bun argv if present; otherwise Node's process.argv.
   const argvFull: string[] =
     hasBun ? (g.Bun.argv as string[]) :
-    hasProc ? (g.process.argv as string[]) :
-    [];
+      hasProc ? (g.process.argv as string[]) :
+        [];
 
   // We expose argv without the runtime + script bits (i.e., same slice you use)
   const argv = argvFull.slice(2);
 
   const env: Env =
     hasBun ? (g.Bun.env as Env) :
-    hasProc ? (g.process.env as Env) :
-    {};
+      hasProc ? (g.process.env as Env) :
+        {};
 
   const isTTY =
     (hasProc && g.process.stdout && !!g.process.stdout.isTTY) ||
@@ -70,8 +74,8 @@ function makeRuntime(): Runtime {
 
   const name: RuntimeName =
     hasBun ? "bun" :
-    hasProc ? "node" :
-    "unknown";
+      hasProc ? "node" :
+        "unknown";
 
   // Functions we call defensively
   const cwd = () => {
@@ -118,9 +122,13 @@ function makeRuntime(): Runtime {
   Logger.debug(env);
 
   return {
+    args: parseArgs(argv),
     name,
     argv,
     env,
+    isPretty(): boolean {
+      return this.env.ORG_UI_MODE === "tmux" || this.env.ORG_UI_MODE === "rich";
+    },
     cwd,
     exit,
     isTTY,
@@ -136,4 +144,26 @@ function makeRuntime(): Runtime {
 export const R: Runtime = makeRuntime();
 
 // Convenience re-exports if you like short imports:
-export const {      } = R;
+export const { } = R;
+
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Args & config
+// ───────────────────────────────────────────────────────────────────────────────
+export function parseArgs(argv: string[]) {
+  const out: Record<string, string | boolean> = {};
+  let key: string | null = null;
+  for (const a of argv) {
+    if (a.startsWith("--")) {
+      const [k, v] = a.slice(2).split("=", 2);
+      if (typeof v === "string") out[k] = v;
+      else { key = k; out[k] = true; }
+    } else if (key) {
+      out[key] = a; key = null;
+    } else {
+      if (!("prompt" in out)) out["prompt"] = a;
+      else out[`arg${Object.keys(out).length}`] = a;
+    }
+  }
+  return out;
+}
