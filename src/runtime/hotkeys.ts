@@ -46,13 +46,6 @@ export function installHotkeys(opts: HotkeysOpts): () => void {
 
     // Bare ESC (not Alt+ or CSI)
     if (key.name === "escape" || key.sequence === "\u001b") {
-      try {
-        // immediate feedback on stderr so it never competes with stdout tokens
-        out.write(
-          `\n⏳ ESC pressed2 — finishing current step, then opening patch review… (Ctrl+C to abort immediately)\n`
-        );
-      } catch { /* ignore */ }
-
       log("ESC");
       try { await Promise.resolve(opts.onEsc()); } catch {}
       return;
