@@ -49,7 +49,7 @@ export function installHotkeys(opts: HotkeysOpts): () => void {
       try {
         // immediate feedback on stderr so it never competes with stdout tokens
         out.write(
-          `\n⏳ ESC pressed — finishing current step, then opening patch review… (Ctrl+C to abort immediately)\n`
+          `\n⏳ ESC pressed2 — finishing current step, then opening patch review… (Ctrl+C to abort immediately)\n`
         );
       } catch { /* ignore */ }
 
