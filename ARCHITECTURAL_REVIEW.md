@@ -12,7 +12,7 @@ The repository implements a **CLI tool** (`org`) that lets AI agents act on a co
 | `src/runtime/` | `runtime.ts` | Detects runtime (Bun/Node), normalises process APIs, provides signal handling helpers (`R`). |
 | `src/agents/` | `agent.ts`, `llm-agent.ts`, `mock-model.ts`, `system-prompt.ts` | Base abstract **Agent** class, concrete LLM‑backed agent, mock for tests. Handles guard‑rail integration and message formatting. |
 | `src/drivers/` | `openai-lmstudio.ts`, `streaming-openai-lmstudio.ts` | Implements streaming OpenAI / LMStudio drivers used by `LlmAgent`. |
-| `src/tools/` | `sh.ts`, `sandboxed-sh.ts`, `execution-gate.ts` | Definition of **tool** interface, safe execution wrapper (`ExecutionGate`) that limits tool usage and enforces sandbox policies. |
+| `src/tools/` | `sh.ts`, `execution-gate.ts` | Definition of **tool** interface, safe execution wrapper (`ExecutionGate`) that limits tool usage and enforces sandbox policies. |
 | `src/sandbox/` | `session.ts`, `policy.ts`, backends (`local.ts`, `podman.ts`, `mock.ts`) | Isolates command execution; supports local and Podman containers, applies glob‑based file‑system restrictions. |
 | `src/guardrails/` | `advanced-guardrail.ts`, `guardrail.ts` | Provides per‑agent safety checks (loop detection, tool‑use limits, content validation). |
 | `src/scheduler/` | `random-scheduler.ts`, `round-robin-scheduler.ts`, `review-manager.ts` | Decouples **task routing** from agents; decides which agent processes a message, handles idle fallback via guard rails. |

@@ -1,3 +1,13 @@
 #!/usr/bin/env bash
 
-exec /application/scripts/org-launch-console.logic.sh "$@"
+# set -v
+
+/application/scripts/org-launch-console.logic.sh "$@"
+rc=$?
+
+# After app exits, write a patch (best-effort)
+if command -v /usr/local/bin/org-patch-create >/dev/null 2>&1; then
+  /usr/local/bin/org-patch-create || true
+fi
+
+exit "$rc"

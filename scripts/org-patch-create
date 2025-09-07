@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Create a patch for the current session.
+# Writes to: /work/.org/runs/<id>/session.patch
+# Supports both modes:
+#   live   : /work is the actual project repo
+#   review : /work is a staged copy; .git is on /project (RO)
+
+set -Eeuo pipefail
+# set -v
+
+ROOT="/work"
+mkdir -p "$ROOT/.org/runs"
+
+id="$(date -u +%Y%m%d%H%M%S)-$$"
+run_dir="$ROOT/.org/runs/$id"
+mkdir -p "$run_dir"
+patch="$run_dir/session.patch"
+
+# helper: run git with provided args, honoring review vs live
+git_diff() {
+  if [ "${ORG_REVIEW_MODE:-live}" = review ]; then
+    # Use project repo metadata read-only, and the staged /work as work tree.
+    GIT_DIR=/project/.git GIT_WORK_TREE=/work \
+      git -c color.ui=false --no-pager "$@"
+  else
+    git -C /work -c color.ui=false --no-pager "$@"
+  fi
+}
+
+# Verify we have a repo to diff against
+if [ "${ORG_REVIEW_MODE:-live}" = review ]; then
+  git -C /project rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || { echo "org-patch-create: /project is not a git repo" >&2; exit 2; }
+else
+  git -C /work rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || { echo "org-patch-create: /work is not a git repo" >&2; exit 2; }
+fi
+
+# Produce a binary-safe diff of the working tree against HEAD, excluding runtime state.
+# (We do NOT stage files here; in review mode we diff the staged copy in /work.)
+git_diff diff --binary HEAD -- . ":(exclude).org/**" > "$patch" || true
+
+# Ensure the file exists even if empty
+test -s "$patch" || : > "$patch"
+if [[ -n "${ORG_VERBOSE:-}" ]]; then
+  echo "[org-patch-create] wrote: $patch"
+fi

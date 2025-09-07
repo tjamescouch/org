@@ -26,6 +26,9 @@ LABEL org.wrapper_version=$ORG_BUILD_STAMP
 COPY scripts/ /tmp/org-scripts/
 RUN bash /tmp/org-scripts/install-org-binaries.sh
 
+COPY scripts/org-patch-create /usr/local/bin/org-patch-create
+RUN chmod 0755 /usr/local/bin/org-patch-create
+
 # Safe default TERM inside the container
 ENV TERM=xterm-256color
 
@@ -67,6 +70,10 @@ RUN set -eux; \
 ENV ORG_BUN_BIN=/usr/local/bin/bun
 ENV ORG_TMUX_BIN=/usr/bin/tmux
 ENV ORG_DEFAULT_CWD=/work
+
+# Ensure /work exists as a mountpoint for the host bind
+RUN mkdir -p /work
+
 
 # --- Portable apply_patch helper (unchanged from your base) ---
 RUN set -eux; \
