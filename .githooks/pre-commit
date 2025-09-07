@@ -41,4 +41,3 @@ else
   # Run full test suite
   exec "$BUN_BIN" test --bail
 fi
-
