@@ -35,6 +35,6 @@ done
 
 case "${mode}" in
   tmux)    exec /usr/local/libexec/org/launch-tmux    "${rest[@]}" ;;
-  rich)    exec /usr/local/libexec/org/launch-console --ui rich "${rest[@]}" ;;
-  console) exec /usr/local/libexec/org/launch-console --ui console "${rest[@]}" ;;
+  rich)    exec /usr/local/libexec/org/launch-rich    "${rest[@]}" ;;
+  console) exec /usr/local/libexec/org/launch-console "${rest[@]}" ;;
 esac
