@@ -62,8 +62,8 @@ const uninstallHotkeys = installHotkeys({
   stdin: R.stdin as any,
   onEsc: async () => { await R.ttyController?.unwind(); /* finalizer handles review+exit */ },
   onCtrlC: () => { Logger.error("SIGINT"); R.exit(130); },
-  feedback: process.stderr,
-  debug: !!process.env.DEBUG,
+  feedback: R.stderr,
+  debug: !!R.env.DEBUG,
 });
 
 /** Scoped helpers that return promises (safe to `await`). */
@@ -249,7 +249,7 @@ async function finalizeOnce(scheduler: SchedulerLike | null, workDir: string, re
 
 async function main() {
   const cfg = loadConfig();
-  const argv = ((globalThis as unknown as { Bun?: unknown }).Bun ? Bun.argv.slice(2) : R.argv.slice(2));
+  const argv = R.argv.slice(2);
   const args = parseArgs(argv);
 
   // tmux handoff
