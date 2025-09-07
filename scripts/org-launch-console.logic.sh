@@ -43,5 +43,6 @@ set +e
 code=${PIPESTATUS[0]}
 set -e
 
+echo "log file: $LOG_FILE"
 echo "===== org console exit: ${code} @ $(date -Is) =====" | tee -a "${LOG_FILE}"
 exit "${code}"
