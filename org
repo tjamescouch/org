@@ -93,29 +93,6 @@ ENV_ARR=(
   "-e" "ORG_SANDBOX_BACKEND=none"
 )
 env_allow
-
-# ---------- run inside the container ----------
-# In review: stage /project -> /work (keep /work/.org; do not copy .git). Also create a .git pointer
-# so /work is recognized as a repo (gitdir: /project/.git). Then exec the in-image 'org'.
-"$ENGINE" run --rm -it \
-  -v "$WORK_SCRATCH:/work:Z" \
-  -v "$PWD:/project:Z,ro" \
-  -v "$REPO_DIR:/application:Z" \
-  -w /work \
-  "${ENV_ARR[@]}" \
-  "$IMAGE" bash -lc '
-    set -Eeuo pipefail
-    mkdir -p /work/.org
-    if [ "${ORG_REVIEW_MODE:-live}" = review ]; then
-      rsync -a --delete --exclude ".git" --exclude ".org" /project/ /work/
-      rm -rf /work/.git 2>/dev/null || true
-      printf "gitdir: /project/.git\n" > /work/.git
-      git config --global --add safe.directory /project >/dev/null 2>&1 || true
-      git config --global --add safe.directory /work    >/dev/null 2>&1 || true
-    fi
-    exec org "$@"
-  ' org "${ARGS[@]}"
-# ---------- run inside the container (foreground) ----------
 # ---------- run inside the container (foreground) ----------
 set +e
 "$ENGINE" run --rm -it \
