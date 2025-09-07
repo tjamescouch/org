@@ -240,8 +240,10 @@ export class TtyController {
         // When prompting, we deliberately ignore the global hotkey handler,
         // except for ESC which cancels and finalizes (as the test expects).
         const s = bufferToString(chunk);
+
         for (const ch of s) {
           const code = ch.charCodeAt(0);
+          Logger.error('code', code);
           if (code === 0x1b) {
             // ESC during prompt -> cancel prompt, restore RAW, finalize+exit
             this.tty.off("data", handler);
