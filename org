@@ -7,6 +7,7 @@
 #            → temporary index in /work/.org/tmp/, include new/deleted files.
 
 set -Eeuo pipefail
+set -v
 
 ROOT="/work"
 RUNS_DIR="$ROOT/.org/runs"
