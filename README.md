@@ -35,6 +35,8 @@ brew tap tjamescouch/org
 brew install org
 brew install lima            # VM provider on Apple Silicon
 orgctl vm init               # uses .org/config/org.lima.yaml
+
+orgctl vm ssh                # from another terminal
 ```
 
 ### Lima 1.2.x shows boot logs; when it settles, press Ctrl-C to detach
@@ -46,7 +48,7 @@ macOS (Intel) — VirtualBox backend
 brew tap tjamescouch/org
 brew install org
 brew install --cask virtualbox
-orgctl vm init
+orgctl vm init   # or --from git / --from tar
 ```
 
 ### Running
