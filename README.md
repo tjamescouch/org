@@ -13,7 +13,7 @@ _Agentic dev helpers that can "do things" in your repo while you watch, review, 
 - 🧪 **Deterministic runs**: all stdout/stderr, artifacts, and a git patch are saved under `.org/runs/<id>` for inspection or CI upload.
 - 🛡️ **Optional containerized sandbox**: run steps inside a Podman container with no network by default.
 
-> Security note. org is safe-by-default but not a hardened sandbox. For a stronger boundary, run it in the provided VM profile (Lima on Apple Silicon, VirtualBox on Intel). See SECURITY.md for hardening 
+> Security note. org is safe-by-default but not a hardened sandbox. For a stronger boundary, run it in the provided VM profile (Lima on Apple Silicon, VirtualBox on Intel). See [SECURITY](SECURITY.md) for hardening.
 
 ## Vision
 
