@@ -1,0 +1,44 @@
+arch: aarch64
+images:
+  - location: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img"
+
+# Root disk for system + packages
+disk: 50GiB
+
+ssh:
+  user: org
+  localPort: 2222
+
+mounts:
+  # 1. Development workspace: host ~/dev -> guest ~/dev
+  - location: "~/dev"
+    mountPoint: "/home/org/dev"
+    writable: true
+
+  # 2. Scratch space: ephemeral tmpfs inside VM
+  - location: "tmpfs"
+    mountPoint: "/home/org/scratch"
+    writable: true
+
+networks:
+  - lima: shared
+    vif: false
+    macAddress: "52:55:55:55:55:01"
+    # Only allow loopback (127.0.0.1) traffic so VM can talk to LMStudio/Ollama running on host
+    # Everything else blocked
+    # Lima doesn’t do fine-grained firewall rules itself, but we can enforce inside VM with ufw:
+provision:
+  - mode: system
+    script: |
+      apt-get update
+      apt-get install -y curl git ufw podman
+      # Lock down outbound traffic
+      ufw default deny outgoing
+      ufw allow out to 127.0.0.1
+      ufw --force enable
+
+  - mode: user
+    script: |
+      curl -fsSL https://bun.sh/install | bash
+      echo 'export BUN_INSTALL=$HOME/.bun' >> ~/.bashrc
+      echo 'export PATH=$BUN_INSTALL/bin:$PATH' >> ~/.bashrc
