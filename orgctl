@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # orgctl - MIT License
 # Unified orchestration CLI for org
-# - Apple Silicon (arm64): Lima backend (Lima 1.2.x compatible)
+# - Apple Silicon (arm64): Lima backend (Lima 1.2.x compatible; no --detach/--user needed)
 # - Intel (x86_64): VirtualBox backend
 # Lima config search order:
 #   1) $ORG_LIMA_CONFIG
@@ -10,13 +10,14 @@
 #   4) $ORG_DIR/.org/config/org.lima.yaml
 
 set -euo pipefail
-VERSION="0.6.2"
+VERSION="0.6.3"
 
 ORG_DIR="$(cd "$(dirname "$0")" && pwd)"
 VM_NAME="org-vm"
 HOST_SSH_PORT="${HOST_SSH_PORT:-2222}"
-SSH_USER="$(whoami)"   # Lima 1.2.x mirrors host username
+SSH_USER="$(whoami)"   # Lima mirrors host username on 1.2.x
 
+# ---------- helpers ----------
 backend() {
   local arch sys
   arch="$(uname -m)"; sys="$(uname -s)"
@@ -32,18 +33,25 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2;
 ssh_base() { echo "-p" "$HOST_SSH_PORT" "-o" "StrictHostKeyChecking=no" "-o" "UserKnownHostsFile=/dev/null"; }
 
 lima_config_path() {
-  local cands=()
-  [[ -n "${ORG_LIMA_CONFIG:-}" ]] && cands+=("$ORG_LIMA_CONFIG")
-  cands+=("$PWD/.org/config/org.lima.yaml" "$HOME/.config/org/org.lima.yaml" "$ORG_DIR/.org/config/org.lima.yaml")
-  for p in "${cands[@]}"; do [[ -f "$p" ]] && { echo "$p"; return; }; done
+  local p
+  for p in \
+    "${ORG_LIMA_CONFIG:-}" \
+    "$PWD/.org/config/org.lima.yaml" \
+    "$HOME/.config/org/org.lima.yaml" \
+    "$ORG_DIR/.org/config/org.lima.yaml"
+  do
+    [[ -n "$p" && -f "$p" ]] && { echo "$p"; return; }
+  done
   cat >&2 <<'EOF'
 orgctl: could not find org.lima.yaml
+
 Searched:
   $ORG_LIMA_CONFIG
   $PWD/.org/config/org.lima.yaml
   $HOME/.config/org/org.lima.yaml
   $ORG_DIR/.org/config/org.lima.yaml
-Fix with:
+
+Fix:
   export ORG_LIMA_CONFIG="$PWD/.org/config/org.lima.yaml"
   # or
   mkdir -p ~/.config/org && ln -s "$PWD/.org/config/org.lima.yaml" ~/.config/org/org.lima.yaml
@@ -51,25 +59,50 @@ EOF
   exit 1
 }
 
-# ---------- Lima backend ----------
+# Lima 1.2.x compatibility helpers
+lima_has_flag() { limactl start -h 2>&1 | grep -q -- "$1"; }
 lima_exists() {
-  # robust for Lima 1.2.x: directory check; also try limactl list if present
   [[ -d "$HOME/.lima/org.lima" ]] && return 0
   limactl list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "org.lima" 2>/dev/null
 }
+lima_wait_ready() {
+  # Wait until a trivial command via guest agent succeeds (max ~3 min)
+  local i
+  for i in {1..90}; do
+    limactl shell org.lima -- true >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  echo "Timed out waiting for Lima guest to be ready." >&2
+  return 1
+}
+lima_start_detached() {
+  if lima_has_flag --detach; then
+    limactl start --name org.lima --detach || true
+  else
+    # Start in background and wait until shell works
+    nohup limactl start --name org.lima >/tmp/orgctl-lima-start.log 2>&1 &
+    lima_wait_ready
+  fi
+}
+
+# ---------- Lima backend ----------
 lima_vm_init() {
   need limactl
   if lima_exists; then
     echo "Lima instance org.lima already exists; starting it."
-    limactl start org.lima || true
+    lima_start_detached
   else
     local cfg; cfg="$(lima_config_path)"
     echo "Creating Lima VM with config: $cfg"
-    # Lima 1.2.x has no --detach; this will stream logs until boot completes
-    limactl start --name org.lima "$cfg"
+    if lima_has_flag --detach; then
+      limactl start --name org.lima --detach "$cfg"
+    else
+      nohup limactl start --name org.lima "$cfg" >/tmp/orgctl-lima-create.log 2>&1 &
+      lima_wait_ready
+    fi
   fi
 }
-lima_vm_up()      { need limactl; limactl start org.lima || true; }
+lima_vm_up()      { need limactl; lima_start_detached; }
 lima_vm_stop()    { need limactl; limactl stop org.lima || true; }
 lima_vm_destroy() { need limactl; limactl delete org.lima || true; }
 lima_vm_ssh()     { need limactl; limactl shell org.lima; }
@@ -104,7 +137,8 @@ build/
 .DS_Store
 EOF
   echo "Syncing current directory to /home/${SSH_USER}/org ..."
-  rsync -az --delete --progress --exclude-from="$tmp_excl" -e "ssh $(ssh_base | xargs echo)" ./ \
+  rsync -az --delete --progress --exclude-from="$tmp_excl" \
+    -e "ssh $(ssh_base | xargs echo)" ./ \
     "${SSH_USER}@127.0.0.1:/home/${SSH_USER}/org/"
   rm -f "$tmp_excl"
 }
@@ -126,6 +160,7 @@ tarball_install_in_vm() {
       curl -fsSL ${url@Q} -o /tmp/org.tgz && ${verify} \
       tar -xzf /tmp/org.tgz -C /home/${SSH_USER}/org --strip-components=1'"
 }
+
 cmd_app_install() {
   local FROM="host" REPO_URL="https://github.com/tjamescouch/org.git" TAR_URL="" TAR_SHA="" NO_RUN="no"
   while [[ $# -gt 0 ]]; do
@@ -147,6 +182,20 @@ cmd_app_install() {
   [[ "$NO_RUN" == "yes" ]] || run_install_script
 }
 
+# ---------- high-level UX ----------
+cmd_quickstart() {
+  if [[ "$(backend)" != "lima" ]]; then
+    echo "quickstart is for Apple Silicon (Lima). On Intel: brew install --cask virtualbox && orgctl vm init && orgctl vm ssh" >&2
+    exit 1
+  fi
+  # Validate we can resolve a Lima config first
+  local cfg; cfg="$(lima_config_path)"
+  echo "Using Lima config: $cfg"
+  lima_vm_init
+  lima_vm_ssh
+}
+
+# ---------- dispatcher ----------
 cmd_vm() {
   local sub="${1:-}"; shift || true
   case "$(backend)" in
@@ -180,9 +229,11 @@ usage() {
 orgctl v$VERSION
 
 USAGE:
+  orgctl quickstart                              # Apple Silicon: ensure VM up + open shell
   orgctl vm <init|up|stop|destroy|ssh|export>
   orgctl app install [--from host|git|tar] [--repo URL] [--tar-url URL --tar-sha256 SHA] [--no-run]
   orgctl version
+
 ENV:
   ORG_LIMA_CONFIG   Absolute path to org.lima.yaml (overrides search)
   HOST_SSH_PORT     SSH port to the guest (default 2222)
@@ -190,13 +241,14 @@ EOF
 }
 
 case "${1:-}" in
-  vm) shift; cmd_vm "$@" ;;
-  app) shift; sub="${1:-}"; shift || true
-       case "$sub" in
-         install) cmd_app_install "$@" ;;
-         *) usage; exit 1 ;;
-       esac ;;
-  version) echo "$VERSION" ;;
+  quickstart) shift; cmd_quickstart "$@" ;;
+  vm)         shift; cmd_vm "$@" ;;
+  app)        shift; sub="${1:-}"; shift || true
+              case "$sub" in
+                install) cmd_app_install "$@" ;;
+                *) usage; exit 1 ;;
+              esac ;;
+  version)    echo "$VERSION" ;;
   ""|help|-h|--help) usage ;;
-  *) usage; exit 1 ;;
+  *)          usage; exit 1 ;;
 esac
