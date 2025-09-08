@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # orgctl - MIT License
-# v0.6.5
+# v0.6.6
 # - Apple Silicon (arm64): Lima backend (Lima 1.2.x compatible)
 # - Intel (x86_64): VirtualBox backend
 # Lima config search order:
@@ -10,7 +10,7 @@
 #   4) $ORG_DIR/.org/config/org.lima.yaml
 
 set -euo pipefail
-VERSION="0.6.5"
+VERSION="0.6.9"
 
 ORG_DIR="$(cd "$(dirname "$0")" && pwd)"
 VM_NAME="org-vm"
@@ -56,21 +56,46 @@ lima_exists() {
   [[ -d "$HOME/.lima/org.lima" ]] && return 0
   limactl list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "org.lima" 2>/dev/null
 }
-ensure_socket_vmnet_if_needed() {
-  local cfg="$1"
-  if [[ "$(uname -s)" == "Darwin" ]] && grep -qE '^[[:space:]]*networks:' "$cfg"; then
-    pgrep -f 'socket_vmnet' >/dev/null 2>&1 || {
-      cat >&2 <<'EOF'
-orgctl: Lima networking helper 'socket_vmnet' is not running.
-Run:
-  brew install socket_vmnet
+
+# --- socket_vmnet UX (interactive auto-fix) ---
+brew_has_socket_vmnet() { command -v brew >/dev/null 2>&1 && brew list --formula 2>/dev/null | grep -qx socket_vmnet; }
+socket_vmnet_running()  { pgrep -f '/socket_vmnet(/socket_vmnet)?' >/dev/null 2>&1 || pgrep -f 'socket_vmnet' >/dev/null 2>&1; }
+start_socket_vmnet()    {
+  if ! brew_has_socket_vmnet; then
+    echo "Installing socket_vmnet with Homebrew…"
+    brew install socket_vmnet || return 1
+  fi
+  echo "Starting socket_vmnet (requires sudo)…"
   sudo brew services start socket_vmnet
-Then re-run: orgctl quickstart
-EOF
-      exit 1
-    }
+}
+
+ensure_socket_vmnet_if_needed() {
+  # Only relevant on macOS when the profile declares networks (e.g., "shared")
+  [[ "$(uname -s)" == "Darwin" ]] || return 0
+  local cfg="$1"
+  grep -qE '^[[:space:]]*networks:' "$cfg" || return 0
+  socket_vmnet_running && return 0
+
+  # If non-interactive (CI), print guidance but don't look "fatal"
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    echo "orgctl: socket_vmnet is not running; provisioning may stall." >&2
+    echo "To enable networking: brew install socket_vmnet && sudo brew services start socket_vmnet" >&2
+    return 0
+  fi
+
+  echo
+  echo "Networking helper 'socket_vmnet' is not running."
+  read -r -p "Install/start it now via Homebrew? [Y/n] " ans; ans=${ans:-Y}
+  if [[ $ans =~ ^[Yy]$ ]]; then
+    if ! start_socket_vmnet; then
+      echo "Could not start socket_vmnet. You can continue, but provisioning may stall." >&2
+    fi
+  else
+    echo "Continuing without socket_vmnet. If provisioning hangs, run:" >&2
+    echo "  brew install socket_vmnet && sudo brew services start socket_vmnet" >&2
   fi
 }
+
 lima_wait_ready() {
   local i=0 spin='|/-\'
   printf "Waiting for VM to become ready "
@@ -114,15 +139,13 @@ lima_vm_up()      { need limactl; lima_start_detached; }
 lima_vm_stop()    { need limactl; limactl stop org.lima || true; }
 lima_vm_destroy() { need limactl; limactl delete org.lima || true; }
 
-# Attach and start in ~/dev if present (avoids noisy cd to /Users/...).
+# Attach and start in ~/dev if present (avoid noisy cd to /Users/..)
 lima_vm_ssh() {
   need limactl
   local work="/home/$SSH_USER/dev"
   if lima_has_flag_shell --workdir; then
-    # newer Lima: request the workdir directly; fall back silently
     limactl shell --workdir "$work" org.lima 2>/dev/null || limactl shell org.lima
   else
-    # Lima 1.2.x: run a login shell after cd attempt
     limactl shell org.lima -- bash -lc "cd \"$work\" 2>/dev/null || true; exec bash -l"
   fi
 }
@@ -204,7 +227,7 @@ cmd_quickstart() {
   local cfg; cfg="$(lima_config_path)"; ensure_socket_vmnet_if_needed "$cfg"
   echo "Using Lima config: $cfg"
   lima_vm_init
-  # take over the TTY so it feels like a single command
+  # attach and prefer ~/dev if present
   if lima_has_flag_shell --workdir; then
     exec limactl shell --workdir "/home/$SSH_USER/dev" org.lima
   else
@@ -245,7 +268,7 @@ usage() {
 orgctl v$VERSION
 
 USAGE:
-  orgctl quickstart                              # Apple Silicon: ensure VM up + open shell in ~/dev
+  orgctl quickstart                              # Apple Silicon: ensure VM up + open shell (in ~/dev if available)
   orgctl vm <init|up|stop|destroy|ssh|export>
   orgctl app install [--from host|git|tar] [--repo URL] [--tar-url URL --tar-sha256 SHA] [--no-run]
   orgctl version

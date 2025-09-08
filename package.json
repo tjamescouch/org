@@ -1,6 +1,6 @@
 {
   "name": "mini-multiagent-proto",
-  "version": "0.1.0",
+  "version": "0.6.9",
   "type": "module",
   "private": true,
   "scripts": {

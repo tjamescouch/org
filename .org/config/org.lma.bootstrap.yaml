@@ -28,3 +28,8 @@ provision:
       curl -fsSL https://bun.sh/install | bash || true
       echo 'export BUN_INSTALL=$HOME/.bun' >> ~/.bashrc
       echo 'export PATH=$BUN_INSTALL/bin:$PATH' >> ~/.bashrc
+  - mode: user
+    script: |
+      mkdir -p "$HOME/dev"
+      [ -d "/Users/$USER/dev" ] && ln -snf "/Users/$USER/dev" "$HOME/dev"
+
