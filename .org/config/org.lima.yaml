@@ -1,55 +1,45 @@
 # .org/config/org.lima.yaml
-# Lima profile for `org` VM
-# - Root disk: 50 GiB
-# - Mounts:
-#     host ~/dev   -> guest /home/org/dev
-#     tmpfs scratch -> guest /home/org/scratch
-# - Networking: disabled in Lima config, but ufw restricts guest
-# - User: fixed "org"
-
 arch: aarch64
 images:
   - location: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img"
 
 disk: 50GiB
 
-# Disable Lima-provided networking (no external connectivity)
-networks: []
+# Minimal networking for apt-get; UFW will lock down after provisioning
+networks:
+  - lima: shared
 
 mounts:
-  # Development workspace
+  # Host ~/dev -> Guest ~/dev
   - location: "~/dev"
-    mountPoint: "/home/org/dev"
+    mountPoint: "/home/{{.User}}/dev"
     writable: true
 
-  # Scratch space (ephemeral tmpfs)
+  # Ephemeral scratch
   - location: "tmpfs"
-    mountPoint: "/home/org/scratch"
+    mountPoint: "/home/{{.User}}/scratch"
     writable: true
+
+ssh:
+  loadDotSSHPubKeys: true
 
 provision:
-  # Create and configure fixed "org" user
   - mode: system
     script: |
       apt-get update
-      apt-get install -y curl git ufw podman sudo
+      apt-get install -y curl git ufw podman openssh-server sudo
+      systemctl enable --now ssh
 
-      # Create 'org' user if missing
-      if ! id -u org >/dev/null 2>&1; then
-        adduser --disabled-password --gecos "" org
-        usermod -aG sudo org
-        echo 'org ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
-      fi
-
-      # Configure firewall: deny everything except localhost
+      # UFW policy
+      ufw default deny incoming
       ufw default deny outgoing
+      ufw allow 22/tcp
       ufw allow out to 127.0.0.1
       ufw --force enable
 
-  # Run setup as "org" user
   - mode: user
     script: |
-      # Install Bun
+      mkdir -p "$HOME/dev"
       curl -fsSL https://bun.sh/install | bash
       echo 'export BUN_INSTALL=$HOME/.bun' >> ~/.bashrc
       echo 'export PATH=$BUN_INSTALL/bin:$PATH' >> ~/.bashrc
