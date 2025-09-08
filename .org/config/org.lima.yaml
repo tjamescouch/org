@@ -1,31 +1,27 @@
 # .org/config/org.lima.yaml
-# Lima profile for `org` VM
-# - Root disk: 50 GiB
-# - Mounts:
-#     host ~/dev   -> guest /home/org/dev
-#     tmpfs scratch -> guest /home/org/scratch
-# - Networking: disabled in Lima config, but ufw restricts guest
-# - User: fixed "org"
-
 arch: aarch64
 images:
   - location: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img"
 
 disk: 50GiB
 
-# Disable Lima-provided networking (no external connectivity)
-networks: []
+# Minimal networking for apt-get; UFW will lock down after provisioning
+networks:
+  - lima: shared
 
 mounts:
-  # Development workspace
+  # Host ~/dev -> Guest ~/dev
   - location: "~/dev"
-    mountPoint: "/home/org/dev"
+    mountPoint: "/home/{{.User}}.linux/dev"
     writable: true
 
-  # Scratch space (ephemeral tmpfs)
+  # Ephemeral scratch
   - location: "tmpfs"
-    mountPoint: "/home/org/scratch"
+    mountPoint: "/home/{{.User}}.linux/scratch"
     writable: true
+
+ssh:
+  loadDotSSHPubKeys: true
 
 provision:
   - mode: system
@@ -34,14 +30,16 @@ provision:
       apt-get install -y curl git ufw podman openssh-server sudo
       systemctl enable --now ssh
 
-      # Hardened defaults, but explicitly open SSH *inbound*
+      # UFW policy
       ufw default deny incoming
       ufw default deny outgoing
-      ufw allow 22/tcp             # <-- allow SSH IN
-      ufw allow out to 127.0.0.1   # allow LMStudio/Ollama on host
+      ufw allow 22/tcp
+      ufw allow out to 127.0.0.1
       ufw --force enable
+
   - mode: user
     script: |
+      mkdir -p "$HOME/dev"
       curl -fsSL https://bun.sh/install | bash
       echo 'export BUN_INSTALL=$HOME/.bun' >> ~/.bashrc
       echo 'export PATH=$BUN_INSTALL/bin:$PATH' >> ~/.bashrc
