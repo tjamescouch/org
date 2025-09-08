@@ -65,6 +65,7 @@ logs/
 !/.org/launcher/
 !/.org/launcher/**
 !/.org/bin
+!/.org/config
 
 # Optionally keep docs/config in .org
 !/.org/*.md
