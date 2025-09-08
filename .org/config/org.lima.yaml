@@ -28,28 +28,20 @@ mounts:
     writable: true
 
 provision:
-  # Create and configure fixed "org" user
   - mode: system
     script: |
       apt-get update
-      apt-get install -y curl git ufw podman sudo
+      apt-get install -y curl git ufw podman openssh-server sudo
+      systemctl enable --now ssh
 
-      # Create 'org' user if missing
-      if ! id -u org >/dev/null 2>&1; then
-        adduser --disabled-password --gecos "" org
-        usermod -aG sudo org
-        echo 'org ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
-      fi
-
-      # Configure firewall: deny everything except localhost
+      # Hardened defaults, but explicitly open SSH *inbound*
+      ufw default deny incoming
       ufw default deny outgoing
-      ufw allow out to 127.0.0.1
+      ufw allow 22/tcp             # <-- allow SSH IN
+      ufw allow out to 127.0.0.1   # allow LMStudio/Ollama on host
       ufw --force enable
-
-  # Run setup as "org" user
   - mode: user
     script: |
-      # Install Bun
       curl -fsSL https://bun.sh/install | bash
       echo 'export BUN_INSTALL=$HOME/.bun' >> ~/.bashrc
       echo 'export PATH=$BUN_INSTALL/bin:$PATH' >> ~/.bashrc

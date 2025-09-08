@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # orgctl - MIT License
-# v0.6.4
-# - Apple Silicon (arm64): Lima backend (Lima 1.2.x compatible; no --detach needed)
+# v0.6.5
+# - Apple Silicon (arm64): Lima backend (Lima 1.2.x compatible)
 # - Intel (x86_64): VirtualBox backend
 # Lima config search order:
 #   1) $ORG_LIMA_CONFIG
@@ -10,36 +10,26 @@
 #   4) $ORG_DIR/.org/config/org.lima.yaml
 
 set -euo pipefail
-VERSION="0.6.4"
+VERSION="0.6.5"
 
 ORG_DIR="$(cd "$(dirname "$0")" && pwd)"
 VM_NAME="org-vm"
 HOST_SSH_PORT="${HOST_SSH_PORT:-2222}"
 SSH_USER="$(whoami)"   # Lima 1.2.x mirrors host username
 
+# ---------- helpers ----------
 backend() {
-  local arch sys
-  arch="$(uname -m)"; sys="$(uname -s)"
-  if [[ "$arch" == "arm64" && "$sys" == "Darwin" ]]; then
-    echo "lima"
-  elif [[ "$arch" == "x86_64" ]]; then
-    echo "vbox"
-  else
-    echo "Unsupported arch: $arch ($sys)" >&2; exit 1
-  fi
+  local arch sys; arch="$(uname -m)"; sys="$(uname -s)"
+  if [[ "$arch" == "arm64" && "$sys" == "Darwin" ]]; then echo "lima"
+  elif [[ "$arch" == "x86_64" ]]; then echo "vbox"
+  else echo "Unsupported arch: $arch ($sys)" >&2; exit 1; fi
 }
-need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 1; }; }
-ssh_base() { echo "-p" "$HOST_SSH_PORT" "-o" "StrictHostKeyChecking=no" "-o" "UserKnownHostsFile=/dev/null"; }
+need()    { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 1; }; }
+ssh_base(){ echo "-p" "$HOST_SSH_PORT" "-o" "StrictHostKeyChecking=no" "-o" "UserKnownHostsFile=/dev/null"; }
 
-# ---- find Lima YAML ----
 lima_config_path() {
   local p
-  for p in \
-    "${ORG_LIMA_CONFIG:-}" \
-    "$PWD/.org/config/org.lima.yaml" \
-    "$HOME/.config/org/org.lima.yaml" \
-    "$ORG_DIR/.org/config/org.lima.yaml"
-  do
+  for p in "${ORG_LIMA_CONFIG:-}" "$PWD/.org/config/org.lima.yaml" "$HOME/.config/org/org.lima.yaml" "$ORG_DIR/.org/config/org.lima.yaml"; do
     [[ -n "$p" && -f "$p" ]] && { echo "$p"; return; }
   done
   cat >&2 <<'EOF'
@@ -59,50 +49,43 @@ EOF
   exit 1
 }
 
-# ---- Lima helpers (1.2.x safe) ----
-lima_has_flag() { limactl start -h 2>&1 | grep -q -- "$1"; }
+# ---------- Lima helpers (1.2.x safe) ----------
+lima_has_flag_start() { limactl start -h 2>&1 | grep -q -- "$1"; }
+lima_has_flag_shell() { limactl shell -h 2>&1 | grep -q -- "$1"; }
 lima_exists() {
   [[ -d "$HOME/.lima/org.lima" ]] && return 0
   limactl list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "org.lima" 2>/dev/null
 }
 ensure_socket_vmnet_if_needed() {
-  # If YAML requests networking, require socket_vmnet running (Darwin only)
   local cfg="$1"
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    if grep -qE '^[[:space:]]*networks:' "$cfg"; then
-      if ! pgrep -f '/opt/homebrew/.*/socket_vmnet(/socket_vmnet)?' >/dev/null 2>&1 \
-         && ! pgrep -f 'socket_vmnet' >/dev/null 2>&1; then
-        cat >&2 <<'EOF'
+  if [[ "$(uname -s)" == "Darwin" ]] && grep -qE '^[[:space:]]*networks:' "$cfg"; then
+    pgrep -f 'socket_vmnet' >/dev/null 2>&1 || {
+      cat >&2 <<'EOF'
 orgctl: Lima networking helper 'socket_vmnet' is not running.
 Run:
   brew install socket_vmnet
   sudo brew services start socket_vmnet
 Then re-run: orgctl quickstart
 EOF
-        exit 1
-      fi
-    fi
+      exit 1
+    }
   fi
 }
 lima_wait_ready() {
-  # Print a spinner/progress while waiting for guest agent
   local i=0 spin='|/-\'
   printf "Waiting for VM to become ready "
-  while (( i < 120 )); do  # ~4 minutes
+  while (( i < 120 )); do
     if limactl shell org.lima -- true >/dev/null 2>&1; then
-      printf "\r%-70s\r" ""  # clear line
-      return 0
+      printf "\r%-70s\r" ""; return 0
     fi
     printf "\rWaiting for VM to become ready %c" "${spin:i%4:1}"
     sleep 2; ((i++))
   done
-  printf "\n"
-  echo "Timed out waiting for Lima guest. See logs:" >&2
-  echo "  tail -f ~/.lima/org.lima/serial*.log" >&2
+  printf "\nTimed out waiting for Lima guest. See logs:\n  tail -f ~/.lima/org.lima/serial*.log\n" >&2
   return 1
 }
 lima_start_detached() {
-  if lima_has_flag --detach; then
+  if lima_has_flag_start --detach; then
     limactl start --name org.lima --detach || true
   else
     nohup limactl start --name org.lima >/tmp/orgctl-lima-start.log 2>&1 < /dev/null &
@@ -110,17 +93,16 @@ lima_start_detached() {
   fi
 }
 
-# ---- Lima backend ----
+# ---------- Lima backend ----------
 lima_vm_init() {
   need limactl
-  local cfg
   if lima_exists; then
     echo "Lima instance org.lima already exists; starting it."
     lima_start_detached
   else
-    cfg="$(lima_config_path)"; ensure_socket_vmnet_if_needed "$cfg"
+    local cfg; cfg="$(lima_config_path)"; ensure_socket_vmnet_if_needed "$cfg"
     echo "Creating Lima VM with config: $cfg"
-    if lima_has_flag --detach; then
+    if lima_has_flag_start --detach; then
       limactl start --name org.lima --detach "$cfg"
     else
       nohup limactl start --name org.lima "$cfg" >/tmp/orgctl-lima-create.log 2>&1 < /dev/null &
@@ -131,10 +113,22 @@ lima_vm_init() {
 lima_vm_up()      { need limactl; lima_start_detached; }
 lima_vm_stop()    { need limactl; limactl stop org.lima || true; }
 lima_vm_destroy() { need limactl; limactl delete org.lima || true; }
-lima_vm_ssh()     { need limactl; limactl shell org.lima; }
+
+# Attach and start in ~/dev if present (avoids noisy cd to /Users/...).
+lima_vm_ssh() {
+  need limactl
+  local work="/home/$SSH_USER/dev"
+  if lima_has_flag_shell --workdir; then
+    # newer Lima: request the workdir directly; fall back silently
+    limactl shell --workdir "$work" org.lima 2>/dev/null || limactl shell org.lima
+  else
+    # Lima 1.2.x: run a login shell after cd attempt
+    limactl shell org.lima -- bash -lc "cd \"$work\" 2>/dev/null || true; exec bash -l"
+  fi
+}
 lima_vm_export()  { echo "Export not supported for Lima"; }
 
-# ---- VirtualBox backend (kept minimal) ----
+# ---------- VirtualBox backend (kept minimal) ----------
 assert_virtualbox() { need VBoxManage; }
 vbox_vm_init() { assert_virtualbox; echo "TODO: implement VBox unattended install"; }
 vbox_vm_up()      { assert_virtualbox; VBoxManage startvm "$VM_NAME" --type headless; }
@@ -143,7 +137,7 @@ vbox_vm_destroy() { assert_virtualbox; VBoxManage unregistervm "$VM_NAME" --dele
 vbox_vm_ssh()     { ssh "$(ssh_base[@])" "${SSH_USER}@127.0.0.1"; }
 vbox_vm_export()  { assert_virtualbox; VBoxManage export "$VM_NAME" --output "$VM_NAME.ova"; }
 
-# ---- App install (shared) ----
+# ---------- App install (shared) ----------
 looks_like_org_repo() { [[ -f "package.json" || -f "bun.toml" || -f "bunfig.toml" ]] && [[ -d "src" || -f "install.sh" ]]; }
 host_sync_into_vm() {
   need rsync
@@ -165,7 +159,7 @@ EOF
 run_install_script() {
   echo "Running install.sh inside VM ..."
   ssh "$(ssh_base[@])" "${SSH_USER}@127.0.0.1" \
-    "bash -lc 'chmod +x /home/${SSH_USER}/org/install.sh || true; /home/${SSH_USER}/org/install.sh'"
+    "bash -lc 'chmod -v +x /home/${SSH_USER}/org/install.sh || true; /home/${SSH_USER}/org/install.sh'"
 }
 git_clone_in_vm() {
   local url="$1"
@@ -201,7 +195,7 @@ cmd_app_install() {
   [[ "$NO_RUN" == "yes" ]] || run_install_script
 }
 
-# ---- UX commands ----
+# ---------- UX ----------
 cmd_quickstart() {
   if [[ "$(backend)" != "lima" ]]; then
     echo "quickstart is for Apple Silicon (Lima). On Intel: brew install --cask virtualbox && orgctl vm init && orgctl vm ssh" >&2
@@ -209,8 +203,13 @@ cmd_quickstart() {
   fi
   local cfg; cfg="$(lima_config_path)"; ensure_socket_vmnet_if_needed "$cfg"
   echo "Using Lima config: $cfg"
-  lima_vm_init                 # create or start (idempotent, non-blocking on 1.2.x)
-  exec limactl shell org.lima  # <-- take over the TTY; never “returns” until you exit the VM
+  lima_vm_init
+  # take over the TTY so it feels like a single command
+  if lima_has_flag_shell --workdir; then
+    exec limactl shell --workdir "/home/$SSH_USER/dev" org.lima
+  else
+    exec limactl shell org.lima -- bash -lc 'cd "$HOME/dev" 2>/dev/null || true; exec bash -l'
+  fi
 }
 
 cmd_vm() {
@@ -240,12 +239,13 @@ cmd_vm() {
       ;;
   esac
 }
+
 usage() {
   cat <<EOF
 orgctl v$VERSION
 
 USAGE:
-  orgctl quickstart
+  orgctl quickstart                              # Apple Silicon: ensure VM up + open shell in ~/dev
   orgctl vm <init|up|stop|destroy|ssh|export>
   orgctl app install [--from host|git|tar] [--repo URL] [--tar-url URL --tar-sha256 SHA] [--no-run]
   orgctl version
