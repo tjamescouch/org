@@ -1,44 +1,55 @@
+# .org/config/org.lima.yaml
+# Lima profile for `org` VM
+# - Root disk: 50 GiB
+# - Mounts:
+#     host ~/dev   -> guest /home/org/dev
+#     tmpfs scratch -> guest /home/org/scratch
+# - Networking: disabled in Lima config, but ufw restricts guest
+# - User: fixed "org"
+
 arch: aarch64
 images:
   - location: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img"
 
-# Root disk for system + packages
 disk: 50GiB
 
-ssh:
-  user: org
-  localPort: 2222
+# Disable Lima-provided networking (no external connectivity)
+networks: []
 
 mounts:
-  # 1. Development workspace: host ~/dev -> guest ~/dev
+  # Development workspace
   - location: "~/dev"
     mountPoint: "/home/org/dev"
     writable: true
 
-  # 2. Scratch space: ephemeral tmpfs inside VM
+  # Scratch space (ephemeral tmpfs)
   - location: "tmpfs"
     mountPoint: "/home/org/scratch"
     writable: true
 
-networks:
-  - lima: shared
-    vif: false
-    macAddress: "52:55:55:55:55:01"
-    # Only allow loopback (127.0.0.1) traffic so VM can talk to LMStudio/Ollama running on host
-    # Everything else blocked
-    # Lima doesn’t do fine-grained firewall rules itself, but we can enforce inside VM with ufw:
 provision:
+  # Create and configure fixed "org" user
   - mode: system
     script: |
       apt-get update
-      apt-get install -y curl git ufw podman
-      # Lock down outbound traffic
+      apt-get install -y curl git ufw podman sudo
+
+      # Create 'org' user if missing
+      if ! id -u org >/dev/null 2>&1; then
+        adduser --disabled-password --gecos "" org
+        usermod -aG sudo org
+        echo 'org ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+      fi
+
+      # Configure firewall: deny everything except localhost
       ufw default deny outgoing
       ufw allow out to 127.0.0.1
       ufw --force enable
 
+  # Run setup as "org" user
   - mode: user
     script: |
+      # Install Bun
       curl -fsSL https://bun.sh/install | bash
       echo 'export BUN_INSTALL=$HOME/.bun' >> ~/.bashrc
       echo 'export PATH=$BUN_INSTALL/bin:$PATH' >> ~/.bashrc

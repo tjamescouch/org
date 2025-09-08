@@ -1,173 +1,75 @@
 #!/usr/bin/env bash
-# orgctl - MIT
-# Orchestrates a VirtualBox VM for 'org' and installs the app into the VM.
+# orgctl - MIT License
+# Unified orchestration CLI for org
+# - Apple Silicon (arm64): Lima backend with .org/config/org.lima.yaml
+# - Intel (x86_64): VirtualBox backend
+# Works with Lima 1.2.1 (no --detach / --user flags)
+
 set -euo pipefail
+VERSION="0.6.0"
 
-VERSION="0.2.0"
-
-# ---------- Defaults (override with env) ----------
-VM_NAME="${VM_NAME:-org-vm}"
-UBUNTU_ISO_URL="${UBUNTU_ISO_URL:-https://releases.ubuntu.com/24.04/ubuntu-24.04.1-live-server-amd64.iso}"
-WORKDIR="${WORKDIR:-$HOME/.orgvm}"
-CPU_COUNT="${CPU_COUNT:-2}"
-RAM_MB="${RAM_MB:-4096}"
-DISK_GB="${DISK_GB:-40}"
+ORG_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIMA_CONFIG="$ORG_DIR/.org/config/org.lima.yaml"
+VM_NAME="org-vm"
 HOST_SSH_PORT="${HOST_SSH_PORT:-2222}"
-SSH_USER="${SSH_USER:-org}"
+SSH_USER="$(whoami)"   # default to host username (works in Lima 1.2.1)
 
-APP_DIR_IN_VM="${APP_DIR_IN_VM:-/home/${SSH_USER}/org}"
-INSTALL_SCRIPT_IN_VM="${INSTALL_SCRIPT_IN_VM:-${APP_DIR_IN_VM}/install.sh}"
-
-ORG_GIT_URL_DEFAULT="${ORG_GIT_URL_DEFAULT:-https://github.com/tjamescouch/org.git}"
-ORG_TARBALL_URL="${ORG_TARBALL_URL:-}"
-ORG_TARBALL_SHA256="${ORG_TARBALL_SHA256:-}"
-
-usage() {
-  cat <<EOF
-orgctl v${VERSION}
-
-USAGE
-  orgctl vm init                 Create & provision base VM (no app yet)
-  orgctl vm up                   Start/ensure VM is running
-  orgctl vm stop                 Gracefully power off
-  orgctl vm destroy              Remove VM and disks
-  orgctl vm ssh                  SSH into VM
-  orgctl vm export               Export OVA to ~/.orgvm/dist/${VM_NAME}.ova
-
-  orgctl app install [--from host|git|tar]
-                     [--repo URL] [--ssh-agent]
-                     [--tar-url URL --tar-sha256 SHA]
-                     [--no-run] [--exclude PATTERN ...]
-
-Defaults:
-  --from host     (rsync current folder -> ${APP_DIR_IN_VM}, then run install.sh)
-Fallbacks:
-  --from git      (clone inside VM; add --ssh-agent to avoid storing secrets)
-  --from tar      (download release tarball into VM; verify with --tar-sha256)
-
-ENV:
-  VM_NAME, CPU_COUNT, RAM_MB, DISK_GB, HOST_SSH_PORT, SSH_USER
-  WORKDIR, UBUNTU_ISO_URL
-  APP_DIR_IN_VM, INSTALL_SCRIPT_IN_VM
-  ORG_TARBALL_URL, ORG_TARBALL_SHA256
-EOF
-}
-
-need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 1; }; }
-assert_virtualbox() { command -v VBoxManage >/dev/null 2>&1 || { echo "Install VirtualBox (brew install --cask virtualbox)" >&2; exit 1; }; }
-ensure_workdir() { mkdir -p "$WORKDIR"/{build,dist,cache,logs}; }
-
-detect_pubkey() {
-  if [[ -n "${ORG_SSH_PUBKEY:-}" ]]; then echo "$ORG_SSH_PUBKEY"; return; fi
-  for cand in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub"; do
-    [[ -f "$cand" ]] && { cat "$cand"; return; }
-  done
-  echo "No SSH public key found. Create one with: ssh-keygen -t ed25519" >&2; exit 1
-}
-
-download_iso() {
-  local iso="$WORKDIR/cache/$(basename "$UBUNTU_ISO_URL")"
-  [[ -f "$iso" ]] || { echo "Downloading Ubuntu ISO..."; curl -fL "$UBUNTU_ISO_URL" -o "$iso"; }
-  echo "$iso"
-}
-
-seed_iso_with() {
-  # Use genisoimage (macOS: brew install cdrtools)
-  local src="$1" out="$2"
-  if command -v genisoimage >/dev/null 2>&1; then
-    genisoimage -quiet -output "$out" -volid cidata -joliet -rock "$src/user-data" "$src/meta-data"
-  elif [[ "$(uname)" == "Darwin" ]] && command -v hdiutil >/dev/null 2>&1; then
-    # fallback for macOS if genisoimage missing
-    hdiutil makehybrid -quiet -o "$out" "$src" -iso -joliet -default-volume-name cidata
+backend() {
+  arch="$(uname -m)"
+  sys="$(uname -s)"
+  if [[ "$arch" == "arm64" && "$sys" == "Darwin" ]]; then
+    echo "lima"
+  elif [[ "$arch" == "x86_64" ]]; then
+    echo "vbox"
   else
-    echo "Need genisoimage (or hdiutil on macOS) to build seed ISO" >&2; exit 1
+    echo "Unsupported arch: $arch ($sys)" >&2
+    exit 1
   fi
 }
 
-make_seed_iso() {
-  local pubkey="$1"
-  local seed="$WORKDIR/build/seed"
-  rm -rf "$seed"; mkdir -p "$seed"
-
-  cat >"$seed/user-data" <<YAML
-#cloud-config
-users:
-  - name: ${SSH_USER}
-    groups: [sudo]
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    shell: /bin/bash
-    ssh_authorized_keys: [ ${pubkey} ]
-package_update: true
-packages: [ git, curl, ca-certificates, unzip, build-essential, tmux, ufw, openssh-server, podman ]
-runcmd:
-  - [ bash, -lc, "ufw --force enable && ufw allow 22/tcp" ]
-  - [ bash, -lc, "curl -fsSL https://bun.sh/install | bash" ]
-  - [ bash, -lc, "echo 'export BUN_INSTALL=\\$HOME/.bun' >> /home/${SSH_USER}/.bashrc" ]
-  - [ bash, -lc, "echo 'export PATH=\\$BUN_INSTALL/bin:\\$PATH' >> /home/${SSH_USER}/.bashrc" ]
-YAML
-
-  cat >"$seed/meta-data" <<MD
-instance-id: ${VM_NAME}
-local-hostname: ${VM_NAME}
-MD
-
-  local iso_out="$WORKDIR/build/seed.iso"
-  seed_iso_with "$seed" "$iso_out"
-  echo "$iso_out"
+ssh_base() {
+  echo "-p" "$HOST_SSH_PORT" "-o" "StrictHostKeyChecking=no" "-o" "UserKnownHostsFile=/dev/null"
 }
 
-vm_exists()  { VBoxManage list vms | grep -q "\"$VM_NAME\""; }
-vm_running() { VBoxManage list runningvms | grep -q "\"$VM_NAME\""; }
+# ---------- Lima backend ----------
+lima_vm_init() {
+  [[ -f "$LIMA_CONFIG" ]] || { echo "Missing $LIMA_CONFIG"; exit 1; }
+  # Lima 1.2.1 has no --detach, so this will stream logs until boot completes.
+  echo "Starting Lima VM with config $LIMA_CONFIG ..."
+  limactl start --name org.lima "$LIMA_CONFIG"
+}
+lima_vm_up() { limactl start --name org.lima || true; }
+lima_vm_stop() { limactl stop org.lima || true; }
+lima_vm_destroy() { limactl delete org.lima || true; }
+lima_vm_ssh() { limactl shell org.lima; }
+lima_vm_export() { echo "Export not supported for Lima"; }
 
-wait_for_ssh() {
-  local tries=90
-  until ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$HOST_SSH_PORT" "${SSH_USER}@127.0.0.1" true 2>/dev/null; do
-    ((tries--)) || { echo "SSH did not come up in time"; exit 1; }
-    sleep 5
-  done
+# ---------- VirtualBox backend ----------
+need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 1; }; }
+assert_virtualbox() { need VBoxManage; }
+
+vbox_vm_init() {
+  assert_virtualbox
+  if VBoxManage list vms | grep -q "\"$VM_NAME\""; then
+    echo "VM already exists: $VM_NAME"; exit 1
+  fi
+  echo "TODO: implement full VBox unattended install"
+}
+vbox_vm_up() { VBoxManage startvm "$VM_NAME" --type headless; }
+vbox_vm_stop() { VBoxManage controlvm "$VM_NAME" acpipowerbutton || true; }
+vbox_vm_destroy() { VBoxManage unregistervm "$VM_NAME" --delete || true; }
+vbox_vm_ssh() { ssh "$(ssh_base[@])" "${SSH_USER}@127.0.0.1"; }
+vbox_vm_export() { VBoxManage export "$VM_NAME" --output "$VM_NAME.ova"; }
+
+# ---------- App install ----------
+looks_like_org_repo() {
+  [[ -f "package.json" || -f "bun.toml" ]] && [[ -d "src" || -f "install.sh" ]]
 }
 
-vm_create() {
-  local iso="$1" seed="$2"
-  echo "Creating VM ${VM_NAME}..."
-  VBoxManage createvm --name "$VM_NAME" --ostype Ubuntu_64 --register
-  VBoxManage modifyvm "$VM_NAME" --memory "$RAM_MB" --cpus "$CPU_COUNT" --ioapic on --pae on --graphicscontroller vmsvga
-  VBoxManage createmedium disk --filename "$WORKDIR/build/${VM_NAME}.vdi" --size "$((DISK_GB*1024))"
-  VBoxManage storagectl "$VM_NAME" --name "SATA" --add sata --controller IntelAhci
-  VBoxManage storageattach "$VM_NAME" --storagectl "SATA" --port 0 --device 0 --type hdd --medium "$WORKDIR/build/${VM_NAME}.vdi"
-  VBoxManage storagectl "$VM_NAME" --name "IDE" --add ide
-  VBoxManage storageattach "$VM_NAME" --storagectl "IDE" --port 0 --device 0 --type dvddrive --medium "$iso"
-  VBoxManage storageattach "$VM_NAME" --storagectl "IDE" --port 1 --device 0 --type dvddrive --medium "$seed"
-  VBoxManage modifyvm "$VM_NAME" --nic1 nat
-  VBoxManage modifyvm "$VM_NAME" --natpf1 "ssh,tcp,127.0.0.1,${HOST_SSH_PORT},,22"
-
-  echo "Starting unattended installation..."
-  VBoxManage unattended install "$VM_NAME" \
-    --iso="$iso" --user="$SSH_USER" --password="$SSH_USER" --full-user-name="$SSH_USER" \
-    --install-additions --locale="en_US" --time-zone="UTC" --start-vm=headless
-
-  wait_for_ssh
-  echo "Base system reachable; giving cloud-init a moment…"; sleep 20 || true
-}
-
-vm_detach_isos() {
-  VBoxManage storageattach "$VM_NAME" --storagectl "IDE" --port 0 --device 0 --type dvddrive --medium none || true
-  VBoxManage storageattach "$VM_NAME" --storagectl "IDE" --port 1 --device 0 --type dvddrive --medium none || true
-}
-
-vm_export() {
-  mkdir -p "$WORKDIR/dist"
-  local ova="$WORKDIR/dist/${VM_NAME}.ova"
-  echo "Exporting OVA to $ova..."
-  VBoxManage export "$VM_NAME" --output "$ova"
-  (cd "$WORKDIR/dist" && shasum -a 256 "$(basename "$ova")" > "$(basename "$ova").sha256")
-  echo "OVA ready: $ova"
-}
-
-ssh_base() { echo "-p" "$HOST_SSH_PORT" "-o" "StrictHostKeyChecking=no" "-o" "UserKnownHostsFile=/dev/null"; }
-
-rsync_excludes() {
-  cat <<EOF
+host_sync_into_vm() {
+  need rsync
+  local tmp_excl; tmp_excl="$(mktemp)"
+  cat > "$tmp_excl" <<EOF
 .git/
 node_modules/
 dist/
@@ -175,150 +77,111 @@ build/
 .cache/
 .DS_Store
 EOF
-}
-
-# ---------- VM Commands ----------
-cmd_vm_init() {
-  assert_virtualbox; need curl
-  ensure_workdir
-  vm_exists && { echo "VM ${VM_NAME} already exists."; exit 1; }
-  local iso pubkey seed
-  iso="$(download_iso)"
-  pubkey="$(detect_pubkey)"
-  seed="$(make_seed_iso "$pubkey")"
-  vm_create "$iso" "$seed"
-  vm_detach_isos
-  echo "VM ${VM_NAME} ready. Next: orgctl app install"
-}
-
-cmd_vm_up()      { assert_virtualbox; vm_running || { VBoxManage startvm "$VM_NAME" --type headless; wait_for_ssh; }; echo "VM up."; }
-cmd_vm_stop()    { assert_virtualbox; vm_running && VBoxManage controlvm "$VM_NAME" acpipowerbutton || echo "VM not running."; }
-cmd_vm_destroy() { assert_virtualbox; vm_running && VBoxManage controlvm "$VM_NAME" poweroff || true; vm_exists && VBoxManage unregistervm "$VM_NAME" --delete || true; echo "Removed VM."; }
-cmd_vm_ssh()     { assert_virtualbox; ssh "$(ssh_base[@])" "${SSH_USER}@127.0.0.1"; }
-cmd_vm_export()  { assert_virtualbox; vm_export; }
-
-# ---------- App install flows ----------
-looks_like_org_repo() {
-  [[ -f "package.json" || -f "bun.toml" || -f "bunfig.toml" ]] && [[ -d "src" || -d "scripts" || -f "install.sh" ]]
-}
-
-host_sync_into_vm() {
-  need rsync
-  local tmp_excl; tmp_excl="$(mktemp)"
-  rsync_excludes > "$tmp_excl"
-  if [[ "${#EXTRA_EXCLUDES[@]:-0}" -gt 0 ]]; then printf "%s\n" "${EXTRA_EXCLUDES[@]}" >> "$tmp_excl"; fi
-  echo "Syncing current directory to ${APP_DIR_IN_VM} ..."
+  echo "Syncing current directory to ~/org ..."
   rsync -az --delete --progress \
     --exclude-from="$tmp_excl" \
     -e "ssh $(ssh_base | xargs echo)" \
-    ./ "${SSH_USER}@127.0.0.1:${APP_DIR_IN_VM}/"
+    ./ "${SSH_USER}@127.0.0.1:/home/${SSH_USER}/org/"
   rm -f "$tmp_excl"
 }
 
 run_install_script() {
-  echo "Running ${INSTALL_SCRIPT_IN_VM} inside VM ..."
+  echo "Running install.sh inside VM ..."
   ssh "$(ssh_base[@])" "${SSH_USER}@127.0.0.1" \
-    "bash -lc 'chmod +x ${INSTALL_SCRIPT_IN_VM} || true; ${INSTALL_SCRIPT_IN_VM}'"
+    "bash -lc 'chmod +x /home/${SSH_USER}/org/install.sh || true; /home/${SSH_USER}/org/install.sh'"
 }
 
-git_clone_in_vm_https() {
+git_clone_in_vm() {
   local url="$1"
-  echo "Cloning ${url} inside the VM (HTTPS) ..."
-  set +e
   ssh "$(ssh_base[@])" "${SSH_USER}@127.0.0.1" \
-    "bash -lc 'rm -rf ${APP_DIR_IN_VM} && git clone ${url} ${APP_DIR_IN_VM}'"
-  local rc=$?; set -e; return $rc
-}
-
-git_clone_in_vm_ssh() {
-  local url="$1"
-  echo "Cloning ${url} inside the VM via SSH agent-forwarding ..."
-  ssh -A "$(ssh_base[@])" "${SSH_USER}@127.0.0.1" \
-    "bash -lc 'rm -rf ${APP_DIR_IN_VM} && git clone ${url} ${APP_DIR_IN_VM}'"
+    "bash -lc 'rm -rf /home/${SSH_USER}/org && git clone ${url} /home/${SSH_USER}/org'"
 }
 
 tarball_install_in_vm() {
   local url="$1" sha="$2"
-  echo "Fetching tarball ${url} inside the VM ..."
-  local verify=""; [[ -n "$sha" ]] && verify="echo '${sha}  /tmp/org.tgz' | sha256sum -c - &&"
+  local verify=""
+  [[ -n "$sha" ]] && verify="echo '${sha}  /tmp/org.tgz' | sha256sum -c - &&"
   ssh "$(ssh_base[@])" "${SSH_USER}@127.0.0.1" \
-    "bash -lc 'rm -rf ${APP_DIR_IN_VM} && mkdir -p ${APP_DIR_IN_VM} && \
-      curl -fL ${url@Q} -o /tmp/org.tgz && ${verify} \
-      tar -xzf /tmp/org.tgz -C ${APP_DIR_IN_VM} --strip-components=1'"
+    "bash -lc 'rm -rf /home/${SSH_USER}/org && mkdir -p /home/${SSH_USER}/org && \
+      curl -fsSL ${url@Q} -o /tmp/org.tgz && ${verify} \
+      tar -xzf /tmp/org.tgz -C /home/${SSH_USER}/org --strip-components=1'"
 }
 
 cmd_app_install() {
-  assert_virtualbox; cmd_vm_up >/dev/null
-
-  local FROM="host" REPO_URL="$ORG_GIT_URL_DEFAULT" USE_SSH_AGENT="no" NO_RUN="no"
-  EXTRA_EXCLUDES=(); local TAR_URL="$ORG_TARBALL_URL" TAR_SHA="$ORG_TARBALL_SHA256"
+  FROM="host"
+  REPO_URL="https://github.com/tjamescouch/org.git"
+  TAR_URL=""; TAR_SHA=""
+  NO_RUN="no"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --from) FROM="$2"; shift 2;;
-      --repo) REPO_URL="$2"; shift 2;;
-      --ssh-agent) USE_SSH_AGENT="yes"; shift;;
-      --no-run) NO_RUN="yes"; shift;;
-      --exclude) EXTRA_EXCLUDES+=("$2"); shift 2;;
-      --tar-url) TAR_URL="$2"; shift 2;;
-      --tar-sha256) TAR_SHA="$2"; shift 2;;
-      *) echo "Unknown option: $1" >&2; usage; exit 1;;
+      --from) FROM="$2"; shift 2 ;;
+      --repo) REPO_URL="$2"; shift 2 ;;
+      --tar-url) TAR_URL="$2"; shift 2 ;;
+      --tar-sha256) TAR_SHA="$2"; shift 2 ;;
+      --no-run) NO_RUN="yes"; shift ;;
+      *) echo "Unknown option: $1"; exit 1 ;;
     esac
   done
 
   case "$FROM" in
-    host)
-      if looks_like_org_repo; then
-        host_sync_into_vm
-      else
-        echo "This directory doesn't look like the 'org' repo; falling back to --from git."
-        FROM="git"
-      fi
-      ;;
+    host) looks_like_org_repo && host_sync_into_vm || git_clone_in_vm "$REPO_URL" ;;
+    git) git_clone_in_vm "$REPO_URL" ;;
+    tar) tarball_install_in_vm "$TAR_URL" "$TAR_SHA" ;;
   esac
 
-  if [[ "$FROM" == "git" ]]; then
-    if git_clone_in_vm_https "$REPO_URL"; then
-      echo "Git clone (HTTPS) succeeded."
-    else
-      echo
-      echo "Git clone failed (likely private repo or no creds). Choose one:"
-      echo "  1) SSH agent forwarding: orgctl app install --from git --repo git@github.com:YOU/org.git --ssh-agent"
-      echo "  2) Verified tarball:      orgctl app install --from tar --tar-url https://... --tar-sha256 <sha>"
-      echo "  3) Local sync:            run from your repo root: orgctl app install --from host"
-      echo
-      exit 2
-    fi
-  fi
-
-  if [[ "$FROM" == "tar" ]]; then
-    [[ -n "$TAR_URL" ]] || { echo "--from tar requires --tar-url"; exit 1; }
-    tarball_install_in_vm "$TAR_URL" "$TAR_SHA"
-  fi
-
   [[ "$NO_RUN" == "yes" ]] || run_install_script
-  echo "✔ Installed at ${APP_DIR_IN_VM}"
+}
+
+# ---------- Dispatcher ----------
+cmd_vm() {
+  sub="${1:-}"; shift || true
+  case "$(backend)" in
+    lima)
+      case "$sub" in
+        init) lima_vm_init ;;
+        up) lima_vm_up ;;
+        stop) lima_vm_stop ;;
+        destroy) lima_vm_destroy ;;
+        ssh) lima_vm_ssh ;;
+        export) lima_vm_export ;;
+        *) echo "Unknown vm subcommand: $sub"; exit 1 ;;
+      esac
+      ;;
+    vbox)
+      case "$sub" in
+        init) vbox_vm_init ;;
+        up) vbox_vm_up ;;
+        stop) vbox_vm_stop ;;
+        destroy) vbox_vm_destroy ;;
+        ssh) vbox_vm_ssh ;;
+        export) vbox_vm_export ;;
+        *) echo "Unknown vm subcommand: $sub"; exit 1 ;;
+      esac
+      ;;
+  esac
+}
+
+usage() {
+  cat <<EOF
+orgctl v$VERSION
+
+USAGE:
+  orgctl vm <init|up|stop|destroy|ssh|export>
+  orgctl app install [--from host|git|tar]
+  orgctl version
+EOF
 }
 
 # ---------- Main ----------
 case "${1:-}" in
-  vm) shift; sub="${1:-}"; shift || true
-      case "$sub" in
-        init) cmd_vm_init "$@";;
-        up) cmd_vm_up;;
-        stop) cmd_vm_stop;;
-        destroy) cmd_vm_destroy;;
-        ssh) cmd_vm_ssh;;
-        export) cmd_vm_export;;
-        *) usage; exit 1;;
-      esac;;
+  vm) shift; cmd_vm "$@" ;;
   app) shift; sub="${1:-}"; shift || true
-      case "$sub" in
-        install) cmd_app_install "$@";;
-        *) usage; exit 1;;
-      esac;;
-  version) echo "$VERSION";;
-  ""|help|-h|--help) usage;;
-  *) usage; exit 1;;
+       case "$sub" in
+         install) cmd_app_install "$@" ;;
+         *) usage; exit 1 ;;
+       esac ;;
+  version) echo "$VERSION" ;;
+  ""|help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
 esac
-
