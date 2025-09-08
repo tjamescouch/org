@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
 # orgctl - MIT License
 # Unified orchestration CLI for org
-# - Apple Silicon (arm64): Lima backend with .org/config/org.lima.yaml
+# - Apple Silicon (arm64): Lima backend (Lima 1.2.x compatible)
 # - Intel (x86_64): VirtualBox backend
-# Works with Lima 1.2.1 (no --detach / --user flags)
+# Lima config search order:
+#   1) $ORG_LIMA_CONFIG
+#   2) $PWD/.org/config/org.lima.yaml
+#   3) $HOME/.config/org/org.lima.yaml
+#   4) $ORG_DIR/.org/config/org.lima.yaml   (vendored next to the installed script)
+# Fail-fast by default.
 
 set -euo pipefail
-VERSION="0.6.0"
+VERSION="0.6.1"
 
+# Path where this script lives (brew installs into .../Cellar/org/<ver>/libexec/)
 ORG_DIR="$(cd "$(dirname "$0")" && pwd)"
-LIMA_CONFIG="$ORG_DIR/.org/config/org.lima.yaml"
+
+# Defaults
 VM_NAME="org-vm"
 HOST_SSH_PORT="${HOST_SSH_PORT:-2222}"
-SSH_USER="$(whoami)"   # default to host username (works in Lima 1.2.1)
+SSH_USER="$(whoami)"   # Lima 1.2.x mirrors host username by default
 
+# ---------- helpers ----------
 backend() {
+  local arch sys
   arch="$(uname -m)"
   sys="$(uname -s)"
   if [[ "$arch" == "arm64" && "$sys" == "Darwin" ]]; then
@@ -27,25 +36,71 @@ backend() {
   fi
 }
 
+need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 1; }; }
+
 ssh_base() {
+  # Always talk to guest via localhost:2222 with relaxed hostkey checks
   echo "-p" "$HOST_SSH_PORT" "-o" "StrictHostKeyChecking=no" "-o" "UserKnownHostsFile=/dev/null"
 }
 
-# ---------- Lima backend ----------
-lima_vm_init() {
-  [[ -f "$LIMA_CONFIG" ]] || { echo "Missing $LIMA_CONFIG"; exit 1; }
-  # Lima 1.2.1 has no --detach, so this will stream logs until boot completes.
-  echo "Starting Lima VM with config $LIMA_CONFIG ..."
-  limactl start --name org.lima "$LIMA_CONFIG"
-}
-lima_vm_up() { limactl start --name org.lima || true; }
-lima_vm_stop() { limactl stop org.lima || true; }
-lima_vm_destroy() { limactl delete org.lima || true; }
-lima_vm_ssh() { limactl shell org.lima; }
-lima_vm_export() { echo "Export not supported for Lima"; }
+# Resolve the Lima profile path using the agreed precedence
+lima_config_path() {
+  local cands=()
 
-# ---------- VirtualBox backend ----------
-need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 1; }; }
+  # 1) Explicit env override
+  if [[ -n "${ORG_LIMA_CONFIG:-}" ]]; then
+    cands+=("$ORG_LIMA_CONFIG")
+  fi
+  # 2) Project-local (run from a repo root)
+  cands+=("$PWD/.org/config/org.lima.yaml")
+  # 3) User config
+  cands+=("$HOME/.config/org/org.lima.yaml")
+  # 4) Vendored next to the installed script (brew libexec path)
+  cands+=("$ORG_DIR/.org/config/org.lima.yaml")
+
+  local p
+  for p in "${cands[@]}"; do
+    if [[ -f "$p" ]]; then
+      echo "$p"
+      return 0
+    fi
+  done
+
+  # Nice error explaining how to fix
+  cat >&2 <<'EOF'
+orgctl: could not find a Lima profile (org.lima.yaml).
+
+Searched (in order):
+  1) $ORG_LIMA_CONFIG (set this to an absolute path to your YAML)
+  2) $PWD/.org/config/org.lima.yaml
+  3) $HOME/.config/org/org.lima.yaml
+  4) $ORG_DIR/.org/config/org.lima.yaml (vendored)
+
+Fix options:
+  export ORG_LIMA_CONFIG="$PWD/.org/config/org.lima.yaml"   # from your project root
+  # or
+  mkdir -p ~/.config/org && ln -s "$PWD/.org/config/org.lima.yaml" ~/.config/org/org.lima.yaml
+EOF
+  exit 1
+}
+
+# ---------- Lima backend (Apple Silicon) ----------
+lima_vm_init() {
+  need limactl
+  local cfg
+  cfg="$(lima_config_path)"
+  echo "Starting Lima VM with config: $cfg"
+  # Lima 1.2.x has no --detach; this will stream logs until boot completes
+  limactl start --name org.lima "$cfg"
+}
+
+lima_vm_up()      { need limactl; limactl start --name org.lima || true; }
+lima_vm_stop()    { need limactl; limactl stop org.lima || true; }
+lima_vm_destroy() { need limactl; limactl delete org.lima || true; }
+lima_vm_ssh()     { need limactl; limactl shell org.lima; }
+lima_vm_export()  { echo "Export not supported for Lima"; }
+
+# ---------- VirtualBox backend (Intel) ----------
 assert_virtualbox() { need VBoxManage; }
 
 vbox_vm_init() {
@@ -55,21 +110,21 @@ vbox_vm_init() {
   fi
   echo "TODO: implement full VBox unattended install"
 }
-vbox_vm_up() { VBoxManage startvm "$VM_NAME" --type headless; }
-vbox_vm_stop() { VBoxManage controlvm "$VM_NAME" acpipowerbutton || true; }
-vbox_vm_destroy() { VBoxManage unregistervm "$VM_NAME" --delete || true; }
-vbox_vm_ssh() { ssh "$(ssh_base[@])" "${SSH_USER}@127.0.0.1"; }
-vbox_vm_export() { VBoxManage export "$VM_NAME" --output "$VM_NAME.ova"; }
+vbox_vm_up()      { assert_virtualbox; VBoxManage startvm "$VM_NAME" --type headless; }
+vbox_vm_stop()    { assert_virtualbox; VBoxManage controlvm "$VM_NAME" acpipowerbutton || true; }
+vbox_vm_destroy() { assert_virtualbox; VBoxManage unregistervm "$VM_NAME" --delete || true; }
+vbox_vm_ssh()     { ssh "$(ssh_base[@])" "${SSH_USER}@127.0.0.1"; }
+vbox_vm_export()  { assert_virtualbox; VBoxManage export "$VM_NAME" --output "$VM_NAME.ova"; }
 
-# ---------- App install ----------
+# ---------- App install flows (common) ----------
 looks_like_org_repo() {
-  [[ -f "package.json" || -f "bun.toml" ]] && [[ -d "src" || -f "install.sh" ]]
+  [[ -f "package.json" || -f "bun.toml" || -f "bunfig.toml" ]] && [[ -d "src" || -f "install.sh" ]]
 }
 
 host_sync_into_vm() {
   need rsync
   local tmp_excl; tmp_excl="$(mktemp)"
-  cat > "$tmp_excl" <<EOF
+  cat > "$tmp_excl" <<'EOF'
 .git/
 node_modules/
 dist/
@@ -77,7 +132,7 @@ build/
 .cache/
 .DS_Store
 EOF
-  echo "Syncing current directory to ~/org ..."
+  echo "Syncing current directory to /home/${SSH_USER}/org ..."
   rsync -az --delete --progress \
     --exclude-from="$tmp_excl" \
     -e "ssh $(ssh_base | xargs echo)" \
@@ -108,55 +163,56 @@ tarball_install_in_vm() {
 }
 
 cmd_app_install() {
-  FROM="host"
-  REPO_URL="https://github.com/tjamescouch/org.git"
-  TAR_URL=""; TAR_SHA=""
-  NO_RUN="no"
+  local FROM="host"
+  local REPO_URL="https://github.com/tjamescouch/org.git"
+  local TAR_URL=""; local TAR_SHA=""
+  local NO_RUN="no"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --from) FROM="$2"; shift 2 ;;
-      --repo) REPO_URL="$2"; shift 2 ;;
-      --tar-url) TAR_URL="$2"; shift 2 ;;
-      --tar-sha256) TAR_SHA="$2"; shift 2 ;;
-      --no-run) NO_RUN="yes"; shift ;;
-      *) echo "Unknown option: $1"; exit 1 ;;
+      --from) FROM="$2"; shift 2;;
+      --repo) REPO_URL="$2"; shift 2;;
+      --tar-url) TAR_URL="$2"; shift 2;;
+      --tar-sha256) TAR_SHA="$2"; shift 2;;
+      --no-run) NO_RUN="yes"; shift;;
+      *) echo "Unknown option: $1" >&2; exit 1;;
     esac
   done
 
   case "$FROM" in
     host) looks_like_org_repo && host_sync_into_vm || git_clone_in_vm "$REPO_URL" ;;
-    git) git_clone_in_vm "$REPO_URL" ;;
-    tar) tarball_install_in_vm "$TAR_URL" "$TAR_SHA" ;;
+    git)  git_clone_in_vm "$REPO_URL" ;;
+    tar)  tarball_install_in_vm "$TAR_URL" "$TAR_SHA" ;;
+    *)    echo "--from must be host|git|tar" >&2; exit 1 ;;
   esac
 
   [[ "$NO_RUN" == "yes" ]] || run_install_script
 }
 
-# ---------- Dispatcher ----------
+# ---------- dispatcher ----------
 cmd_vm() {
-  sub="${1:-}"; shift || true
+  local sub="${1:-}"; shift || true
   case "$(backend)" in
     lima)
       case "$sub" in
-        init) lima_vm_init ;;
-        up) lima_vm_up ;;
-        stop) lima_vm_stop ;;
+        init)    lima_vm_init ;;
+        up)      lima_vm_up ;;
+        stop)    lima_vm_stop ;;
         destroy) lima_vm_destroy ;;
-        ssh) lima_vm_ssh ;;
-        export) lima_vm_export ;;
-        *) echo "Unknown vm subcommand: $sub"; exit 1 ;;
+        ssh)     lima_vm_ssh ;;
+        export)  lima_vm_export ;;
+        *) echo "Unknown vm subcommand: $sub" >&2; exit 1 ;;
       esac
       ;;
     vbox)
       case "$sub" in
-        init) vbox_vm_init ;;
-        up) vbox_vm_up ;;
-        stop) vbox_vm_stop ;;
+        init)    vbox_vm_init ;;
+        up)      vbox_vm_up ;;
+        stop)    vbox_vm_stop ;;
         destroy) vbox_vm_destroy ;;
-        ssh) vbox_vm_ssh ;;
-        export) vbox_vm_export ;;
-        *) echo "Unknown vm subcommand: $sub"; exit 1 ;;
+        ssh)     vbox_vm_ssh ;;
+        export)  vbox_vm_export ;;
+        *) echo "Unknown vm subcommand: $sub" >&2; exit 1 ;;
       esac
       ;;
   esac
@@ -168,12 +224,15 @@ orgctl v$VERSION
 
 USAGE:
   orgctl vm <init|up|stop|destroy|ssh|export>
-  orgctl app install [--from host|git|tar]
+  orgctl app install [--from host|git|tar] [--repo URL] [--tar-url URL --tar-sha256 SHA] [--no-run]
   orgctl version
+ENV:
+  ORG_LIMA_CONFIG   Absolute path to org.lima.yaml (overrides search)
+  HOST_SSH_PORT     SSH port to the guest (default 2222)
 EOF
 }
 
-# ---------- Main ----------
+# ---------- main ----------
 case "${1:-}" in
   vm) shift; cmd_vm "$@" ;;
   app) shift; sub="${1:-}"; shift || true
