@@ -1,247 +1,195 @@
 
-# INSTALLATION.md
+# INSTALLATION
 
-This guide shows how to install **org** so you can run it from anywhere on your machine.
-Covers macOS (Apple Silicon & Intel) and Debian/Ubuntu-like Linux.
+This guide shows how to install **org** with a **VM-backed sandbox** for safer runs and a reproducible developer experience.
+
+- **Apple Silicon (M-series macOS):** uses **Lima** as the VM backend.
+- **Intel macOS:** uses **VirtualBox**.
+- Linux notes and a legacy “container-only” path are included at the end.
+
+> If you just need the quick steps, see the README. This doc explains *why* each step exists, how to verify it, and how to troubleshoot.
 
 ---
 
-## Quick Start (recommended)
+## 0) What gets installed
 
-1. **Install prerequisites**
+- A tiny CLI, **`orgctl`**, installed via Homebrew.
+- A VM defined by **`.org/config/org.lima.yaml`** (Apple Silicon) or VirtualBox (Intel).
+- Inside the VM: minimal Ubuntu, Bun, Podman (optional), and a locked-down firewall (localhost-only by default).
+- Your **code** is mounted from the host into the VM at `~/dev` (and `~/scratch` is an in-VM tmpfs).
 
-* **macOS**
+---
 
-  ```bash
-  brew install podman git
-  podman machine init    # first time only
-  podman machine start
-  ```
+## 1) Prerequisites
 
-* **Debian/Ubuntu**
+### macOS (Apple Silicon – recommended path)
+```bash
+brew tap tjamescouch/org
+brew install org
+brew install lima                # VM provider for Apple Silicon
+````
 
-  ```bash
-  sudo apt-get update
-  sudo apt-get install -y podman git
-  ```
+> **Why Lima?** VirtualBox is not practically usable on Apple Silicon; Lima wraps Apple’s native virtualization for a fast, light VM.
 
-2. **Clone & install**
+### macOS (Intel)
 
 ```bash
+brew tap tjamescouch/org
+brew install org
+brew install --cask virtualbox   # approve kext if macOS prompts
+```
+
+### Linux (Debian/Ubuntu)
+
+You can run `org` directly or bring your own VM/hypervisor. For parity with macOS, QEMU/KVM works well, but is not wired into `orgctl` yet. See **Container-only (legacy)** below if you prefer no VM.
+
+---
+
+## 2) Create and start the VM
+
+From the **repo root** (so `orgctl` finds the checked-in profile at `.org/config/org.lima.yaml`):
+
+```bash
+# Apple Silicon (Lima)
+./orgctl vm init     # creates & boots the VM from .org/config/org.lima.yaml
+# Lima 1.2.x prints boot logs; when it settles, press Ctrl-C to detach.
+./orgctl vm ssh      # open a shell inside the VM
+```
+```bash
+# Intel (VirtualBox)
+./orgctl vm init
+./orgctl vm ssh
+```
+
+**What the Lima profile does (Apple Silicon):**
+
+* Root disk **50 GiB**.
+* Mount host `~/dev →` guest `~/dev` (sane default; keeps personal files out).
+* `~/scratch` is tmpfs for ephemeral work.
+* Networking: **no external egress**; UFW allows only `127.0.0.1` (LMStudio/Ollama).
+  You can temporarily open HTTPS egress inside the VM if you need to pull images (see Troubleshooting).
+
+---
+
+## 3) Put your code into the VM
+
+Choose one:
+
+```bash
+# A) Sync your current checkout (no creds in the VM)
+./orgctl app install --from host
+
+# B) Clone inside the VM (HTTPS or SSH agent-forwarding)
+./orgctl app install --from git --repo https://github.com/<username>/org.git
+# or: ./orgctl app install --from git --repo git@github.com:<username>/org.git  (then use ssh-agent)
+
+# C) Verified tarball (no auth; reproducible)
+./orgctl app install --from tar \
+  --tar-url https://github.com/<username>/org/releases/download/vX.Y.Z/org-X.Y.Z.tgz \
+  --tar-sha256 <sha256>
+```
+
+All methods end with the repo at `~/org` (or under `~/dev/…` if you prefer).
+`--from host` is the safest default: the VM never sees your Git credentials.
+The <username> is either tjamescouch or your username if you forked the repository.
+
+---
+
+## 4) Run and verify
+
+Inside the VM:
+
+```bash
+cd ~/dev/your-repo
+./install.sh        # This will take a while
+org                 # or: org --ui tmux
+```
+
+Logs for the project appear under `<project>/.org/logs/…` on your host (because the project dir is mounted).
+
+---
+
+## 5) Day-to-day commands
+
+```bash
+# Start or stop the VM
+./orgctl vm up
+./orgctl vm stop
+
+# Enter the VM shell
+./orgctl vm ssh
+
+# Rebuild from scratch (applies updated .org/config/org.lima.yaml)
+limactl delete org.lima || true
+./orgctl vm init
+```
+
+> If you installed `orgctl` via Homebrew earlier, ensure your shell picks the **repo** version while developing:
+> `export PATH="$PWD:$PATH"` then `type -a orgctl` should show `./orgctl` first.
+
+---
+
+## 6) Security model (quick read)
+
+* **VM boundary**: separate kernel and disk; only `~/dev` (and tmpfs scratch) are visible in the guest.
+* **Default egress**: blocked; only `127.0.0.1` allowed from inside VM (talk to LMStudio/Ollama on host).
+* **Safer than host/container**: the VM is the recommended “hard boundary.”
+* **Not an air-gap**: the mounted `~/dev` is read/write; treat it as in-scope for hostile code.
+
+> See **SECURITY.md** for vulnerability reporting and hardening tips (read-only mounts, per-project mounts, temporary egress rules, etc.).
+
+---
+
+## 7) Troubleshooting
+
+**I see Lima boot logs and can’t type commands**
+That’s normal on Lima 1.2.x during `vm init`. Press **Ctrl-C** to detach; the VM stays up. Then `./orgctl vm ssh`.
+
+**`orgctl vm ssh` says “install VirtualBox” on Apple Silicon**
+Your shell is using the Homebrew `orgctl` instead of the repo copy. Run `export PATH="$PWD:$PATH"` or call `./orgctl …`. Check with `type -a orgctl`.
+
+**Where’s my disk space?**
+`df -h /` shows the VM’s root disk (50 GiB). `df -h ~/dev` shows your **host** free space—expected because it’s a mount.
+
+**Need to pull a container image in the VM**
+Inside the VM:
+
+```bash
+sudo ufw allow out 443/tcp
+podman pull docker.io/library/alpine:latest
+sudo ufw delete allow out 443/tcp
+```
+
+**VirtualBox on Apple Silicon?**
+Not supported in practice. Use Lima.
+
+---
+
+## 8) Uninstall / clean up
+
+```bash
+# Remove the VM (Apple Silicon)
+limactl stop org.lima || true
+limactl delete org.lima || true
+
+# Remove brew CLI
+brew uninstall org
+```
+
+VirtualBox users: also remove the VM from VirtualBox if created.
+
+---
+
+## 9) Linux & Container-only (legacy)
+
+You can still run **without a VM** (less isolation):
+
+```bash
+# Debian/Ubuntu
+sudo apt-get update && sudo apt-get install -y podman git
 git clone https://github.com/tjamescouch/org.git
 cd org
 ./install.sh
-```
-
-> `install.sh` will **build the container image if it’s missing** and install the `org` and `apply_patch` shims.
-> If `/usr/local/bin` isn’t writable, it automatically installs into `~/.local/bin` and tells you what it did.
-
-3. **Run it**
-
-* Easiest (no host runtime needed): **tmux mode** runs everything inside the container:
-
-  ```bash
-  org --ui tmux --prompt "hello"
-  ```
-
-* Or, if you have Bun or Node+tsx on your host:
-
-  ```bash
-  org --prompt "hello"
-  ```
-
-Logs will appear under the **project you run from** at `.org/logs/`.
-
----
-
-## What you’ll end up with
-
-* A container image **`localhost/org-build:debian-12`** (Bun, tmux, etc.).
-* A command **`org`** on your `$PATH` (symlink back to this repo).
-* A utility **`apply_patch`** on your `$PATH` (safe patch applier).
-
-The install is **non-destructive** and easy to remove.
-
----
-
-## Prerequisites (details)
-
-* **Podman** (preferred). Docker can work, but scripts assume `podman`.
-* **git**
-* (Optional) **Bun** or **Node+tsx** — only needed if you want to run the **console UI on the host**.
-  If you don’t want host runtimes, just use `--ui tmux` and everything runs inside the container.
-
-> macOS users: make sure `podman machine start` completes without errors before continuing.
-
----
-
-## Building the container (optional)
-
-`install.sh` will **build the image if it’s not present**. If you want to (re)build explicitly:
-
-```bash
-./create-container.sh
-```
-
-Raw Podman example:
-
-```bash
-# Apple Silicon
-podman build --no-cache --platform linux/arm64 \
-  -t localhost/org-build:debian-12 -f Containerfile .
-
-# Intel
-podman build --no-cache --platform linux/amd64 \
-  -t localhost/org-build:debian-12 -f Containerfile .
-```
-
----
-
-## Installing the CLI shims (what `install.sh` does)
-
-From the repo root:
-
-```bash
-./install.sh
-```
-
-It will:
-
-* **Install** `apply_patch` to `/usr/local/bin/apply_patch` (or `~/.local/bin/apply_patch` if `/usr/local/bin` isn’t writable).
-* **Symlink** `org` to the repo script:
-
-  * `/usr/local/bin/org` → `<repo>/org` (or `~/.local/bin/org` → `<repo>/org`)
-* Build the image if it’s missing.
-* Print exactly where it installed things and how to run `org` next.
-
-If it had to fall back to `~/.local/bin`, ensure that directory is on your `$PATH`:
-
-```bash
-# bash / zsh
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # or ~/.zshrc
-exec $SHELL -l
-```
-
----
-
-## Verifying your install
-
-From **any** project directory:
-
-```bash
-# Runs the console UI on host if you have Bun or Node+tsx
-org --prompt "say hi"
-
-# Or: run inside the container in a tmux pane (no host runtime needed)
-org --ui tmux --prompt "say hi"
-```
-
-Tail logs from the project:
-
-```bash
-ls -lt .org/logs/
-tail -f .org/logs/last.log
-```
-
----
-
-## Day-to-day usage
-
-* Run `org` **inside the repo you want to work on** — it treats your current directory as the project root.
-
-* Start with a prompt:
-
-  ```bash
-  org --prompt "fix tests"
-  ```
-
-* Choose UI:
-
-  * Console (host): `org --ui console`
-  * tmux (container): `org --ui tmux`
-
-* Useful env vars:
-
-  * `ORG_DEBUG=1` or `LOG_LEVEL=debug` — extra logs
-  * `ORG_FORCE_UI=console|tmux` — default UI preference
-  * `ORG_ENGINE=podman` — override engine
-  * `ORG_IMAGE=localhost/org-build:debian-12` — override image
-
-> In tmux mode we run the console UI **inside** the container; no Bun/Node required on the host.
-
----
-
-## Upgrading
-
-```bash
-git pull
-./install.sh
-```
-
-If you changed `Containerfile` and want a fresh image:
-
-```bash
-./create-container.sh
-```
-
----
-
-## Uninstall
-
-Remove the shims (whichever location you used):
-
-```bash
-sudo rm -f /usr/local/bin/org /usr/local/bin/apply_patch
-rm -f "$HOME/.local/bin/org" "$HOME/.local/bin/apply_patch"
-```
-
-Remove the container image (optional):
-
-```bash
-podman rmi localhost/org-build:debian-12
-```
-
-Delete project artifacts (`.org/`) as desired.
-
----
-
-## Troubleshooting
-
-**“Cannot connect to Podman socket” (macOS)**
-Run `podman machine init` (once) then `podman machine start`. Confirm `podman info` works.
-
-**`org: entrypoint not found: …/src/app.ts`**
-The launcher couldn’t find the app entry in the project you’re in. Make sure the repo you’re **working on** contains `src/app.ts`, or run `org` from the correct project root.
-
-**tmux starts and exits immediately**
-Open the newest `.org/logs/tmux-*.log` in the project you launched from:
-
-```bash
-ls -lt .org/logs/tmux-*.log | head
-tail -n +1 -f .org/logs/tmux-*.log
-```
-
-Check for an error just before exit.
-
-**`org: command not found`**
-Open a new terminal or put `~/.local/bin` on your `$PATH` (see “Installing the CLI shims”).
-
----
-
-## Files created
-
-* **`/usr/local/bin/org`** or **`~/.local/bin/org`** — symlink to `<repo>/org`
-* **`/usr/local/bin/apply_patch`** or **`~/.local/bin/apply_patch`** — copy of the repo script
-* **`<project>/.org/logs/`** — run & tmux logs for that project
-* **Podman image** — `localhost/org-build:debian-12`
-
----
-
-## One-liner (first-time macOS setup)
-
-```bash
-brew install podman git && podman machine init && podman machine start \
-&& git clone https://github.com/tjamescouch/org.git && cd org \
-&& ./install.sh && org --ui tmux --prompt "hello"
+org --ui tmux --prompt "hello"
 ```
 
