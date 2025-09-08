@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # orgctl - MIT License
-# v0.7.4
+# v0.8.0
 # - Apple Silicon: Lima backend (Lima 1.2.x compatible; no --detach)
 # - Intel: minimal VBox shim
 
 set -euo pipefail
-VERSION="0.7.4"
+VERSION="0.8.0"
 
 ORG_DIR="$(cd "$(dirname "$0")" && pwd)"
 SSH_USER="$(whoami)"
+NO_TAIL="${NO_TAIL:-false}"
 
 # ---------- utils ----------
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1" >&2; exit 1; }; }
@@ -40,14 +41,21 @@ EOF
 lima_exists() { [[ -d "$HOME/.lima/org.lima" ]] || limactl list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx org.lima 2>/dev/null; }
 
 lima_wait_ready(){
-  local i=0 spin='|/-\'
-  printf "Waiting for VM to become ready "
+  local i=0 
+  echo "Sleeping 5 seconds"
+  sleep 5
+  echo "Waiting for VM to become ready "
   while (( i < 180 )); do
-    limactl shell org.lima -- true >/dev/null 2>&1 && { printf "\r%-70s\r" ""; return 0; }
-    printf "\rWaiting for VM to become ready %c" "${spin:i%4:1}"
-    sleep 2; ((i++))
+    if limactl shell org.lima -- true >/dev/null 2>&1; then
+      echo "VM is ready!"
+
+      return 0
+    fi
+    echo "Waiting for VM to become ready..."
+    ((i++))
+    sleep 2
   done
-  printf "\nTimed out. See: tail -f ~/.lima/org.lima/serial*.log\n" >&2
+  echo "Timed out. See: tail -f ~/.lima/org.lima/serial*.log" >&2
   return 1
 }
 
@@ -119,11 +127,7 @@ tail_vm_log() {
 
 lima_attach() {
   echo "Attaching to VM…"
-  if limactl shell -h 2>&1 | grep -q -- '--workdir'; then
-    limactl shell --workdir "/home/$SSH_USER.linux/dev" org.lima || limactl shell org.lima
-  else
-    limactl shell org.lima -- bash -lc 'cd "$HOME/dev" 2>/dev/null || cd ~; exec bash -l'
-  fi
+  limactl shell org.lima -- bash -i -l -c 'cd "$HOME/dev" 2>/dev/null || cd ~; exec bash -i -l'
 }
 
 # ---------- VBox stub ----------
@@ -131,6 +135,14 @@ vbox_init(){ echo "TODO: VBox unattended install"; }
 
 # ---------- commands ----------
 cmd_quickstart() {
+  # parse flags
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --no-tail) NO_TAIL=true; shift;;
+      *) echo "Unknown option: $1"; exit 1;;
+    esac
+  done
+
   if [[ "$(backend)" != "lima" ]]; then
     echo "quickstart is for Apple Silicon (Lima)." >&2
     exit 1
@@ -140,7 +152,9 @@ cmd_quickstart() {
   ensure_vmnet_if_needed "$cfg"
   echo "Using Lima config: $cfg"
   lima_start "$cfg"
-  tail_vm_log
+  if [[ "$NO_TAIL" != "true" ]]; then
+    tail_vm_log
+  fi
   lima_attach
 }
 
@@ -169,7 +183,7 @@ cmd_vm(){
 usage(){ cat <<EOF
 orgctl v$VERSION
 USAGE:
-  orgctl quickstart
+  orgctl quickstart [--no-tail]
   orgctl vm <init|up|stop|destroy|ssh>
   orgctl version
 EOF

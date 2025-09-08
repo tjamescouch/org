@@ -12,12 +12,12 @@ networks:
 mounts:
   # Host ~/dev -> Guest ~/dev
   - location: "~/dev"
-    mountPoint: "/home/{{.User}}.linux/dev"
+    mountPoint: "/home/{{.User}}/dev"
     writable: true
 
   # Ephemeral scratch
   - location: "tmpfs"
-    mountPoint: "/home/{{.User}}.linux/scratch"
+    mountPoint: "/home/{{.User}}/scratch"
     writable: true
 
 ssh:
