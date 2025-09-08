@@ -51,14 +51,13 @@ From the **repo root** (so `orgctl` finds the checked-in profile at `.org/config
 
 ```bash
 # Apple Silicon (Lima)
-./orgctl vm init     # creates & boots the VM from .org/config/org.lima.yaml
-# Lima 1.2.x prints boot logs; when it settles, press Ctrl-C to detach.
-./orgctl vm ssh      # open a shell inside the VM
+./orgctl quickstart  # If you fail to connect on the first try run 
+./orgctl vm ssh      # open a shell inside the VM ./orgctl vm ssh
 ```
+
 ```bash
 # Intel (VirtualBox)
-./orgctl vm init
-./orgctl vm ssh
+./orgctl quickstart
 ```
 
 **What the Lima profile does (Apple Silicon):**
