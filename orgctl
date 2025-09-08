@@ -7,102 +7,76 @@
 #   1) $ORG_LIMA_CONFIG
 #   2) $PWD/.org/config/org.lima.yaml
 #   3) $HOME/.config/org/org.lima.yaml
-#   4) $ORG_DIR/.org/config/org.lima.yaml   (vendored next to the installed script)
-# Fail-fast by default.
+#   4) $ORG_DIR/.org/config/org.lima.yaml
 
 set -euo pipefail
-VERSION="0.6.1"
+VERSION="0.6.2"
 
-# Path where this script lives (brew installs into .../Cellar/org/<ver>/libexec/)
 ORG_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-# Defaults
 VM_NAME="org-vm"
 HOST_SSH_PORT="${HOST_SSH_PORT:-2222}"
-SSH_USER="$(whoami)"   # Lima 1.2.x mirrors host username by default
+SSH_USER="$(whoami)"   # Lima 1.2.x mirrors host username
 
-# ---------- helpers ----------
 backend() {
   local arch sys
-  arch="$(uname -m)"
-  sys="$(uname -s)"
+  arch="$(uname -m)"; sys="$(uname -s)"
   if [[ "$arch" == "arm64" && "$sys" == "Darwin" ]]; then
     echo "lima"
   elif [[ "$arch" == "x86_64" ]]; then
     echo "vbox"
   else
-    echo "Unsupported arch: $arch ($sys)" >&2
-    exit 1
+    echo "Unsupported arch: $arch ($sys)" >&2; exit 1
   fi
 }
-
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 1; }; }
+ssh_base() { echo "-p" "$HOST_SSH_PORT" "-o" "StrictHostKeyChecking=no" "-o" "UserKnownHostsFile=/dev/null"; }
 
-ssh_base() {
-  # Always talk to guest via localhost:2222 with relaxed hostkey checks
-  echo "-p" "$HOST_SSH_PORT" "-o" "StrictHostKeyChecking=no" "-o" "UserKnownHostsFile=/dev/null"
-}
-
-# Resolve the Lima profile path using the agreed precedence
 lima_config_path() {
   local cands=()
-
-  # 1) Explicit env override
-  if [[ -n "${ORG_LIMA_CONFIG:-}" ]]; then
-    cands+=("$ORG_LIMA_CONFIG")
-  fi
-  # 2) Project-local (run from a repo root)
-  cands+=("$PWD/.org/config/org.lima.yaml")
-  # 3) User config
-  cands+=("$HOME/.config/org/org.lima.yaml")
-  # 4) Vendored next to the installed script (brew libexec path)
-  cands+=("$ORG_DIR/.org/config/org.lima.yaml")
-
-  local p
-  for p in "${cands[@]}"; do
-    if [[ -f "$p" ]]; then
-      echo "$p"
-      return 0
-    fi
-  done
-
-  # Nice error explaining how to fix
+  [[ -n "${ORG_LIMA_CONFIG:-}" ]] && cands+=("$ORG_LIMA_CONFIG")
+  cands+=("$PWD/.org/config/org.lima.yaml" "$HOME/.config/org/org.lima.yaml" "$ORG_DIR/.org/config/org.lima.yaml")
+  for p in "${cands[@]}"; do [[ -f "$p" ]] && { echo "$p"; return; }; done
   cat >&2 <<'EOF'
-orgctl: could not find a Lima profile (org.lima.yaml).
-
-Searched (in order):
-  1) $ORG_LIMA_CONFIG (set this to an absolute path to your YAML)
-  2) $PWD/.org/config/org.lima.yaml
-  3) $HOME/.config/org/org.lima.yaml
-  4) $ORG_DIR/.org/config/org.lima.yaml (vendored)
-
-Fix options:
-  export ORG_LIMA_CONFIG="$PWD/.org/config/org.lima.yaml"   # from your project root
+orgctl: could not find org.lima.yaml
+Searched:
+  $ORG_LIMA_CONFIG
+  $PWD/.org/config/org.lima.yaml
+  $HOME/.config/org/org.lima.yaml
+  $ORG_DIR/.org/config/org.lima.yaml
+Fix with:
+  export ORG_LIMA_CONFIG="$PWD/.org/config/org.lima.yaml"
   # or
   mkdir -p ~/.config/org && ln -s "$PWD/.org/config/org.lima.yaml" ~/.config/org/org.lima.yaml
 EOF
   exit 1
 }
 
-# ---------- Lima backend (Apple Silicon) ----------
+# ---------- Lima backend ----------
+lima_exists() {
+  # robust for Lima 1.2.x: directory check; also try limactl list if present
+  [[ -d "$HOME/.lima/org.lima" ]] && return 0
+  limactl list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "org.lima" 2>/dev/null
+}
 lima_vm_init() {
   need limactl
-  local cfg
-  cfg="$(lima_config_path)"
-  echo "Starting Lima VM with config: $cfg"
-  # Lima 1.2.x has no --detach; this will stream logs until boot completes
-  limactl start --name org.lima "$cfg"
+  if lima_exists; then
+    echo "Lima instance org.lima already exists; starting it."
+    limactl start org.lima || true
+  else
+    local cfg; cfg="$(lima_config_path)"
+    echo "Creating Lima VM with config: $cfg"
+    # Lima 1.2.x has no --detach; this will stream logs until boot completes
+    limactl start --name org.lima "$cfg"
+  fi
 }
-
-lima_vm_up()      { need limactl; limactl start --name org.lima || true; }
+lima_vm_up()      { need limactl; limactl start org.lima || true; }
 lima_vm_stop()    { need limactl; limactl stop org.lima || true; }
 lima_vm_destroy() { need limactl; limactl delete org.lima || true; }
 lima_vm_ssh()     { need limactl; limactl shell org.lima; }
 lima_vm_export()  { echo "Export not supported for Lima"; }
 
-# ---------- VirtualBox backend (Intel) ----------
+# ---------- VirtualBox backend ----------
 assert_virtualbox() { need VBoxManage; }
-
 vbox_vm_init() {
   assert_virtualbox
   if VBoxManage list vms | grep -q "\"$VM_NAME\""; then
@@ -116,11 +90,8 @@ vbox_vm_destroy() { assert_virtualbox; VBoxManage unregistervm "$VM_NAME" --dele
 vbox_vm_ssh()     { ssh "$(ssh_base[@])" "${SSH_USER}@127.0.0.1"; }
 vbox_vm_export()  { assert_virtualbox; VBoxManage export "$VM_NAME" --output "$VM_NAME.ova"; }
 
-# ---------- App install flows (common) ----------
-looks_like_org_repo() {
-  [[ -f "package.json" || -f "bun.toml" || -f "bunfig.toml" ]] && [[ -d "src" || -f "install.sh" ]]
-}
-
+# ---------- App install (common) ----------
+looks_like_org_repo() { [[ -f "package.json" || -f "bun.toml" || -f "bunfig.toml" ]] && [[ -d "src" || -f "install.sh" ]]; }
 host_sync_into_vm() {
   need rsync
   local tmp_excl; tmp_excl="$(mktemp)"
@@ -133,41 +104,30 @@ build/
 .DS_Store
 EOF
   echo "Syncing current directory to /home/${SSH_USER}/org ..."
-  rsync -az --delete --progress \
-    --exclude-from="$tmp_excl" \
-    -e "ssh $(ssh_base | xargs echo)" \
-    ./ "${SSH_USER}@127.0.0.1:/home/${SSH_USER}/org/"
+  rsync -az --delete --progress --exclude-from="$tmp_excl" -e "ssh $(ssh_base | xargs echo)" ./ \
+    "${SSH_USER}@127.0.0.1:/home/${SSH_USER}/org/"
   rm -f "$tmp_excl"
 }
-
 run_install_script() {
   echo "Running install.sh inside VM ..."
   ssh "$(ssh_base[@])" "${SSH_USER}@127.0.0.1" \
     "bash -lc 'chmod +x /home/${SSH_USER}/org/install.sh || true; /home/${SSH_USER}/org/install.sh'"
 }
-
 git_clone_in_vm() {
   local url="$1"
   ssh "$(ssh_base[@])" "${SSH_USER}@127.0.0.1" \
     "bash -lc 'rm -rf /home/${SSH_USER}/org && git clone ${url} /home/${SSH_USER}/org'"
 }
-
 tarball_install_in_vm() {
   local url="$1" sha="$2"
-  local verify=""
-  [[ -n "$sha" ]] && verify="echo '${sha}  /tmp/org.tgz' | sha256sum -c - &&"
+  local verify=""; [[ -n "$sha" ]] && verify="echo '${sha}  /tmp/org.tgz' | sha256sum -c - &&"
   ssh "$(ssh_base[@])" "${SSH_USER}@127.0.0.1" \
     "bash -lc 'rm -rf /home/${SSH_USER}/org && mkdir -p /home/${SSH_USER}/org && \
       curl -fsSL ${url@Q} -o /tmp/org.tgz && ${verify} \
       tar -xzf /tmp/org.tgz -C /home/${SSH_USER}/org --strip-components=1'"
 }
-
 cmd_app_install() {
-  local FROM="host"
-  local REPO_URL="https://github.com/tjamescouch/org.git"
-  local TAR_URL=""; local TAR_SHA=""
-  local NO_RUN="no"
-
+  local FROM="host" REPO_URL="https://github.com/tjamescouch/org.git" TAR_URL="" TAR_SHA="" NO_RUN="no"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --from) FROM="$2"; shift 2;;
@@ -178,18 +138,15 @@ cmd_app_install() {
       *) echo "Unknown option: $1" >&2; exit 1;;
     esac
   done
-
   case "$FROM" in
     host) looks_like_org_repo && host_sync_into_vm || git_clone_in_vm "$REPO_URL" ;;
     git)  git_clone_in_vm "$REPO_URL" ;;
     tar)  tarball_install_in_vm "$TAR_URL" "$TAR_SHA" ;;
     *)    echo "--from must be host|git|tar" >&2; exit 1 ;;
   esac
-
   [[ "$NO_RUN" == "yes" ]] || run_install_script
 }
 
-# ---------- dispatcher ----------
 cmd_vm() {
   local sub="${1:-}"; shift || true
   case "$(backend)" in
@@ -232,7 +189,6 @@ ENV:
 EOF
 }
 
-# ---------- main ----------
 case "${1:-}" in
   vm) shift; cmd_vm "$@" ;;
   app) shift; sub="${1:-}"; shift || true
