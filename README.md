@@ -13,7 +13,7 @@ _Agentic dev helpers that can "do things" in your repo while you watch, review, 
 - 🧪 **Deterministic runs**: all stdout/stderr, artifacts, and a git patch are saved under `.org/runs/<id>` for inspection or CI upload.
 - 🛡️ **Optional containerized sandbox**: run steps inside a Podman container with no network by default.
 
-> This is a developer productivity tool, not a security boundary. See [SECURITY.md](SECURITY.md) for hardening guidance.
+> Security note. org is safe-by-default but not a hardened sandbox. For a stronger boundary, run it in the provided VM profile (Lima on Apple Silicon, VirtualBox on Intel). See SECURITY.md for hardening 
 
 ## Vision
 
@@ -29,18 +29,33 @@ The vision is simple: **an agent CLI that feels like a real teammate — fast, o
 
 ## Quick Start
 
-```bash
-# Install
+### macOS (Apple Silicon: M1/M2/M3) — Lima backend
+```sh
 brew tap tjamescouch/org
 brew install org
-brew install --cask virtualbox     # VM provider (install once, approve kext if macOS asks)
-orgctl vm init                     # creates a minimal Ubuntu VM and sets up basics
-orgctl app install --from host     # sync your current repo into the VM & run install.sh
-
-# Test
-org
-@@alice write "hello world" to a file named hello/hello-world.txt
+brew install lima            # VM provider on Apple Silicon
+orgctl vm init               # uses .org/config/org.lima.yaml
 ```
+
+### Lima 1.2.x shows boot logs; when it settles, press Ctrl-C to detach
+```sh
+orgctl vm ssh
+orgctl app install --from host   # or: --from git / --from tar
+
+macOS (Intel) — VirtualBox backend
+brew tap tjamescouch/org
+brew install org
+brew install --cask virtualbox
+orgctl vm init
+```
+
+### Running
+```sh
+org
+@@alice write "Hello World" to a file `hello-world.txt`
+```
+
+> Tip for contributors who installed an older brew orgctl: prefer the repo copy during development with PATH="$PWD:$PATH" or run ./orgctl ….
 
 When the tool wants to touch the filesystem, it first produces a **patch**. You can read, approve, or reject it. After approval, the agent continues.
 
@@ -52,7 +67,8 @@ See [INSTALLATION.md](docs/INSTALLATION.md) for complete setup instructions.
 
 ## Documentation
 
-- **[Installation Guide](docs/INSTALLATION.md)** - Complete setup for macOS and Linux
+- **[Installation Guide](docs/INSTALLATION.md)** - Setup for macOS and Linux not including VM setup.
+- **[VM Configuration](docs/VM_CONFIGURATION.md)** — Lima/VirtualBox setup, security model, and troubleshooting.
 - **[Configuration](docs/CONFIGURATION.md)** - LLM settings, environment variables, and options
 - **[Usage Guide](docs/USAGE.md)** - CLI options, examples, and common workflows
 - **[Architecture](docs/ARCHITECTURE.md)** - How it works under the hood
