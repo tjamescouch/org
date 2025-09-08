@@ -52,7 +52,8 @@ See [INSTALLATION.md](docs/INSTALLATION.md) for complete setup instructions.
 
 ## Documentation
 
-- **[Installation Guide](docs/INSTALLATION.md)** - Complete setup for macOS and Linux
+- **[Installation Guide](docs/INSTALLATION.md)** - Setup for macOS and Linux not including VM setup.
+- **[VM Guide](docs/vm.md)** — Lima/VirtualBox setup, security model, and troubleshooting.
 - **[Configuration](docs/CONFIGURATION.md)** - LLM settings, environment variables, and options
 - **[Usage Guide](docs/USAGE.md)** - CLI options, examples, and common workflows
 - **[Architecture](docs/ARCHITECTURE.md)** - How it works under the hood
