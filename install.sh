@@ -4,7 +4,6 @@
 
 set -Eeuo pipefail
 
-# --- enter repo root regardless of where invoked ---
 _self="${BASH_SOURCE[0]:-$0}"
 while [ -L "$_self" ]; do
   t="$(readlink "$_self")"; case "$t" in /*) _self="$t";; *) _self="$(dirname "$_self")/$t";; esac
@@ -12,7 +11,6 @@ done
 REPO_ROOT="$(cd "$(dirname "$_self")" && pwd)"
 pushd "$REPO_ROOT" >/dev/null
 trap 'popd >/dev/null' EXIT
-# ---------------------------------------------------
 
 say()  { printf "\033[1;36m==>\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m!!\033[0m %s\n" "$*" >&2; }
@@ -20,18 +18,16 @@ die()  { printf "\033[1;31mxx\033[0m %s\n" "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 am_root(){ [[ "${EUID:-$(id -u)}" -eq 0 ]]; }
 
-# ---------- defaults & flags ----------
-USE_SUDO="${ORG_INSTALL_SUDO:-auto}"        # auto|yes|no
-DO_HARDEN="${ORG_INSTALL_HARDEN:-yes}"      # yes|no
+USE_SUDO="${ORG_INSTALL_SUDO:-auto}"
+DO_HARDEN="${ORG_INSTALL_HARDEN:-yes}"
 SCRATCH_SIZE="${ORG_SCRATCH_SIZE:-1G}"
-BUILD_IMAGE="${ORG_BUILD_IMAGE:-auto}"      # auto builds if Containerfile exists
+BUILD_IMAGE="${ORG_BUILD_IMAGE:-auto}"
 IMAGE_TAG="${ORG_IMAGE_TAG:-org:debian12}"
 CONTAINERFILE="${ORG_CONTAINERFILE:-Containerfile}"
 BUILD_CONTEXT="${ORG_BUILD_CONTEXT:-$REPO_ROOT}"
 KEEP_HTTPS="${ORG_KEEP_HTTPS:-no}"
-
-LAUNCH="${ORG_INSTALL_LAUNCH:-auto}"        # auto|yes|no
-UI="${ORG_INSTALL_UI:-console}"             # console|tmux
+LAUNCH="${ORG_INSTALL_LAUNCH:-auto}"
+UI="${ORG_INSTALL_UI:-console}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -70,9 +66,19 @@ apt_install() {
 }
 ensure_service(){ local s="$1"; $SUDO systemctl enable --now "$s" >/dev/null 2>&1 || $SUDO systemctl restart "$s" >/dev/null 2>&1 || true; }
 
-# ---------- 1) privilege & Bun ----------
 say "Detecting privilege mode"; enable_sudo || warn "No sudo; proceeding user-only (no system changes)"
-if ! have bun; then say "Installing Bun (user)"; curl -fsSL https://bun.sh/install | bash; fi
+
+# ---------- 1) Bun ----------
+say "Installing Bun (user)"
+if [[ "$DO_HARDEN" == "yes" ]] && want_sudo; then
+  say "Temporarily allowing outbound 443/tcp for Bun install"
+  $SUDO ufw allow out 443/tcp >/dev/null 2>&1 || true
+fi
+curl -fsSL https://bun.sh/install | bash || die "Bun install failed"
+if [[ "$DO_HARDEN" == "yes" ]] && want_sudo && [[ "$KEEP_HTTPS" != "yes" ]]; then
+  say "Closing temporary 443/tcp egress after Bun install"
+  $SUDO ufw delete allow out 443/tcp >/dev/null 2>&1 || true
+fi
 if ! echo ":$PATH:" | grep -q ":$HOME/.bun/bin:"; then
   echo 'export BUN_INSTALL="$HOME/.bun"' >> "$HOME/.bashrc"
   echo 'export PATH="$BUN_INSTALL/bin:$PATH"' >> "$HOME/.bashrc"
@@ -108,7 +114,7 @@ if [[ "$DO_HARDEN" == "yes" ]] && want_sudo; then
   $SUDO mount -o remount "$SCRATCH" 2>/dev/null || $SUDO mount "$SCRATCH" || true
 fi
 
-# ---------- 4) project deps & real `org` ----------
+# ---------- 4) project deps & org ----------
 say "Installing project deps (bun install)"; bun install
 say "Optional build (if present)"; bun run build || true
 say "Exposing 'org' command (prefer package.json bin via Bun global)"
@@ -128,7 +134,7 @@ EOF
   fi
 fi
 
-# ---------- 5) build container image (smart) ----------
+# ---------- 5) build container image ----------
 should_build_image() {
   case "$BUILD_IMAGE" in yes) return 0;; no) return 1;; auto) [[ -f "$CONTAINERFILE" ]];; esac
 }
@@ -159,7 +165,7 @@ else
   say "Skipping image build (mode=$BUILD_IMAGE)"
 fi
 
-# ---------- 6) maybe launch ----------
+# ---------- 6) launch ----------
 maybe_launch_org() {
   command -v org >/dev/null 2>&1 || { warn "'org' not on PATH yet"; return 0; }
   [[ "$UI" == "tmux" ]] && command -v tmux >/dev/null 2>&1 || UI="console"

@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # orgctl - MIT License
-# v0.8.0
 # - Apple Silicon: Lima backend (Lima 1.2.x compatible; no --detach)
 # - Intel: minimal VBox shim
 
 set -euo pipefail
-VERSION="0.8.0"
+VERSION="0.8.1"
 
 ORG_DIR="$(cd "$(dirname "$0")" && pwd)"
 SSH_USER="$(whoami)"

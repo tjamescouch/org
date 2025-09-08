@@ -2,16 +2,16 @@ arch: aarch64
 images:
   - location: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img"
 
-disk: 50GiB
+disk: 60GiB
 networks:
   - lima: shared                       # requires socket_vmnet running
 
 mounts:
   - location: "~/dev"                  # host → guest
-    mountPoint: "/home/${USER}/dev"
+    mountPoint: "/home/{{.User}}.linux/dev"
     writable: true
   - location: "tmpfs"
-    mountPoint: "/home/${USER}/scratch"
+    mountPoint: "/home/{{.User}}.linux/scratch"
     writable: true
 
 ssh:

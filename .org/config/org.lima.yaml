@@ -1,9 +1,8 @@
-# .org/config/org.lima.yaml
 arch: aarch64
 images:
   - location: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img"
 
-disk: 50GiB
+disk: 60GiB
 
 # Minimal networking for apt-get; UFW will lock down after provisioning
 networks:
@@ -12,12 +11,12 @@ networks:
 mounts:
   # Host ~/dev -> Guest ~/dev
   - location: "~/dev"
-    mountPoint: "/home/{{.User}}/dev"
+    mountPoint: "/home/{{.User}}.linux/dev"
     writable: true
 
   # Ephemeral scratch
   - location: "tmpfs"
-    mountPoint: "/home/{{.User}}/scratch"
+    mountPoint: "/home/{{.User}}.linux/scratch"
     writable: true
 
 ssh:
