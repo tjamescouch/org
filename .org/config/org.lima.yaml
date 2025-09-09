@@ -28,14 +28,26 @@ provision:
     script: |
       set -euxo pipefail
       mkdir -p ~/.bashrc.d
-      cat >~/.bashrc.d/org.sh <<'EOF'
-      PS1='\[\e[36m\]\u@org:\w\[\e[0m\]$ '
+      # --- DISTINCT, COLOURFUL VM PROMPT ---
+      cat >~/.bashrc.d/10-org-prompt.sh <<'EOF'
+      # Shorten deep paths a bit
+      export PROMPT_DIRTRIM=2
+      # Colourful, unmistakable VM prompt:  [VM] user@host:cwd $
+      # magenta [VM], cyan user@host, green cwd, reset, then $/# as usual
+      PS1='\[\e[1;95m\][VM]\[\e[0m\] \[\e[1;36m\]\u@\h\[\e[0m\]:\[\e[1;32m\]\w\[\e[0m\]\$ '
+      EOF
+
+      # PATH conveniences
+      cat >~/.bashrc.d/20-org-path.sh <<'EOF'
       [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"
       [[ ":$PATH:" != *":$HOME/.bun/bin:"*   ]] && export PATH="$HOME/.bun/bin:$PATH"
       EOF
+
+      # Load our snippets on login
       grep -q '.bashrc.d' ~/.bashrc 2>/dev/null || \
         printf '\nfor f in ~/.bashrc.d/*.sh; do [ -r "$f" ] && . "$f"; done\n' >> ~/.bashrc
 
+      # Ensure repo present
       mkdir -p "$HOME/dev"
       if [ ! -d "$HOME/dev/org/.git" ]; then
         git clone --depth=1 https://github.com/tjamescouch/org.git "$HOME/dev/org"
