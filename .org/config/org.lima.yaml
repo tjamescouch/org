@@ -1,44 +1,77 @@
-arch: aarch64
+# config/org.lima.yaml
+# Minimal, reproducible Lima config for org VM with first-boot provisioning.
+
 images:
+  - location: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+    arch: "x86_64"
   - location: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img"
+    arch: "aarch64"
 
-disk: 60GiB
+cpus: 4
+memory: "8GiB"
+disk: "40GiB"
 
-# Minimal networking for apt-get; UFW will lock down after provisioning
-networks:
-  - lima: shared
-
+# Keep your host repos visible in the guest at ~/dev
 mounts:
-  # Host ~/dev -> Guest ~/dev
   - location: "~/dev"
     mountPoint: "/home/{{.User}}.linux/dev"
     writable: true
 
-  # Ephemeral scratch
-  - location: "tmpfs"
-    mountPoint: "/home/{{.User}}.linux/scratch"
-    writable: true
+# Networking: default NAT; socket_vmnet (host macOS service) improves performance.
+# Lima will use it automatically when available; no extra YAML needed here.
 
-ssh:
-  loadDotSSHPubKeys: true
-
+# First-boot provisioning: make sudo available, set PATH/prompt, clone org, run install.sh.
 provision:
   - mode: system
     script: |
+      set -euxo pipefail
+      export DEBIAN_FRONTEND=noninteractive
       apt-get update
-      apt-get install -y curl git ufw podman openssh-server sudo
-      systemctl enable --now ssh
-
-      # UFW policy
-      ufw default deny incoming
-      ufw default deny outgoing
-      ufw allow 22/tcp
-      ufw allow out to 127.0.0.1
-      ufw --force enable
-
+      apt-get install -y sudo ufw git curl ca-certificates bash-completion jq
+      # Passwordless sudo for the user so install.sh can harden/firewall without prompts.
+      printf '%s ALL=(ALL) NOPASSWD:ALL\n' '{{.User}}' > /etc/sudoers.d/90-{{.User}}-nopasswd
+      chmod 0440 /etc/sudoers.d/90-{{.User}}-nopasswd
+      # Helpful login message (shown on SSH/console).
+      cat >/etc/profile.d/10-org-help.sh <<'EOF'
+      echo
+      echo "┌──────────────── org VM ────────────────"
+      echo "│ Connect from macOS:"
+      echo "│   lima shell org"
+      echo "│ or:"
+      echo "│   limactl shell org"
+      echo "│ Inside VM:"
+      echo "│   cd ~/dev/org && org --ui console"
+      echo "└────────────────────────────────────────"
+      echo
+      EOF
   - mode: user
     script: |
-      mkdir -p "$HOME/dev"
-      curl -fsSL https://bun.sh/install | bash
-      echo 'export BUN_INSTALL=$HOME/.bun' >> ~/.bashrc
-      echo 'export PATH=$BUN_INSTALL/bin:$PATH' >> ~/.bashrc
+      set -euxo pipefail
+      # Ensure PATH has our usual locations and add a readable prompt.
+      mkdir -p ~/.bashrc.d
+      cat >~/.bashrc.d/org.sh <<'EOF'
+      PS1='\[\e[36m\]\u@org:\w\[\e[0m\]$ '
+      [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"
+      [[ ":$PATH:" != *":$HOME/.bun/bin:"*   ]] && export PATH="$HOME/.bun/bin:$PATH"
+      EOF
+      grep -q '.bashrc.d' ~/.bashrc 2>/dev/null || \
+        printf '\nfor f in ~/.bashrc.d/*.sh; do [ -r "$f" ] && . "$f"; done\n' >> ~/.bashrc
+
+      # Clone org if not present at ~/dev/org; otherwise just pull.
+      mkdir -p ~/dev
+      if [ ! -d "$HOME/dev/org/.git" ]; then
+        git clone --depth=1 https://github.com/tjamescouch/org.git "$HOME/dev/org"
+      else
+        git -C "$HOME/dev/org" pull --ff-only || true
+      fi
+
+      # Non-interactive install: build image, do not auto-launch; allow sudo inside script.
+      # The script itself performs final firewall lockdown on completion.
+      ORG_INSTALL_SUDO=yes \
+      ORG_INSTALL_LAUNCH=no \
+      bash "$HOME/dev/org/install.sh" --build-image
+
+ssh:
+  localPort: 0     # pick a free local port automatically
+firmware:
+  legacyBIOS: false
