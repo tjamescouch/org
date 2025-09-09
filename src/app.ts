@@ -263,7 +263,7 @@ async function main() {
       : path.resolve((R.env.PWD && R.env.PWD.trim()) ? R.env.PWD : R.cwd());
 
   // Resolve repo root from that frozen starting directory.
-  const projectDir = assertIsRepository('/project');
+  const projectDir = resolvePath('/project');
   const workDir = resolvePath('/work');
 
   // Pretty, TTY-aware banner (falls back to simple lines if not a TTY)
