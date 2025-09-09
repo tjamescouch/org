@@ -32,10 +32,9 @@ KEEP_HTTPS="${ORG_KEEP_HTTPS:-no}"
 LAUNCH="${ORG_INSTALL_LAUNCH:-auto}"
 UI="${ORG_INSTALL_UI:-console}"
 
-# Host loopback as seen from Lima guest; can override
+# Lima host-loopback (guest -> host)
 HOST_LO_IP="${ORG_HOST_LO_IP:-192.168.5.2}"
 HOST_LLM_PORT="${ORG_HOST_LLM_PORT:-11434}"
-# Final value to persist & export for org/LLM access (overridable)
 ORG_LLM_BASE_URL="${ORG_LLM_BASE_URL:-http://${HOST_LO_IP}:${HOST_LLM_PORT}}"
 
 # ---------- flags ----------
@@ -89,7 +88,7 @@ open_bootstrap_egress_if_needed() {
     if ! want_sudo; then
       die "UFW is active (deny outgoing) and no sudo to open DNS/HTTPS.
 Re-run with ORG_INSTALL_SUDO=yes ./install.sh
-or run: sudo ufw allow out 53/udp 53/tcp 443/tcp"
+or: sudo ufw allow out 53/udp 53/tcp 443/tcp"
     fi
     for rule in "53/udp" "53/tcp" "443/tcp"; do
       if ! ufw status | grep -q "$rule.*ALLOW OUT"; then
@@ -155,7 +154,7 @@ if want_sudo; then
   say "Ensuring sshd is enabled"; ensure_service ssh
 fi
 
-# Remove temporary DNS/HTTPS allows, we’ll re-open granularly later if needed.
+# Remove temporary DNS/HTTPS allows; we’ll re-open granularly later if needed.
 close_bootstrap_egress
 
 # =====================================================================
@@ -167,9 +166,8 @@ if [[ "$DO_HARDEN" == "yes" ]] && want_sudo; then
   $SUDO ufw default deny incoming  >/dev/null 2>&1 || true
   $SUDO ufw default deny outgoing  >/dev/null 2>&1 || true
   $SUDO ufw allow out to 127.0.0.1 >/dev/null 2>&1 || true
-  # keep HTTPS if explicitly requested
   [[ "$KEEP_HTTPS" == "yes" ]] && $SUDO ufw allow out 443/tcp >/dev/null 2>&1 || true
-  # Allow guest -> host LLM on 11434/tcp (or override via ORG_HOST_* env)
+  # Allow guest -> host LLM on specified port
   $SUDO ufw allow out to "$HOST_LO_IP" proto tcp port "$HOST_LLM_PORT" >/dev/null 2>&1 || true
   $SUDO ufw --force enable >/dev/null 2>&1 || true
 
@@ -193,11 +191,10 @@ mkdir -p "$HOME/.bashrc.d"
 cat >"$HOME/.bashrc.d/30-org-llm.sh" <<EOF
 # org: host LLM endpoint (Lima exposes host-lo as ${HOST_LO_IP})
 export ORG_LLM_BASE_URL="${ORG_LLM_BASE_URL}"
+export LLM_BASE_URL="\${LLM_BASE_URL:-${ORG_LLM_BASE_URL}}"
 EOF
-# ensure snippet loader exists
 grep -q ".bashrc.d" "$HOME/.bashrc" 2>/dev/null || \
   printf '\nfor f in ~/.bashrc.d/*.sh; do [ -r "$f" ] && . "$f"; done\n' >> "$HOME/.bashrc"
-# export for this session too
 export ORG_LLM_BASE_URL="${ORG_LLM_BASE_URL}"
 
 # =====================================================================
@@ -205,15 +202,18 @@ export ORG_LLM_BASE_URL="${ORG_LLM_BASE_URL}"
 # =====================================================================
 say "Installing project deps (bun install)"; bun install
 say "Optional build (if present)"; bun run build || true
+
 say "Exposing 'org' command (prefer package.json bin via Bun global)"
 bun install -g . || true
+
+# --- FIX: embed APP_ENTRY literal to avoid REPO_ROOT at runtime ---
 if ! command -v org >/dev/null 2>&1; then
   mkdir -p "$HOME/.local/bin"
-  APP_ENTRY="${ORG_APP_ENTRY:-$REPO_ROOT/src/app.ts}"
-  cat >"$HOME/.local/bin/org" <<'EOF'
+  APP_ENTRY="${ORG_APP_ENTRY:-$REPO_ROOT/src/app.ts}"   # compute now
+  cat >"$HOME/.local/bin/org" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-exec bun "${ORG_APP_ENTRY:-'"$REPO_ROOT"'/src/app.ts}" "$@"
+exec bun "$APP_ENTRY" "\$@"
 EOF
   chmod +x "$HOME/.local/bin/org"
   if ! echo ":$PATH:" | grep -q ":$HOME/.local/bin:"; then
@@ -257,7 +257,7 @@ fi
 # 7) Launch
 # =====================================================================
 maybe_launch_org() {
-  command -v org >/dev/null 2>&1 || { warn "'org' not on PATH yet"; return 0; }
+  command -v org >/div/null 2>&1 || { warn "'org' not on PATH yet"; return 0; }
   [[ "$UI" == "tmux" ]] && command -v tmux >/dev/null 2>&1 || UI="console"
   is_tty=0; [[ -t 0 && -t 1 ]] && is_tty=1
   case "$LAUNCH" in
