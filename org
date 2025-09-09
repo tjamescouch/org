@@ -33,7 +33,7 @@ fi
 ENGINE="${ORG_ENGINE:-podman}"
 IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
 FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
-NETWORK="${ORG_NETWORK:-none}"
+NETWORK="${ORG_NETWORK:-slirp4netns:allow_host_loopback=true}"
 CAPS="${ORG_CAPS:-all}"
 USERNS="${ORG_USERNS:-keep-id}"
 
@@ -93,27 +93,29 @@ echo "[org] repo        = $REPO_DIR"
 echo "[org] work        = $WORK_SCRATCH -> /work (rw)"
 echo "[org] project(ro) = $PWD          -> /project (ro)"
 echo "[org] app         = $REPO_DIR     -> /application"
-
-# ---------- env forward (allow-list) ----------
-env_allow() {
-  local k v
-  while IFS='=' read -r k v; do
-    case "$k" in
-      ORG_*|OPENAI_*|ANTHROPIC_*|OLLAMA_*|LMSTUDIO_*|AZURE_*|GOOGLE_*|GROQ_*|GEMINI_*|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy|LANG|LC_*|TZ|TERM|FORCE_COLOR|NO_COLOR)
-        ENV_ARR+=("-e" "${k}=${v}")
-        ;;
-    esac
-  done < <(env)
-}
-
+# ---------- container env ----------
 ENV_ARR=(
+  "-e" "ORG_LAUNCHER_SCRIPT_RAN=1"
   "-e" "ORG_PROJECT_DIR=/work"
   "-e" "ORG_APP_ENTRY=/application/src/app.ts"
   "-e" "ORG_REVIEW_MODE=${REVIEW_MODE}"
   "-e" "TERM=${TERM:-xterm-256color}"
   "-e" "ORG_SANDBOX_BACKEND=none"
+  "-e" "ORG_HOST_ALIAS=host.containers.internal"
+  "-e" "NO_PROXY=localhost,127.0.0.1,::1,host.containers.internal"
+  "-e" "ORG_OPENAI_BASE_DEFAULT=${ORG_OPENAI_BASE_DEFAULT:-http://host.containers.internal:11434/v1}"
 )
-env_allow
+
+env_allow() {
+  local k="$1"
+  # preserve a small, safe set from the host environment (if present)
+  [[ "$k" =~ ^(NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy|LANG|LC_.*|TZ|TERM|FORCE_COLOR|NO_COLOR|ORG_.*)$ ]]
+}
+for k in $(env | cut -d= -f1); do
+  if env_allow "$k"; then
+    ENV_ARR+=("-e" "$k=${!k}")
+  fi
+done
 
 # ---------- run inside the container ----------
 set +e
@@ -141,9 +143,9 @@ set +e
 status=$?
 set -e
 
-# ---------- host-side patch review ----------
-if [[ "$mode" == "review" ]]; then
-  PATCH_ROOT="$WORK_SCRATCH/.org"
+# ---------- host-side patch review (unchanged) ----------
+if [[ "$REVIEW_MODE" == "review" ]]; then
+  PATCH_ROOT="$PWD/.org"
   PATCH_HOST_PATH="$(ls -t "$PATCH_ROOT"/runs/*/session.patch 2>/dev/null | head -n1 || true)"
   if [[ -n "$PATCH_HOST_PATH" && -f "$PATCH_HOST_PATH" ]]; then
     if [[ ! -s "$PATCH_HOST_PATH" ]]; then
