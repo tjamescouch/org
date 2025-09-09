@@ -1,4 +1,4 @@
-# .org/config/org.lima.yaml
+# org.lima.yaml — canonical, one-command install with pre-warmed image
 images:
   - location: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
     arch: "x86_64"
@@ -7,7 +7,7 @@ images:
 
 cpus: 4
 memory: "8GiB"
-disk: "40GiB"   # VM disk; host ~/dev is bind-mounted and does NOT consume this
+disk: "40GiB"
 
 mounts:
   - location: "~/dev"
@@ -20,22 +20,26 @@ provision:
       set -euxo pipefail
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
-      apt-get install -y sudo ufw git curl ca-certificates jq unzip bash-completion
+      # Podman + essentials for rootless usage and our provisioning
+      apt-get install -y \
+        podman uidmap slirp4netns fuse-overlayfs iptables \
+        ufw git curl ca-certificates jq unzip bash-completion
+      # Passwordless sudo for our user
       printf '%s ALL=(ALL) NOPASSWD:ALL\n' '{{.User}}' > /etc/sudoers.d/90-{{.User}}-nopasswd
       chmod 0440 /etc/sudoers.d/90-{{.User}}-nopasswd
+      # Make sure sshd is enabled for limactl shell
+      systemctl enable --now ssh
 
   - mode: user
     script: |
       set -euxo pipefail
 
-      # --- Make login shells load .bashrc, and .bashrc load ~/.bashrc.d/* ---
+      # Shell init
       grep -q "\. ~/.bashrc" ~/.bash_profile 2>/dev/null || \
         printf '[ -r ~/.bashrc ] && . ~/.bashrc\n' >> ~/.bash_profile
+      mkdir -p ~/.bashrc.d
       grep -q ".bashrc.d" ~/.bashrc 2>/dev/null || \
         printf '\nfor f in ~/.bashrc.d/*.sh; do [ -r "$f" ] && . "$f"; done\n' >> ~/.bashrc
-      mkdir -p ~/.bashrc.d
-
-      # --- DISTINCT, COLOURFUL VM PROMPT ---
       cat >~/.bashrc.d/10-org-prompt.sh <<'EOF'
       export PROMPT_DIRTRIM=2
       PS1='\[\e[1;95m\][VM]\[\e[0m\] \[\e[1;36m\]\u@\h\[\e[0m\]:\[\e[1;32m\]\w\[\e[0m\]\$ '
@@ -53,8 +57,7 @@ provision:
       # mirror for libs that read LLM_BASE_URL
       export LLM_BASE_URL="${LLM_BASE_URL:-$ORG_LLM_BASE_URL}"
       EOF
-
-      # --- Ensure repo present ---
+      # Ensure repo present (bind-mounted at ~/dev)
       mkdir -p "$HOME/dev"
       if [ ! -d "$HOME/dev/org/.git" ]; then
         git clone --depth=1 https://github.com/tjamescouch/org.git "$HOME/dev/org"
@@ -62,16 +65,14 @@ provision:
         git -C "$HOME/dev/org" pull || true
       fi
 
-      # --- Non-interactive install; ends with firewall locked down ---
-      ORG_INSTALL_SUDO=yes \
-      ORG_INSTALL_LAUNCH=no \
-      ORG_HOST_LO_IP=192.168.5.2 \
-      ORG_HOST_LLM_PORT=11434 \
+      # Run installer in the repo — ALWAYS build the sandbox image here.
+      # This provision step blocks until done; failure stops limactl start.
+      ORG_HOST_LO_IP=192.168.5.2 ORG_HOST_LLM_PORT=11434 \
       ORG_LLM_BASE_URL="http://192.168.5.2:11434" \
       ORG_ENGINE=podman \
       SANDBOX_BACKEND=podman \
       pushd "$HOME/dev/org/"
-      bash "install.sh" --build-image > "$HOME/org-install.log" 2>&1
+      bash ./install.sh --build-image > "$HOME/org-install.log" 2>&1
       popd
 
 ssh:
