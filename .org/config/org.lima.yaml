@@ -7,7 +7,7 @@ images:
 
 cpus: 4
 memory: "8GiB"
-disk: "60GiB"
+disk: "60GiB"   # VM disk; host ~/dev is bind-mounted and does NOT consume this
 
 mounts:
   - location: "~/dev"
@@ -16,25 +16,15 @@ mounts:
 
 provision:
   - mode: system
-    when: once
     script: |
       set -euxo pipefail
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
-      apt-get install -y sudo ufw git curl ca-certificates bash-completion jq
+      apt-get install -y sudo ufw git curl ca-certificates jq unzip bash-completion
       printf '%s ALL=(ALL) NOPASSWD:ALL\n' '{{.User}}' > /etc/sudoers.d/90-{{.User}}-nopasswd
       chmod 0440 /etc/sudoers.d/90-{{.User}}-nopasswd
-      cat >/etc/profile.d/10-org-help.sh <<'EOF'
-      echo
-      echo "┌────────────── org VM ──────────────"
-      echo "│ Connect:   lima shell org"
-      echo "│ Project:   cd ~/dev/org"
-      echo "│ Run org:   org --ui console"
-      echo "└────────────────────────────────────"
-      echo
-      EOF
+
   - mode: user
-    when: always   # re-run on each start; guarded below so it’s cheap
     script: |
       set -euxo pipefail
       mkdir -p ~/.bashrc.d
@@ -54,11 +44,9 @@ provision:
         git -C "$HOME/dev/org" reset --hard origin/HEAD || true
       fi
 
-      # Only run installer if not already installed (cheap guard).
-      if ! command -v org >/dev/null 2>&1; then
-        ORG_INSTALL_SUDO=yes ORG_INSTALL_LAUNCH=no \
-        bash "$HOME/dev/org/install.sh" --build-image || true
-      fi
+      # Non-interactive install; ends with firewall locked down
+      ORG_INSTALL_SUDO=yes ORG_INSTALL_LAUNCH=no \
+      bash "$HOME/dev/org/install.sh" --build-image || true
 
 ssh:
   localPort: 0

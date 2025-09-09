@@ -1,22 +1,40 @@
 #!/usr/bin/env bash
 # orgctl - MIT License
-# - Apple Silicon: Lima backend (Lima 1.2.x compatible; no --detach)
-# - Intel: minimal VBox shim
+# - Apple Silicon: Lima backend (Lima 1.2.x compatible)
+# - Intel: minimal VBox shim (stub)
 
 set -euo pipefail
 VERSION="0.8.1"
 
+# ---------- constants ----------
 ORG_DIR="$(cd "$(dirname "$0")" && pwd)"
-SSH_USER="$(whoami)"
+LIMA_NAME="${ORG_LIMA_NAME:-org.lima}"   # Lima instance name
+LIMA_USER="$(whoami)"
 NO_TAIL="${NO_TAIL:-false}"
+ATTACH="false"                           # default: do NOT auto-attach
+TAIL_PID=""
 
 # ---------- utils ----------
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1" >&2; exit 1; }; }
-backend(){ local m s; m="$(uname -m)"; s="$(uname -s)"; [[ "$m" == "arm64" && "$s" == "Darwin" ]] && echo lima || { [[ "$m" == "x86_64" ]] && echo vbox || { echo "Unsupported: $m/$s" >&2; exit 1; }; }; }
+backend(){
+  local m s; m="$(uname -m)"; s="$(uname -s)"
+  if [[ "$m" == "arm64" && "$s" == "Darwin" ]]; then
+    echo lima
+  elif [[ "$m" == "x86_64" ]]; then
+    echo vbox
+  else
+    echo "Unsupported: $m/$s" >&2; exit 1
+  fi
+}
 
 lima_cfg() {
   local p
-  for p in "${ORG_LIMA_CONFIG:-}" "$PWD/.org/config/org.lima.yaml" "$HOME/.config/org/org.lima.yaml" "$ORG_DIR/.org/config/org.lima.yaml"; do
+  for p in \
+    "${ORG_LIMA_CONFIG:-}" \
+    "$PWD/.org/config/org.lima.yaml" \
+    "$HOME/.config/org/org.lima.yaml" \
+    "$ORG_DIR/.org/config/org.lima.yaml"
+  do
     [[ -n "${p:-}" && -f "$p" ]] && { echo "$p"; return; }
   done
   cat >&2 <<'EOF'
@@ -37,30 +55,16 @@ EOF
 }
 
 # ---------- Lima helpers ----------
-lima_exists() { [[ -d "$HOME/.lima/org.lima" ]] || limactl list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx org.lima 2>/dev/null; }
-
-lima_wait_ready(){
-  local i=0 
-  echo "Sleeping 5 seconds"
-  sleep 5
-  echo "Waiting for VM to become ready "
-  while (( i < 180 )); do
-    if limactl shell org.lima -- true >/dev/null 2>&1; then
-      echo "VM is ready!"
-
-      return 0
-    fi
-    echo "Waiting for VM to become ready..."
-    ((i++))
-    sleep 2
-  done
-  echo "Timed out. See: tail -f ~/.lima/org.lima/serial*.log" >&2
-  return 1
+lima_exists() {
+  [[ -d "$HOME/.lima/$LIMA_NAME" ]] \
+    || limactl list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$LIMA_NAME" 2>/dev/null
 }
 
 brew_prefix(){ command -v brew >/dev/null 2>&1 && brew --prefix || echo /opt/homebrew; }
 brew_has_vmnet(){ command -v brew >/dev/null 2>&1 && brew list --formula 2>/dev/null | grep -qx socket_vmnet; }
-vmnet_running(){ pgrep -f '/socket_vmnet(/socket_vmnet)?' >/dev/null 2>&1 || pgrep -f 'socket_vmnet' >/dev/null 2>&1; }
+vmnet_running(){
+  pgrep -f '/socket_vmnet(/socket_vmnet)?' >/dev/null 2>&1 || pgrep -f 'socket_vmnet' >/dev/null 2>&1
+}
 
 ensure_vmnet_binary() {
   [[ "$(uname -s)" == "Darwin" ]] || return 0
@@ -90,6 +94,7 @@ start_vmnet(){
 ensure_vmnet_if_needed(){
   [[ "$(uname -s)" == "Darwin" ]] || return 0
   local cfg="$1"
+  # Only bother if the YAML declares networks (cheap heuristic)
   grep -qE '^[[:space:]]*networks:' "$cfg" || return 0
   vmnet_running && return 0
   if [[ -t 0 && -t 1 ]]; then
@@ -102,31 +107,80 @@ ensure_vmnet_if_needed(){
   fi
 }
 
+# Spinner that is bash-3.2 compatible (no ${var:i%4:1})
+lima_wait_ready(){
+  local i=0; local spin='|/-\'
+  echo "Sleeping 5 seconds"
+  sleep 5
+  printf "Waiting for VM to become ready "
+  while (( i < 180 )); do
+    if limactl shell "$LIMA_NAME" -- true >/dev/null 2>&1; then
+      printf "\nVM is ready!\n"
+      return 0
+    fi
+    local ch="${spin:$((i%4)):1}"
+    printf "\rWaiting for VM to become ready %s" "$ch"
+    ((i++))
+    sleep 2
+  done
+  printf "\nTimed out. See: tail -f ~/.lima/%s/serial*.log\n" "$LIMA_NAME" >&2
+  return 1
+}
+
+# Make start synchronous (no background/nohup) for reliable first run
 lima_start() {
   local cfg="$1"
   if lima_exists; then
     echo "Starting existing Lima instance…"
-    nohup limactl start org.lima >/tmp/orgctl-lima-start.log 2>&1 < /dev/null &
+    limactl start "$LIMA_NAME"
   else
     echo "Creating Lima instance from $cfg …"
-    nohup limactl start --name org.lima "$cfg" >/tmp/orgctl-lima-create.log 2>&1 < /dev/null &
+    limactl start --name "$LIMA_NAME" "$cfg"
   fi
   lima_wait_ready
 }
 
 tail_vm_log() {
   local log
-  log="$(ls -1t ~/.lima/org.lima/serial*.log 2>/dev/null | head -n1 || true)"
+  log="$(ls -1t "$HOME/.lima/$LIMA_NAME"/serial*.log 2>/dev/null | head -n1 || true)"
   [[ -n "$log" ]] || return 0
   echo "Tailing VM console log ($log)…"
   tail -f "$log" &
   TAIL_PID=$!
-  trap "kill $TAIL_PID 2>/dev/null || true" EXIT INT TERM
+  trap 'kill "$TAIL_PID" 2>/dev/null || true' EXIT INT TERM
+}
+
+# Map host path → guest path (~/… -> /home/<user>.linux/…)
+guest_path_from_host() {
+  local host_path="$1"
+  local host_home="$HOME"
+  local guest_home="/home/${LIMA_USER}.linux"
+  if [[ "$host_path" == "$host_home"* ]]; then
+    echo "${host_path/$host_home/$guest_home}"
+  else
+    echo "$guest_home/dev"
+  fi
 }
 
 lima_attach() {
+  local guest_pwd; guest_pwd="$(guest_path_from_host "$PWD")"
   echo "Attaching to VM…"
-  limactl shell org.lima -- bash -i -l -c 'cd "$HOME/dev" 2>/dev/null || cd ~; exec bash -i -l'
+  # Try to cd to the mapped path; else fallback to ~/dev/org then ~
+  limactl shell "$LIMA_NAME" -- bash -ilc "cd \"$guest_pwd\" 2>/dev/null || cd \"\$HOME/dev/org\" 2>/dev/null || cd ~; exec bash -i -l"
+}
+
+print_host_banner() {
+  local cfg="$1"
+  local guest_pwd; guest_pwd="$(guest_path_from_host "$PWD")"
+  cat <<EOF
+
+┌────────────── org VM ──────────────
+│ Config:    $cfg
+│ Connect:   lima shell $LIMA_NAME
+│ Project:   cd "$guest_pwd"   # or: cd ~/dev/org
+│ Run org:   org --ui console
+└────────────────────────────────────
+EOF
 }
 
 # ---------- VBox stub ----------
@@ -138,6 +192,7 @@ cmd_quickstart() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --no-tail) NO_TAIL=true; shift;;
+      --attach)  ATTACH=true; shift;;
       *) echo "Unknown option: $1"; exit 1;;
     esac
   done
@@ -151,10 +206,15 @@ cmd_quickstart() {
   ensure_vmnet_if_needed "$cfg"
   echo "Using Lima config: $cfg"
   lima_start "$cfg"
+  print_host_banner "$cfg"
   if [[ "$NO_TAIL" != "true" ]]; then
     tail_vm_log
   fi
-  lima_attach
+  if [[ "$ATTACH" == "true" ]]; then
+    lima_attach
+  else
+    echo "(Not attaching automatically. Use:  limactl shell $LIMA_NAME)"
+  fi
 }
 
 cmd_vm(){
@@ -162,11 +222,11 @@ cmd_vm(){
   case "$(backend)" in
     lima)
       case "$sub" in
-        init|up)  need limactl; ensure_vmnet_if_needed "$(lima_cfg)"; lima_start "$(lima_cfg)";;
-        stop)     need limactl; limactl stop org.lima || true;;
-        destroy)  need limactl; limactl delete org.lima || true;;
+        init|up)  need limactl; ensure_vmnet_if_needed "$(lima_cfg)"; lima_start "$(lima_cfg)"; print_host_banner "$(lima_cfg)";;
+        stop)     need limactl; limactl stop "$LIMA_NAME" || true;;
+        destroy)  need limactl; limactl delete "$LIMA_NAME" || true;;
         ssh)      need limactl; lima_attach;;
-        export)   echo "Export not supported for Lima";;
+        logs)     tail_vm_log;;
         *) echo "Unknown vm subcommand: $sub" >&2; exit 1;;
       esac
       ;;
@@ -182,9 +242,13 @@ cmd_vm(){
 usage(){ cat <<EOF
 orgctl v$VERSION
 USAGE:
-  orgctl quickstart [--no-tail]
-  orgctl vm <init|up|stop|destroy|ssh>
+  orgctl quickstart [--no-tail] [--attach]
+  orgctl vm <init|up|stop|destroy|ssh|logs>
   orgctl version
+ENV:
+  ORG_LIMA_CONFIG   path to org.lima.yaml (optional)
+  ORG_LIMA_NAME     Lima instance name (default: $LIMA_NAME)
+  NO_TAIL=true      disable log tail in quickstart
 EOF
 }
 
