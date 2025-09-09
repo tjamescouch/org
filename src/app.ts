@@ -268,11 +268,11 @@ async function main() {
 
   // Pretty, TTY-aware banner (falls back to simple lines if not a TTY)
   printInitCard("org", [
-    { label: "host cwd",   value: C.bold(hostStartDir) },
-    { label: "proj dir",   value: C.bold(projectDir) },
-    { label: "work dir",   value: C.bold(workDir) },
-    { label: "R.cwd",      value: `${C.bold(R.cwd())}` },
-    { label: "R.env.PWD",  value: `${C.bold(R.env.PWD as string)}` },
+    { label: "host cwd", value: C.bold(hostStartDir) },
+    { label: "proj dir", value: C.bold(projectDir) },
+    { label: "work dir", value: C.bold(workDir) },
+    { label: "R.cwd", value: `${C.bold(R.cwd())}` },
+    { label: "R.env.PWD", value: `${C.bold(R.env.PWD as string)}` },
   ]);
 
   const recipeName = (typeof args["recipe"] === "string" && args["recipe"]) || (R.env.ORG_RECIPE || "");
@@ -304,7 +304,20 @@ async function main() {
   const scheduler: IScheduler = new RandomScheduler({
     agents,
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
-    onAskUser: async (_: string, content: string) => R.ttyController?.askUser(),
+    onAskUser: async (_: string, content: string) => {
+      // Open prompt, collect a single line, deliver it, then drain and exit.
+      try {
+        await R.ttyController?.askUser();
+        const line = await R.ttyController!.readUserLine();
+        await scheduler.enqueueUserText(line);
+        await scheduler.drain();
+      } catch {
+        // best-effort exit even if something goes wrong
+      } finally {
+        R.stdout.write("\n");
+        R.exit(0);
+      }
+    },
     workDir, // repo root to copy/sync into /work
     reviewMode,
     promptEnabled:
