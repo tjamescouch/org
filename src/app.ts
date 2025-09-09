@@ -30,6 +30,12 @@ import { createFeedbackController } from "./ui/feedback";
 import { installHotkeys } from "./runtime/hotkeys";
 import { printInitCard } from "./ui/pretty";
 
+if (R.env.ORG_LAUNCHER_SCRIPT_RAN !== "1") { // TODO - safely support non-sandboxed workflows without opening up this hole.
+  Logger.error(C.red("org must be launched via the org wrapper (sandbox). Refusing to run on host."));
+
+  R.exit(112);
+}
+
 let paused = false;
 export const setOutputPaused = (v: boolean) => {
   paused = v;
