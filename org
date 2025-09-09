@@ -117,6 +117,8 @@ for k in $(env | cut -d= -f1); do
   fi
 done
 
+mkdir -p "$PWD/.org"
+
 # ---------- run inside the container ----------
 set +e
 "$ENGINE" run --rm -it \
@@ -126,6 +128,7 @@ set +e
   -v "$WORK_SCRATCH:/work:Z" \
   -v "$PWD:/project:Z,ro" \
   -v "$REPO_DIR:/application:Z" \
+  -v "$PWD/.org:/work/.org:Z" \
   -w /work \
   "${ENV_ARR[@]}" \
   "$IMAGE" bash -lc '

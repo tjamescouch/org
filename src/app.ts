@@ -308,20 +308,20 @@ async function main() {
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
 
   const scheduler: IScheduler = new RandomScheduler({
-    agents,
+    agents, //FIXME - types
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
     onAskUser: async (_: string, content: string) => {
       // Open prompt, collect a single line, deliver it, then drain and exit.
       try {
         await R.ttyController?.askUser();
         const line = await R.ttyController!.readUserLine();
-        await scheduler.enqueueUserText(line);
+        await scheduler.interject(line);
         await scheduler.drain();
-      } catch {
-        // best-effort exit even if something goes wrong
       } finally {
-        R.stdout.write("\n");
-        R.exit(0);
+        if (!R.isPretty && !R.isTTY) {
+          R.stdout.write("\n");
+          R.exit(0);
+        }
       }
     },
     workDir, // repo root to copy/sync into /work

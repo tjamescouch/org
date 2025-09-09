@@ -15,15 +15,12 @@ export interface IScheduler {
   start(): Promise<void>;
 
   /** Request a graceful stop (soon). */
-  stop(): Promise<void>;
+  stop(): void;
 
   /** Drain outstanding work, then stop. */
-  drain(): Promise<void>;
+  drain(): Promise<boolean>;
 
-  interject(s: string): Promise<string>;
-
-  /** Enqueue a user text message. Scheduler converts text into ChatMessage. */
-  enqueueUserText(text: string, opts?: { to?: string; from?: string }): Promise<void>;
+  interject(s: string): Promise<void>;
 }
 
 /** Agent shape schedulers coordinate. Only what we need. */

@@ -45,7 +45,6 @@ type SchedulerOptionsWithBridge = Hooks &
  *  - Draining/pause/resume/stop and review integration
  *
  * Notes:
- *  - Added `enqueueUserText(text)` as a typed alias to the interjection path,
  *    so newer call sites remain compatible without changing the old surface.
  *  - Added *external prompt bridge* (`readUserLine`) so the UI (TTY controller) can
  *    own the prompt/echo while the scheduler retains turn/state logic.
@@ -353,7 +352,6 @@ All agents are idle. Provide the next concrete instruction or question.`;
     return !!this.activeAgent;
   }
 
-  /** External entry for user interjections (e.g., CLI input). */
   async interject(text: string) {
     await this.handleUserInterjection(text, {
       defaultTargetId: this.lastUserDMTarget || undefined,
