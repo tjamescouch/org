@@ -97,4 +97,4 @@ logs/
 # tmux debug logs (in case they ever land in repo root)
 tmux-*.log
 
-
+*.zip
