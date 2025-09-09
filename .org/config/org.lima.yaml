@@ -72,7 +72,7 @@ provision:
       ORG_ENGINE=podman \
       SANDBOX_BACKEND=podman \
       pushd "$HOME/dev/org/"
-      bash ./install.sh --build-image > "$HOME/org-install.log" 2>&1
+      bash ./install.sh > "$HOME/org-install.log" 2>&1
       popd
 
 ssh:
