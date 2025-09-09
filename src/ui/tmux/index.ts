@@ -5,18 +5,19 @@
 import * as fsp from "fs/promises";
 import * as path from "path";
 import { Logger } from "../../logger";
-import { shInteractive } from "../../tools/sandboxed-sh";
 import { buildTmuxConf, buildInnerScript } from "./config";
+import { runSh } from "../../tools/sh";
+import { R } from "../../runtime/runtime";
 
-function bunBin(): string { return process.env.ORG_BUN_BIN || "/usr/local/bin/bun"; }
-function tmuxBin(): string { return process.env.ORG_TMUX_BIN || "/usr/bin/tmux"; }
+function bunBin(): string { return R.env.ORG_BUN_BIN || "/usr/local/bin/bun"; }
+function tmuxBin(): string { return R.env.ORG_TMUX_BIN || "/usr/bin/tmux"; }
 
 export async function launchTmuxUI(_argv: string[]): Promise<number> {
-  const projectDir = process.env.ORG_PROJECT_DIR || "/work";
-  const agentSessionId = process.env.ORG_AGENT_SESSION_ID || "default";
+  const projectDir = R.env.ORG_PROJECT_DIR || "/work";
+  const agentSessionId = R.env.ORG_AGENT_SESSION_ID || "default";
 
   // If an external bootstrap owns tmux files, do nothing.
-  if (process.env.ORG_EXTERNAL_TMUX_BOOTSTRAP === "1") {
+  if (R.env.ORG_EXTERNAL_TMUX_BOOTSTRAP === "1") {
     Logger.debug("[tmux] external bootstrap set; skipping internal launcher.");
     return 0;
   }
@@ -52,6 +53,7 @@ export async function launchTmuxUI(_argv: string[]): Promise<number> {
   const trailer = `echo "[tmux/launcher] end $(date -Is)" | tee -a ${LOG_DIR}/tmux-launcher.log >/dev/null`;
   const script = [prelude, tmuxStart, trailer].join(" && ");
 
-  const { code } = await shInteractive(["bash", "-lc", script], { projectDir, agentSessionId });
+  const { exit_code: code } = await runSh(`bash -lc ${script}`);
+
   return code ?? 0;
 }
