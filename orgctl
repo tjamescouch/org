@@ -192,12 +192,12 @@ print_host_banner_ready() {
   local guest_pwd; guest_pwd="$(guest_path_from_host "$PWD")"
   cat <<EOF
 
-┌────────────── org VM (ready) ─────────────
+┌────────────── org VM (ready) ──────────────────────────────────
 │ Config:    $cfg
-│ Connect:   lima shell $LIMA_NAME
+│ Connect:   limactl shell $LIMA_NAME
 │ Project:   cd "$guest_pwd"   # or: cd ~/dev/org
 │ Run org:   org --ui console
-└───────────────────────────────────────────
+└────────────────────────────────────────────────────────────────
 EOF
 }
 
@@ -205,12 +205,12 @@ print_host_banner_waiting() {
   local cfg="$1"
   cat <<EOF
 
-┌───────────── org VM (provisioning) ─────────────
+┌───────────── org VM (provisioning) ────────────────────────────
 │ First boot may take a while (Bun, apt, image build).
 │ I will keep you posted below; dots mean “still working”.
 │ You can watch logs with: tail -f ~/.lima/$LIMA_NAME/serial*.log
 │ Config: $cfg
-└─────────────────────────────────────────────────
+└────────────────────────────────────────────────────────────────
 EOF
 }
 
