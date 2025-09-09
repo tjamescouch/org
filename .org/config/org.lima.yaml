@@ -70,7 +70,9 @@ provision:
       ORG_LLM_BASE_URL="http://192.168.5.2:11434" \
       ORG_ENGINE=podman \
       SANDBOX_BACKEND=podman \
-      bash "$HOME/dev/org/install.sh" --build-image > "$HOME/org-install.log"
+      pushd "$HOME/dev/org/"
+      bash "install.sh" --build-image > "$HOME/org-install.log" 2>&1
+      popd
 
 ssh:
   localPort: 0
