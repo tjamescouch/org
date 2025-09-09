@@ -167,11 +167,11 @@ done
 GUEST_PWD="/home/${USER}.linux/dev/$(basename "$REPO_ROOT")"
 cat <<EOF
 
-┌────────────── org VM (ready) ─────────────
-│ Connect:   lima shell org.lima
+┌────────────── org VM (ready) ─────────────────────────
+│ Connect:   limactl shell org.lima
 │ Project:   cd "$GUEST_PWD"   # or: cd ~/dev/org
 │ Run org:   org --ui console
-└───────────────────────────────────────────
+└───────────────────────────────────────────────────────
 EOF
 
 # Optionally auto-attach once ready (comment out if you prefer manual)
