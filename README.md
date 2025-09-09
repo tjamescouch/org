@@ -31,30 +31,18 @@ The vision is simple: **an agent CLI that feels like a real teammate — fast, o
 
 ### macOS (Apple Silicon: M1/M2/M3) — Lima backend
 ```sh
+# 1) Install via Homebrew (CLI + VM helpers)
 brew tap tjamescouch/org
-brew install org
-brew install lima            # VM provider on Apple Silicon
-orgctl vm init               # uses .org/config/org.lima.yaml
+brew install orgctl lima socket_vmnet
 
-orgctl vm ssh                # from another terminal
-```
-
-### Lima 1.2.x shows boot logs; when it settles, press Ctrl-C to detach
-```sh
-orgctl vm ssh
-orgctl app install --from host   # or: --from git / --from tar
-
-macOS (Intel) — VirtualBox backend
-brew tap tjamescouch/org
-brew install org
-brew install --cask virtualbox
-orgctl vm init   # or --from git / --from tar
+# 2) One shot: create + provision the VM and attach when ready
+orgctl quickstart --verbose --attach
 ```
 
 ### Running
 ```sh
 org
-@@alice write "Hello World" to a file `hello-world.txt`
+You > @@alice write "Hello World" to a file `hello-world.txt`
 ```
 
 > Tip for contributors who installed an older brew orgctl: prefer the repo copy during development with PATH="$PWD:$PATH" or run ./orgctl ….
