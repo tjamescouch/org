@@ -7,7 +7,7 @@ images:
 
 cpus: 4
 memory: "8GiB"
-disk: "80GiB"   # VM disk; host ~/dev is bind-mounted and does NOT consume this
+disk: "40GiB"   # VM disk; host ~/dev is bind-mounted and does NOT consume this
 
 mounts:
   - location: "~/dev"
@@ -70,7 +70,7 @@ provision:
       ORG_LLM_BASE_URL="http://192.168.5.2:11434" \
       ORG_ENGINE=podman \
       SANDBOX_BACKEND=podman \
-      bash "$HOME/dev/org/install.sh" --build-image
+      bash "$HOME/dev/org/install.sh" --build-image > "$HOME/org-install.log"
 
 ssh:
   localPort: 0
