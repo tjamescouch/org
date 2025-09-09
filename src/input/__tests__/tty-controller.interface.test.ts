@@ -7,7 +7,7 @@ describe("TtyController API surface", () => {
     const stdin = { isTTY: false } as unknown as NodeJS.ReadStream;
     const stdout = {} as unknown as NodeJS.WriteStream;
     const ctl = new TtyController({
-      stdin, stdout, prompt: "user: ", interjectKey: "i", interjectBanner: "user: ",
+      stdin, stdout, prompt: "You > ", interjectKey: "i", interjectBanner: "You > ",
     });
     expect(typeof ctl.start).toBe("function");
     expect(typeof ctl.setScheduler).toBe("function");

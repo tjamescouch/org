@@ -104,9 +104,9 @@ beforeEach(async () => {
   ctl = new TtyController({
     stdin,
     stdout,
-    prompt: "user: ",
+    prompt: "You > ",
     interjectKey: "i",
-    interjectBanner: "user: ",
+    interjectBanner: "You > ",
     feedbackStream: stderr,
     finalizer: async () => { finalizerCalls++; },
     loopMode: "external",
@@ -207,9 +207,9 @@ describe("Non-interactive mode disables hotkeys", () => {
     const niCtl = new TtyController({
       stdin: niIn,
       stdout,
-      prompt: "user: ",
+      prompt: "You > ",
       interjectKey: "i",
-      interjectBanner: "user: ",
+      interjectBanner: "You > ",
       feedbackStream: niErr,
       finalizer: async () => { finalizerCalls++; },
       loopMode: "external",
@@ -233,7 +233,7 @@ describe("Non-interactive mode disables hotkeys", () => {
 describe("Prompt RAW/COOKED and flow restoration", () => {
   test("prompt toggles to COOKED then back to RAW; ESC after prompt is handled", async () => {
     // Call a readUserLine; provide a quick answer, ensure RAW restored and bytes flow.
-    const p = ctl.readUserLine("user: ");
+    const p = ctl.readUserLine("You > ");
     await delay(10); // allow prompt to open and toggle COOKED
     expect(stdin.isRawMode).toBe(false);
 

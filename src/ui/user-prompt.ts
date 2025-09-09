@@ -40,7 +40,7 @@ export interface AskUserLineOptions {
 }
 
 /**
- * Render a single user prompt (e.g., "user: ") and read one line of input.
+ * Render a single user prompt (e.g., "You > ") and read one line of input.
  * Always runs under cooked TTY, restoring the previous mode on exit.
  */
 export async function askUserLine(opts?: AskUserLineOptions): Promise<string> {

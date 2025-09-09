@@ -25,7 +25,7 @@ type Hooks = {
 type SchedulerOptionsWithBridge = Hooks &
   SchedulerOptions & {
     /**
-     * If provided, scheduler will not render its own 'user:' banner or readline.
+     * If provided, scheduler will not render its own 'You >' banner or readline.
      * Instead it awaits this provider and treats the returned line as user input.
      * This keeps `promptEnabled` semantics (the scheduler still "waits for user"),
      * but routes I/O through the TTY controller to avoid duplicate listeners.
@@ -51,7 +51,7 @@ type SchedulerOptionsWithBridge = Hooks &
  */
 export class RandomScheduler {
   /**
-   * If provided, scheduler will not render its own 'user:' banner or readline.
+   * If provided, scheduler will not render its own 'You >' banner or readline.
    * Instead it awaits this provider and treats the returned line as user input.
    */
   readUserLine?: () => Promise<string | undefined>;

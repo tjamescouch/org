@@ -64,7 +64,7 @@ export function installTtyGuard(): void {
 }
 
 installTtyGuard();
-Logger.info("[org] Installing hotkeys 🔥");
+Logger.debug("[org] Installing hotkeys 🔥");
 const uninstallHotkeys = installHotkeys({
   stdin: R.stdin as any,
   onEsc: async () => { await R.ttyController?.unwind(); /* finalizer handles review+exit */ },
@@ -311,6 +311,7 @@ async function main() {
     agents, //FIXME - types
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
     onAskUser: async (_: string, content: string) => {
+      Logger.info("onAskUser");
       // Open prompt, collect a single line, deliver it, then drain and exit.
       try {
         await R.ttyController?.askUser();
@@ -318,7 +319,7 @@ async function main() {
         await scheduler.interject(line);
         await scheduler.drain();
       } finally {
-        if (!R.isPretty && !R.isTTY) {
+        if (R.args['prompt']) {
           R.stdout.write("\n");
           R.exit(0);
         }
@@ -351,9 +352,9 @@ async function main() {
       waitSuppressOutput: true,
       stdin: R.stdin,
       stdout: R.stdout,
-      prompt: String(args["banner"] ?? "user: "),
+      prompt: String(args["banner"] ?? "You > "),
       interjectKey: String(args["interject-key"] ?? "i"),
-      interjectBanner: String(args["banner"] ?? "user: "),
+      interjectBanner: String(args["banner"] ?? "You > "),
       // ESC path ends up here: stop → drain → review/apply
       finalizer: async () => { await finalizeOnce(scheduler, workDir, reviewMode); },
       // Let the scheduler drive the idle loop

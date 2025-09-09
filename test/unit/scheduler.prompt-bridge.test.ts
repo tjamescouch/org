@@ -44,7 +44,7 @@ describe("scheduler external prompt bridge", () => {
       .map((args) => args.map((a) => String(a)).join(" "))
       .join("\n");
 
-    // With the bridge, the scheduler must NOT print its own 'user: (scheduler)' banner.
-    expect(joined.includes("user: (scheduler)")).toBe(false);
+    // With the bridge, the scheduler must NOT print its own 'You > (scheduler)' banner.
+    expect(joined.includes("You > (scheduler)")).toBe(false);
   });
 });

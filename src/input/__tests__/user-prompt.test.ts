@@ -16,7 +16,7 @@ class StubRl implements RlLike {
 }
 
 describe("askUserLine", () => {
-  test("prints one 'user: ' prompt and restores raw mode", async () => {
+  test("prints one 'You > ' prompt and restores raw mode", async () => {
     const tty = new FakeTty();
     const scopes = new TtyScopes(tty);
     scopes.setMode("raw"); // simulate outer raw context
@@ -27,8 +27,8 @@ describe("askUserLine", () => {
     const result = await askUserLine({ rlFactory, scopes });
     expect(result).toBe("ok");
 
-    // It should have shown exactly one prompt with 'user: '
-    expect(stub.prompts).toEqual(["user: "]);
+    // It should have shown exactly one prompt with 'You > '
+    expect(stub.prompts).toEqual(["You > "]);
 
     // Outer mode restored
     expect(tty.isRaw).toBe(true);

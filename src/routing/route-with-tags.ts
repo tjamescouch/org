@@ -1,4 +1,3 @@
-import { Logger } from "../logger";
 import { Responder } from "../scheduler";
 import { createPDAStreamFilter } from "../utils/filter-passes/llm-pda-stream";
 import { TagPart } from "../utils/tag-parser";
@@ -53,12 +52,12 @@ export function routeWithTags(raw: string, agentTokens: string[]): RouteOutcome 
     sawGroup = true;
   }
 
-  return {
+  return ({
     deliveries,
     yieldForUser: sawUser,
     yieldForGroup: sawGroup,
     sawTags: { user: sawUser, group: sawGroup, file: sawFile, agent: sawAgent },
-  };
+  });
 }
 
 type RouterCallbacks = {

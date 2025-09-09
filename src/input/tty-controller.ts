@@ -53,7 +53,7 @@ interface TtyControllerOptions {
   /** Explicit feedback stream; falls back to `stderr`, then `stdout`. */
   feedback?: WritableLike;
 
-  /** Label shown for interactive prompt, defaults to "user: ". */
+  /** Label shown for interactive prompt, defaults to "You > ". */
   prompt?: string;
   /** Interjection hotkey, defaults to "i". */
   interjectKey?: string;
@@ -146,7 +146,7 @@ export class TtyController {
       this.feedback =
         (R.stderr as unknown as WritableLike) ?? this.out;
       this.interjectKey = "i";
-      this.promptLabel = "user: ";
+      this.promptLabel = "You > ";
       this.interjectBanner = this.promptLabel;
       this.doFinalize = () => {};
       this.doExit = (code: number) => R.exit(code);
@@ -163,7 +163,7 @@ export class TtyController {
     this.feedback = o.feedback ?? o.stderr ?? this.out;
 
     this.interjectKey = o.interjectKey ?? "i";
-    this.promptLabel = o.prompt ?? "user: ";
+    this.promptLabel = o.prompt ?? "You > ";
     this.interjectBanner = o.interjectBanner ?? this.promptLabel;
 
     this.doFinalize = o.finalize ?? (() => {});
