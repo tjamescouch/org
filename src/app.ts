@@ -84,6 +84,8 @@ function assertIsRepository(p: string): string {
   let d = path.resolve(p);
   if (fs.existsSync(path.join(d, ".git"))) return d;
 
+  Logger.error(`Not git repository at: ${p} (${d})`);
+
   throw new Error(`Not a git repository.`);
 }
 
