@@ -59,8 +59,7 @@ provision:
       if [ ! -d "$HOME/dev/org/.git" ]; then
         git clone --depth=1 https://github.com/tjamescouch/org.git "$HOME/dev/org"
       else
-        git -C "$HOME/dev/org" fetch --quiet || true
-        git -C "$HOME/dev/org" reset --hard origin/HEAD || true
+        git -C "$HOME/dev/org" pull || true
       fi
 
       # --- Non-interactive install; ends with firewall locked down ---
