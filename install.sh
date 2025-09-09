@@ -203,23 +203,14 @@ export ORG_LLM_BASE_URL="${ORG_LLM_BASE_URL}"
 say "Installing project deps (bun install)"; bun install
 say "Optional build (if present)"; bun run build || true
 
-say "Exposing 'org' command (prefer package.json bin via Bun global)"
-bun install -g . || true
-
-# --- FIX: embed APP_ENTRY literal to avoid REPO_ROOT at runtime ---
-if ! command -v org >/dev/null 2>&1; then
-  mkdir -p "$HOME/.local/bin"
-  APP_ENTRY="${ORG_APP_ENTRY:-$REPO_ROOT/src/app.ts}"   # compute now
-  cat >"$HOME/.local/bin/org" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-exec bun "$APP_ENTRY" "\$@"
-EOF
-  chmod +x "$HOME/.local/bin/org"
-  if ! echo ":$PATH:" | grep -q ":$HOME/.local/bin:"; then
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
-    export PATH="$HOME/.local/bin:$PATH"
-  fi
+# --- Expose 'org' on PATH as a symlink to the repo script (requested) ---
+say "Exposing 'org' command (symlink to repo script)"
+mkdir -p "$HOME/.local/bin"
+chmod +x "$REPO_ROOT/org" 2>/dev/null || true
+ln -sfn "$REPO_ROOT/org" "$HOME/.local/bin/org"
+if ! echo ":$PATH:" | grep -q ":$HOME/.local/bin:"; then
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+  export PATH="$HOME/.local/bin:$PATH"
 fi
 
 # =====================================================================
@@ -257,7 +248,7 @@ fi
 # 7) Launch
 # =====================================================================
 maybe_launch_org() {
-  command -v org >/div/null 2>&1 || { warn "'org' not on PATH yet"; return 0; }
+  command -v org >/dev/null 2>&1 || { warn "'org' not on PATH yet"; return 0; }
   [[ "$UI" == "tmux" ]] && command -v tmux >/dev/null 2>&1 || UI="console"
   is_tty=0; [[ -t 0 && -t 1 ]] && is_tty=1
   case "$LAUNCH" in
