@@ -68,7 +68,9 @@ provision:
       ORG_HOST_LO_IP=192.168.5.2 \
       ORG_HOST_LLM_PORT=11434 \
       ORG_LLM_BASE_URL="http://192.168.5.2:11434" \
-      bash "$HOME/dev/org/install.sh" --build-image || true
+      ORG_ENGINE=podman \
+      SANDBOX_BACKEND=podman \
+      bash "$HOME/dev/org/install.sh" --build-image
 
 ssh:
   localPort: 0
