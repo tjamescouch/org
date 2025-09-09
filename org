@@ -114,7 +114,7 @@ ENV_ARR=(
   "-e" "ORG_APP_ENTRY=/application/src/app.ts"
   "-e" "ORG_REVIEW_MODE=${REVIEW_MODE}"
   "-e" "TERM=${TERM:-xterm-256color}"
-  "-e" "ORG_SANDBOX_BACKEND=none"
+  "-e" "ORG_SANDBOX_BACKEND=podman"
   "-e" "ORG_ALLOW=$ALLOW"
   "-e" "ORG_DENY=$DENY"
 )
