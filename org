@@ -39,9 +39,9 @@ USERNS="${ORG_USERNS:-keep-id}"
 
 # ---------- ensure image exists (build if missing) ----------
 if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "[org] building image with $ENGINE (this can take a while)..."
-  "$ENGINE" build -t "$IMAGE" -f "$FILE" "$REPO_DIR"
-  echo "[org] image built: $IMAGE"
+  echo "[org] image not built: $IMAGE"
+
+  exit 1123
 fi
 
 # ---------- parse CLI (NEW: --review <yes|no>) ----------
