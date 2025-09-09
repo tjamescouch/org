@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# install.sh — one-time installer inside the VM
+# install.sh — VM-side installer (prewarm container; install launchers; never run on host tree)
 # - ALWAYS pre-build the Podman sandbox image (no prompts)
-# - Symlink /usr/local/bin/org -> <repo>/org
-# - Install host launchers in /usr/local/libexec/org/launch-* (includes PATCH REVIEW)
-# - Portable networking: use host.containers.internal + slirp host-loopback
+# - Symlink /usr/local/bin/org -> <repo>/org   (single source of truth)
+# - Install host launchers in /usr/local/libexec/org/launch-*
+# - Launchers run container then host patch-review
 # - Logs to $HOME/.org/logs/install-*.log
 # - No git ops; repo is bind-mounted from host
 
@@ -45,7 +45,7 @@ need bash
 if command -v apt-get >/dev/null 2>&1; then PKG=apt-get; else die "Requires apt-get (Ubuntu/Debian)."; fi
 [[ -d .git ]] || die "Not a git repository: $(pwd)."
 
-# Ensure ufw exists (used for temporary egress)
+# ufw for temporary egress during inner Debian apt-get
 if ! command -v ufw >/dev/null 2>&1; then
   log "Installing ufw ..."
   sudo ${PKG} update -y
@@ -56,11 +56,9 @@ fi
 if command -v bun >/dev/null 2>&1; then
   log "bun install (optional)"
   ( set -Eeuo pipefail; bun install || true )
-else
-  warn "bun not found; skipping 'bun install' (this is fine)"
 fi
 
-# -------- ensure podman (fallback) --------
+# -------- ensure podman (fallback if system stage ever missed it) --------
 ensure_podman() {
   if command -v podman >/dev/null 2>&1; then return; fi
   warn "podman not found — attempting installation now (fallback)"
@@ -74,7 +72,7 @@ ensure_podman() {
 }
 ensure_podman
 
-# -------- /usr/local/bin/org -> repo root 'org' --------
+# -------- link /usr/local/bin/org -> repo 'org' --------
 if [[ ! -L /usr/local/bin/org || "$(readlink -f /usr/local/bin/org || true)" != "$(pwd)/org" ]]; then
   log "Symlinking /usr/local/bin/org -> $(pwd)/org"
   sudo ln -sfn "$(pwd)/org" /usr/local/bin/org
@@ -91,16 +89,13 @@ install_libexec_launcher() {
 set -Eeuo pipefail
 MODE="__MODE__"
 
-# Project root on host filesystem (bind-mounted)
+# Host project root (bind-mounted)
 GIT_ROOT=$(git -C "${ORG_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null || echo "${ORG_PROJECT_DIR:-$PWD}")
 RUNS_DIR="$GIT_ROOT/.org/runs"
 mkdir -p "$GIT_ROOT/.org"
 
-# Network args:
-# - slirp4netns host-loopback so 'host.containers.internal' resolves to host
+# Network args for rootless Podman: access host via host.containers.internal
 NETWORK_ARGS=( --network "slirp4netns:allow_host_loopback=true" )
-
-# Portable env for in-container discovery
 ENV_ARGS=(
   -e ORG_BACKEND=podman
   -e SANDBOX_BACKEND=podman
@@ -117,7 +112,7 @@ podman run --rm -it \
   org-sandbox:latest "/application/scripts/org-launch-$MODE.logic.sh" "$@"
 code=$?
 
-# 2) Host-side PATCH REVIEW (newest session.patch)
+# 2) Host-side PATCH REVIEW
 patch=""
 if [ -d "$RUNS_DIR" ]; then
   latest_run=$(ls -1dt "$RUNS_DIR"/* 2>/dev/null | head -1 || true)
@@ -140,7 +135,6 @@ fi
 
 exit "$code"
 EOF
-  # replace placeholder with mode
   sudo sed -i "s/__MODE__/$mode/g" "$target"
   sudo chmod +x "$target"
   log "Installed host launcher: $target"
@@ -153,8 +147,7 @@ install_libexec_launcher rich
 UFW_COMMENT="org-install-temporary-build-egress"
 allow_temp_egress() {
   if ! sudo ufw status >/dev/null 2>&1; then
-    warn "ufw not active; skipping temporary egress rules"
-    return
+    warn "ufw not active; skipping temporary egress rules"; return
   fi
   log "Temporarily allowing egress: 53/udp, 80/tcp, 443/tcp"
   sudo ufw allow out proto udp to any port 53  comment "$UFW_COMMENT" || true
@@ -172,21 +165,37 @@ revoke_temp_egress() {
 }
 trap 'revoke_temp_egress || true' EXIT
 
-# -------- build image (always) --------
-build_podman_image() {
-  local dockerfile=""
-  if   [[ -f Dockerfile.sandbox ]]; then dockerfile="Dockerfile.sandbox"
-  elif [[ -f Containerfile      ]]; then dockerfile="Containerfile"
-  else
-    warn "No Dockerfile.sandbox or Containerfile found; skipping image build"
-    return 0
-  fi
-  allow_temp_egress
-  log "[org] building image with podman (this can take a while)..."
-  podman build -t org-sandbox:latest -f "$dockerfile" .
-  log "Image built: org-sandbox:latest"
+# -------- select the canonical containerfile used at runtime --------
+select_containerfile() {
+  local root="$1"
+  local c
+  for c in \
+    "Containerfile" \
+    "Dockerfile.sandbox" \
+    "container/Containerfile" \
+    "container/Dockerfile.sandbox" \
+    ; do
+    if [[ -f "$root/$c" ]]; then
+      echo "$c"; return 0
+    fi
+  done
+  return 1
 }
-build_podman_image
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
+CF="$(select_containerfile "$ROOT" || true)"
+[[ -n "$CF" ]] || die "No Containerfile found (looked for Dockerfile.sandbox, Containerfile, container/*)."
+
+log "Using containerfile: $CF"
+log "Build context:       $ROOT"
+
+# -------- build image (always; same file the runtime will use) --------
+allow_temp_egress
+podman build \
+  -t org-sandbox:latest \
+  -f "$ROOT/$CF" \
+  "$ROOT"
+log "Image built: org-sandbox:latest"
 
 log "=== INSTALL END $(date -Is) ==="
 log "Run 'org --ui console' (or tmux/rich) anywhere in the repo."

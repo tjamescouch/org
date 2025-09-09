@@ -1,4 +1,4 @@
-# org.lima.yaml — one-command install, prewarmed image, reliable logs, scratch tmpfs
+# org.lima.yaml — one-command install, prewarmed image, reliable logs, scratch tmpfs, no git in VM
 
 images:
   - location: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
@@ -8,7 +8,7 @@ images:
 
 cpus: 4
 memory: "8GiB"
-disk: "40GiB"   # reduced from 80GiB
+disk: "40GiB"
 
 mounts:
   - location: "~/dev"
@@ -19,7 +19,7 @@ provision:
   # ---- SYSTEM PHASE (root) ----
   - mode: system
     script: |
-      # Log to file (POSIX sh friendly)
+      # POSIX-sh friendly logging
       LOG_FILE="/var/log/org-provision-system.log"
       mkdir -p /var/log
       : > "$LOG_FILE"
@@ -42,7 +42,7 @@ provision:
         containernetworking-plugins \
         ufw git jq unzip bash-completion
 
-      # Create per-user scratch as tmpfs (1GiB, noexec,nosuid,nodev) and mount it
+      # Per-user scratch tmpfs (1GiB, noexec,nosuid,nodev)
       SCRATCH_DIR="/home/{{.User}}.linux/scratch"
       mkdir -p "$SCRATCH_DIR"
       if ! grep -q " $SCRATCH_DIR " /etc/fstab; then
@@ -50,11 +50,9 @@ provision:
       fi
       mountpoint -q "$SCRATCH_DIR" || mount "$SCRATCH_DIR"
 
-      # Passwordless sudo for the login user
+      # Passwordless sudo for the login user; SSH for limactl shell
       printf '%s ALL=(ALL) NOPASSWD:ALL\n' '{{.User}}' > /etc/sudoers.d/90-{{.User}}-nopasswd
       chmod 0440 /etc/sudoers.d/90-{{.User}}-nopasswd
-
-      # Ensure SSH for limactl shell
       systemctl enable --now ssh
 
       echo "=== SYSTEM PROVISION END $(date -Is) ==="
@@ -62,7 +60,6 @@ provision:
   # ---- USER PHASE ({{.User}}.linux) ----
   - mode: user
     script: |
-      # Log to file (POSIX sh friendly)
       LOG_DIR="$HOME/.org/logs"
       mkdir -p "$LOG_DIR"
       LOG_FILE="$LOG_DIR/org-provision-user.log"
@@ -85,7 +82,7 @@ provision:
       PS1='\[\e[1;95m\][VM]\[\e[0m\] \[\e[1;36m\]\u@\h\[\e[0m\]:\[\e[1;32m\]\w\[\e[0m\]\$ '
       EOF
 
-      # Require host bind-mounted repo; no git ops in VM
+      # Require host bind-mounted repo; no git in VM
       if [ ! -d "$HOME/dev/org/.git" ]; then
         echo "ERROR: Expected host bind mount at $HOME/dev/org (.git missing)."
         echo "HINT (on host):  mkdir -p ~/dev && git clone https://github.com/tjamescouch/org.git ~/dev/org"
@@ -95,8 +92,6 @@ provision:
       # Prewarm container image during provisioning (blocks until finished)
       cd "$HOME/dev/org"
       SANDBOX_BACKEND=podman ORG_ENGINE=podman \
-      ORG_HOST_LO_IP=192.168.5.2 ORG_HOST_LLM_PORT=11434 \
-      ORG_LLM_BASE_URL="http://192.168.5.2:11434" \
       bash ./install.sh
 
       echo "=== USER PROVISION END $(date -Is) ==="
