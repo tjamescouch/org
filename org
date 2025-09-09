@@ -36,13 +36,12 @@ FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
 NETWORK="${ORG_NETWORK:-none}"
 CAPS="${ORG_CAPS:-all}"
 USERNS="${ORG_USERNS:-keep-id}"
-ALLOW="${ORG_ALLOW:-*:**/*}"
-DENY="${ORG_DENY:-.git/**:.org/**:.env:.github/**:**/*.pem:**/*.key}"
 
 # ---------- ensure image exists (build if missing) ----------
 if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "[org] image missing: $IMAGE"
-  exit 1213
+  echo "[org] building image with $ENGINE (this can take a while)..."
+  "$ENGINE" build -t "$IMAGE" -f "$FILE" "$REPO_DIR"
+  echo "[org] image built: $IMAGE"
 fi
 
 # ---------- parse CLI (NEW: --review <yes|no>) ----------
@@ -94,8 +93,6 @@ echo "[org] repo        = $REPO_DIR"
 echo "[org] work        = $WORK_SCRATCH -> /work (rw)"
 echo "[org] project(ro) = $PWD          -> /project (ro)"
 echo "[org] app         = $REPO_DIR     -> /application"
-echo "[org] allow globs = $ALLOW"
-echo "[org] deny  globs = $DENY"
 
 # ---------- env forward (allow-list) ----------
 env_allow() {
@@ -114,9 +111,7 @@ ENV_ARR=(
   "-e" "ORG_APP_ENTRY=/application/src/app.ts"
   "-e" "ORG_REVIEW_MODE=${REVIEW_MODE}"
   "-e" "TERM=${TERM:-xterm-256color}"
-  "-e" "ORG_SANDBOX_BACKEND=podman"
-  "-e" "ORG_ALLOW=$ALLOW"
-  "-e" "ORG_DENY=$DENY"
+  "-e" "ORG_SANDBOX_BACKEND=none"
 )
 env_allow
 
