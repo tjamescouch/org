@@ -4,7 +4,7 @@
 
 set -Eeuo pipefail
 
-# Resolve path to repo root
+# ---------- repo root ----------
 _self="${BASH_SOURCE[0]:-$0}"
 while [ -L "$_self" ]; do
   t="$(readlink "$_self")"; case "$t" in /*) _self="$t";; *) _self="$(dirname "$_self")/$t";; esac
@@ -13,14 +13,14 @@ REPO_ROOT="$(cd "$(dirname "$_self")" && pwd)"
 pushd "$REPO_ROOT" >/dev/null
 trap 'popd >/dev/null' EXIT
 
-# Pretty log helpers
+# ---------- log helpers ----------
 say()  { printf "\033[1;36m==>\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m!!\033[0m %s\n" "$*" >&2; }
 die()  { printf "\033[1;31mxx\033[0m %s\n" "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 am_root(){ [[ "${EUID:-$(id -u)}" -eq 0 ]]; }
 
-# Configurable knobs
+# ---------- knobs ----------
 USE_SUDO="${ORG_INSTALL_SUDO:-auto}"
 DO_HARDEN="${ORG_INSTALL_HARDEN:-yes}"
 SCRATCH_SIZE="${ORG_SCRATCH_SIZE:-1G}"
@@ -32,7 +32,7 @@ KEEP_HTTPS="${ORG_KEEP_HTTPS:-no}"
 LAUNCH="${ORG_INSTALL_LAUNCH:-auto}"
 UI="${ORG_INSTALL_UI:-console}"
 
-# Parse CLI flags
+# ---------- flags ----------
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-sudo)        USE_SUDO="no"; shift;;
@@ -51,7 +51,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Sudo handling
+# ---------- sudo handling ----------
 SUDO=""
 want_sudo() {
   case "$USE_SUDO" in
@@ -65,24 +65,78 @@ want_sudo() {
 }
 enable_sudo(){ if want_sudo; then SUDO="sudo"; am_root && SUDO=""; fi; }
 
-# Apt helpers
+# ---------- apt helpers ----------
+APT_ENV=(env DEBIAN_FRONTEND=noninteractive)
 apt_install() {
-  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -y
-  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"
+  $SUDO "${APT_ENV[@]}" apt-get update -y
+  $SUDO "${APT_ENV[@]}" apt-get install -y --no-install-recommends "$@"
 }
 ensure_service(){ local s="$1"; $SUDO systemctl enable --now "$s" >/dev/null 2>&1 || $SUDO systemctl restart "$s" >/dev/null 2>&1 || true; }
+
+# ---------- UFW bootstrap (handles "already locked" VMs) ----------
+BOOT_OPENED=()
+ufw_active()          { have ufw && ufw status 2>/dev/null | grep -q "Status: active"; }
+ufw_denies_outgoing() { have ufw && ufw status verbose 2>/dev/null | grep -qi "Default: deny (outgoing)"; }
+
+open_bootstrap_egress_if_needed() {
+  if ufw_active && ufw_denies_outgoing; then
+    if ! want_sudo; then
+      die "UFW is active with outgoing=deny, but no sudo to open DNS/HTTPS.
+Re-run with ORG_INSTALL_SUDO=yes ./install.sh
+or run in the VM: sudo ufw allow out 53/udp 53/tcp 443/tcp"
+    fi
+    for rule in "53/udp" "53/tcp" "443/tcp"; do
+      if ! ufw status | grep -q "$rule.*ALLOW OUT"; then
+        say "Temporarily allowing outbound $rule for bootstrap"
+        $SUDO ufw allow out "$rule" >/dev/null 2>&1 || true
+        BOOT_OPENED+=("$rule")
+      fi
+    done
+  fi
+}
+close_bootstrap_egress() {
+  if [[ "${#BOOT_OPENED[@]}" -gt 0 ]] && want_sudo; then
+    for rule in "${BOOT_OPENED[@]}"; do
+      [[ "$KEEP_HTTPS" == "yes" && "$rule" == "443/tcp" ]] && continue
+      say "Closing temporary bootstrap $rule"
+      $SUDO ufw delete allow out "$rule" >/dev/null 2>&1 || true
+    done
+  fi
+}
+
+# ---------- minimal prereqs for Bun ----------
+ensure_bun_prereqs() {
+  local need=()
+  have curl || need+=(curl)
+  have unzip || need+=(unzip)
+  # not a command, but needed for TLS trust
+  if ! dpkg -s ca-certificates >/dev/null 2>&1; then
+    need+=(ca-certificates)
+  fi
+  if [[ "${#need[@]}" -gt 0 ]]; then
+    if want_sudo; then
+      say "Installing Bun prerequisites: ${need[*]}"
+      apt_install "${need[@]}"
+    else
+      die "Missing prerequisites (${need[*]}), and no sudo available.
+Install them (e.g., sudo apt-get install -y ${need[*]}) or re-run with ORG_INSTALL_SUDO=yes."
+    fi
+  fi
+}
 
 say "Detecting privilege mode"; enable_sudo || warn "No sudo; proceeding user-only (no system changes)"
 
 # =====================================================================
-# 1) Bun
+# 1) Bootstrap network (if UFW already denies egress) + ensure prereqs
+# =====================================================================
+open_bootstrap_egress_if_needed
+ensure_bun_prereqs
+
+# =====================================================================
+# 2) Bun
 # =====================================================================
 say "Installing Bun (user)"
-
-# ⚠️ Network unrestricted here — curl can resolve DNS and hit bun.sh.
 curl -fsSL https://bun.sh/install | bash || die "Bun install failed"
-
-# Add Bun to PATH if needed
 if ! echo ":$PATH:" | grep -q ":$HOME/.bun/bin:"; then
   echo 'export BUN_INSTALL="$HOME/.bun"' >> "$HOME/.bashrc"
   echo 'export PATH="$BUN_INSTALL/bin:$PATH"' >> "$HOME/.bashrc"
@@ -90,24 +144,22 @@ if ! echo ":$PATH:" | grep -q ":$HOME/.bun/bin:"; then
 fi
 
 # =====================================================================
-# 2) system deps
+# 3) System deps (curl git openssh-server ufw podman …)
 # =====================================================================
 if want_sudo; then
   say "Installing system packages (curl git openssh-server ufw podman)"
-  apt_install curl git openssh-server ufw podman uidmap slirp4netns ca-certificates sudo
+  apt_install curl git openssh-server ufw podman uidmap slirp4netns ca-certificates sudo unzip
   say "Ensuring sshd is enabled"; ensure_service ssh
 fi
 
-# ⚠️ Still unrestricted — apt mirrors reachable.
-# This is the LAST step before lockdown.
+# No longer need bootstrap egress for Bun/apt.
+close_bootstrap_egress
 
 # =====================================================================
-# 3) harden (UFW + tmpfs scratch)
+# 4) Hardening (UFW + tmpfs scratch) — final state by end of script
 # =====================================================================
 if [[ "$DO_HARDEN" == "yes" ]] && want_sudo; then
   say "Applying firewall (deny IN/OUT; allow SSH IN; allow 127.0.0.1 OUT)"
-
-  # ⛔ Network lockdown begins here:
   $SUDO ufw allow 22/tcp >/dev/null 2>&1 || true
   $SUDO ufw default deny incoming  >/dev/null 2>&1 || true
   $SUDO ufw default deny outgoing  >/dev/null 2>&1 || true
@@ -128,13 +180,13 @@ if [[ "$DO_HARDEN" == "yes" ]] && want_sudo; then
 fi
 
 # =====================================================================
-# 4) project deps & org
+# 5) Project deps & org
 # =====================================================================
 say "Installing project deps (bun install)"; bun install
 say "Optional build (if present)"; bun run build || true
 say "Exposing 'org' command (prefer package.json bin via Bun global)"
 bun install -g . || true
-if ! command -v org >/dev/null 2>&1; then
+if ! command -v org >/dev/null 2%; then
   mkdir -p "$HOME/.local/bin"
   APP_ENTRY="${ORG_APP_ENTRY:-$REPO_ROOT/src/app.ts}"
   cat >"$HOME/.local/bin/org" <<EOF
@@ -150,16 +202,13 @@ EOF
 fi
 
 # =====================================================================
-# 5) build container image
+# 6) Build container image (open 53/443 temporarily during pulls)
 # =====================================================================
-should_build_image() {
-  case "$BUILD_IMAGE" in yes) return 0;; no) return 1;; auto) [[ -f "$CONTAINERFILE" ]];; esac
-}
+should_build_image() { case "$BUILD_IMAGE" in yes) return 0;; no) return 1;; auto) [[ -f "$CONTAINERFILE" ]];; esac; }
 if should_build_image; then
   say "Preparing Podman (rootless)"; podman info >/dev/null 2>&1 || podman system migrate -f || true
   OPENED=()
   if [[ "$DO_HARDEN" == "yes" ]] && want_sudo; then
-    # ⛔ Firewall is active now, so we selectively open outbound DNS + HTTPS
     for rule in "53/udp" "53/tcp" "443/tcp"; do
       if ! $SUDO ufw status | grep -q "$rule.*ALLOW OUT"; then
         say "Temporarily allowing outbound $rule for image pulls"
@@ -184,7 +233,7 @@ else
 fi
 
 # =====================================================================
-# 6) launch
+# 7) Launch
 # =====================================================================
 maybe_launch_org() {
   command -v org >/dev/null 2>&1 || { warn "'org' not on PATH yet"; return 0; }
