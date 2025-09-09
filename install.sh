@@ -32,6 +32,12 @@ KEEP_HTTPS="${ORG_KEEP_HTTPS:-no}"
 LAUNCH="${ORG_INSTALL_LAUNCH:-auto}"
 UI="${ORG_INSTALL_UI:-console}"
 
+# Host loopback as seen from Lima guest; can override
+HOST_LO_IP="${ORG_HOST_LO_IP:-192.168.5.2}"
+HOST_LLM_PORT="${ORG_HOST_LLM_PORT:-11434}"
+# Final value to persist & export for org/LLM access (overridable)
+ORG_LLM_BASE_URL="${ORG_LLM_BASE_URL:-http://${HOST_LO_IP}:${HOST_LLM_PORT}}"
+
 # ---------- flags ----------
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -81,9 +87,9 @@ ufw_denies_outgoing() { have ufw && ufw status verbose 2>/dev/null | grep -qi "D
 open_bootstrap_egress_if_needed() {
   if ufw_active && ufw_denies_outgoing; then
     if ! want_sudo; then
-      die "UFW is active with outgoing=deny, but no sudo to open DNS/HTTPS.
+      die "UFW is active (deny outgoing) and no sudo to open DNS/HTTPS.
 Re-run with ORG_INSTALL_SUDO=yes ./install.sh
-or run in the VM: sudo ufw allow out 53/udp 53/tcp 443/tcp"
+or run: sudo ufw allow out 53/udp 53/tcp 443/tcp"
     fi
     for rule in "53/udp" "53/tcp" "443/tcp"; do
       if ! ufw status | grep -q "$rule.*ALLOW OUT"; then
@@ -109,10 +115,7 @@ ensure_bun_prereqs() {
   local need=()
   have curl || need+=(curl)
   have unzip || need+=(unzip)
-  # not a command, but needed for TLS trust
-  if ! dpkg -s ca-certificates >/dev/null 2>&1; then
-    need+=(ca-certificates)
-  fi
+  dpkg -s ca-certificates >/dev/null 2>&1 || need+=(ca-certificates)
   if [[ "${#need[@]}" -gt 0 ]]; then
     if want_sudo; then
       say "Installing Bun prerequisites: ${need[*]}"
@@ -133,7 +136,7 @@ open_bootstrap_egress_if_needed
 ensure_bun_prereqs
 
 # =====================================================================
-# 2) Bun
+# 2) Bun (user)
 # =====================================================================
 say "Installing Bun (user)"
 curl -fsSL https://bun.sh/install | bash || die "Bun install failed"
@@ -144,7 +147,7 @@ if ! echo ":$PATH:" | grep -q ":$HOME/.bun/bin:"; then
 fi
 
 # =====================================================================
-# 3) System deps (curl git openssh-server ufw podman …)
+# 3) System deps
 # =====================================================================
 if want_sudo; then
   say "Installing system packages (curl git openssh-server ufw podman)"
@@ -152,7 +155,7 @@ if want_sudo; then
   say "Ensuring sshd is enabled"; ensure_service ssh
 fi
 
-# No longer need bootstrap egress for Bun/apt.
+# Remove temporary DNS/HTTPS allows, we’ll re-open granularly later if needed.
 close_bootstrap_egress
 
 # =====================================================================
@@ -164,7 +167,10 @@ if [[ "$DO_HARDEN" == "yes" ]] && want_sudo; then
   $SUDO ufw default deny incoming  >/dev/null 2>&1 || true
   $SUDO ufw default deny outgoing  >/dev/null 2>&1 || true
   $SUDO ufw allow out to 127.0.0.1 >/dev/null 2>&1 || true
+  # keep HTTPS if explicitly requested
   [[ "$KEEP_HTTPS" == "yes" ]] && $SUDO ufw allow out 443/tcp >/dev/null 2>&1 || true
+  # Allow guest -> host LLM on 11434/tcp (or override via ORG_HOST_* env)
+  $SUDO ufw allow out to "$HOST_LO_IP" proto tcp port "$HOST_LLM_PORT" >/dev/null 2>&1 || true
   $SUDO ufw --force enable >/dev/null 2>&1 || true
 
   say "Creating tmpfs scratch at ~/scratch ($SCRATCH_SIZE, noexec,nosuid,nodev)"
@@ -180,19 +186,34 @@ if [[ "$DO_HARDEN" == "yes" ]] && want_sudo; then
 fi
 
 # =====================================================================
+# 4b) Persist LLM URL for org (and current shell)
+# =====================================================================
+say "Configuring ORG_LLM_BASE_URL → ${ORG_LLM_BASE_URL}"
+mkdir -p "$HOME/.bashrc.d"
+cat >"$HOME/.bashrc.d/30-org-llm.sh" <<EOF
+# org: host LLM endpoint (Lima exposes host-lo as ${HOST_LO_IP})
+export ORG_LLM_BASE_URL="${ORG_LLM_BASE_URL}"
+EOF
+# ensure snippet loader exists
+grep -q ".bashrc.d" "$HOME/.bashrc" 2>/dev/null || \
+  printf '\nfor f in ~/.bashrc.d/*.sh; do [ -r "$f" ] && . "$f"; done\n' >> "$HOME/.bashrc"
+# export for this session too
+export ORG_LLM_BASE_URL="${ORG_LLM_BASE_URL}"
+
+# =====================================================================
 # 5) Project deps & org
 # =====================================================================
 say "Installing project deps (bun install)"; bun install
 say "Optional build (if present)"; bun run build || true
 say "Exposing 'org' command (prefer package.json bin via Bun global)"
 bun install -g . || true
-if ! command -v org >/dev/null 2%; then
+if ! command -v org >/dev/null 2>&1; then
   mkdir -p "$HOME/.local/bin"
   APP_ENTRY="${ORG_APP_ENTRY:-$REPO_ROOT/src/app.ts}"
-  cat >"$HOME/.local/bin/org" <<EOF
+  cat >"$HOME/.local/bin/org" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-exec bun "$APP_ENTRY" "\$@"
+exec bun "${ORG_APP_ENTRY:-'"$REPO_ROOT"'/src/app.ts}" "$@"
 EOF
   chmod +x "$HOME/.local/bin/org"
   if ! echo ":$PATH:" | grep -q ":$HOME/.local/bin:"; then

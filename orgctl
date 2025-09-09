@@ -138,7 +138,9 @@ wait_for_ssh(){
   die "Timed out waiting for SSH. See: tail -f ~/.lima/$LIMA_NAME/serial*.log"
 }
 
-# First create: start NON-interactive and synchronous (no YAML editor)
+# First create: NON-interactive & synchronous (no YAML editor).
+# If limactl returns non-zero (e.g., “did not receive an event with the 'running' status”),
+# treat it as transient and proceed to our own SSH/provision wait.
 # Subsequent starts: non-blocking (we still wait for SSH ourselves).
 lima_start() {
   local cfg="$1"
@@ -147,7 +149,13 @@ lima_start() {
     nohup limactl start "$LIMA_NAME" >/tmp/orgctl-lima-start.log 2>&1 < /dev/null &
   else
     say "Creating Lima instance from $cfg (first run; --tty=false, synchronous)…"
+    set +e
     yes | limactl start --name "$LIMA_NAME" --tty=false "$cfg"
+    local rc=$?
+    set -e
+    if (( rc != 0 )); then
+      warn "limactl start exited with $rc; continuing to wait for SSH (startup often continues successfully)."
+    fi
   fi
 }
 
@@ -315,13 +323,8 @@ cmd_quickstart() {
   lima_start "$cfg"
 
   wait_for_ssh
-
   [[ "$NO_TAIL" != "true" ]] && tail_vm_log
-
-  if [[ "$FAST" != "true" ]]; then
-    wait_for_install "$cfg"
-  fi
-
+  [[ "$FAST" != "true" ]] && wait_for_install "$cfg"
   print_host_banner_ready "$cfg"
 
   if [[ "$ATTACH" == "true" ]]; then
@@ -399,6 +402,7 @@ ENV:
   ORG_VERBOSE=1                   verbose mode (more truthful chatter)
 NOTES:
   • First VM create runs limactl with --tty=false (no interactive YAML editor).
+  • If limactl returns a transient error, we still proceed to SSH/provision wait.
   • Default quickstart waits for SSH and for 'org' to be installed in the VM.
   • Use --fast to skip the install wait (not recommended on first boot).
   • Prefer a faster tryout?  Run:  orgctl podman first
