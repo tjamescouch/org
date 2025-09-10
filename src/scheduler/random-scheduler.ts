@@ -83,6 +83,8 @@ export class RandomScheduler {
   private readonly onStreamStart: Hooks["onStreamStart"];
   private readonly onStreamEnd: Hooks["onStreamEnd"];
 
+  private interjection: string | undefined = undefined;
+
   // when true, break the current agent loop and start a new tick immediately
   private rescheduleNow = false;
 
@@ -123,6 +125,12 @@ export class RandomScheduler {
 
       let didWork = false;
       this.rescheduleNow = false;
+
+      if (this.interjection) {
+        await this.handleUserInterjection(this.interjection, { defaultTargetId: this.lastUserDMTarget ?? undefined, });
+        this.interjection = undefined;
+        this.rescheduleNow = true;
+      }
 
       // Choose agents that currently have messages waiting.
       const ready = this.agents.filter((a) => this.inbox.hasWork(a.id));
@@ -202,27 +210,23 @@ export class RandomScheduler {
               didWork = true;
 
               if (askedUser) {
-                if (this.promptEnabled) {
-                  // interactive: open prompt as before
-                  this.lastUserDMTarget = a.id;
-                  const userText = (
-                    (await this.askUser(a.id, message)) ?? ""
-                  ).trim();
-                  if (userText) {
-                    await this.handleUserInterjection(userText, {
-                      defaultTargetId: a.id,
-                    });
-                  }
-                  this.rescheduleNow = true;
-                } else {
-                  this.stop();
-                  this.rescheduleNow = true;
+                Logger.info(C.red('3'));
+                // interactive: open prompt as before
+                this.lastUserDMTarget = a.id;
+                const userText = (
+                  (await this.askUser(a.id, message)) ?? ""
+                ).trim();
+                if (userText) {
+                  await this.handleUserInterjection(userText, {
+                    defaultTargetId: a.id,
+                  });
                 }
-                break;
+                this.rescheduleNow = true;
+                //break;
               }
             }
 
-            if (this.rescheduleNow) break;
+            //if (this.rescheduleNow) break;
             if (totalToolsUsed > 0) {
               remaining = Math.max(0, remaining - totalToolsUsed);
               if (remaining <= 0) break;
@@ -353,18 +357,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
   }
 
   async interject(text: string) {
-    await this.handleUserInterjection(text, {
-      defaultTargetId: this.lastUserDMTarget || undefined,
-    });
-  }
-
-  async finalizeAndReview(): Promise<void> {
-    Logger.info("\n👀 Finalize and review all ...");
-    try {
-      await this.review.finalizeAndReview(this.agents.map((a) => a.id));
-    } catch (e: any) {
-      Logger.error("finalizeAndReviewAll:", e?.message ?? e);
-    }
+    this.interjection = text;
   }
 
   /**

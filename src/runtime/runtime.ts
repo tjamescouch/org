@@ -11,11 +11,12 @@ type RuntimeName = "bun" | "node" | "unknown";
 
 
 interface Runtime {
-  args:  Record<string, string | boolean>,
+  args: Record<string, string | boolean>,
 
   ttyController?: TtyController | undefined;
 
   isPretty(): boolean;
+  isInteractive(): boolean;
 
   /** Which runtime we detected */
   name: RuntimeName;
@@ -121,8 +122,13 @@ function makeRuntime(): Runtime {
 
   Logger.debug(env);
 
+  const args = parseArgs(argv);
+
   return {
-    args: parseArgs(argv),
+    isInteractive(): boolean {
+      return !(args["prompt"]);
+    },
+    args,
     name,
     argv,
     env,

@@ -311,26 +311,16 @@ async function main() {
     agents, //FIXME - types
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
     onAskUser: async (_: string, content: string) => {
-      Logger.info("onAskUser");
-      // Open prompt, collect a single line, deliver it, then drain and exit.
-      try {
-        await R.ttyController?.askUser();
-        const line = await R.ttyController!.readUserLine();
-        await scheduler.interject(line);
-        await scheduler.drain();
-      } finally {
-        if (R.args['prompt']) {
-          R.stdout.write("\n");
-          R.exit(0);
-        }
+      if (R.isInteractive()) {
+        return R.ttyController?.askUser();
       }
+
+      await finalizeOnce(scheduler, workDir, reviewMode);
+      R.exit(0);
     },
     workDir, // repo root to copy/sync into /work
     reviewMode,
-    promptEnabled:
-      typeof args["prompt"] === "boolean" ? (args["prompt"] as boolean)
-        : kickoff ? false
-          : R.stdin.isTTY,
+    promptEnabled: R.isInteractive(),
     // Bridge: scheduler keeps the logic; controller renders & collects the line.
     readUserLine: async () => R.ttyController!.readUserLine(),
     // STREAM DEFERRAL: bracket every chattering section

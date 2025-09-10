@@ -228,7 +228,6 @@ export class TtyController {
     this.enqueue(line);
   }
 
-  /** exposed for a prompt-only test */
   readUserLine(label = this.promptLabel): Promise<string> {
     this.inPrompt = true;
     this.modes.toCooked();
@@ -257,12 +256,17 @@ export class TtyController {
             return resolve("");
           }
           if (ch === "\n") {
-            this.tty.off("data", handler);
-            this.inPrompt = false;
-            this.modes.toRaw();
-            return resolve(buf);
+            if (buf === "") {
+              this.out.write(label);
+            } else {
+              this.tty.off("data", handler);
+              this.inPrompt = false;
+              this.modes.toRaw();
+              return resolve(buf);
+            }
+          } else {
+            buf += ch;
           }
-          buf += ch;
         }
       };
       this.tty.on("data", handler);

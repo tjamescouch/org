@@ -134,6 +134,7 @@ export class LlmAgent extends Agent {
     // Initialize per-turn thresholds/counters in the guard rail.
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
 
+    //const reverse = [...messages].reverse();
     for (const message of messages) {
       await this.memory.addIfNotExists(message);
     }
