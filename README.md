@@ -1,7 +1,6 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 
-
 # org
 
 _Agentic dev helpers that can "do things" in your repo while you watch, review, and approve every change._
@@ -50,6 +49,8 @@ You > @@alice write "Hello World" to a file `hello-world.txt`
 When the tool wants to touch the filesystem, it first produces a **patch**. You can read, approve, or reject it. After approval, the agent continues.
 
 All artifacts for each run land in `.org/runs/<uuid>/` with comprehensive logs and the final patch.
+
+[![asciicast](https://asciinema.org/a/Xz4HX5TAlybHGQ1IJJ8fC6l7V.svg)](https://asciinema.org/a/Xz4HX5TAlybHGQ1IJJ8fC6l7V)
 
 ## Installation
 
