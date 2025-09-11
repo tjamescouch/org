@@ -20,7 +20,7 @@ export class ExecutionGate {
   static configure(cfg: GateConfig) {
     this._safe = Boolean(cfg.safe);
     this._interactive = Boolean(cfg.interactive);
-    this._guards = Array.isArray(cfg.guards) ? cfg.guards : [];
+    this._guards = (Array.isArray(cfg.guards) && cfg.guards.length > 0) ? cfg.guards : this._guards;
     if (this._safe && !this._interactive) {
       throw new Error("SAFE mode requires interactive mode (safe + non-interactive is not allowed).");
     }

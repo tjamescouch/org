@@ -32,10 +32,11 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
     try { 
         args = JSON.parse(toolcall.function?.arguments ??  "{}"); 
     } catch { args = {}; }
-    const hasApplyPatch = text.match(/apply_patch <</);
+
+    //const hasApplyPatch = text.match(/apply_patch <</);
     //const rawCmd =  String(args?.cmd ?? "");
     //const cmd = hasApplyPatch ? 'sh' : rawCmd
-    const cmd = String(args?.cmd ?? "");
+    const cmd = String(args?.cmd ?? toolcall.function?.name ?? "");
     const name = toolcall.function?.name || "";
 
     let toolsUsed = 1;
@@ -63,7 +64,9 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
             exit_code: 1,
             cmd: "",
         });
-        Logger.warn(`Execution failed: Command required.`, {...toolcall, cmd});
+        Logger.warn(`Execution failed: Command required.`);
+        Logger.warn(toolcall);
+        Logger.warn(cmd)
         await memory.add({ role: "tool", content, tool_call_id: toolcall.id, name, from: "Tool" });
 
         return { toolsUsed, forceEndTurn: false, stdout: "", stderr: "System aborted shell call tue to missing command.", ok: false, exit_code: 2 };
@@ -72,7 +75,7 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
     Logger.debug(`${agentId} tool ->`, { name, cmd: cmd.slice(0, 160) });
     const t = Date.now();
     const result = await runSh(cmd)
-    Logger.info(C.bold(formatToolResult(result)) );
+    Logger.debug(C.bold(formatToolResult(result)) );
     Logger.debug(`${agentId} tool <-`, { name, ms: Date.now() - t, exit: result.exit_code, outChars: result.stdout.length, errChars: result.stderr.length });
 
     // Let GuardRail see the signature to stop "same command" repetition

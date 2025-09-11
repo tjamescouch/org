@@ -1,69 +1,104 @@
 #!/usr/bin/env bash
 # Host-side patch review & apply.
-# Expects: --patch <patch-path> --project <repo-root>
+# Viewers:
+#   - default: less (Ctrl+C exits)
+#   - vimdiff: side-by-side visual diff using a temp worktree (safe)
+#
+# Usage:
+#   scripts/host-patch-review.sh --patch <file> --project <repo> [--viewer less|vimdiff]
+#
+# Or via env:
+#   ORG_PATCH_VIEWER=vimdiff scripts/host-patch-review.sh --patch ... --project ...
 
 set -Eeuo pipefail
 
-usage() {
-  cat >&2 <<'USAGE'
-Usage:
-  host-patch-review.sh --patch <patch-path> --project <repo-root>
-
-Behavior:
-  - Shows the patch in a pager (delta if available, else less -R).
-  - Refuses to apply if the target repo has uncommitted changes.
-  - On "y" approval, applies the patch with:
-        git -C <repo-root> apply --index --whitespace=nowarn <patch>
-  - Leaves committing to the user.
-USAGE
-}
-
 PATCH=""
 PROJECT=""
+VIEWER="${ORG_PATCH_VIEWER:-less}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --patch)   PATCH="${2:-}"; shift 2 ;;
-    --project) PROJECT="${2:-}"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "host-patch-review: unknown arg: $1" >&2; usage; exit 2 ;;
+    --patch)   PATCH="$2"; shift 2 ;;
+    --project) PROJECT="$2"; shift 2 ;;
+    --viewer)  VIEWER="$2";  shift 2 ;;
+    -h|--help)
+      cat <<'EOF'
+Usage: host-patch-review.sh --patch <file> --project <repo> [--viewer less|vimdiff]
+       ORG_PATCH_VIEWER=vimdiff host-patch-review.sh --patch <file> --project <repo>
+
+less    : shows the unified diff in a pager (press 'q' to close, Ctrl+C to abort).
+vimdiff : opens a side-by-side visual diff in a temporary worktree; quit with :qa.
+EOF
+      exit 0
+      ;;
+    *) echo "[org] unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
-[[ -n "$PATCH"   ]] || { echo "host-patch-review: --patch is required" >&2; exit 2; }
-[[ -n "$PROJECT" ]] || { echo "host-patch-review: --project is required" >&2; exit 2; }
-[[ -f "$PATCH"   ]] || { echo "host-patch-review: patch not found: $PATCH" >&2; exit 2; }
+[[ -f "$PATCH"   ]] || { echo "[org] patch not found: $PATCH" >&2; exit 2; }
+[[ -d "$PROJECT" ]] || { echo "[org] project dir not found: $PROJECT" >&2; exit 2; }
 
-git -C "$PROJECT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-  || { echo "host-patch-review: not a git repo: $PROJECT" >&2; exit 2; }
+trap 'echo; echo "[org] Aborted."; exit 130' INT
 
-echo "[host-review] project = $PROJECT"
-echo "[host-review] patch   = $PATCH"
-echo
+show_less() {
+  if command -v less >/dev/null 2>&1; then
+    export LESS='-K -R'  # -K: quit on Ctrl+C, -R: pass ANSI colors if present
+    less -P '[org] Patch preview — press q to close; Ctrl+C to abort' "$PATCH" || true
+  else
+    ${PAGER:-more} "$PATCH" || true
+  fi
+}
 
-# Require a clean repo (fail-fast)
-if [[ -n "$(git -C "$PROJECT" status --porcelain)" ]]; then
-  echo "[host-review] repo is dirty; please commit/stash/reset before applying a review patch."
-  exit 1
-fi
+show_vimdiff() {
+  # Create an isolated preview worktree at HEAD
+  local tmp base
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/org-review.XXXXXX")"
+  cleanup() {
+    # Remove the worktree even if user force-quit
+    git -C "$PROJECT" worktree remove --force "$tmp" >/dev/null 2>&1 || true
+    rm -rf "$tmp" >/dev/null 2>&1 || true
+  }
+  trap 'cleanup; exit 130' INT TERM
 
-# ---- Show patch (read-only) ----
-if command -v delta >/dev/null 2>&1; then
-  delta -s --paging=always "$PATCH"
-else
-  less -R -K "$PATCH"
-fi
+  git -C "$PROJECT" worktree add --detach "$tmp" HEAD >/dev/null
+  base="$(git -C "$tmp" rev-parse HEAD)"
 
-# ---- Confirm & apply ----
-read -r -p "Apply this patch to '$PROJECT'? [y/N] " ans
-case "$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')" in
-  y|yes)
-    echo "[host-review] applying..."
+  # Preflight: will fail early if patch cannot apply
+  git -C "$tmp" apply --index --whitespace=nowarn --check "$PATCH"
+
+  # Apply to the temp worktree & make a single preview commit
+  GIT_AUTHOR_NAME=org GIT_AUTHOR_EMAIL=org@local \
+  GIT_COMMITTER_NAME=org GIT_COMMITTER_EMAIL=org@local \
+    bash -lc "
+      set -Eeuo pipefail
+      git -C \"$tmp\" apply --index --whitespace=nowarn \"$PATCH\"
+      git -C \"$tmp\" commit -m 'org review preview' --no-gpg-sign >/dev/null
+    "
+
+  # Open a directory diff in vimdiff without writing any global git config
+  git -C "$tmp" \
+    -c diff.tool=vimdiff -c difftool.prompt=false \
+    difftool --dir-diff "$base" HEAD
+
+  cleanup
+}
+
+case "${VIEWER}" in
+  vimdiff) show_vimdiff ;;
+  less|pager|*) show_less ;;
+esac
+
+# Ask whether to apply to the real repo
+read -r -p "[org] Apply this patch to ${PROJECT}? [y/N] " ans
+case "${ans:-}" in
+  y|Y)
+    # Preflight on the real repo
     git -C "$PROJECT" apply --index --whitespace=nowarn --check "$PATCH"
     git -C "$PROJECT" apply --index --whitespace=nowarn "$PATCH"
-    echo "[host-review] apply: OK"
+    git -C "$PROJECT" commit -m "Apply org session patch" --no-gpg-sign
+    echo "[org] Patch applied."
     ;;
   *)
-    echo "[host-review] skipped (no changes applied)."
+    echo "[org] Patch skipped."
     ;;
 esac
