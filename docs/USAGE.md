@@ -58,7 +58,7 @@ When running **inside** a repo, just call `org` normally.
 
   * `ORG_DEBUG=1` or `LOG_LEVEL=debug` for extra logs
   * `ORG_FORCE_UI=console|tmux` to set a default
-  * `ORG_ENGINE=podman` and `ORG_IMAGE=localhost/org-build:debian-12` to override engine/image
+  * `ORG_ENGINE=podman` and `ORG_IMAGE=localhost/org-sandbox:latest` to override engine/image
 
 ## Interactive Controls
 

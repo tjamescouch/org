@@ -51,7 +51,7 @@ fi
 if command -v delta >/dev/null 2>&1; then
   delta -s --paging=always "$PATCH"
 else
-  less -R "$PATCH"
+  less -R -K "$PATCH"
 fi
 
 # ---- Confirm & apply ----

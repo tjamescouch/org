@@ -52,7 +52,7 @@ export async function routeWithSideEffects(
     sandbox?: ISandboxSession,
 ): Promise<boolean> {
     const router = makeRouter({
-        onAgent: async (from, to, cleaned) => {
+        onAgent: async (_from, to, cleaned) => {
             //Logger.info(C.blue(`[@@${from} → @@${to}]`));
             deps.setRespondingAgent(to);
             if (cleaned) deps.enqueue(to, { role: "user", from: fromAgent.id, content: cleaned });

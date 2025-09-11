@@ -56,7 +56,7 @@ export function defaultPolicy(opts: {
     return {
         projectDir,
         runRoot,
-        image: opts.image ?? "localhost/org-build:debian-12",
+        image: opts.image ?? "localhost/org-sandbox:latest",
         net: opts.net ?? { mode: "deny" },
         limits: {
             timeoutMs: opts.limits?.timeoutMs ?? 30_000,

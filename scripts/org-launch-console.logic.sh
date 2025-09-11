@@ -11,6 +11,13 @@ LOG_FILE="${LOG_DIR}/console.log"
 BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"
 APP_ENTRY="${ORG_APP_ENTRY:-/application/src/app.ts}"
 
+# Keep global git config out of /work so it never becomes part of the patch.
+if [ "${HOME:-/work}" = "/work" ]; then
+  export GIT_CONFIG_GLOBAL="/tmp/org/gitconfig"
+  mkdir -p /tmp/org
+  : > "$GIT_CONFIG_GLOBAL"  # ensure file exists (idempotent)
+fi
+
 # Forward ALL user args verbatim to the app.
 APP_ARGS=("$@")
 
@@ -33,7 +40,6 @@ print_cmd() {
 
 {
   echo "===== org console start: $(date -Is) ====="
-  printf "cmd: "
   print_cmd "${BUN_BIN}" "${APP_ENTRY}" --ui console "${APP_ARGS[@]}"
 } | tee -a "${LOG_FILE}"
 

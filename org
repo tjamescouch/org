@@ -31,7 +31,7 @@ if [[ -f "$CONF_FILE" ]]; then
 fi
 
 ENGINE="${ORG_ENGINE:-podman}"
-IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
+IMAGE="${ORG_IMAGE:-localhost/org-sandbox:latest}"
 FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
 NETWORK="${ORG_NETWORK:-slirp4netns:allow_host_loopback=true}"
 CAPS="${ORG_CAPS:-all}"
@@ -135,7 +135,7 @@ set +e
     set -Eeuo pipefail
     mkdir -p /work/.org
     if [ "${ORG_REVIEW_MODE:-live}" = review ]; then
-      rsync -a --delete --exclude ".git" --exclude ".org" /project/ /work/
+      rsync -a --delete  --delete-delay --force --exclude ".git/**" --exclude ".org/**" /project/ /work/
       rm -rf /work/.git 2>/dev/null || true
       printf "gitdir: /project/.git\n" > /work/.git
       git config --global --add safe.directory /project >/dev/null 2>&1 || true

@@ -25,11 +25,17 @@ const formatToolResult = (tr: ToolResult): string => {
 
 
 const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, memory: AgentMemory, guard: GuardRail): Promise<ToolHandlerResult> => {
+    console.log("shHanlder", toolcall);
+
+
     let args: any = {};
-    try { args = JSON.parse(toolcall.function?.arguments || "{}"); } catch { args = {}; }
+    try { 
+        args = JSON.parse(toolcall.function?.arguments ??  "{}"); 
+    } catch { args = {}; }
     const hasApplyPatch = text.match(/apply_patch <</);
-    const rawCmd =  String(args?.cmd ?? "");
-    const cmd = hasApplyPatch ? 'sh' : rawCmd;
+    //const rawCmd =  String(args?.cmd ?? "");
+    //const cmd = hasApplyPatch ? 'sh' : rawCmd
+    const cmd = String(args?.cmd ?? "");
     const name = toolcall.function?.name || "";
 
     let toolsUsed = 1;
