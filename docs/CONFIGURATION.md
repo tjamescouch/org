@@ -55,11 +55,11 @@ We initialize a baseline commit inside `/work`, and compute the patch against th
 
 **Base image**
 
-By default we look for `localhost/org-build:debian-12`. You can tag or load an image that contains `bash`, `git`, `rsync`, and a few coreutils:
+By default we look for `localhost/org-sandbox:latest`. You can tag or load an image that contains `bash`, `git`, `rsync`, and a few coreutils:
 
 ```bash
 podman pull docker.io/library/debian:12
-podman tag  docker.io/library/debian:12  localhost/org-build:debian-12
+podman tag  docker.io/library/debian:12  localhost/org-sandbox:latest
 ```
 
 > The repo is bind-mounted; you do not need build toolchains baked into the image for most tasks.

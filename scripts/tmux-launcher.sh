@@ -11,7 +11,7 @@ if [[ -z "${ENGINE}" ]]; then
   else echo "ERROR: neither podman nor docker found; set ORG_CONTAINER_ENGINE."; exit 1; fi
 fi
 
-IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
+IMAGE="${ORG_IMAGE:-localhost/org-sandbox:latest}"
 MODE="${1:-tmux}" # default tmux; or pass 'console'
 
 case "${MODE}" in tmux|console) ;; *) echo "Usage: $0 [tmux|console]"; exit 2 ;; esac

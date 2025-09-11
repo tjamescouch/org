@@ -31,7 +31,7 @@ if [[ -f "$CONF_FILE" ]]; then
 fi
 
 ENGINE="${ORG_ENGINE:-podman}"
-IMAGE="${ORG_IMAGE:-localhost/org-build:debian-12}"
+IMAGE="${ORG_IMAGE:-localhost/org-sandbox:latest}"
 FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
 NETWORK="${ORG_NETWORK:-slirp4netns:allow_host_loopback=true}"
 CAPS="${ORG_CAPS:-all}"

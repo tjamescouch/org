@@ -71,7 +71,7 @@ These are strongly recommended for day-to-day use:
 
 ## Notes on containerization
 
-- The Podman backend uses a local image `localhost/org-build:debian-12`. If you
+- The Podman backend uses a local image `localhost/org-sandbox:latest`. If you
   cannot pull images, you can load an offline tarball via `podman load -i …`.
 - Containerization is for **safety and reproducibility**, not for strong
   isolation. Treat it as a convenience boundary, not a security boundary.

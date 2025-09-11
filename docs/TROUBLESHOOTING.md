@@ -18,10 +18,10 @@
 * It's a pager (`delta` or `less`). **q** to quit, then you'll see:
   `Apply this patch? [y/N]`. Press **y** (Enter) to apply.
 
-### "Trying to pull localhost/org-build:debian-12"
+### "Trying to pull localhost/org-sandbox:latest"
 
 * Build or tag the base image locally:
-  `podman tag debian:12 localhost/org-build:debian-12`.
+  `podman tag debian:12 localhost/org-sandbox:latest`.
 
 ### Heartbeat dots over the patch screen
 
