@@ -9,7 +9,7 @@ Set these to point the app at your local or remote model server:
 | `LLM_DRIVER`   | `lmstudio`                  | Driver key (e.g., `lmstudio`, `mock`) |
 | `LLM_PROTOCOL` | `openai`                    | Wire format                           |
 | `LLM_BASE_URL` | `http://192.168.56.1:11434` | Host API (override if not using a VM) |
-| `LLM_MODEL`    | `openai/gpt-oss-20b`        | Model id                              |
+| `LLM_MODEL`    | `openai/gpt-oss-120b`       | Model id                              |
 
 ## Environment Variables
 

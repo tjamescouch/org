@@ -92,11 +92,15 @@ esac
 read -r -p "[org] Apply this patch to ${PROJECT}? [y/N] " ans
 case "${ans:-}" in
   y|Y)
-    # Preflight on the real repo
     git -C "$PROJECT" apply --index --whitespace=nowarn --check "$PATCH"
     git -C "$PROJECT" apply --index --whitespace=nowarn "$PATCH"
-    git -C "$PROJECT" commit -m "Apply org session patch" --no-gpg-sign
-    echo "[org] Patch applied."
+
+    if [[ "${ORG_COMMIT_ENABLED,,}" =~ ^(1|true|yes)$ ]]; then
+      git -C "$PROJECT" commit -m "Apply org session patch" --no-gpg-sign
+      echo "[org] Patch applied and committed."
+    else
+      echo "[org] Patch applied. (not committed; ORG_COMMIT_ENABLED is false)"
+    fi
     ;;
   *)
     echo "[org] Patch skipped."

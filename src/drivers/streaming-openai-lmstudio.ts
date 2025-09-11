@@ -7,7 +7,7 @@ import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types"
 
 interface OpenAiDriverConfig {
   baseUrl: string;    // e.g. http://127.0.0.1:11434
-  model: string;      // e.g. openai/gpt-oss-20b
+  model: string;
   timeoutMs?: number; // default 2h (aligns with non-streaming driver)
 }
 
