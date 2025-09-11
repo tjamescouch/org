@@ -104,6 +104,7 @@ ENV_ARR=(
   "-e" "ORG_HOST_ALIAS=host.containers.internal"
   "-e" "NO_PROXY=localhost,127.0.0.1,::1,host.containers.internal"
   "-e" "ORG_OPENAI_BASE_DEFAULT=${ORG_OPENAI_BASE_DEFAULT:-http://host.containers.internal:11434/v1}"
+  "-e" "GIT_CONFIG_GLOBAL=/tmp/org/gitconfig"
 )
 
 env_allow() {
@@ -138,6 +139,7 @@ set +e
       rsync -a --delete  --delete-delay --force --exclude ".git/**" --exclude ".org/**" /project/ /work/
       rm -rf /work/.git 2>/dev/null || true
       printf "gitdir: /project/.git\n" > /work/.git
+      mkdir -p /tmp/org
       git config --global --add safe.directory /project >/dev/null 2>&1 || true
       git config --global --add safe.directory /work    >/dev/null 2>&1 || true
     fi
