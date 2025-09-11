@@ -1,6 +1,7 @@
 // src/tools/sh.ts
 import { ExecutionGate } from "./execution-gate";
 import { C, Logger } from "../logger"; import { spawnInCleanEnvironment } from "../utils/spawn-clean";
+import { R } from "../runtime/runtime";
 
 export const SH_TOOL_DEF = {
   type: "function",
@@ -36,14 +37,14 @@ export async function runSh(
   cmd: string,
   opts?: {
     shell?: string;                 // default: /bin/bash if present, else /bin/sh
-    cwd?: string;                   // default: process.cwd()
-    env?: NodeJS.ProcessEnv;        // default: process.env
+    cwd?: string;                   // default: R.cwd()
+    env?: NodeJS.ProcessEnv;        // default: R.env
     idleHeartbeatMs?: number;       // default: 1000 (print '.' to stderr when idle)
   }
 ): Promise<ShResult> {
 
-  Logger.error("command:");
-  Logger.error(cmd)
+  Logger.debug("command:");
+  Logger.debug(cmd)
 
   try {
     await ExecutionGate.gate(cmd);
@@ -54,16 +55,16 @@ export async function runSh(
     return { ok: false, stdout: '', stderr: `Execution denied by guard or user: ${cmd}`, exit_code: 10101, cmd };
   }
 
-  const shell = opts?.shell ?? (process.platform === "win32" ? "bash" : "/bin/bash");
+  const shell = opts?.shell ?? (R.platform === "win32" ? "bash" : "/bin/bash");
   const args = shell.endsWith("bash") || shell.endsWith("/bash") ? ["-lc", cmd] : ["-c", cmd];
-  const cwd = opts?.cwd ?? process.cwd();
-  const env = { ...process.env, ...(opts?.env ?? {}) };
+  const cwd = opts?.cwd ?? R.cwd();
+  const env = { ...R.env, ...(opts?.env ?? {}) };
   const idleHeartbeatMs = Math.max(250, opts?.idleHeartbeatMs ?? 1000);
 
   // UX line prefix as in your screenshots:
   // e.g. `sh: make -> make: Nothing to be done for 'all'.`
   // We write to stderr so it doesn't contaminate captured stdout.
-  process.stderr.write(`sh: ${cmd} -> `);
+  //R.stderr.write(`sh: ${cmd} -> `);
 
   return new Promise<ShResult>((resolve) => {
     const child = spawnInCleanEnvironment(shell, args, {
@@ -90,7 +91,7 @@ export async function runSh(
         const idleFor = Date.now() - lastChildOutputAt;
         if (idleFor >= idleHeartbeatMs && exitCode === null) {
           // print a dot on stderr to indicate we're alive
-          process.stderr.write(C.bold("."));
+          R.stderr.write(C.bold("."));
           printedHeartbeat = true;
           // Note: DO NOT update lastChildOutputAt here — only child output resets idleness
         }
@@ -114,10 +115,10 @@ export async function runSh(
 
       // If we were printing dots, break the line once before showing real output.
       if (printedHeartbeat && !brokeLineAfterHeartbeat) {
-        process.stderr.write("\n");
+        R.stderr.write("\n");
         brokeLineAfterHeartbeat = true;
       }
-      process.stdout.write(s);
+      R.stdout.write(s);
     });
 
     child.stderr.on("data", (buf: Buffer) => {
@@ -126,17 +127,17 @@ export async function runSh(
       err += s;
 
       if (printedHeartbeat && !brokeLineAfterHeartbeat) {
-        process.stderr.write("\n");
+        R.stderr.write("\n");
         brokeLineAfterHeartbeat = true;
       }
-      process.stderr.write(s);
+      R.stderr.write(s);
     });
 
     child.on("error", (e) => {
       clearHeartbeat();
       // Ensure we end the heartbeat line cleanly
-      if (printedHeartbeat && !brokeLineAfterHeartbeat) process.stderr.write("\n");
-      if (!printedHeartbeat) process.stderr.write("\n");
+      if (printedHeartbeat && !brokeLineAfterHeartbeat) R.stderr.write("\n");
+      if (!printedHeartbeat) R.stderr.write("\n");
 
       resolve({
         ok: false,
@@ -152,10 +153,10 @@ export async function runSh(
       clearHeartbeat();
 
       // Finish the line cleanly if we showed a heartbeat but no output followed.
-      if (printedHeartbeat && !brokeLineAfterHeartbeat) process.stderr.write("\n");
+      if (printedHeartbeat && !brokeLineAfterHeartbeat) R.stderr.write("\n");
       if (!printedHeartbeat && out.length === 0 && err.length === 0) {
         // no output at all — still end the line
-        process.stderr.write("\n");
+        R.stderr.write("\n");
       }
 
       resolve({

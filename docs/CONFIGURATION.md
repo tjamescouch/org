@@ -9,7 +9,7 @@ Set these to point the app at your local or remote model server:
 | `LLM_DRIVER`   | `lmstudio`                  | Driver key (e.g., `lmstudio`, `mock`) |
 | `LLM_PROTOCOL` | `openai`                    | Wire format                           |
 | `LLM_BASE_URL` | `http://192.168.56.1:11434` | Host API (override if not using a VM) |
-| `LLM_MODEL`    | `openai/gpt-oss-20b`        | Model id                              |
+| `LLM_MODEL`    | `openai/gpt-oss-120b`       | Model id                              |
 
 ## Environment Variables
 
@@ -85,10 +85,10 @@ You can override policy when creating a session if needed, but the defaults are 
 
 ## Environment Cheat Sheet
 
-| Variable          | Typical values           | Purpose                                               |
-| ----------------- | ------------------------ | ----------------------------------------------------- |
-| `ORG_PAGER`       | `delta`, `less`, `cat`   | Force a specific pager for `session.patch`.           |
-| `ORG_REVIEW`      | `ask`, `auto`, `never`   | Patch review mode (defaults to interactive on a TTY). |
-| `ORG_PROJECT_DIR` | `/path/to/repo`          | Operate on a repo without `cd` (alternate to `-C`).   |
-| `SANDBOX_BACKEND` | `podman`, `none`, `auto` | Choose/disable the sandbox backend.                   |
-| `SAFE_MODE`       | `1`/`true`               | Extra confirmation gates for shell & writes.          |
+| Variable             | Typical values           | Purpose                                               |
+| -------------------- | ------------------------ | ----------------------------------------------------- |
+| `ORG_PAGER`          | `delta`, `less`, `cat`   | Force a specific pager for `session.patch`.           |
+| `ORG_REVIEW`         | `ask`, `auto`, `never`   | Patch review mode (defaults to interactive on a TTY). |
+| `ORG_PROJECT_DIR`    | `/path/to/repo`          | Operate on a repo without `cd` (alternate to `-C`).   |
+| `ORG_COMMIT_ENABLED` | `true`/`false`           | When true org will commit to your repostiroy any approved patches   |
+| `ORG_SAFE_MODE`      |`1`/`true`                | Extra confirmation gates for shell & writes.          |

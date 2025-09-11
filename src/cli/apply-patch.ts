@@ -3,6 +3,8 @@ import { spawn } from "child_process";
 import * as path from "path";
 import * as fs from "fs/promises";
 
+const commitEnabled = /^(1|true|yes)$/i.test(process.env.ORG_COMMIT_ENABLED || "");
+
 type R = { code: number; stdout: string; stderr: string };
 const run = (cmd: string, args: string[], cwd: string): Promise<R> =>
   new Promise((resolve) => {
@@ -30,7 +32,9 @@ export async function applySessionPatch(repoDir: string, patchPath: string, comm
   // Fast path: index-aware, 3-way.
   let r = await run("git", [...applyArgs, "--index", "--3way", abs], repoDir);
   if (r.code === 0) {
-    await ok(run("git", ["commit", "-m", commitMsg || "Apply org session patch"], repoDir), "git commit");
+    if (commitEnabled) {
+      await ok(run("git", ["commit", "-m", commitMsg || "Apply org session patch"], repoDir), "git commit");
+    }
     return;
   }
 
@@ -48,5 +52,8 @@ export async function applySessionPatch(repoDir: string, patchPath: string, comm
   }
 
   await ok(run("git", ["add", "-A"], repoDir), "git add -A");
-  await ok(run("git", ["commit", "-m", commitMsg || "Apply org session patch"], repoDir), "git commit");
+
+  if (commitEnabled) {
+    await ok(run("git", ["commit", "-m", commitMsg || "Apply org session patch"], repoDir), "git commit");
+  }
 }
