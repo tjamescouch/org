@@ -135,7 +135,7 @@ set +e
     set -Eeuo pipefail
     mkdir -p /work/.org
     if [ "${ORG_REVIEW_MODE:-live}" = review ]; then
-      rsync -a --delete --exclude ".git" --exclude ".org" /project/ /work/
+      rsync -a --delete  --delete-delay --force --exclude ".git/**" --exclude ".org/**" /project/ /work/
       rm -rf /work/.git 2>/dev/null || true
       printf "gitdir: /project/.git\n" > /work/.git
       git config --global --add safe.directory /project >/dev/null 2>&1 || true

@@ -49,6 +49,13 @@ INNER_LOG="$ORG_LOG_DIR/tmux-inner.log"
 SHELL_BIN="${SHELL:-/bin/bash}"
 SCRIPT_BIN="$(command -v script || true)"
 
+# Keep global git config out of /work so it never becomes part of the patch.
+if [ "${HOME:-/work}" = "/work" ]; then
+  export GIT_CONFIG_GLOBAL="/tmp/org/gitconfig"
+  mkdir -p /tmp/org
+  : > "$GIT_CONFIG_GLOBAL"  # ensure file exists (idempotent)
+fi
+
 # -------- Prep dirs -----------------------------------------------------------
 mkdir -p "$ORG_STATE_DIR" "$ORG_LOG_DIR" "$ORG_TMUX_LOG_DIR"
 
