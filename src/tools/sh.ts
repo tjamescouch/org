@@ -1,8 +1,6 @@
 // src/tools/sh.ts
-import { spawn } from "node:child_process";
 import { ExecutionGate } from "./execution-gate";
-import { C, Logger } from "../logger";
-import { spawnInCleanEnvironment } from "../utils/spawn-clean";
+import { C, Logger } from "../logger"; import { spawnInCleanEnvironment } from "../utils/spawn-clean";
 
 export const SH_TOOL_DEF = {
   type: "function",
@@ -44,6 +42,9 @@ export async function runSh(
   }
 ): Promise<ShResult> {
 
+  Logger.error("command:");
+  Logger.error(cmd)
+
   try {
     await ExecutionGate.gate(cmd);
   } catch (e) {
@@ -68,7 +69,7 @@ export async function runSh(
     const child = spawnInCleanEnvironment(shell, args, {
       cwd,
       env,
-      timeoutMs: 90_000,
+      timeoutMs: 10*60*1000,
       graceMs: 5000,
     });
 
@@ -89,7 +90,7 @@ export async function runSh(
         const idleFor = Date.now() - lastChildOutputAt;
         if (idleFor >= idleHeartbeatMs && exitCode === null) {
           // print a dot on stderr to indicate we're alive
-          process.stderr.write(".");
+          process.stderr.write(C.bold("."));
           printedHeartbeat = true;
           // Note: DO NOT update lastChildOutputAt here — only child output resets idleness
         }

@@ -134,8 +134,8 @@ export class LlmAgent extends Agent {
     // Initialize per-turn thresholds/counters in the guard rail.
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
 
-    //const reverse = [...messages].reverse();
-    for (const message of messages) {
+    const reverse = [...messages].reverse();
+    for (const message of reverse) {
       await this.memory.addIfNotExists(message);
     }
 
@@ -205,6 +205,8 @@ export class LlmAgent extends Agent {
       },
       onToolCallDelta
     });
+
+    console.log("this.driver.chat", out);
 
     const tail = this.streamFilter.flush();                            // then flush filter
     if (tail) Logger.streamInfo(C.bold(tail) + "\n");

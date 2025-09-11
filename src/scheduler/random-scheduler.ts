@@ -210,7 +210,6 @@ export class RandomScheduler {
               didWork = true;
 
               if (askedUser) {
-                Logger.info(C.red('3'));
                 // interactive: open prompt as before
                 this.lastUserDMTarget = a.id;
                 const userText = (

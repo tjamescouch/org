@@ -32,7 +32,7 @@ export class Logger {
   static info(...a: any[]) { console.log(...a); }
   static warn(...a: any[]) { console.warn(...a); }
   static error(...a: any[]) { console.error(...a); }
-  static debug(...a: any[]) { if ((process.env.LOG_LEVEL||'').toUpperCase()==='DEBUG') console.log(...a); }
+  static debug(...a: any[]) { if ((process.env.ORG_LOG_LEVEL||'').toUpperCase()==='DEBUG') console.log(...a); }
 
   /** stream without newline */
   static streamInfo(s: string) { writeRaw(s); }

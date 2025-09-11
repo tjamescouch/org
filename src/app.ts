@@ -214,9 +214,14 @@ async function finalizeOnce(scheduler: SchedulerLike | null, workDir: string, re
     Logger.info(`Patch ready: ${patch}`);
     if (reviewMode === "never") continue;
 
+    const inHost = (R.env.SANDBOX_BACKEND || "").toLowerCase() === "none";
+    if (!inHost) {
+      Logger.info(`Patch produced at ${patch}. Review/apply on the host: scripts/host-patch-review.sh --patch ${patch} --project <repo>`);
+      continue;
+    }
     if (reviewMode === "auto" || !R.stdout.isTTY) {
       try { applyPatch(workDir, patch); Logger.info("Patch auto-applied."); }
-      catch (e) { const msg = e instanceof Error ? e.message : String(e); Logger.error("Auto-apply failed:", msg); Logger.info(`You can apply manually: git -C ${workDir} apply --index ${patch}`); }
+      catch (e) { /* log */ }
       continue;
     }
 
@@ -242,15 +247,15 @@ async function main() {
 
   // tmux handoff
   if (args["ui"] === "tmux" && R.env.ORG_TMUX !== "1") {
-    const sandbox = R.env.SANDBOX_BACKEND ?? "podman";
+    const inHost = (R.env.SANDBOX_BACKEND || "").toLowerCase() === "none";
     const tmuxScope: "host" | "container" =
-      (R.env.ORG_TMUX_SCOPE as "host" | "container" | undefined) ?? (sandbox === "none" ? "host" : "container");
+      (R.env.ORG_TMUX_SCOPE as "host" | "container" | undefined) ?? (inHost ? "host" : "container");
     const { doctorTmux } = await import("./cli/doctor");
     if (tmuxScope === "host") {
       if ((await doctorTmux("host")) !== 0) R.exit(1);
     }
     const { launchTmuxUI } = await import("./ui/tmux");
-    const code = await launchTmuxUI(R.argv, tmuxScope);
+    const code = await launchTmuxUI(R.argv);
     R.exit(code);
   }
 

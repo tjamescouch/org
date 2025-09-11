@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # Create a patch for the current session.
 # Writes to: /work/.org/runs/<id>/session.patch
-# Supports both modes:
-#   live   : /work is the actual project repo
-#   review : /work is a staged copy; .git is on /project (RO)
+# Works in both live and review modes; does not write to the real .git.
 
 set -Eeuo pipefail
 
@@ -15,32 +13,54 @@ run_dir="$ROOT/.org/runs/$id"
 mkdir -p "$run_dir"
 patch="$run_dir/session.patch"
 
-# helper: run git with provided args, honoring review vs live
-git_diff() {
-  if [ "${ORG_REVIEW_MODE:-live}" = review ]; then
-    # Use project repo metadata read-only, and the staged /work as work tree.
-    GIT_DIR=/project/.git GIT_WORK_TREE=/work \
-      git -c color.ui=false --no-pager "$@"
+# Choose a repo-aware git that also works when /project/.git is read-only
+use_project_git=false
+if [[ -d /project/.git ]]; then
+  if GIT_DIR=/project/.git GIT_WORK_TREE=/work git rev-parse --git-dir >/dev/null 2>&1; then
+    use_project_git=true
+  fi
+fi
+
+git_repo() {
+  if $use_project_git; then
+    GIT_DIR=/project/.git GIT_WORK_TREE=/work git -c color.ui=false --no-pager "$@"
   else
     git -C /work -c color.ui=false --no-pager "$@"
   fi
 }
 
-# Verify we have a repo to diff against
-if [ "${ORG_REVIEW_MODE:-live}" = review ]; then
-  git -C /project rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+# Sanity: ensure we’re in a repo context for tracked diffs
+if $use_project_git; then
+  GIT_DIR=/project/.git GIT_WORK_TREE=/work git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     || { echo "org-patch-create: /project is not a git repo" >&2; exit 2; }
 else
   git -C /work rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     || { echo "org-patch-create: /work is not a git repo" >&2; exit 2; }
 fi
 
-# Produce a binary-safe diff of the working tree against HEAD, excluding runtime state.
-# (We do NOT stage files here; in review mode we diff the staged copy in /work.)
-git_diff diff --binary HEAD -- . ":(exclude).org/**" > "$patch" || true
+tracked="$run_dir/.tracked.diff"
+untracked="$run_dir/.untracked.diff"
+: > "$tracked"; : > "$untracked"
 
-# Ensure the file exists even if empty
-test -s "$patch" || : > "$patch"
+# 1) Tracked changes vs HEAD (includes deletes/renames)
+git_repo diff --binary -M --no-ext-diff HEAD -- . ":(exclude).org/**" ":(exclude).git/**" >"$tracked" || true
+
+# 2) Untracked additions (no-index; doesn’t touch .git)
+mapfile -d '' UNTRACKED < <(git_repo ls-files --others --exclude-standard -z -- . ":(exclude).org/**" ":(exclude).git/**" || true)
+if (( ${#UNTRACKED[@]} )); then
+  for f in "${UNTRACKED[@]}"; do
+    [[ -z "$f" ]] && continue
+    git -C "$ROOT" -c color.ui=false --no-pager diff --no-index --binary -- /dev/null "$f" >>"$untracked" || true
+  done
+fi
+
+# 3) Compose final patch
+if [[ -s "$tracked" || -s "$untracked" ]]; then
+  cat "$tracked" "$untracked" >"$patch"
+else
+  : >"$patch"
+fi
+
 if [[ -n "${ORG_VERBOSE:-}" ]]; then
   echo "[org-patch-create] wrote: $patch"
 fi
