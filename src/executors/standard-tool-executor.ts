@@ -25,7 +25,7 @@ const formatToolResult = (tr: ToolResult): string => {
 
 
 const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, memory: AgentMemory, guard: GuardRail): Promise<ToolHandlerResult> => {
-    console.log("shHanlder", toolcall);
+    Logger.debug("shHanlder", toolcall);
 
 
     let args: any = {};

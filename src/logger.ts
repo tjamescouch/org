@@ -1,3 +1,5 @@
+import { R } from "./runtime/runtime";
+
 const Reset = "\u001b[0m";
 const Dim = "\u001b[2m";
 const FgCyan = "\u001b[36m";
@@ -31,8 +33,8 @@ const Colors = { Reset, Dim, FgCyan, FgGreen, FgMagenta, FgYellow, FgBlue };
 export class Logger {
   static info(...a: any[]) { console.log(...a); }
   static warn(...a: any[]) { console.warn(...a); }
-  static error(...a: any[]) { console.error(...a); }
-  static debug(...a: any[]) { if ((process.env.ORG_LOG_LEVEL||'').toUpperCase()==='DEBUG') console.log(...a); }
+  static error(...a: any[]) { console.error(...a); } // This must remain as process to prevent cyclic imports
+  static debug(...a: any[]) { if ((process.env.ORG_LOG_LEVEL ?? '').toUpperCase()==='DEBUG') console.log(...a); }
 
   /** stream without newline */
   static streamInfo(s: string) { writeRaw(s); }

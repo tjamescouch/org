@@ -141,7 +141,7 @@ export class LlmAgent extends Agent {
 
     let hop = 0;
 
-    Logger.info(C.green(`${this.id} ...`));
+    Logger.info(C.green(`${this.id} is thinking.`));
     const msgs = this.memory.messages();
     Logger.debug(`${this.id} chat ->`, { hop: hop++, msgs: msgs.length });
     const t0 = Date.now();
@@ -206,7 +206,7 @@ export class LlmAgent extends Agent {
       onToolCallDelta
     });
 
-    console.log("this.driver.chat", out);
+    Logger.debug("this.driver.chat", out);
 
     const tail = this.streamFilter.flush();                            // then flush filter
     if (tail) Logger.streamInfo(C.bold(tail) + "\n");

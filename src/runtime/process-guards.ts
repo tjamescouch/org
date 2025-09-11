@@ -1,17 +1,18 @@
-// src/runtime/process-guards.ts
+// src/runtime/R-guards.ts
 import { Logger } from "../logger";
+import { R } from "./runtime";
 
-export function setupProcessGuards() {
-  const dbgOn = !!process.env.DEBUG && process.env.DEBUG !== "0" && process.env.DEBUG !== "false";
+export function setupRGuards() {
+  const dbgOn = !!R.env.DEBUG && R.env.DEBUG !== "0" && R.env.DEBUG !== "false";
   if (!dbgOn) return;
 
-  process.on("beforeExit", (code) => {
+  R.on("beforeExit", (code) => {
     Logger.info("[DBG] beforeExit", code, "— scheduler stays alive unless Ctrl+C");
     setTimeout(() => { /* keep loop alive while idle */ }, 60_000);
   });
-  process.on("uncaughtException", (e) => { Logger.info("[DBG] uncaughtException:", e); });
-  process.on("unhandledRejection", (e) => { Logger.info("[DBG] unhandledRejection:", e); });
-  process.stdin.on("end", () => Logger.info("[DBG] stdin end"));
-  process.stdin.on("pause", () => Logger.info("[DBG] stdin paused"));
-  process.stdin.on("resume", () => Logger.info("[DBG] stdin resumed"));
+  R.on("uncaughtException", (e) => { Logger.info("[DBG] uncaughtException:", e); });
+  R.on("unhandledRejection", (e) => { Logger.info("[DBG] unhandledRejection:", e); });
+  R.stdin.on("end", () => Logger.info("[DBG] stdin end"));
+  R.stdin.on("pause", () => Logger.info("[DBG] stdin paused"));
+  R.stdin.on("resume", () => Logger.info("[DBG] stdin resumed"));
 }
