@@ -27,6 +27,8 @@ install -D -m 0755 "$DIR/org"                "/usr/local/bin/org"
 install -D -m 0755 "$DIR/org-launch-tmux"    "/usr/local/libexec/org/launch-tmux"
 install -D -m 0755 "$DIR/org-launch-rich"    "/usr/local/libexec/org/launch-rich"
 install -D -m 0755 "$DIR/org-launch-console" "/usr/local/libexec/org/launch-console"
+install -D -m 0755 "$DIR/org-status" "/usr/local/libexec/org/status"
+install -D -m 0755 "$DIR/org-apply" "/usr/local/libexec/org/apply"
 
 # Normalize line endings defensively
 sed -i 's/\r$//' \

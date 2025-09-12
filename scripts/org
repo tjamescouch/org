@@ -14,9 +14,21 @@ usage() {
 Usage:
   org
   org --ui console
+  org --ui rich 
   org --ui tmux
 USAGE
 }
+
+# --- org verbs (host-side recipes) ------------------------------------------
+if [[ "${1:-}" == "apply" ]]; then
+  shift
+  exec "$(dirname "$0")/scripts/org-apply.sh" "$@"
+elif [[ "${1:-}" == "status" ]]; then
+  shift
+  exec "$(dirname "$0")/scripts/org-status.sh" "$@"
+fi
+# ---------------------------------------------------------------------------
+
 
 mode="console"   # default
 rest=()

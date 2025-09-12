@@ -95,7 +95,9 @@ case "${ans:-}" in
     git -C "$PROJECT" apply --index --whitespace=nowarn --check "$PATCH"
     git -C "$PROJECT" apply --index --whitespace=nowarn "$PATCH"
 
-    if [[ "${ORG_COMMIT_ENABLED,,}" =~ ^(1|true|yes)$ ]]; then
+    _commit="${ORG_COMMIT_ENABLED:-}"
+
+    if [[ "${_commit,,}" =~ ^(1|true|yes)$ ]]; then
       git -C "$PROJECT" commit -m "Apply org session patch" --no-gpg-sign
       echo "[org] Patch applied and committed."
     else

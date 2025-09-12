@@ -7,6 +7,17 @@
 
 set -Eeuo pipefail
 
+# --- org verbs (host-side recipes) ------------------------------------------
+if [[ "${1:-}" == "apply" ]]; then
+  shift
+  exec "$(dirname "$0")/scripts/org-apply.sh" "$@"
+elif [[ "${1:-}" == "status" ]]; then
+  shift
+  exec "$(dirname "$0")/scripts/org-status.sh" "$@"
+fi
+# ---------------------------------------------------------------------------
+
+
 # ---------- resolve real path to this script (portable) ----------
 resolve_realpath() {
   if command -v readlink >/dev/null 2>&1; then
