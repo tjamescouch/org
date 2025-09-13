@@ -57,6 +57,66 @@ provision:
       chmod 0440 /etc/sudoers.d/90-{{.User}}-nopasswd
       systemctl enable --now ssh
 
+      # Create network lockdown script for later use
+      cat >/usr/local/bin/org-network-lockdown <<'LOCKDOWN_SCRIPT'
+      #!/bin/bash
+      # Lock down network egress - only allow localhost access
+      set -euo pipefail
+
+      # Clear existing rules
+      iptables -F OUTPUT 2>/dev/null || true
+      iptables -P OUTPUT ACCEPT
+
+      # Allow loopback (localhost/127.0.0.1)
+      iptables -A OUTPUT -o lo -j ACCEPT
+
+      # Allow traffic to Lima host (192.168.5.2)
+      iptables -A OUTPUT -d 192.168.5.2 -j ACCEPT
+
+      # Allow established connections to finish
+      iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+      # Block everything else
+      iptables -A OUTPUT -j REJECT --reject-with icmp-net-unreachable
+
+      echo "Network locked down - only localhost and Lima host access allowed"
+      LOCKDOWN_SCRIPT
+
+      chmod 755 /usr/local/bin/org-network-lockdown
+
+      # Create unlock script for system user
+      cat >/usr/local/bin/org-network-unlock <<'UNLOCK_SCRIPT'
+      #!/bin/bash
+      # Unlock network egress (system user only)
+      set -euo pipefail
+
+      # Clear lockdown rules
+      iptables -F OUTPUT 2>/dev/null || true
+      iptables -P OUTPUT ACCEPT
+
+      echo "Network unlocked - full egress restored"
+      UNLOCK_SCRIPT
+
+      chmod 700 /usr/local/bin/org-network-unlock
+
+      # Make lockdown persistent across reboots
+      cat >/etc/systemd/system/org-network-lockdown.service <<'SERVICE_UNIT'
+      [Unit]
+      Description=Org Network Lockdown
+      After=network.target
+      Wants=network.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/org-network-lockdown
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+      SERVICE_UNIT
+
+      systemctl enable org-network-lockdown.service
+
       echo "=== NETWORK OPEN disable before using ==="
       echo "=== SYSTEM PROVISION END $(date -Is) ==="
 
