@@ -38,6 +38,39 @@ provision:
       add-apt-repository -y universe
       apt-get update
 
+      ./install-asciinema.sh      
+
+      ############################# ASCIINEMA ################################
+      if command -v sudo >/dev/null; then
+        echo "Updating package index with sudo..."
+        sudo apt update
+      else
+        echo "Updating package index..."
+        apt update
+      fi
+
+      # Install asciinema
+      if command -v sudo >/dev/null; then
+        echo "Installing asciinema with sudo..."
+        sudo apt install -y asciinema
+      else
+        echo "Installing asciinema..."
+        apt install -y asciinema
+      fi
+
+      # Verify installation
+      if command -v asciinema >/dev/null; then
+        echo "asciinema installed successfully: $(asciinema --version)"
+      else
+        echo "Installation failed or asciinema not found in PATH."
+        exit 1
+      fi
+      ############################# END ASCIINEMA ################################
+
+
+
+
+
       # Podman + rootless deps + essentials
       apt-get install -y \
         podman uidmap slirp4netns fuse-overlayfs iptables \
@@ -186,6 +219,11 @@ provision:
       cd "$HOME/dev/org"
       SANDBOX_BACKEND=podman ORG_ENGINE=podman \
       bash ./install.sh
+
+      while [ -f /tmp/provisioning.done ]; do
+        echo "Waiting for ack from system."
+        sleep 5
+      done
 
       echo "=== USER PROVISION END $(date -Is) ==="
 
