@@ -1,4 +1,4 @@
-export function normalizeContent(raw: string) {
+function normalizeContent(raw: string) {
   let cmd = raw.trim();
   // strip redundant leading "bash -lc ..."
   cmd = cmd.replace(/^\s*(?:bash|sh)\s+-lc\s+/, "");

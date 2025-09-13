@@ -187,6 +187,11 @@ provision:
       SANDBOX_BACKEND=podman ORG_ENGINE=podman \
       bash ./install.sh
 
+      while [ -f /tmp/provisioning.done ]; do
+        echo "Waiting for ack from system."
+        sleep 5
+      done
+
       echo "=== USER PROVISION END $(date -Is) ==="
 
 ssh:

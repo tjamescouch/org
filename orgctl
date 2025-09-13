@@ -194,10 +194,10 @@ print_host_banner_ready() {
 
 ┌────────────── org VM (ready) ──────────────────────────────────
 │ Config:    $cfg
-│ Connect:   limactl shell $LIMA_NAME
-│ Project:   cd "$guest_pwd"   # or: cd ~/dev/org
-│ Run org:   org --ui console
-│ !!!!NETWORK ENABLED - DISABLE BEFORE USE!!!!
+│ Connect:   orgactl vm ssh
+│ Project:   cd ~/dev/org
+│ Run org:   org
+│ ! Ensure that network egress is disabled prior to use !
 └────────────────────────────────────────────────────────────────
 EOF
 }
