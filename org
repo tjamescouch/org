@@ -5,7 +5,7 @@
 # - --review <yes|no> and ORG_REVIEW_MODE control live vs review-gated mode.
 # - Host-side sandbox policy may be configured via .org/policy-host.env.
 
-set -Eeuo pipefail
+set -Eeo pipefail
 
 echo Checking for host side verbs
 
@@ -49,7 +49,7 @@ ENGINE="${ORG_ENGINE:-podman}"
 IMAGE="${ORG_IMAGE:-localhost/org-sandbox:latest}"
 FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
 NETWORK="${ORG_NETWORK:-slirp4netns:allow_host_loopback=true}"
-SECURITY="${ORG_SECURITY:none}"
+SECURITY=no-new-privileges
 CAPS="${ORG_CAPS:-all}"
 USERNS="${ORG_USERNS:-keep-id}"
 
