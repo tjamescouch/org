@@ -48,8 +48,6 @@ fi
 ENGINE="${ORG_ENGINE:-podman}"
 IMAGE="${ORG_IMAGE:-localhost/org-sandbox:latest}"
 FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
-NETWORK=llm-restricted
-SECURITY=no-new-privileges
 CAPS="${ORG_CAPS:-all}"
 USERNS="${ORG_USERNS:-keep-id}"
 
@@ -138,23 +136,20 @@ mkdir -p "$PWD/.org"
 
 # ---------- run inside the container ----------
 
-"$ENGINE" network create --driver bridge --internal $NETWORK || true
-
 set +e
 "$ENGINE" run --rm -it \
-  --network="$NETWORK" \
+  --userns=keep-id \
+  -u $(id -u):$(id -g) \
+  --network=slirp4netns:allow_host_loopback=true \
   --cap-drop="${CAPS^^}" \
   --userns="$USERNS" \
-  --security-opt="$SECURITY" \
   --user 1000:1000 \
   --tmpfs /tmp:size=1G,noexec \
   --memory=4G \
   --cpus=2 \
-  --network $NETWORK \
   --add-host host.containers.internal:host-gateway \
   --security-opt no-new-privileges \
   --cap-drop ALL \
-  --no-healthcheck \
   --pids-limit 100 \
   -v "$WORK_SCRATCH:/work:Z" \
   -v "$PWD:/project:Z,ro" \
@@ -177,8 +172,6 @@ set +e
   ' org "${ARGS[@]}"
 status=$?
 set -e
-
-podman network rm $NETWORK
 
 # ---------- host-side patch review (unchanged) ----------
 if [[ "$REVIEW_MODE" == "review" ]]; then
