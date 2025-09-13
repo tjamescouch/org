@@ -57,7 +57,7 @@ provision:
       chmod 0440 /etc/sudoers.d/90-{{.User}}-nopasswd
       systemctl enable --now ssh
 
-      # Create network lockdown script for later use
+      # Create network lockdown script
       cat >/usr/local/bin/org-network-lockdown <<'LOCKDOWN_SCRIPT'
       #!/bin/bash
       # Lock down network egress - only allow localhost access
@@ -117,7 +117,34 @@ provision:
 
       systemctl enable org-network-lockdown.service
 
-      echo "=== NETWORK OPEN disable before using ==="
+      # Create background polling script for network lockdown
+      cat >/usr/local/bin/org-network-watcher <<'WATCHER_SCRIPT'
+      #!/bin/bash
+      # Background script to wait for provisioning completion and apply lockdown
+      set -euo pipefail
+
+      LOG_FILE="/var/log/org-network-watcher.log"
+      exec >>"$LOG_FILE" 2>&1
+
+      echo "$(date -Is): Network watcher started, waiting for /tmp/provisioning.done"
+
+      # Wait for user provisioning to complete
+      while [ ! -f /tmp/provisioning.done ]; do
+        sleep 5
+      done
+
+      echo "$(date -Is): User provisioning completed, applying network lockdown..."
+      /usr/local/bin/org-network-lockdown
+
+      echo "$(date -Is): Network locked down successfully"
+      WATCHER_SCRIPT
+
+      chmod 755 /usr/local/bin/org-network-watcher
+
+      # Start the network watcher in background
+      nohup /usr/local/bin/org-network-watcher &
+
+      echo "=== NETWORK OPEN - Background watcher started ==="
       echo "=== SYSTEM PROVISION END $(date -Is) ==="
 
   # ---- USER PHASE ({{.User}}.linux) ----
@@ -129,6 +156,9 @@ provision:
       export PS4='+ [$(date -Is)] '
       exec >>"$LOG_FILE" 2>&1
       set -eux
+
+      # Trap to create done file on any exit (success or failure)
+      trap 'touch /tmp/provisioning.done' EXIT
 
       echo "=== USER PROVISION START $(date -Is) ==="
 
@@ -157,84 +187,7 @@ provision:
       SANDBOX_BACKEND=podman ORG_ENGINE=podman \
       bash ./install.sh
 
-      echo "=== NETWORK OPEN disable before using org ==="
       echo "=== USER PROVISION END $(date -Is) ==="
-
-  # ---- SYSTEM PHASE (root) - NETWORK LOCKDOWN ----
-  - mode: system
-    script: |
-      LOG_FILE="/var/log/org-provision-system.log"
-      export PS4='+ [$(date -Is)] '
-      exec >>"$LOG_FILE" 2>&1
-      set -eux
-
-      echo "=== NETWORK LOCKDOWN START $(date -Is) ==="
-
-      # Create network lockdown script for system use
-      cat >/usr/local/bin/org-network-lockdown <<'LOCKDOWN_SCRIPT'
-      #!/bin/bash
-      # Lock down network egress - only allow localhost access
-      set -euo pipefail
-
-      # Clear existing rules
-      iptables -F OUTPUT 2>/dev/null || true
-      iptables -P OUTPUT ACCEPT
-
-      # Allow loopback (localhost/127.0.0.1)
-      iptables -A OUTPUT -o lo -j ACCEPT
-
-      # Allow traffic to Lima host (192.168.5.2)
-      iptables -A OUTPUT -d 192.168.5.2 -j ACCEPT
-
-      # Allow established connections to finish
-      iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-
-      # Block everything else
-      iptables -A OUTPUT -j REJECT --reject-with icmp-net-unreachable
-
-      echo "Network locked down - only localhost and Lima host access allowed"
-      LOCKDOWN_SCRIPT
-
-      chmod 755 /usr/local/bin/org-network-lockdown
-
-      # Create unlock script for system user
-      cat >/usr/local/bin/org-network-unlock <<'UNLOCK_SCRIPT'
-      #!/bin/bash
-      # Unlock network egress (system user only)
-      set -euo pipefail
-
-      # Clear lockdown rules
-      iptables -F OUTPUT 2>/dev/null || true
-      iptables -P OUTPUT ACCEPT
-
-      echo "Network unlocked - full egress restored"
-      UNLOCK_SCRIPT
-
-      chmod 700 /usr/local/bin/org-network-unlock
-
-      # Apply network lockdown immediately
-      /usr/local/bin/org-network-lockdown
-
-      # Make lockdown persistent across reboots
-      cat >/etc/systemd/system/org-network-lockdown.service <<'SERVICE_UNIT'
-      [Unit]
-      Description=Org Network Lockdown
-      After=network.target
-      Wants=network.target
-
-      [Service]
-      Type=oneshot
-      ExecStart=/usr/local/bin/org-network-lockdown
-      RemainAfterExit=yes
-
-      [Install]
-      WantedBy=multi-user.target
-      SERVICE_UNIT
-
-      systemctl enable org-network-lockdown.service
-
-      echo "=== NETWORK LOCKED DOWN - Use 'sudo /usr/local/bin/org-network-unlock' to restore ==="
-      echo "=== NETWORK LOCKDOWN END $(date -Is) ==="
 
 ssh:
   localPort: 0
