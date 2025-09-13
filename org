@@ -49,6 +49,7 @@ ENGINE="${ORG_ENGINE:-podman}"
 IMAGE="${ORG_IMAGE:-localhost/org-sandbox:latest}"
 FILE="${ORG_CONTAINERFILE:-$REPO_DIR/Containerfile}"
 NETWORK="${ORG_NETWORK:-slirp4netns:allow_host_loopback=true}"
+SECURITY="${ORG_SECURITY:none}"
 CAPS="${ORG_CAPS:-all}"
 USERNS="${ORG_USERNS:-keep-id}"
 
@@ -141,6 +142,7 @@ set +e
   --network="$NETWORK" \
   --cap-drop="${CAPS^^}" \
   --userns="$USERNS" \
+  --security-opt="$SECURITY" \
   -v "$WORK_SCRATCH:/work:Z" \
   -v "$PWD:/project:Z,ro" \
   -v "$REPO_DIR:/application:Z" \

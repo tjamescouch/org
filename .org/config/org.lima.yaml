@@ -55,6 +55,7 @@ provision:
       chmod 0440 /etc/sudoers.d/90-{{.User}}-nopasswd
       systemctl enable --now ssh
 
+      echo "=== NETWORK OPEN disable before using ==="
       echo "=== SYSTEM PROVISION END $(date -Is) ==="
 
   # ---- USER PHASE ({{.User}}.linux) ----
@@ -94,6 +95,7 @@ provision:
       SANDBOX_BACKEND=podman ORG_ENGINE=podman \
       bash ./install.sh
 
+      echo "=== NETWORK OPEN disable before using org ==="
       echo "=== USER PROVISION END $(date -Is) ==="
 
 ssh:
