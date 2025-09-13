@@ -15,7 +15,7 @@ done
 DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
 # Verify the payload exists
-for f in org org-launch-tmux org-launch-console org-launch-rich; do
+for f in org org-launch-tmux org-launch-console org-launch-rich org-status org-apply; do
   if [[ ! -f "$DIR/$f" ]]; then
     echo "ERROR: missing $DIR/$f (expected next to this installer)" >&2
     exit 1
@@ -27,14 +27,16 @@ install -D -m 0755 "$DIR/org"                "/usr/local/bin/org"
 install -D -m 0755 "$DIR/org-launch-tmux"    "/usr/local/libexec/org/launch-tmux"
 install -D -m 0755 "$DIR/org-launch-rich"    "/usr/local/libexec/org/launch-rich"
 install -D -m 0755 "$DIR/org-launch-console" "/usr/local/libexec/org/launch-console"
-install -D -m 0755 "$DIR/org-status" "/usr/local/libexec/org/status"
-install -D -m 0755 "$DIR/org-apply" "/usr/local/libexec/org/apply"
+install -D -m 0755 "$DIR/org-status"         "/usr/local/libexec/org/status"
+install -D -m 0755 "$DIR/org-apply"          "/usr/local/libexec/org/apply"
 
 # Normalize line endings defensively
 sed -i 's/\r$//' \
   /usr/local/bin/org \
+  /usr/local/libexec/org/status \
+  /usr/local/libexec/org/apply \
   /usr/local/libexec/org/launch-tmux \
   /usr/local/libexec/org/launch-rich \
   /usr/local/libexec/org/launch-console
 
-echo "Installed: /usr/local/bin/org and /usr/local/libexec/org/{launch-tmux,launch-console}"
+echo "Installed: /usr/local/bin/org and /usr/local/libexec/org/{launch-tmux,launch-console, apply, status}"

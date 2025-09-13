@@ -1,0 +1,35 @@
+arch: aarch64
+images:
+  - location: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-arm64.img"
+
+disk: 60GiB
+networks:
+  - lima: shared                       # requires socket_vmnet running
+
+mounts:
+  - location: "~/dev"                  # host → guest
+    mountPoint: "/home/{{.User}}.linux/dev"
+    writable: true
+  - location: "tmpfs"
+    mountPoint: "/home/{{.User}}.linux/scratch"
+    writable: true
+
+ssh:
+  loadDotSSHPubKeys: true              # inject your ~/.ssh/*.pub for passwordless ssh
+
+provision:
+  - mode: system
+    script: |
+      apt-get update
+      apt-get install -y curl git sudo openssh-server podman
+      systemctl enable --now ssh
+  - mode: user
+    script: |
+      curl -fsSL https://bun.sh/install | bash || true
+      echo 'export BUN_INSTALL=$HOME/.bun' >> ~/.bashrc
+      echo 'export PATH=$BUN_INSTALL/bin:$PATH' >> ~/.bashrc
+  - mode: user
+    script: |
+      mkdir -p "$HOME/dev"
+      [ -d "/Users/$USER/dev" ] && ln -snf "/Users/$USER/dev" "$HOME/dev"
+
