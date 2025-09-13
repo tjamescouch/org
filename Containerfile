@@ -74,7 +74,6 @@ ENV ORG_DEFAULT_CWD=/work
 # Ensure /work exists as a mountpoint for the host bind
 RUN mkdir -p /work
 
-
 # --- Portable apply_patch helper (unchanged from your base) ---
 RUN set -eux; \
   printf '%s\n' \
@@ -99,6 +98,13 @@ RUN set -eux; \
  && chmod +x /usr/local/bin/apply_patch
 
 ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (command -v delta >/dev/null && delta -s --paging=never .org/last-session.patch || (echo; echo \"(delta not found; showing raw patch)\"; echo; cat .org/last-session.patch)); else echo \"No session patch found.\"; fi; echo; read -p \"Enter to close...\" _"'
+
+# ---------- rsync wrapper: avoid EPERM on bind-mounted /work/. dir mtime ----------
+# Ensures all rsync calls inside the container include --omit-dir-times (short: -O)
+RUN printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'exec /usr/bin/rsync --omit-dir-times "$@"' \
+  > /usr/local/bin/rsync && chmod 0755 /usr/local/bin/rsync
 
 # Networking defaults
 ENV ORG_HOST_ALIAS=host.containers.internal
