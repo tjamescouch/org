@@ -147,7 +147,6 @@ set +e
   --userns="$USERNS" \
   --security-opt="$SECURITY" \
   --user 1000:1000 \
-  --read-only \
   --tmpfs /tmp:size=1G,noexec \
   --memory=4G \
   --cpus=2 \
@@ -166,7 +165,7 @@ set +e
   "$IMAGE" bash -lc '
     set -Eeuo pipefail
     mkdir -p /work/.org
-    if [ "${ORG_REVIEW_MODE:-live}" = review ]; then
+    if [ "${ORG_REVIEW_MODE:-review}" = review ]; then
       rsync -a --delete  --delete-delay --force --exclude ".git/**" --exclude ".org/**" /project/ /work/
       rm -rf /work/.git 2>/dev/null || true
       printf "gitdir: /project/.git\n" > /work/.git
@@ -178,6 +177,8 @@ set +e
   ' org "${ARGS[@]}"
 status=$?
 set -e
+
+podman network rm $NETWORK
 
 # ---------- host-side patch review (unchanged) ----------
 if [[ "$REVIEW_MODE" == "review" ]]; then
