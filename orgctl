@@ -197,6 +197,7 @@ print_host_banner_ready() {
 │ Connect:   limactl shell $LIMA_NAME
 │ Project:   cd "$guest_pwd"   # or: cd ~/dev/org
 │ Run org:   org --ui console
+│ !!!!NETWORK ENABLED - DISABLE BEFORE USE!!!!
 └────────────────────────────────────────────────────────────────
 EOF
 }
