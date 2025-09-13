@@ -79,9 +79,9 @@ if [[ ! -L /usr/local/bin/org || "$(readlink -f /usr/local/bin/org || true)" != 
 fi
 
 # -------- install host launchers (container + PATCH REVIEW) --------
-install_libexec_launcher() {
-  local mode="$1"                   # console|tmux|rich
-  local target="/usr/local/libexec/org/launch-$mode"
+install_libexec_binary() {
+  local name="$1"                   # launch-console|launch-tmux|launch-rich
+  local target="/usr/local/libexec/org/$name"
   local dir; dir="$(dirname "$target")"
   sudo install -d -m 0755 "$dir"
   sudo tee "$target" >/dev/null <<'EOF'
@@ -135,13 +135,15 @@ fi
 
 exit "$code"
 EOF
-  sudo sed -i "s/__MODE__/$mode/g" "$target"
+  sudo sed -i "s/__MODE__/$name/g" "$target"
   sudo chmod +x "$target"
   log "Installed host launcher: $target"
 }
-install_libexec_launcher console
-install_libexec_launcher tmux
-install_libexec_launcher rich
+install_libexec_binary launch-console
+install_libexec_binary launch-tmux
+install_libexec_binary launch-rich
+install_libexec_binary apply
+install_libexec_binary status
 
 # -------- firewall helpers (for the image build only) --------
 UFW_COMMENT="org-install-temporary-build-egress"

@@ -7,6 +7,21 @@
 
 set -Eeuo pipefail
 
+echo Checking for host side verbs
+
+# --- org verbs (host-side recipes) ------------------------------------------
+if [[ "${1:-}" == "apply" ]]; then
+  shift
+  exec "/usr/local/libexec/org/apply" "$@"
+  exit 0
+elif [[ "${1:-}" == "status" ]]; then
+  shift
+  exec "/usr/local/libexec/org/status" "$@"
+  exit 0
+fi
+# ---------------------------------------------------------------------------
+
+
 # ---------- resolve real path to this script (portable) ----------
 resolve_realpath() {
   if command -v readlink >/dev/null 2>&1; then

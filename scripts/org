@@ -14,9 +14,11 @@ usage() {
 Usage:
   org
   org --ui console
+  org --ui rich 
   org --ui tmux
 USAGE
 }
+
 
 mode="console"   # default
 rest=()
