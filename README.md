@@ -32,7 +32,7 @@ The vision is simple: **an agent CLI that feels like a real teammate — fast, o
 ```sh
 # 1) Install via Homebrew (CLI + VM helpers)
 brew tap tjamescouch/org
-brew install orgctl lima socket_vmnet
+brew install org lima socket_vmnet
 
 # 2) One shot: create + provision the VM and attach when ready
 orgctl quickstart --verbose --attach
