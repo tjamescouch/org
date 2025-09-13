@@ -1,44 +1,33 @@
 #!/usr/bin/env bash
 # container/entrypoint.sh
-#
-# Single-container session entrypoint:
-#   - Mirror /project (host repo, ro) -> /work (rw).
-#   - Baseline /work (git init/commit) so patch review diffs against HEAD.
-#   - Honor ORG_DEFAULT_CWD (e.g., /work/sub/area) for app/tools.
-#   - Exec the app ('org' by default), forwarding CLI args.
-
+# - Mirrors /project -> /work (idempotent).
+# - Baselines /work as a git repo for patch diffs.
+# - If /run/llm.sock exists, exposes it at 127.0.0.1:11434 via uds-bridge.py.
+# - Exports sane defaults for LLM_BASE_URL / OPENAI_BASE_URL.
 set -euo pipefail
 
-: "${PROJECT_MOUNT:=/project}"         # host repo mount (read-only)
-: "${WORKDIR:=/work}"                  # workspace inside container (read-write)
-: "${HOSTRUN_MOUNT:=/hostrun}"         # runs/patch artifacts if you persist to host (optional)
-: "${ORG_DEFAULT_CWD:=/work}"          # default cwd for app/tools (e.g., /work/examples)
-: "${APP_CMD:=org}"                    # how to start your app; default 'org'
+: "${PROJECT_MOUNT:=/project}"
+: "${WORKDIR:=/work}"
+: "${ORG_DEFAULT_CWD:=/work}"
+: "${APP_CMD:=org}"
 
-log() { printf '[entry] %s\n' "$*" >&2; }
+log(){ printf '[entrypoint] %s\n' "$*" >&2; }
 
-log "PROJECT_MOUNT=${PROJECT_MOUNT}"
-log "WORKDIR=${WORKDIR}"
-log "ORG_DEFAULT_CWD=${ORG_DEFAULT_CWD}"
-log "APP_CMD=${APP_CMD}"
+mkdir -p "${WORKDIR}" "${WORKDIR}/.org"
 
-mkdir -p "${WORKDIR}" "${HOSTRUN_MOUNT}"
-
-# 1) Mirror repo from /project -> /work (idempotent)
+log "Mirror /project -> /work"
 if command -v rsync >/dev/null 2>&1; then
-  log "rsync /project -> /work"
+  # rsync wrapper injects --omit-dir-times
   rsync -a --delete \
     --exclude ".git/***" \
     --exclude ".org/***" \
     --filter="P .org/" \
     "${PROJECT_MOUNT}/." "${WORKDIR}/"
 else
-  log "cp -a /project -> /work (rsync not present)"
   find "${WORKDIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
   cp -a "${PROJECT_MOUNT}/." "${WORKDIR}/"
 fi
 
-# 2) Baseline /work (so patch review diffs against baseline)
 cd "${WORKDIR}"
 if ! [ -d .git ]; then
   git init -q
@@ -46,22 +35,26 @@ if ! [ -d .git ]; then
   git config user.name  "org"
   git add -A || true
   git commit -qm "baseline" || true
-else
-  git rev-parse --verify HEAD >/dev/null 2>&1 || git commit -qm "baseline (existing .git)"
 fi
-mkdir -p .org .org/steps
 
-# 3) Export env visible to app/tools
-export ORG_PROJECT_DIR="${WORKDIR}"
-export ORG_DEFAULT_CWD="${ORG_DEFAULT_CWD}"
-# *** IMPORTANT: tell the app what the host "cwd" should be (so it resolves /work correctly) ***
-export ORG_HOST_PWD="${ORG_DEFAULT_CWD}"
-
-# Optional: start the app directly in the default cwd
+# Default CWD for the application
 if [ -n "${ORG_DEFAULT_CWD:-}" ] && [ -d "${ORG_DEFAULT_CWD}" ]; then
   cd "${ORG_DEFAULT_CWD}"
 fi
 
-# 4) Exec the app (forward CLI args)
+# If the VM mounted a UNIX socket, expose it as 127.0.0.1:11434 inside the container.
+if [ -S "${ORG_LLM_SOCKET:-/run/llm.sock}" ]; then
+  if ! ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "127\.0\.0\.1:11434$"; then
+    nohup python3 -u /usr/local/bin/uds-bridge.py \
+      --tcp 127.0.0.1:11434 --unix "${ORG_LLM_SOCKET:-/run/llm.sock}" \
+      >/dev/null 2>&1 &
+    log "uds-bridge: 127.0.0.1:11434 -> ${ORG_LLM_SOCKET:-/run/llm.sock}"
+  fi
+fi
+
+# Ensure the app defaults to the in-container bridge.
+export LLM_BASE_URL="${LLM_BASE_URL:-http://host.containers.internal:11434/v1}"
+export OPENAI_BASE_URL="${OPENAI_BASE_URL:-$LLM_BASE_URL}"
+
 log "exec: ${APP_CMD} $*"
 exec ${APP_CMD} "$@"

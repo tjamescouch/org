@@ -29,6 +29,10 @@ RUN bash /tmp/org-scripts/install-org-binaries.sh
 COPY scripts/org-patch-create /usr/local/bin/org-patch-create
 RUN chmod 0755 /usr/local/bin/org-patch-create
 
+# UDS bridge helper for host↔VM↔container LLM access
+COPY scripts/uds-bridge.py /usr/local/bin/uds-bridge.py
+RUN chmod 0755 /usr/local/bin/uds-bridge.py
+
 # Safe default TERM inside the container
 ENV TERM=xterm-256color
 
@@ -74,7 +78,7 @@ ENV ORG_DEFAULT_CWD=/work
 # Ensure /work exists as a mountpoint for the host bind
 RUN mkdir -p /work
 
-# --- Portable apply_patch helper (unchanged from your base) ---
+# --- Portable apply_patch helper (unchanged from base) ---
 RUN set -eux; \
   printf '%s\n' \
 '#!/usr/bin/env bash' \
@@ -86,7 +90,7 @@ RUN set -eux; \
 'tmp_patch="/tmp/ap.$$.patch"' \
 'if [ -z "$PATCH_FILE" ] || [ "$PATCH_FILE" = "-" ]; then cat > "$tmp_patch"; else cp "$PATCH_FILE" "$tmp_patch"; fi' \
 'mapfile -t paths < <(awk '\''/^diff --git a\\//{print $4}'\'' "$tmp_patch" | sed -E '\''s#^b/##'\'')' \
-'if [ "${#paths[@]}" -eq 0 ]; then echo "apply_patch: no file paths detected (expects unified diff)." >&2; exit 1; fi' \
+'if [ "${#paths[@]}"] -eq 0 ]; then echo "apply_patch: no file paths detected (expects unified diff)." >&2; exit 1; fi' \
 "deny_regex='^(\\.git/|\\.org/|/|\\.{2}(/|$)|.*\\x00.*)'" \
 'viol=""' \
 'for p in "${paths[@]}"; do p="${p#./}"; [[ "$p" =~ $deny_regex ]] && viol+="$p\n"; done' \
@@ -98,15 +102,13 @@ RUN set -eux; \
  && chmod +x /usr/local/bin/apply_patch
 
 ENV ORG_PATCH_POPUP_CMD='bash -lc "if test -f .org/last-session.patch; then (command -v delta >/dev/null && delta -s --paging=never .org/last-session.patch || (echo; echo \"(delta not found; showing raw patch)\"; echo; cat .org/last-session.patch)); else echo \"No session patch found.\"; fi; echo; read -p \"Enter to close...\" _"'
-
-# ---------- rsync wrapper: avoid EPERM on bind-mounted /work/. dir mtime ----------
-# Ensures all rsync calls inside the container include --omit-dir-times (short: -O)
+# Enforce omit-dir-times on all rsync calls to avoid EPERM on /work/.
 RUN printf '%s\n' \
   '#!/usr/bin/env bash' \
   'exec /usr/bin/rsync --omit-dir-times "$@"' \
   > /usr/local/bin/rsync && chmod 0755 /usr/local/bin/rsync
 
-# Networking defaults
+# Networking defaults (used by app code; runtime is --network=none)
 ENV ORG_HOST_ALIAS=host.containers.internal
 ENV ORG_OPENAI_BASE_DEFAULT=http://host.containers.internal:11434/v1
 ENV NO_PROXY=localhost,127.0.0.1,::1,host.containers.internal,192.168.56.1
