@@ -38,14 +38,13 @@ provision:
       add-apt-repository -y universe
       apt-get update
 
-      # Podman + rootless deps + essentials
+      # Podman + rootless deps + essentials (+socat for UDS forwarder)
       apt-get install -y \
         podman uidmap slirp4netns fuse-overlayfs iptables \
         containernetworking-plugins \
         ufw git jq unzip bash-completion socat
 
       # --- LLM UDS forwarder (VM -> macOS 192.168.5.2:11434) ---
-      # Env (editable later)
       cat >/etc/llm-uds.env <<'EOF_LLM_ENV'
       LMS_HOST_IP=192.168.5.2
       LMS_HOST_PORT=11434
@@ -53,7 +52,6 @@ provision:
       LMS_SOCKET_MODE=0666
       EOF_LLM_ENV
 
-      # Systemd unit
       cat >/etc/systemd/system/llm-uds.service <<'EOF_LLM_SVC'
       [Unit]
       Description=LM Studio/Ollama UNIX socket forwarder (VM -> macOS)
@@ -89,94 +87,58 @@ provision:
       chmod 0440 /etc/sudoers.d/90-{{.User}}-nopasswd
       systemctl enable --now ssh
 
-      # Create network lockdown script
+      # Network lockdown helper scripts (only allow loopback + 192.168.5.2)
       cat >/usr/local/bin/org-network-lockdown <<'LOCKDOWN_SCRIPT'
       #!/bin/bash
-      # Lock down network egress - only allow localhost access
       set -euo pipefail
-
-      # Clear existing rules
       iptables -F OUTPUT 2>/dev/null || true
       iptables -P OUTPUT ACCEPT
-
-      # Allow loopback (localhost/127.0.0.1)
       iptables -A OUTPUT -o lo -j ACCEPT
-
-      # Allow traffic to Lima host (192.168.5.2)
       iptables -A OUTPUT -d 192.168.5.2 -j ACCEPT
-
-      # Allow established connections to finish
       iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-
-      # Block everything else
       iptables -A OUTPUT -j REJECT --reject-with icmp-net-unreachable
-
-      echo "Network locked down - only localhost and Lima host access allowed"
+      echo "Network locked down - only localhost and Lima host allowed"
       LOCKDOWN_SCRIPT
-
       chmod 755 /usr/local/bin/org-network-lockdown
 
-      # Create unlock script for system user
       cat >/usr/local/bin/org-network-unlock <<'UNLOCK_SCRIPT'
       #!/bin/bash
-      # Unlock network egress (system user only)
       set -euo pipefail
-
-      # Clear lockdown rules
       iptables -F OUTPUT 2>/dev/null || true
       iptables -P OUTPUT ACCEPT
-
-      echo "Network unlocked - full egress restored"
+      echo "Network unlocked"
       UNLOCK_SCRIPT
-
       chmod 700 /usr/local/bin/org-network-unlock
 
-      # Make lockdown persistent across reboots
       cat >/etc/systemd/system/org-network-lockdown.service <<'SERVICE_UNIT'
       [Unit]
       Description=Org Network Lockdown
       After=network.target
       Wants=network.target
-
       [Service]
       Type=oneshot
       ExecStart=/usr/local/bin/org-network-lockdown
       RemainAfterExit=yes
-
       [Install]
       WantedBy=multi-user.target
       SERVICE_UNIT
-
       systemctl enable org-network-lockdown.service
 
-      # Create background polling script for network lockdown
+      # Background watcher to apply lockdown after user provisioning signal
       cat >/usr/local/bin/org-network-watcher <<'WATCHER_SCRIPT'
       #!/bin/bash
-      # Background script to wait for provisioning completion and apply lockdown
       set -euo pipefail
-
       LOG_FILE="/var/log/org-network-watcher.log"
       exec >>"$LOG_FILE" 2>&1
-
-      echo "$(date -Is): Network watcher started, waiting for /tmp/provisioning.done"
-
-      # Wait for user provisioning to complete
-      while [ ! -f /tmp/provisioning.done ]; do
-        sleep 5
-      done
-
-      echo "$(date -Is): User provisioning completed, applying network lockdown..."
+      echo "$(date -Is): watcher waiting for /tmp/provisioning.done"
+      while [ ! -f /tmp/provisioning.done ]; do sleep 5; done
       /usr/local/bin/org-network-lockdown
-
-      echo "$(date -Is): Network locked down successfully"
+      echo "$(date -Is): lockdown applied"
       WATCHER_SCRIPT
-
       chmod 755 /usr/local/bin/org-network-watcher
-
-      # Start the network watcher in background
       nohup /usr/local/bin/org-network-watcher &
 
-      echo "=== NETWORK OPEN - Background watcher started ==="
+      echo "=== NETWORK OPEN - watcher started ==="
       echo "=== SYSTEM PROVISION END $(date -Is) ==="
 
   # ---- USER PHASE ({{.User}}.linux) ----
@@ -188,8 +150,6 @@ provision:
       export PS4='+ [$(date -Is)] '
       exec >>"$LOG_FILE" 2>&1
       set -eux
-
-      # Trap to create done file on any exit (success or failure)
       trap 'touch /tmp/provisioning.done' EXIT
 
       echo "=== USER PROVISION START $(date -Is) ==="
