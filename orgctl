@@ -14,8 +14,8 @@ NO_TAIL="${NO_TAIL:-false}"
 ATTACH="false"                                 # attach after readiness
 FAST="false"                                   # --fast => only wait for SSH (skip install wait)
 VERBOSE="${ORG_VERBOSE:-0}"                    # 1 for extra chatter
-WAIT_SSH_TIMEOUT="${ORG_WAIT_SSH_TIMEOUT:-360}"          # seconds to wait for SSH
-WAIT_INSTALL_TIMEOUT="${ORG_WAIT_INSTALL_TIMEOUT:-1800}" # seconds to wait for org install
+WAIT_SSH_TIMEOUT="${ORG_WAIT_SSH_TIMEOUT:-5000}"          # seconds to wait for SSH
+WAIT_INSTALL_TIMEOUT="${ORG_WAIT_INSTALL_TIMEOUT:-5000}" # seconds to wait for org install
 TAIL_PID=""
 
 # ---------- tiny logger ----------
