@@ -12,7 +12,7 @@ export class NoDangerousRm extends ExecutionGuard {
 
 export class NoRm extends ExecutionGuard {
   async allow(cmd: string) {
-    return !/rm\s+.*/.test(cmd);
+    return !/\brm\s+.*/.test(cmd);
   }
 }
 

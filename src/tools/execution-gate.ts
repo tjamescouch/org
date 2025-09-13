@@ -8,6 +8,7 @@
 import { promptLine } from "../utils/prompt-line";
 import { ExecutionGuard, NoDangerousRm, NoGitAdd, NoGitCommit, NoGitPush, NoRm } from "./execution-guards";
 import { withCookedTTY } from "../input/tty-controller";
+import { Logger } from "../logger";
 
 
 type GateConfig = { safe: boolean; interactive: boolean; guards?: ExecutionGuard[] };
@@ -31,7 +32,12 @@ export class ExecutionGate {
     // Guard chain first (applies for both safe/non-safe)
     for (const g of this._guards) {
       const ok = await Promise.resolve(g.allow(hint));
-      if (!ok) throw new Error(`Execution blocked by guard for: ${hint}`);
+      if (!ok) {
+        const message = `Execution blocked by guard for: ${hint}`;
+        Logger.error(message);
+
+        throw new Error(message);
+      }
     }
 
     if (!this._safe) return;
