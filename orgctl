@@ -4,7 +4,7 @@
 # - Intel: minimal VBox shim (stub)
 
 set -euo pipefail
-VERSION="1.0.5"
+VERSION="1.0.6"
 
 # ---------- constants ----------
 ORG_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -38,12 +38,16 @@ backend(){
   fi
 }
 
+mkdir -p ~/dev/org || true
+git clone https://github.com/tjamescouch/org.git ~/dev/org >/dev/null 2>&1|| true
+
 lima_cfg() {
   local p
   for p in \
     "${ORG_LIMA_CONFIG:-}" \
     "$PWD/.org/config/org.lima.yaml" \
     "$HOME/.config/org/org.lima.yaml" \
+    "~/dev/org/.org/org.lima.yaml" \
     "$ORG_DIR/.org/config/org.lima.yaml"
   do
     [[ -n "${p:-}" && -f "$p" ]] && { echo "$p"; return; }
@@ -55,6 +59,7 @@ Searched:
   $ORG_LIMA_CONFIG
   $PWD/.org/config/org.lima.yaml
   $HOME/.config/org/org.lima.yaml
+  ~/dev/org/org.lima.yaml
   $ORG_DIR/.org/config/org.lima.yaml
 
 Fix:
@@ -393,6 +398,7 @@ USAGE:
   orgctl quickstart [--no-tail] [--attach] [--fast] [--verbose|-v]
   orgctl vm <init|up|stop|destroy|ssh|logs>
   orgctl podman <first|start|build>
+  orgctl go                    # alias of: orgctl vm ssh
   orgctl version
 ENV:
   ORG_LIMA_CONFIG                 path to org.lima.yaml (optional)
@@ -414,6 +420,7 @@ case "${1:-}" in
   quickstart) shift; cmd_quickstart "$@";;
   vm)         shift; cmd_vm "$@";;
   podman)     shift; cmd_podman "$@";;
+  go)         shift; cmd_vm ssh "$@";;    # <— alias: orgctl go == orgctl vm ssh
   version)    echo "$VERSION";;
   ""|help|-h|--help) usage;;
   *) usage; exit 1;;

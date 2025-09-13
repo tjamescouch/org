@@ -57,47 +57,55 @@ provision:
       chmod 0440 /etc/sudoers.d/90-{{.User}}-nopasswd
       systemctl enable --now ssh
 
-      # Create network lockdown script
+      # Create network lockdown script (allow only loopback + macOS LLM port)
       cat >/usr/local/bin/org-network-lockdown <<'LOCKDOWN_SCRIPT'
       #!/bin/bash
-      # Lock down network egress - only allow localhost access
+      # Lock down egress to: loopback + ${LMS_HOST_IP}:${LMS_HOST_PORT} (from /etc/llm-uds.env)
       set -euo pipefail
 
-      # Clear existing rules
+      # Load LLM host/port used by the UDS forwarder
+      if [ -r /etc/llm-uds.env ]; then
+        # shellcheck disable=SC1091
+        . /etc/llm-uds.env
+      else
+        echo "[lockdown] /etc/llm-uds.env missing; refusing to lock down blindly." >&2
+        exit 1
+      fi
+
+      # Sanity defaults (should already be set by provision)
+      : "${LMS_HOST_IP:=192.168.5.2}"
+      : "${LMS_HOST_PORT:=11434}"
+
+      # ----- IPv4 egress policy -----
       iptables -F OUTPUT 2>/dev/null || true
       iptables -P OUTPUT ACCEPT
 
-      # Allow loopback (localhost/127.0.0.1)
+      # Allow loopback
       iptables -A OUTPUT -o lo -j ACCEPT
 
-      # Allow traffic to Lima host (192.168.5.2)
-      iptables -A OUTPUT -d 192.168.5.2 -j ACCEPT
-
-      # Allow established connections to finish
+      # Allow established/related
       iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-      # Block everything else
+      # Allow ONLY TCP to the macOS LLM port
+      iptables -A OUTPUT -p tcp -d "${LMS_HOST_IP}" --dport "${LMS_HOST_PORT}" -j ACCEPT
+
+      # Reject everything else
       iptables -A OUTPUT -j REJECT --reject-with icmp-net-unreachable
 
-      echo "Network locked down - only localhost and Lima host access allowed"
+      # ----- IPv6 egress policy (deny all, allow ::1) -----
+      if command -v ip6tables >/dev/null 2>&1; then
+        ip6tables -F OUTPUT 2>/dev/null || true
+        ip6tables -P OUTPUT ACCEPT
+        ip6tables -A OUTPUT -o lo -j ACCEPT
+        ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        ip6tables -A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited
+      fi
+
+      echo "[lockdown] egress allowed only to ${LMS_HOST_IP}:${LMS_HOST_PORT} (TCP) and loopback"
       LOCKDOWN_SCRIPT
 
       chmod 755 /usr/local/bin/org-network-lockdown
 
-      # Create unlock script for system user
-      cat >/usr/local/bin/org-network-unlock <<'UNLOCK_SCRIPT'
-      #!/bin/bash
-      # Unlock network egress (system user only)
-      set -euo pipefail
-
-      # Clear lockdown rules
-      iptables -F OUTPUT 2>/dev/null || true
-      iptables -P OUTPUT ACCEPT
-
-      echo "Network unlocked - full egress restored"
-      UNLOCK_SCRIPT
-
-      chmod 700 /usr/local/bin/org-network-unlock
 
       # Make lockdown persistent across reboots
       cat >/etc/systemd/system/org-network-lockdown.service <<'SERVICE_UNIT'
