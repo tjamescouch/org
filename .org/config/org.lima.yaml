@@ -38,8 +38,6 @@ provision:
       add-apt-repository -y universe
       apt-get update
 
-      ./install-asciinema.sh      
-
       ############################# ASCIINEMA ################################
       if command -v sudo >/dev/null; then
         echo "Updating package index with sudo..."

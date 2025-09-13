@@ -107,6 +107,8 @@ echo "[org] repo        = $REPO_DIR"
 echo "[org] work        = $WORK_SCRATCH -> /work (rw)"
 echo "[org] project(ro) = $PWD          -> /project (ro)"
 echo "[org] app         = $REPO_DIR     -> /application"
+echo "Please wait..."
+
 # ---------- container env ----------
 ENV_ARR=(
   "-e" "ORG_LAUNCHER_SCRIPT_RAN=1"
