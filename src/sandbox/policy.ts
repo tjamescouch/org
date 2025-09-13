@@ -31,7 +31,7 @@ export interface ExecPolicy {
     keepScratch?: boolean;   // keep /work host dir for debugging
 }
 
-export interface ExecSpec {
+interface ExecSpec {
     id: string;
     image: string;
     projectDir: string;      // mounted RO at /project

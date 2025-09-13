@@ -4,13 +4,13 @@ import type { ChatResponse, Responder } from "../../src/scheduler/types";
 import { RandomScheduler } from "../../src/scheduler/random-scheduler";
 import { Logger } from "../../src/logger";
 
-export type FakeReply =
+type FakeReply =
   | { kind: "say"; text: string; tools?: number }
   | { kind: "dm"; to: string; text: string; tools?: number }
   | { kind: "mentionUser"; text: string; tools?: number }
   | { kind: "askUser"; prompt: string; tools?: number };
 
-export type FakeRule = {
+type FakeRule = {
   when: (history: ChatMessage[]) => boolean;
   reply: FakeReply | FakeReply[];
 };
@@ -73,12 +73,12 @@ export class FakeAgent implements Responder {
 }
 
 /** Small probe of what the scheduler is doing (for assertions). */
-export type Probe = {
+type Probe = {
   asks: Array<{ from: string; prompt: string }>;
   logs: string[];
 };
 
-export type RunOptions = {
+type RunOptions = {
   agents: Responder[];
   promptEnabled?: boolean;
   idleSleepMs?: number;

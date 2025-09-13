@@ -54,6 +54,6 @@ export function detectBackend(): Backend {
   return "mock";
 }
 
-export function isMock(): boolean {
+function isMock(): boolean {
   return detectBackend() === "mock";
 }

@@ -16,7 +16,7 @@ type SessionLike = {
   finalize?: (key?: string) => void;
 };
 
-export class SandboxManager {
+class SandboxManager {
   readonly projectDir: string;
   readonly runRoot: string;
   readonly opts: ManagerOpts;

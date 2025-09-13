@@ -156,7 +156,7 @@ export const { } = R;
 // ───────────────────────────────────────────────────────────────────────────────
 // Args & config
 // ───────────────────────────────────────────────────────────────────────────────
-export function parseArgs(argv: string[]) {
+function parseArgs(argv: string[]) {
   const out: Record<string, string | boolean> = {};
   let key: string | null = null;
   for (const a of argv) {
