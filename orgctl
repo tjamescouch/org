@@ -38,8 +38,6 @@ backend(){
   fi
 }
 
-mkdir -p ~/dev/org || true
-git clone https://github.com/tjamescouch/org.git ~/dev/org >/dev/null 2>&1|| true
 
 lima_cfg() {
   local p
@@ -47,7 +45,7 @@ lima_cfg() {
     "${ORG_LIMA_CONFIG:-}" \
     "$PWD/.org/config/org.lima.yaml" \
     "$HOME/.config/org/org.lima.yaml" \
-    "~/dev/org/.org/org.lima.yaml" \
+    "~/dev/org/.org/config/org.lima.yaml" \
     "$ORG_DIR/.org/config/org.lima.yaml"
   do
     [[ -n "${p:-}" && -f "$p" ]] && { echo "$p"; return; }
@@ -59,7 +57,7 @@ Searched:
   $ORG_LIMA_CONFIG
   $PWD/.org/config/org.lima.yaml
   $HOME/.config/org/org.lima.yaml
-  ~/dev/org/org.lima.yaml
+  ~/dev/org/.org/config/org.lima.yaml
   $ORG_DIR/.org/config/org.lima.yaml
 
 Fix:
@@ -318,6 +316,9 @@ cmd_quickstart() {
       *) die "Unknown option: $1";;
     esac
   done
+
+  mkdir -p ~/dev/org || true
+  git clone https://github.com/tjamescouch/org.git || true
 
   if [[ "$(backend)" != "lima" ]]; then
     die "quickstart is for Apple Silicon (Lima)."
