@@ -10,12 +10,12 @@
 # - Keeps the pane on screen after exit (remain-on-exit) for postmortem.
 
 set -Eeuo pipefail
-# set -v
 
+# ---- Entrypoints & binaries --------------------------------------------------
+BUN_BIN="${ORG_BUN_BIN:-/usr/local/bin/bun}"
 APP_ENTRY="${ORG_APP_ENTRY:-/application/src/app.ts}"
 
-# -------- Config (override via environment if needed) -------------------------
-# Preferred working directory inside the container; falls back to $PWD on host.
+# ---- Preferred working directory (container: /work; else PWD) ----------------
 ORG_WORKDIR_DEFAULT="/work"
 ORG_WORKDIR="${ORG_WORKDIR:-${ORG_WORKDIR_DEFAULT}}"
 if [[ ! -d "$ORG_WORKDIR" ]]; then
@@ -36,11 +36,6 @@ ORG_TMUX_SESSION="${ORG_TMUX_SESSION:-org}"
 ORG_TMUX_WINDOW="${ORG_TMUX_WINDOW:-0}"
 ORG_TMUX_PANE="${ORG_TMUX_PANE:-0}"
 
-# App entry (console UI to render inside tmux)
-# All args passed to this launcher are forwarded to the app.
-ORG_ENTRY_BASE="${APP_ENTRY:-bun $ORG_WORKDIR/src/app.ts --ui console}"
-ORG_ENTRY="$ORG_ENTRY_BASE ${*:-}"
-
 # Log files
 PANE_LOG="$ORG_LOG_DIR/pane-0.log"
 INNER_LOG="$ORG_LOG_DIR/tmux-inner.log"
@@ -56,10 +51,41 @@ if [ "${HOME:-/work}" = "/work" ]; then
   : > "$GIT_CONFIG_GLOBAL"  # ensure file exists (idempotent)
 fi
 
-# -------- Prep dirs -----------------------------------------------------------
+# ---- Prep dirs ---------------------------------------------------------------
 mkdir -p "$ORG_STATE_DIR" "$ORG_LOG_DIR" "$ORG_TMUX_LOG_DIR"
+chmod 700 "$ORG_STATE_DIR" || true
 
-# -------- Generate a tiny inner runner (avoids quoting foot-guns) ------------
+# ---- Arg handling: strip external --ui and force console inside tmux ---------
+RAW_ARGS=("$@")
+APP_ARGS=()
+skip_next=0
+for ((i=0; i<${#RAW_ARGS[@]}; i++)); do
+  if (( skip_next )); then
+    skip_next=0; continue
+  fi
+  arg="${RAW_ARGS[i]}"
+  case "$arg" in
+    --) # pass through the rest verbatim
+      APP_ARGS+=("${RAW_ARGS[@]:i}")
+      break
+      ;;
+    --ui) # drop --ui <value>
+      skip_next=1
+      ;;
+    --ui=*) # drop --ui=*
+      ;;
+    *) APP_ARGS+=("$arg") ;;
+  esac
+done
+
+# Compose the final command *as an argv array*:
+CMD=("$BUN_BIN" "$APP_ENTRY" --ui console "${APP_ARGS[@]}")
+
+# Safely-quoted string form for `script -c` / logging (no trailing space)
+printf -v ORG_CMD_STR "%q " "${CMD[@]}"
+ORG_CMD_STR="${ORG_CMD_STR% }"
+
+# ---- Tiny inner runner to avoid quoting foot-guns ----------------------------
 INNER_RUNNER="$ORG_STATE_DIR/tmux-inner.sh"
 cat >"$INNER_RUNNER" <<'EOF'
 #!/usr/bin/env bash
@@ -67,47 +93,46 @@ set -Eeuo pipefail
 
 LOG_DIR="${ORG_LOG_DIR:?}"
 APP_LOG="${INNER_LOG:?}"
-ENTRY="${ORG_ENTRY:?}"
+ENTRY_STR="${ORG_CMD_STR:?}"
 SHELL_BIN="${SHELL_BIN:-/bin/bash}"
 SCRIPT_BIN="${SCRIPT_BIN:-}"
 
 {
   echo "===== org tmux-inner start: $(date -Is) ====="
   echo "[inner] cwd=$(pwd) uid=$(id -u):$(id -g) PATH=$PATH"
-  echo "[inner] entry: \$ENTRY"
+  echo "[inner] entry: ${ENTRY_STR}"
 } >>"$APP_LOG" 2>&1
 
 # If util-linux `script` is available, use it to preserve a real PTY while logging.
 if [[ -n "$SCRIPT_BIN" ]]; then
-  exec "$SCRIPT_BIN" -qfe -c "$ENTRY" "$APP_LOG"
+  exec "$SCRIPT_BIN" -qfe -c "$ENTRY_STR" "$APP_LOG"
 fi
 
-# Fallback keeps logs but may reduce interactivity (no PTY).
-exec "$SHELL_BIN" -lc "$ENTRY 2>&1 | tee -a \"$APP_LOG\"; exit \${PIPESTATUS[0]}"
+# Fallback keeps logs (tee) but lacks PTY semantics.
+exec "$SHELL_BIN" -lc "$ENTRY_STR 2>&1 | tee -a \"$APP_LOG\"; exit \${PIPESTATUS[0]}"
 EOF
 chmod +x "$INNER_RUNNER"
 
 # Export runtime variables for the inner runner
-export ORG_LOG_DIR ORG_TMUX_LOG_DIR INNER_LOG="$INNER_LOG" ORG_ENTRY="$ORG_ENTRY" SHELL_BIN SCRIPT_BIN
+export ORG_LOG_DIR ORG_TMUX_LOG_DIR INNER_LOG ORG_CMD_STR SHELL_BIN SCRIPT_BIN
 
-# -------- tmux bootstrap ------------------------------------------------------
+# ---- tmux bootstrap ----------------------------------------------------------
 export TMUX_TMPDIR="${TMUX_TMPDIR:-/tmp}"
 tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" start-server
 
 # Create session if it doesn't exist yet
 if ! tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" has-session -t "$ORG_TMUX_SESSION" 2>/dev/null; then
-  # Start the session detached running our inner runner
-  tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" new-session -s "$ORG_TMUX_SESSION" -n main "exec \"$INNER_RUNNER\""
+  # Start the session detached running our inner runner (prefer requested workdir)
+  tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" new-session -s "$ORG_TMUX_SESSION" -n main -c "$ORG_WORKDIR" "exec \"$INNER_RUNNER\""
   # Keep pane visible after exit for debugging
   tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" set-option -t "$ORG_TMUX_SESSION" remain-on-exit on
 
   # Mirror pane output to a timestamped log (does not break TTY)
-  # `-o` only starts piping if not already active (idempotent).
-  tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" pipe-pane -t "$ORG_TMUX_SESSION:$ORG_TMUX_WINDOW.$ORG_TMUX_PANE" -o "ts %H:%M:%.S >> \"$PANE_LOG\""
+  tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" pipe-pane -t "$ORG_TMUX_SESSION:$ORG_TMUX_WINDOW.$ORG_TMUX_PANE" -o "ts %H:%M:%.S >> \"$PANE_LOG\"" || true
 fi
 
 # If a pipe-pane got disabled somehow, ensure it's on (idempotent).
 tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" pipe-pane -t "$ORG_TMUX_SESSION:$ORG_TMUX_WINDOW.$ORG_TMUX_PANE" -o "ts %H:%M:%.S >> \"$PANE_LOG\"" || true
 
-# -------- Attach --------------------------------------------------------------
+# ---- Attach ------------------------------------------------------------------
 exec tmux -L "$ORG_TMUX_SOCKET" -f "$TMUX_CONF" attach -t "$ORG_TMUX_SESSION"
