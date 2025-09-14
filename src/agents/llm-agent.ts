@@ -6,11 +6,11 @@ import { GuardRail } from "../guardrails/guardrail";
 import { Agent } from "./agent";
 import { sanitizeContent } from "../utils/sanitize-content";
 import { sanitizeAndRepairAssistantReply } from "../guard/sanitizer";
-import { AdvancedMemory } from "../memory/advanced-memory";
 import { ToolExecutor } from "../executors/tool-executor";
 import { StandardToolExecutor } from "../executors/standard-tool-executor";
 import { createPDAStreamFilterHeuristic } from "../utils/filter-passes/llm-pda-stream-heuristic";
 import { SH_TOOL_DEF } from "../tools/sh";
+import { DynamicAdvancedMemory } from "../memory/dynamic-advanced-memory";
 
 interface AgentReply {
   message: string;   // assistant text
@@ -97,7 +97,7 @@ export class LlmAgent extends Agent {
     this.systemPrompt = buildSystemPrompt(this.id);
 
     // Attach a hysteresis-based memory that summarizes overflow.
-    this.memory = new AdvancedMemory({
+    this.memory = new DynamicAdvancedMemory({
       driver: this.driver,
       model: this.model,
       systemPrompt: this.systemPrompt,
