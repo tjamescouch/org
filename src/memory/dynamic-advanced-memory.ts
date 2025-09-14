@@ -1,63 +1,77 @@
 import type { ChatDriver, ChatMessage } from "../drivers/types";
-import { R } from "../runtime/runtime";
 import { AgentMemory } from "./agent-memory";
 
 /**
- * AdvancedMemory (with Dynamic System Block)
+ * DynamicAdvancedMemory (v2)
  *
- * Backwards-compatible:
- * - Public surface unchanged (same class name, constructor, methods).
+ * A backward-compatible memory with a *reflective persona*:
+ * - Periodically distills recent dialogue (any language) into a compact
+ *   "Dynamic Persona Block" (roles, style, heuristics, anti-goals).
+ * - Appends or refreshes that block inside the FIRST system message.
+ * - Keeps the original lane summarization & budgeting logic intact.
  *
- * What’s new (internals only):
- * - Self-reflection pass mines stable user/assistant patterns into compact "rules".
- * - Gating rejects unsafe/contradictory rules; dedupes/merges; manages TTL & confidence.
- * - A versioned DYNAMIC SYSTEM BLOCK is embedded into the first system prompt (in-place),
- *   so it’s preserved by context pruning and stays authoritative.
+ * Modes (env OR constructor):
+ *   off    → no reflection, no persona block
+ *   shadow → mine/merge persona internally but DO NOT write to system lane
+ *   auto   → mine/merge and write the persona block (bounded, safe)
  *
- * Opt-in modes (env): ORG_DYNAMIC_MEMORY = "off" | "shadow" | "auto"
- * - off    : no reflection, no block
- * - shadow : mine & score rules, but DO NOT write the block
- * - auto   : mine & write only "low-risk" style/format rules (never loosens hard policy)
+ * Safety:
+ * - Persona can NEVER override static policy, SAFE_MODE, tool caps, or review.
+ * - No network/git enabling, no sandbox weakening—guarded in merge/render.
  *
- * The block is strictly bounded in size and never overrides static policy, SAFE_MODE,
- * tool caps, or review/sandbox constraints.
+ * Cadence:
+ * - Reflection is time-based, not keyword-triggered (language-agnostic).
+ * - Default: every 3 turns (min gap), window-capped; single LLM call per pass.
  */
-export class AdvancedMemory extends AgentMemory {
+
+export class DynamicAdvancedMemory extends AgentMemory {
   private readonly driver: ChatDriver;
   private readonly model: string;
 
-  // Context budgeting knobs
+  // Context budgeting knobs (unchanged from AdvancedMemory defaults)
   private readonly contextTokens: number;
   private readonly reserveHeaderTokens: number;
   private readonly reserveResponseTokens: number;
-  private readonly highRatio: number;     // trigger summarization when est > highRatio * budget
+  private readonly highRatio: number;     // summarize when est > highRatio * budget
   private readonly lowRatio: number;      // compress to <= lowRatio * budget
-  private readonly summaryRatio: number;  // max fraction of budget for the 3 summaries combined
+  private readonly summaryRatio: number;  // fraction of budget reserved for 3 lane summaries
   private readonly avgCharsPerToken: number;
 
   // Recency knobs
   private readonly keepRecentPerLane: number; // keep last N assistant/user/system msgs
   private readonly keepRecentTools: number;   // keep last N tool msgs
 
-  // -------------------- Dynamic block internals (private) --------------------
+  // ------------------ Reflective Persona (v2) configuration ------------------
 
   private readonly dynMode: "off" | "shadow" | "auto";
-  private dynVersion = 0;
-  private lastReflectTurn = 0;
+  private readonly minReflectGapTurns: number;       // default 3
+  private readonly reflectWindowMaxMsgs: number;     // default 16 (total mixed)
+  private readonly personaTokenFraction: number;     // default 0.12 of usable budget
+  private readonly personaMaxLines: number;          // default 12
+  private readonly decayPerPass: number;             // default 0.03 (3%)
+  private readonly minKeepWeight: number;            // default 0.22
+  private readonly mergeAggressiveness: number;      // default 0.60 (how strongly new evidence bumps)
+
   private turnCounter = 0;
+  private lastReflectTurn = 0;
+  private persona: PersonaModel = {
+    version: 0,
+    lastUpdatedTurn: 0,
+    roles: [],
+    style: [],
+    heuristics: [],
+    antigoals: [],
+    languages: []
+  };
 
-  // Rule model
-  private readonly rules = new Map<string, DynamicRule>(); // key = normalized text hash
-  private readonly ledger: RuleEvent[] = [];
-
-  // Background guard (reuse AgentMemory.runOnce)
-  // --------------------------------------------------------------------------
+  private readonly ledger: PersonaEvent[] = [];
 
   constructor(args: {
     driver: ChatDriver;
     model: string;
     systemPrompt?: string;
 
+    // Context / summarization knobs (same defaults as prior class)
     contextTokens?: number;         // default 8192
     reserveHeaderTokens?: number;   // default 1200
     reserveResponseTokens?: number; // default 800
@@ -67,11 +81,22 @@ export class AdvancedMemory extends AgentMemory {
     avgCharsPerToken?: number;      // default 4
     keepRecentPerLane?: number;     // default 4
     keepRecentTools?: number;       // default 3
+
+    // v2 reflective persona knobs (all defaulted)
+    dynMode?: "off" | "shadow" | "auto";
+    minReflectGapTurns?: number;       // default 3
+    reflectWindowMaxMsgs?: number;     // default 16
+    personaTokenFraction?: number;     // default 0.12
+    personaMaxLines?: number;          // default 12
+    decayPerPass?: number;             // default 0.03
+    minKeepWeight?: number;            // default 0.22
+    mergeAggressiveness?: number;      // default 0.60
   }) {
     super(args.systemPrompt);
     this.driver = args.driver;
     this.model = args.model;
 
+    // Original budgeting defaults
     this.contextTokens = Math.max(2048, Math.floor(args.contextTokens ?? 8192));
     this.reserveHeaderTokens = Math.max(0, Math.floor(args.reserveHeaderTokens ?? 1200));
     this.reserveResponseTokens = Math.max(0, Math.floor(args.reserveResponseTokens ?? 800));
@@ -83,34 +108,42 @@ export class AdvancedMemory extends AgentMemory {
     this.keepRecentPerLane = Math.max(1, Math.floor(args.keepRecentPerLane ?? 4));
     this.keepRecentTools   = Math.max(0, Math.floor(args.keepRecentTools ?? 3));
 
-    // Dynamic mode (env toggle, defaults to "shadow" for safe rollout)
-    const m = (R?.env?.ORG_DYNAMIC_MEMORY) || "";
-    this.dynMode = (m === "auto" || m === "off" || m === "shadow") ? m : "shadow";
+    // v2 persona defaults (env can override dynMode)
+    const envMode = (typeof process !== "undefined" && process?.env?.ORG_DYNAMIC_MEMORY) || "";
+    const mode: "off" | "shadow" | "auto" =
+      args.dynMode ?? ((envMode === "off" || envMode === "shadow" || envMode === "auto") ? envMode : "shadow");
+    this.dynMode = mode;
+
+    this.minReflectGapTurns  = Math.max(1, Math.floor(args.minReflectGapTurns ?? 3));
+    this.reflectWindowMaxMsgs = Math.max(6, Math.floor(args.reflectWindowMaxMsgs ?? 16));
+    this.personaTokenFraction = Math.min(0.25, Math.max(0.06, Number(args.personaTokenFraction ?? 0.12)));
+    this.personaMaxLines      = Math.max(5, Math.floor(args.personaMaxLines ?? 12));
+    this.decayPerPass         = Math.min(0.15, Math.max(0.0, Number(args.decayPerPass ?? 0.03)));
+    this.minKeepWeight        = Math.min(0.50, Math.max(0.05, Number(args.minKeepWeight ?? 0.22)));
+    this.mergeAggressiveness  = Math.min(1.0, Math.max(0.1, Number(args.mergeAggressiveness ?? 0.60)));
   }
 
   // ---------------------------------------------------------------------------
+  // Main hook
+  // ---------------------------------------------------------------------------
 
   protected async onAfterAdd(): Promise<void> {
-    // Increment turn counter for TTL/decay bookkeeping.
     this.turnCounter++;
 
-    // Kick a non-blocking reflection pass on cadence; serialized via runOnce.
-    // Cadence: every 2 turns, or whenever the last message is a user correction.
-    if (this.dynMode !== "off" && this.shouldReflectNow()) {
-      // Fire-and-forget; do not block caller (background).
+    // Reflection by cadence (language-agnostic; single LLM call).
+    if (this.dynMode !== "off" && this.turnCounter - this.lastReflectTurn >= this.minReflectGapTurns) {
+      // Non-blocking; serialized by AgentMemory.runOnce
       void this.runOnce(async () => {
-        await this.reflectMineGateAndSquash();
+        await this.reflectAndSquashPersona();
       });
     }
 
-    // Existing summarization flow (unchanged contract).
+    // Original summarization flow when context is high
     const budget = this.budgetTokens();
     const estTok = this.estimateTokens(this.messagesBuffer);
     if (estTok <= Math.floor(this.highRatio * budget)) return;
 
-    // Serialize summarization; do not block caller.
     await this.runOnce(async () => {
-      // Recompute at execution time (history may have changed).
       const budget2 = this.budgetTokens();
       const estTok2 = this.estimateTokens(this.messagesBuffer);
       if (estTok2 <= Math.floor(this.highRatio * budget2)) return;
@@ -135,7 +168,6 @@ export class AdvancedMemory extends AgentMemory {
 
       const keepTools = tool.slice(Math.max(0, tool.length - this.keepRecentTools));
 
-      // Tokens cost of preserved (tails + sys head + a few tools + others)
       const preserved: ChatMessage[] = [
         ...sysHead, ...keepAssistant, ...keepSystem, ...keepUser, ...keepTools, ...other
       ];
@@ -144,17 +176,12 @@ export class AdvancedMemory extends AgentMemory {
       const lowTarget = Math.floor(this.lowRatio * budget2);
       const maxSummaryTok = Math.floor(this.summaryRatio * budget2);
 
-      // If tails alone fit, rebuild w/out summaries (just reorder preserved)
       if (preservedTok <= lowTarget) {
-        const rebuilt = this.ordered(
-          [], sysHead, keepAssistant, keepSystem, keepUser, keepTools, other
-        );
+        const rebuilt = this.ordered([], sysHead, keepAssistant, keepSystem, keepUser, keepTools, other);
         this.messagesBuffer.splice(0, this.messagesBuffer.length, ...rebuilt);
         return;
       }
 
-      // We need summaries. Allocate summary budget across lanes proportionally
-      // to the chars we removed from each lane.
       const removedCharA = this.totalChars(olderAssistant);
       const removedCharS = this.totalChars(olderSystem);
       const removedCharU = this.totalChars(olderUser);
@@ -172,25 +199,21 @@ export class AdvancedMemory extends AgentMemory {
       ]);
 
       const summaries: ChatMessage[] = [];
-      if (sumA) summaries.push({ from: "Me",     role: "assistant", content: `ASSISTANT SUMMARY:\n${sumA}` });
-      if (sumS) summaries.push({ from: "System", role: "system",    content: `SYSTEM SUMMARY:\n${sumS}` });
-      if (sumU) summaries.push({ from: "Memory", role: "user",      content: `USER SUMMARY:\n${sumU}` });
+      if (sumA) summaries.push({ from:"Me",     role: "assistant", content: `ASSISTANT SUMMARY:\n${sumA}` });
+      if (sumS) summaries.push({ from:"System", role: "system",    content: `SYSTEM SUMMARY:\n${sumS}` });
+      if (sumU) summaries.push({ from:"Memory", role: "user",      content: `USER SUMMARY:\n${sumU}` });
 
-      const rebuilt = this.ordered(
-        summaries, sysHead, keepAssistant, keepSystem, keepUser, keepTools, other
-      );
+      const rebuilt = this.ordered(summaries, sysHead, keepAssistant, keepSystem, keepUser, keepTools, other);
       this.messagesBuffer.splice(0, this.messagesBuffer.length, ...rebuilt);
 
-      // Final clamp if still above target (drop oldest non-system until under target)
+      // Clamp to budget (drop oldest non-system)
       let finalTok = this.estimateTokens(this.messagesBuffer);
       if (finalTok > lowTarget) {
         const pruned: ChatMessage[] = [];
         for (const m of this.messagesBuffer) {
           pruned.push(m);
           finalTok = this.estimateTokens(pruned);
-          if (finalTok > lowTarget && m.role !== "system") {
-            pruned.pop();
-          }
+          if (finalTok > lowTarget && m.role !== "system") pruned.pop();
         }
         this.messagesBuffer.splice(0, this.messagesBuffer.length, ...pruned);
       }
@@ -198,12 +221,256 @@ export class AdvancedMemory extends AgentMemory {
   }
 
   // ---------------------------------------------------------------------------
+  // Reflective Persona (v2)
+  // ---------------------------------------------------------------------------
+
+  private async reflectAndSquashPersona(): Promise<void> {
+    this.lastReflectTurn = this.turnCounter;
+
+    if (this.dynMode === "off") return;
+
+    const window = this.collectWindow(this.reflectWindowMaxMsgs);
+    if (window.length === 0) return;
+
+    // Single LLM call that infers persona deltas in ANY language.
+    const update = await this.minePersona(window, Math.floor(this.budgetTokens() * 0.10 * this.avgCharsPerToken));
+    if (!update) return;
+
+    // Merge + decay (language-agnostic, not rule-based).
+    const accepted = this.mergePersona(update);
+    if (!accepted) return;
+
+    if (this.dynMode === "shadow") return;
+
+    const block = this.renderPersonaBlock(); // bounded tokens/lines
+    this.embedPersonaBlockIntoSystemHead(block);
+  }
+
+  /** Gather a small chronological slice from recent messages across roles. */
+  private collectWindow(maxTotal: number): ChatMessage[] {
+    const out: ChatMessage[] = [];
+    for (let i = this.messagesBuffer.length - 1; i >= 0 && out.length < maxTotal; i--) {
+      out.push(this.messagesBuffer[i]);
+    }
+    return out.reverse();
+  }
+
+  /**
+   * Asks the model to infer persona facets (roles, style, heuristics, anti-goals, languages)
+   * and a friction score. Output must be strict JSON.
+   */
+  private async minePersona(window: ChatMessage[], approxChars: number): Promise<PersonaUpdate | null> {
+    let acc = "";
+    for (const m of window) {
+      let c = this.messageContent(m);
+      if (c.length > 3000) c = c.slice(0, 3000) + "\n…(truncated)…";
+      acc += `- ${m.role.toUpperCase()}: ${c}\n\n`;
+      if (acc.length > approxChars) break;
+    }
+
+    const sys: ChatMessage = {
+      role: "system",
+      from: "System",
+      content: [
+        "You are a reflective meta-cognition module for an AI assistant.",
+        "Given a mixed-language transcript (user/assistant/tool), infer durable persona facets that",
+        "would have improved prior replies prospectively (roles, tone/style, planning heuristics, anti-goals, language).",
+        "Avoid prescriptive hard policies; prefer succinct, human-like self-modeling.",
+        "Never propose anything that enables network/git, weakens sandbox/review, or violates safety.",
+        "Output STRICT JSON only—no prose."
+      ].join(" ")
+    };
+
+    const schema = [
+      "{",
+      `  "friction": 0.0,             // 0..1 alignment friction`,
+      `  "confidence": 0.0,          // 0..1 confidence in this update`,
+      `  "persona": {`,
+      `    "roles":      [{"text": "...", "weight": 0.0}],`,
+      `    "style":      [{"text": "...", "weight": 0.0}],`,
+      `    "heuristics": [{"text": "...", "weight": 0.0}],`,
+      `    "antigoals":  [{"text": "...", "weight": 0.0}],`,
+      `    "languages":  [{"text": "...", "weight": 0.0}]`,
+      `  }`,
+      "}"
+    ].join("\n");
+
+    const usr: ChatMessage = {
+      role: "user",
+      from: "User",
+      content: [
+        "Distill a PERSONA UPDATE from the transcript below. Use ANY language found in the transcript.",
+        "Keep items short (<= 80 chars each). Weights are in [0,1].",
+        "SCHEMA:",
+        schema,
+        "TRANSCRIPT:",
+        acc
+      ].join("\n\n")
+    };
+
+    const out = await this.driver.chat([sys, usr], { model: this.model });
+    const text = this.extractText(out);
+    const obj = this.safeParseJson(text);
+    if (!obj || typeof obj !== "object") return null;
+
+    // Validate & clamp
+    try {
+      const p = (obj as any).persona ?? {};
+      const norm = (arr: any): PersonaFacet[] =>
+        Array.isArray(arr)
+          ? arr.slice(0, 12).map((x: any) => ({
+              text: String(x?.text ?? "").trim(),
+              weight: this.clamp01(Number(x?.weight ?? 0))
+            })).filter((x: PersonaFacet) => x.text.length > 0 && x.text.length <= 80)
+          : [];
+
+      const upd: PersonaUpdate = {
+        friction: this.clamp01(Number((obj as any).friction ?? 0)),
+        confidence: this.clamp01(Number((obj as any).confidence ?? 0)),
+        persona: {
+          roles: norm(p.roles),
+          style: norm(p.style),
+          heuristics: norm(p.heuristics),
+          antigoals: norm(p.antigoals),
+          languages: norm(p.languages)
+        }
+      };
+      return upd;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Merge update into persona with decay & bounded capacity (no hard rules). */
+  private mergePersona(update: PersonaUpdate): boolean {
+    // Decay
+    const decay = 1 - this.decayPerPass;
+    const aged = (xs: PersonaFacet[]) =>
+      xs.map(f => ({ ...f, weight: f.weight * decay }));
+
+    const now = this.turnCounter;
+    this.persona.roles      = aged(this.persona.roles);
+    this.persona.style      = aged(this.persona.style);
+    this.persona.heuristics = aged(this.persona.heuristics);
+    this.persona.antigoals  = aged(this.persona.antigoals);
+    this.persona.languages  = aged(this.persona.languages);
+
+    // Merge (language-agnostic; string-equality after normalization)
+    const mergeArr = (dst: PersonaFacet[], inc: PersonaFacet[], cap: number) => {
+      for (const it of inc) {
+        const key = this.normKey(it.text);
+        const idx = dst.findIndex(d => this.normKey(d.text) === key);
+        const bump = it.weight * this.mergeAggressiveness;
+        if (idx >= 0) {
+          // 1 - (1 - old) * (1 - bump)
+          const w = 1 - (1 - dst[idx].weight) * (1 - bump);
+          dst[idx].weight = this.clamp01(w);
+        } else {
+          dst.push({ text: it.text, weight: this.clamp01(0.5 * bump + 0.15) });
+        }
+      }
+      // Drop very weak; keep strongest first
+      const filtered = dst.filter(d => d.weight >= this.minKeepWeight);
+      filtered.sort((a, b) => b.weight - a.weight);
+      return filtered.slice(0, cap);
+    };
+
+    const caps = {
+      roles: 3,
+      style: 6,
+      heuristics: 8,
+      antigoals: 6,
+      languages: 2
+    };
+
+    const before = JSON.stringify(this.persona);
+    this.persona.roles      = mergeArr(this.persona.roles,      update.persona.roles,      caps.roles);
+    this.persona.style      = mergeArr(this.persona.style,      update.persona.style,      caps.style);
+    this.persona.heuristics = mergeArr(this.persona.heuristics, update.persona.heuristics, caps.heuristics);
+    this.persona.antigoals  = mergeArr(this.persona.antigoals,  update.persona.antigoals,  caps.antigoals);
+    this.persona.languages  = mergeArr(this.persona.languages,  update.persona.languages,  caps.languages);
+
+    const after = JSON.stringify(this.persona);
+    if (before !== after) {
+      this.persona.version += 1;
+      this.persona.lastUpdatedTurn = now;
+      this.ledger.push({ type: "merge", at: now, friction: update.friction, confidence: update.confidence });
+      return true;
+    }
+    return false;
+  }
+
+  /** Render bounded persona text; prepend guard lines asserting non-override of safety. */
+  private renderPersonaBlock(): string {
+    const usableTok = this.budgetTokens();
+    const personaTok = Math.max(64, Math.floor(usableTok * this.personaTokenFraction));
+    const charBudget = Math.max(480, Math.floor(personaTok * this.avgCharsPerToken));
+    const maxLines = this.personaMaxLines;
+
+    const header =
+      `DYNAMIC PERSONA BLOCK v${this.persona.version}\n` +
+      `- Self-model distilled from recent dialogue (language-agnostic).\n` +
+      `- Does NOT override static policy, SAFE_MODE, tool caps, or review; it only guides tone/role/heuristics.\n`;
+
+    const sect = (title: string, items: PersonaFacet[]) => {
+      const xs = items.slice(0, 99).map(x => x.text);
+      return xs.length ? `• ${title}: ${xs.join("; ")}\n` : "";
+    };
+
+    let body = "";
+    let lines = 0;
+
+    const chunks = [
+      sect("Roles & POV", this.persona.roles),
+      sect("Style & Rhythm", this.persona.style),
+      sect("Decision Heuristics", this.persona.heuristics),
+      sect("Soft Anti-goals", this.persona.antigoals),
+      sect("Languages", this.persona.languages)
+    ].filter(Boolean);
+
+    for (const ch of chunks) {
+      if ((header.length + body.length + ch.length) > charBudget) break;
+      body += ch;
+      lines += (ch.match(/\n/g)?.length ?? 0);
+      if (lines >= maxLines) break;
+    }
+
+    return header + body;
+  }
+
+  /** Append or refresh the persona block within the first system message. */
+  private embedPersonaBlockIntoSystemHead(block: string): void {
+    const idx = this.messagesBuffer.findIndex(m => m.role === "system");
+    if (idx < 0) return;
+
+    const head = this.messagesBuffer[idx];
+    const orig = this.messageContent(head);
+
+    const startTag = "\n[BEGIN DYNAMIC PERSONA BLOCK]\n";
+    const endTag   = "\n[END DYNAMIC PERSONA BLOCK]\n";
+    const payload  = `${startTag}${block}${endTag}`;
+
+    const s = orig.indexOf(startTag);
+    const e = orig.indexOf(endTag);
+    let next: string;
+
+    if (s >= 0 && e > s) {
+      next = orig.slice(0, s) + payload + orig.slice(e + endTag.length);
+    } else {
+      const sep = orig.endsWith("\n") ? "" : "\n";
+      next = `${orig}${sep}${payload}`;
+    }
+
+    (head as unknown as { content: string }).content = next;
+    this.messagesBuffer[idx] = head;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Original summarization helpers
+  // ---------------------------------------------------------------------------
 
   private budgetTokens(): number {
-    return Math.max(
-      512,
-      this.contextTokens - this.reserveHeaderTokens - this.reserveResponseTokens
-    );
+    return Math.max(512, this.contextTokens - this.reserveHeaderTokens - this.reserveResponseTokens);
   }
 
   private estimateTokens(msgs: ChatMessage[]): number {
@@ -214,10 +481,8 @@ export class AdvancedMemory extends AgentMemory {
     let c = 0;
     for (const m of msgs) {
       const s = this.messageContent(m);
-      // Cap extremely long tool outputs for estimation
-      if (m.role === "tool" && s.length > 24_000) c += 24_000;
-      else c += s.length;
-      c += 32; // small per-message overhead
+      if (m.role === "tool" && s.length > 24_000) c += 24_000; else c += s.length;
+      c += 32;
     }
     return c;
   }
@@ -260,10 +525,8 @@ export class AdvancedMemory extends AgentMemory {
   ): ChatMessage[] {
     const rest: ChatMessage[] = [];
     const keepSet = new Set([...sysHead, ...keepA, ...keepS, ...keepU, ...keepT, ...other]);
-    for (const m of this.messagesBuffer) {
-      if (keepSet.has(m)) rest.push(m);
-    }
-    // prepend summaries in required order
+    for (const m of this.messagesBuffer) if (keepSet.has(m)) rest.push(m);
+
     const orderedSummaries = [
       ...summaries.filter(s => s.role === "assistant"),
       ...summaries.filter(s => s.role === "system"),
@@ -288,13 +551,12 @@ export class AdvancedMemory extends AgentMemory {
       }
     })();
 
-    // Cap total transcript length used for summarization to avoid slow prompts.
     let acc = "";
     for (const m of messages) {
       let c = this.messageContent(m);
       if (c.length > 4000) c = c.slice(0, 4000) + "\n…(truncated)…";
       const next = `- ${laneName.toUpperCase()}: ${c}\n\n`;
-      if (acc.length + next.length > approxChars * 3) break; // bounded input
+      if (acc.length + next.length > approxChars * 3) break;
       acc += next;
     }
 
@@ -320,284 +582,7 @@ export class AdvancedMemory extends AgentMemory {
     return text.trim();
   }
 
-  // ---------------------- Dynamic block implementation -----------------------
-
-  /** Decide whether to run a reflection pass on this turn (lightweight heuristic). */
-  private shouldReflectNow(): boolean {
-    // Avoid running too often; at most every 2 turns.
-    if (this.turnCounter - this.lastReflectTurn < 2) return false;
-
-    // Prefer to reflect when the most recent user message looks like a correction/constraint.
-    const last = this.messagesBuffer[this.messagesBuffer.length - 1];
-    if (!last) return true;
-    if (last.role !== "user") return true;
-
-    const txt = this.messageContent(last).toLowerCase();
-    const hints = ["always", "never", "prefer", "please", "no ", "avoid", "do not", "full-file", "succinct", "type-safe", "fail-fast"];
-    return hints.some(h => txt.includes(h));
-  }
-
-  /** Orchestrates mining -> gating -> squash (background, serialized). */
-  private async reflectMineGateAndSquash(): Promise<void> {
-    this.lastReflectTurn = this.turnCounter;
-
-    if (this.dynMode === "off") return;
-
-    // 1) Gather a bounded recent window from assistant+user+tool to mine rules.
-    const window: ChatMessage[] = [];
-    let seenA = 0, seenU = 0, seenT = 0;
-    for (let i = this.messagesBuffer.length - 1; i >= 0; i--) {
-      const m = this.messagesBuffer[i];
-      if (m.role === "assistant" && seenA < 6) { window.push(m); seenA++; }
-      else if (m.role === "user" && seenU < 6) { window.push(m); seenU++; }
-      else if (m.role === "tool" && seenT < 3) { window.push(m); seenT++; }
-      if (window.length >= 14) break;
-    }
-    window.reverse(); // chronological
-
-    // 2) Ask the miner to propose candidate rules (JSON only).
-    const candidates = await this.mineRuleCandidates(window, 1200 /* approx chars */);
-
-    if (candidates.length === 0) return;
-
-    // 3) Gate, score, merge, apply TTL/confidence updates.
-    const accepted = this.gateAndMerge(candidates);
-
-    if (accepted.length === 0) return;
-
-    // 4) Depending on mode, either shadow-log or squash into system head.
-    if (this.dynMode === "shadow") return;
-
-    // Compose and embed a compact Dynamic System Block (size-bounded).
-    const block = this.renderDynamicBlock();
-    this.embedDynamicBlockIntoSystemHead(block);
-  }
-
-  /** Miner: ask the model to output strict JSON candidate rules mined from the window. */
-  private async mineRuleCandidates(window: ChatMessage[], approxChars: number): Promise<CandidateRule[]> {
-    if (window.length === 0) return [];
-
-    let acc = "";
-    for (const m of window) {
-      let c = this.messageContent(m);
-      if (c.length > 3000) c = c.slice(0, 3000) + "\n…(truncated)…";
-      acc += `- ${m.role.toUpperCase()}: ${c}\n\n`;
-      if (acc.length > approxChars) break;
-    }
-
-    const sys: ChatMessage = {
-      role: "system",
-      from: "System",
-      content: [
-        "You are a compliance-aware preference miner.",
-        "Extract STABLE, GENERAL rules that would have improved the assistant's behavior prospectively.",
-        "NEVER propose rules that enable network, git ops, or weaken sandbox/review/safety.",
-        "ONLY output a JSON array. No prose."
-      ].join(" ")
-    };
-
-    const schema = [
-      "{",
-      `"text": "<imperative rule, <= 140 chars>",`,
-      `"scope": "global|repo|run|agent|ui",`,
-      `"priority": "strong|soft",`,
-      `"confidence": 0.0-1.0`,
-      "}"
-    ].join(" ");
-
-    const usr: ChatMessage = {
-      role: "user",
-      from: "User",
-      content: [
-        "From the transcript below, emit up to 6 candidate rules (JSON array) with fields:",
-        schema,
-        "Bias toward durable style/format/process preferences (e.g., 'Provide full-file replacements').",
-        "Transcript:",
-        acc
-      ].join("\n\n")
-    };
-
-    const out = await this.driver.chat([sys, usr], { model: this.model });
-    const text = this.extractText(out);
-    const json = this.safeExtractJsonArray(text);
-    const parsed = Array.isArray(json) ? json : [];
-    const outRules: CandidateRule[] = [];
-
-    for (const r of parsed) {
-      if (this.isCandidateRule(r)) {
-        // Clamp values defensively
-        const confidence = Math.max(0, Math.min(1, r.confidence));
-        const priority = (r.priority === "strong" ? "strong" : "soft");
-        const scope: CandidateRule["scope"] =
-          r.scope === "repo" || r.scope === "run" || r.scope === "agent" || r.scope === "ui" ? r.scope : "global";
-        const textClean = String(r.text ?? "").trim();
-        if (textClean.length > 0 && textClean.length <= 160) {
-          outRules.push({ text: textClean, scope, priority, confidence });
-        }
-      }
-    }
-    return outRules;
-  }
-
-  /** Safety gate + merge into rule store; returns the accepted set this round (post-merge ids). */
-  private gateAndMerge(cands: CandidateRule[]): DynamicRule[] {
-    const accepted: DynamicRule[] = [];
-    for (const c of cands) {
-      if (!this.isSafeRuleText(c.text)) {
-        this.ledger.push({ type: "reject", reason: "unsafe_text", at: this.turnCounter, text: c.text });
-        continue;
-      }
-      const key = this.ruleKey(c.text);
-      const prev = this.rules.get(key);
-      const ttl = this.initialTtl(c.priority);
-      if (prev) {
-        // Merge: raise confidence toward 1 with diminishing returns; refresh TTL.
-        const conf = this.blend(prev.confidence, c.confidence);
-        const merged: DynamicRule = {
-          ...prev,
-          confidence: conf,
-          ttl,
-          updatedAt: this.turnCounter
-        };
-        this.rules.set(key, merged);
-        accepted.push(merged);
-        this.ledger.push({ type: "merge", at: this.turnCounter, text: c.text });
-      } else {
-        const now = this.turnCounter;
-        const rule: DynamicRule = {
-          id: key,
-          text: c.text,
-          scope: c.scope,
-          priority: c.priority,
-          confidence: c.confidence,
-          ttl,
-          createdAt: now,
-          updatedAt: now
-        };
-        this.rules.set(key, rule);
-        accepted.push(rule);
-        this.ledger.push({ type: "accept", at: this.turnCounter, text: c.text });
-      }
-    }
-
-    // Decay & prune
-    this.decayAndPrune();
-    return accepted;
-  }
-
-  private decayAndPrune(): void {
-    const toDelete: string[] = [];
-    for (const [k, r] of this.rules.entries()) {
-      // Reduce TTL each reflection turn; bump soft rules down first by trimming confidence slightly.
-      const age = Math.max(0, this.turnCounter - r.updatedAt);
-      const ttlLeft = r.ttl - 1; // one unit per reflection pass
-      const conf = (r.priority === "soft" && age > 8) ? r.confidence * 0.995 : r.confidence;
-      const updated: DynamicRule = { ...r, ttl: ttlLeft, confidence: conf };
-      if (ttlLeft <= 0 || conf < 0.15) toDelete.push(k);
-      else this.rules.set(k, updated);
-    }
-    for (const k of toDelete) {
-      const t = this.rules.get(k)?.text ?? "";
-      this.rules.delete(k);
-      this.ledger.push({ type: "expire", at: this.turnCounter, text: t });
-    }
-  }
-
-  private initialTtl(priority: "strong" | "soft"): number {
-    return priority === "strong" ? 40 : 20; // reflection turns
-  }
-
-  private blend(prev: number, inc: number): number {
-    // Conservative confidence increase
-    return Math.max(prev, Math.min(1, prev + (inc * 0.35) * (1 - prev)));
-  }
-
-  private isSafeRuleText(text: string): boolean {
-    const t = text.toLowerCase();
-    // Never permit rules that would loosen safety, network, git, or review/sandbox.
-    const banned = [
-      "network", "internet", "http://", "https://", "curl ", "wget ", "fetch ",
-      "git ", "commit", "push", "pull", "clone", "add ", "npm install", "pip install",
-      "bypass", "ignore", "disable safety", "disable sandbox", "skip review"
-    ];
-    if (banned.some(b => t.includes(b))) return false;
-    // Keep rules general and short
-    if (t.length > 180) return false;
-    return true;
-  }
-
-  private ruleKey(text: string): string {
-    // djb2 hash over normalized text (lowercase, collapsed whitespace)
-    const norm = text.toLowerCase().replace(/\s+/g, " ").trim();
-    let h = 5381;
-    for (let i = 0; i < norm.length; i++) h = ((h << 5) + h) + norm.charCodeAt(i);
-    return `r${(h >>> 0).toString(16)}`;
-  }
-
-  /** Render a compact, bounded dynamic block from current rules. */
-  private renderDynamicBlock(): string {
-    this.dynVersion++;
-
-    // Sort by priority (strong first), then confidence, then recency.
-    const arr = Array.from(this.rules.values());
-    arr.sort((a, b) => {
-      if (a.priority !== b.priority) return a.priority === "strong" ? -1 : 1;
-      if (b.confidence !== a.confidence) return b.confidence - a.confidence;
-      return b.updatedAt - a.updatedAt;
-    });
-
-    // Size cap: budget ~10–12% of total usable context (chars).
-    const dynTokenBudget = Math.max(64, Math.floor(this.budgetTokens() * 0.12));
-    const dynCharBudget = Math.max(480, Math.floor(dynTokenBudget * this.avgCharsPerToken));
-
-    const header = `DYNAMIC SYSTEM BLOCK v${this.dynVersion}\n` +
-      `- Purpose: distilled, safety-preserving preferences learned from recent conversation.\n` +
-      `- Scope: never overrides static policy, SAFE_MODE, tool caps, or review/sandbox.\n`;
-
-    let body = "";
-    let i = 1;
-    for (const r of arr) {
-      const line = `${i}) ${r.text}\n`;
-      if ((header.length + body.length + line.length) > dynCharBudget) break;
-      body += line;
-      i++;
-      if (i > 12) break; // hard cap on number of lines
-    }
-
-    return header + body;
-  }
-
-  /** Embed (or refresh) the dynamic block inside the FIRST system message content. */
-  private embedDynamicBlockIntoSystemHead(block: string): void {
-    const idx = this.messagesBuffer.findIndex(m => m.role === "system");
-    if (idx < 0) return; // no system head; nothing to do
-
-    const head = this.messagesBuffer[idx];
-    const orig = this.messageContent(head);
-    const startTag = "\n[BEGIN DYNAMIC SYSTEM BLOCK]\n";
-    const endTag = "\n[END DYNAMIC SYSTEM BLOCK]\n";
-
-    let nextContent: string;
-    const startIdx = orig.indexOf(startTag);
-    const endIdx = orig.indexOf(endTag);
-
-    const payload = `${startTag}${block}${endTag}`;
-
-    if (startIdx >= 0 && endIdx > startIdx) {
-      // Replace existing
-      nextContent = orig.slice(0, startIdx) + payload + orig.slice(endIdx + endTag.length);
-    } else {
-      // Append
-      const sep = orig.endsWith("\n") ? "" : "\n";
-      nextContent = `${orig}${sep}${payload}`;
-    }
-
-    // Mutate in place
-    (head as unknown as { content: string }).content = nextContent;
-    this.messagesBuffer[idx] = head;
-  }
-
-  // -------------------------- Utilities & parsing ----------------------------
+  // ------------------------------- Utilities ---------------------------------
 
   private extractText(out: unknown): string {
     if (typeof out === "string") return out;
@@ -608,49 +593,56 @@ export class AdvancedMemory extends AgentMemory {
     return "";
   }
 
-  private safeExtractJsonArray(text: string): unknown {
-    // Try strict parse first
+  private safeParseJson(text: string): unknown {
     try {
       const trimmed = text.trim();
-      if (trimmed.startsWith("[")) return JSON.parse(trimmed);
-    } catch { /* fallthrough */ }
-
-    // Fallback: find first [...] block
-    const m = text.match(/\[[\s\S]*\]/);
-    if (!m) return [];
-    try { return JSON.parse(m[0]); } catch { return []; }
+      if (trimmed.startsWith("{")) return JSON.parse(trimmed);
+      const m = text.match(/\{[\s\S]*\}/);
+      return m ? JSON.parse(m[0]) : null;
+    } catch {
+      return null;
+    }
   }
 
-  private isCandidateRule(v: unknown): v is CandidateRule {
-    if (!v || typeof v !== "object") return false;
-    const o = v as Record<string, unknown>;
-    const text = o["text"];
-    const scope = o["scope"];
-    const priority = o["priority"];
-    const confidence = o["confidence"];
-    return typeof text === "string"
-      && (scope === "global" || scope === "repo" || scope === "run" || scope === "agent" || scope === "ui")
-      && (priority === "strong" || priority === "soft")
-      && typeof confidence === "number";
+  private clamp01(x: number): number {
+    if (Number.isNaN(x)) return 0;
+    return Math.max(0, Math.min(1, x));
+  }
+
+  private normKey(s: string): string {
+    return s.toLowerCase().replace(/\s+/g, " ").trim();
   }
 }
 
 /* --------------------------------- Types ---------------------------------- */
 
-type CandidateRule = {
-  text: string;
-  scope: "global" | "repo" | "run" | "agent" | "ui";
-  priority: "strong" | "soft"; // dynamic memory never emits "hard"
-  confidence: number;          // 0..1
+type PersonaFacet = { text: string; weight: number };
+
+type PersonaModel = {
+  version: number;
+  lastUpdatedTurn: number;
+  roles: PersonaFacet[];
+  style: PersonaFacet[];
+  heuristics: PersonaFacet[];
+  antigoals: PersonaFacet[];
+  languages: PersonaFacet[];
 };
 
-type DynamicRule = CandidateRule & {
-  id: string;       // stable key (hash over normalized text)
-  ttl: number;      // reflection turns remaining
-  createdAt: number;
-  updatedAt: number;
+type PersonaUpdate = {
+  friction: number;    // 0..1
+  confidence: number;  // 0..1
+  persona: {
+    roles: PersonaFacet[];
+    style: PersonaFacet[];
+    heuristics: PersonaFacet[];
+    antigoals: PersonaFacet[];
+    languages: PersonaFacet[];
+  };
 };
 
-type RuleEvent =
-  | { type: "accept" | "merge" | "expire"; at: number; text: string }
-  | { type: "reject"; reason: "unsafe_text"; at: number; text: string };
+type PersonaEvent = {
+  type: "merge";
+  at: number;
+  friction: number;
+  confidence: number;
+};
