@@ -32,40 +32,46 @@ We’ll acknowledge receipt within 5 business days and keep you updated.
 
 ## Hardening recommendations
 
-These are strongly recommended for day-to-day use:
+These defaults match the project’s VM-first posture and are recommended for day-to-day use.
 
 1. **Run inside a VM**  
-   Prefer a small Linux VM with a host-only network. Point `LLM_BASE_URL` to the
-   host-only IP to keep the model interface private.
+   Prefer a small Linux VM (e.g., Lima). Keep the model private and reachable only from the guest:
+   - Set `ORG_OPENAI_BASE_URL` to the Lima host address:
+     ```bash
+     export ORG_OPENAI_BASE_URL="http://192.168.5.2:11434/v1"
+     ```
+   - (Alternative) Use a reverse SSH tunnel so the LLM remains on Mac loopback and appears on the VM loopback:
+     ```bash
+     ssh -F ~/.lima/_config/ssh_config lima-org-lima -N -f -R 11434:127.0.0.1:11434
+     export ORG_OPENAI_BASE_URL="http://127.0.0.1:11434/v1"
+     ```
+   Keep VM firewall/UFW default-deny for outbound except the loopback and the single LLM port you need.
 
 2. **Use the sandbox backend**  
-   Set `SANDBOX_BACKEND=podman`. By default we start containers with:
+   Set `ORG_ENGINE=podman`. Containers start rootless with:
    - read-only bind for `/project` (your repo),
-   - a writable `/work` scratch copy,
-   - **network disabled**,
-   - dropped capabilities and `--userns=keep-id`.
-   This shrinks the blast radius for accidental commands.
+   - writable `/work` scratch copy,
+   - **egress-only networking** via `slirp4netns:allow_host_loopback=true` (no inbound),
+   - `--cap-drop=ALL`, `--security-opt no-new-privileges`, and `--userns=keep-id`.
+   This keeps changes auditable and shrinks the blast radius for mistakes.  
+   > If a task truly needs no network at all, you can run with `--network=none`.
 
 3. **Keep “safe mode” on (optional)**  
-   The `--safe` flag (or `SAFE_MODE=1`) preserves additional guardrails. Treat
-   the `sh` tool as untrusted input even in safe mode; guards are heuristics.
+   Use `--safe` or `export ORG_SAFE_MODE=1` for additional confirmation gates. Treat any shell tooling as untrusted input even in safe mode; guardrails are heuristics.
 
 4. **Review every patch**  
-   Never auto-apply changes without reading the patch. Deny patterns override
-   allows; keep `.git/**`, `.org/**`, `.env`, `**/*.pem`, `.github/**` denied.
+   Never auto-apply changes without reading the diff. Deny patterns override allows; keep  
+   `.git/**`, `.org/**`, `.env`, `**/*.pem`, `.github/**` denied.
 
 5. **Mind secrets and transcripts**  
-   Avoid sending secrets to models. The run directory (`.org/runs/<id>/`) stores
-   `transcript.txt` and step outputs; keep the repo private and rotate secrets
-   if something leaks.
+   Avoid sending secrets to models. Run directories (`.org/runs/<id>/`) contain `transcript.txt` and step outputs—keep the repo private and rotate secrets if something leaks.
 
 6. **Prefer dedicated working directories**  
-   If you add custom tools, validate they cannot escape the working directory
-   via `..` or symlinks.
+   If you add custom tools, validate they cannot escape the working directory via `..` or symlinks.
 
 7. **Keep your LLM endpoint private**  
-   Do not expose unauthenticated local model servers to untrusted networks. Bind
-   to a private interface or firewall them.
+   Do **not** expose unauthenticated local model servers to untrusted networks. For Lima, prefer `192.168.5.2:11434` or the reverse-tunnel/VM-loopback option above. Avoid binding to `0.0.0.0` unless you understand and control the exposure.
+
 
 ---
 
