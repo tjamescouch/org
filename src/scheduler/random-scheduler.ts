@@ -471,6 +471,19 @@ All agents are idle. Provide the next concrete instruction or question.`;
     }
   }
 
+  /**
+   * Test-friendly helper: choose the next agent id using the same policy
+   * as the run loop (hint first, then shuffle over ready agents).
+   * Deterministic when `shuffle` is identity.
+   */
+  public pickNext(inbox: Inbox, agents: ReadonlyArray<Responder>, hint?: string): string | undefined {
+    if (hint && inbox.hasWork(hint)) return hint;
+
+    const ready = agents.filter(a => inbox.hasWork(a.id));
+    const order = this.shuffle(ready);       // identity in tests => round-robin by arrival order
+    return order.length ? order[0]!.id : undefined;
+  }
+
   /** Exact id match, case-insensitive. */
   private findAgentByIdExact(key: string): Responder | undefined {
     const t = key.toLowerCase();
