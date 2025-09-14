@@ -118,6 +118,14 @@ export class LlmAgent extends Agent {
     this.toolExecutor = new StandardToolExecutor();
   }
 
+  async load(): Promise<void>{
+    this.memory.load();
+  }
+
+  async save(): Promise<void>{
+    this.memory.save();
+  }
+
   /**
    * Respond to a prompt.
    * - Add the user's text to memory.

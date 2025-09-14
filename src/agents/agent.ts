@@ -36,4 +36,7 @@ export abstract class Agent {
     const anyGuard: any = this.guard as any;
     return typeof anyGuard.onIdle === 'function' ? anyGuard.onIdle(state) : null;
   }
+
+  abstract load(): Promise<void>;
+  abstract save(): Promise<void>;
 }

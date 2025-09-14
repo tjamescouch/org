@@ -11,18 +11,24 @@ export abstract class AgentMemory {
   private summarizing = false;
   private pending = false;
 
+
   constructor(systemPrompt?: string) {
     if (systemPrompt && systemPrompt.trim().length > 0) {
       this.messagesBuffer.push({ role: "system", content: systemPrompt, from: "System" });
     }
   }
 
+  abstract load(): Promise<void>;
+  abstract save(): Promise<void>;
+
   async add(msg: ChatMessage): Promise<void> {
+    this.load();
     this.messagesBuffer.push(msg);
     await this.onAfterAdd();
   }
 
   async addIfNotExists(msg: ChatMessage): Promise<void> {
+    this.load();
     const exists = this.messagesBuffer.some(m => (m.content===msg.content && m.role === msg.role));
     if(!exists) {
       this.messagesBuffer.push(msg);

@@ -312,6 +312,10 @@ All agents are idle. Provide the next concrete instruction or question.`;
     } catch (e) {
       Logger.error("Scheduler start failed.", e);
     } finally {
+      for (const agent of this.agents) {
+        agent.save();
+      }
+
       if (this.keepAlive) {
         clearInterval(this.keepAlive);
         this.keepAlive = null;
@@ -479,22 +483,3 @@ All agents are idle. Provide the next concrete instruction or question.`;
 }
 
 export default RandomScheduler;
-
-/* ------------------------- Module-level convenience ------------------------- */
-/* Kept for compatibility with any legacy imports. Prefer the runtime-owned instance. */
-
-function withCookedTTY<T>(fn: () => Promise<T> | T): Promise<T> {
-  return R.ttyController!.withCookedTTY(fn);
-}
-function withRawTTY<T>(fn: () => Promise<T> | T): Promise<T> {
-  return R.ttyController!.withRawTTY(fn);
-}
-
-// Optional compatibility: some older code stores a scheduler here.
-let _scheduler: unknown | undefined;
-function setScheduler(s: unknown): void {
-  _scheduler = s;
-}
-function getScheduler(): unknown | undefined {
-  return _scheduler;
-}

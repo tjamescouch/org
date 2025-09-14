@@ -11,11 +11,12 @@ export type ChatResponse = { message: string; toolsUsed: number };
  */
 export interface Responder {
   id: string;
+  save: () => Promise<void>;
   respond(
     messages: ChatMessage[],
     maxTools: number,
     peers: string[],
-    abortCallback: () => boolean
+    abortCallback: () => boolean,
   ): Promise<ChatResponse[]>;
   /**
    * Optional guard hook invoked by the scheduler when the system is idle.
