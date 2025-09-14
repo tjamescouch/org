@@ -10,7 +10,7 @@ _Agentic dev helpers that can "do things" in your repo while you watch, review, 
 - 🧰 **Tools**: `sh`, `apply_patch`, etc. 100% auditable.
 - 🔒 **Safe-by-default**: denylist for dangerous paths; *every* change turns into a patch you review before it lands.
 - 🧪 **Deterministic runs**: all stdout/stderr, artifacts, and a git patch are saved under `.org/runs/<id>` for inspection or CI upload.
-- 🛡️ **Optional containerized sandbox**: run steps inside a Podman container with no network by default.
+- 🛡️ **Optional containerized sandbox**: run steps inside a Podman container with no network by default (quickstart config allows egress to the host LLM at 192.168.5.2:11434).
 
 > Security note. org is safe-by-default but not a hardened sandbox. For a stronger boundary, run it in the provided VM profile (Lima on Apple Silicon, VirtualBox on Intel). See [SECURITY](SECURITY.md) for hardening.
 
