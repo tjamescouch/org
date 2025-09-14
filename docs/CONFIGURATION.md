@@ -7,7 +7,7 @@
 
 ---
 
-## LLM Settings (ORG_* only)
+## LLM Settings
 
 Set these to point the app at your local or remote model server.
 
