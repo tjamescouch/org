@@ -4,13 +4,14 @@
 
 ```bash
 org [options] [--prompt "…"]
+org --agents "alice^lmsutdio.openai|gemma^lmstudio.google^google/gemma-3-27b^You do as the user requests."
 ```
 
 ### Common Options
 
 | Flag / Env                     | Meaning                                                   |                            |                                                   |
 | ------------------------------ | --------------------------------------------------------- | -------------------------- | ------------------------------------------------- |
-| `--agents "alice:lmstudio,…"`  | Configure agent(s) and driver(s)                          |                            |                                                   |
+| `--agents "alice^lmstudio.openai"`  | Configure agent(s) and driver(s)                          |                            |                                                   |
 | `--max-tools N`                | Cap total tool invocations per run                        |                            |                                                   |
 | `--safe` / `SAFE_MODE=1`       | Extra confirmation gates for shell & writes               |                            |                                                   |
 | `--review ask`                 | `auto` / `never`                     | Patch review mode (interactive by default on TTY) |
@@ -24,10 +25,10 @@ org [options] [--prompt "…"]
 
 ```bash
 # Run from anywhere, operate on ~/dev/myrepo
-org -C ~/dev/myrepo --agents "alice:lmstudio" --max-tools 50 --review ask
+org -C ~/dev/myrepo --agents "alice^lmstudio" --max-tools 50 --review ask
 
 # Auto-apply small/safe patches (applies only if the patch is clean & touches no restricted paths)
-ORG_REVIEW=auto org --agents "alice:lmstudio"
+ORG_REVIEW=auto org --agents "alice^lmstudio"
 ```
 
 ### Running from Any Directory
@@ -35,9 +36,9 @@ ORG_REVIEW=auto org --agents "alice:lmstudio"
 You don't have to `cd` into the repo to use `org`. Two equivalent ways:
 
 ```bash
-org -C /path/to/repo --agents "alice:lmstudio" --max-tools 50
+org -C /path/to/repo --agents "alice^lmstudio" --max-tools 50
 # or
-ORG_PROJECT_DIR=/path/to/repo org --agents "alice:lmstudio"
+ORG_PROJECT_DIR=/path/to/repo org --agents "alice^lmstudio"
 ```
 
 When running **inside** a repo, just call `org` normally.
@@ -111,7 +112,7 @@ The `sh` tool streams `stdout`/`stderr` **live** to your terminal. During idle p
 
 ## Multi-Agent Workflows
 
-Run several named agents (e.g., `"alice:lmstudio,bob:lmstudio"`). Agents can hand off tasks and you can interject at any time with **`i`** to steer the plan, while the same review-before-apply loop protects your repo.
+Run several named agents (e.g., `"alice:lmstudio,bob^lmstudio"`). Agents can hand off tasks and you can interject at any time with **`i`** to steer the plan, while the same review-before-apply loop protects your repo.
 
 ### Interaction Protocol & Routing Rules
 

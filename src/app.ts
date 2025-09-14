@@ -268,9 +268,9 @@ async function main() {
   const recipe = getRecipe(recipeName || null);
 
   // Build agents
-  const agentSpecs = await agentManager.parse(String(args["agents"] || "alice:lmstudio"), cfg.llm, recipe?.system ?? null);
+  const agentSpecs = await agentManager.parse(String(args["agents"] || "alice^lmstudio.openai"), cfg.llm, recipe?.system ?? null);
   if (agentSpecs.length === 0) {
-    Logger.error('No agents. Use --agents "alice:lmstudio,bob:mock" or "alice:mock,bob:mock"');
+    Logger.error('No agents. Use --agents "alice^lmstudio|bob^lmstudio"');
     R.exit(1);
   }
   const agents = agentSpecs.map(a => ({

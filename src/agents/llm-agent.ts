@@ -81,7 +81,7 @@ export class LlmAgent extends Agent {
 
   // Memory replaces the old raw history array.
   private readonly memory: AgentMemory;
-  private readonly systemPrompt: string;
+  private systemPrompt: string;
 
   // New: polymorphic tool executor (pure refactor)
   private readonly toolExecutor: ToolExecutor;
@@ -116,6 +116,10 @@ export class LlmAgent extends Agent {
 
     // Default executor used polymorphically
     this.toolExecutor = new StandardToolExecutor();
+  }
+
+  setSystemPrompt(systemPrompt: string): void {
+    this.systemPrompt = systemPrompt;
   }
 
   async load(): Promise<void>{

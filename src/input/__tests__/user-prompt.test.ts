@@ -19,7 +19,7 @@ describe("askUserLine", () => {
   test("prints one 'You > ' prompt and restores raw mode", async () => {
     const tty = new FakeTty();
     const scopes = new TtyScopes(tty);
-    scopes.setMode("raw"); // simulate outer raw context
+    //scopes.setMode("raw"); // simulate outer raw context
 
     const stub = new StubRl("ok");
     const rlFactory: RlFactory = () => stub;

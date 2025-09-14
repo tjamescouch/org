@@ -6,6 +6,7 @@ import { Agent } from "./agent";
 import { LlmAgent } from "./llm-agent";
 import { MockModel } from "./mock-model";
 import { R } from "../runtime/runtime";
+import { Logger } from "../logger";
 
 type ModelKind = "mock" | "lmstudio";
 type AgentSpec = { id: string; kind: ModelKind; model: Agent };
@@ -13,12 +14,14 @@ type AgentCreator = (agentId: string, model: string, extra: string, defaults: Ll
 type LlmDefaults = { model: string; baseUrl: string; protocol: "openai" | "google" | "deepseek" | "antrhopic"; apiKey?: string };
 
 const openaiModelCreationHandler = async (agentId: string, model: string, extra: string, defaults: LlmDefaults): Promise<AgentSpec> => {
+    Logger.info("openai", {agentId, model, extra, defaults});
+
     const driver = makeStreamingOpenAiLmStudio({
         baseUrl: defaults.baseUrl,
-        model: defaults.model,
+        model: model || defaults.model,
         //apiKey: defaults.apiKey
     });
-    const agentModel = new LlmAgent(agentId, driver, defaults.model);
+    const agentModel = new LlmAgent(agentId, driver, model || defaults.model);
     await agentModel.load();
 
     return {
@@ -29,12 +32,14 @@ const openaiModelCreationHandler = async (agentId: string, model: string, extra:
 };
 
 const gemmaModelCreationHandler = async (agentId: string, model: string, extra: string, defaults: LlmDefaults): Promise<AgentSpec> => {
+    Logger.info("gemma", {agentId, model, extra, defaults});
+
     const driver = makeStreamingOpenAiLmStudio({ //Same for now
         baseUrl: defaults.baseUrl,
-        model: defaults.model,
+        model: model || defaults.model,
         //apiKey: defaults.apiKey
     });
-    const agentModel = new LlmAgent(agentId, driver, defaults.model);
+    const agentModel = new LlmAgent(agentId, driver, model || defaults.model);
     await agentModel.load();
 
     return {
@@ -134,14 +139,7 @@ export class AgentManger {
 
             const agentSpec = await creationHandler(id, model, "", llmDefaults);
 
-            // If the model supports a system prompt, set it
-            function hasSystemPromptSetter(x: unknown): x is { setSystemPrompt: (s: string) => void } {
-                return typeof x === "object" && x !== null
-                    && "setSystemPrompt" in x
-                    && typeof (x as { setSystemPrompt?: unknown }).setSystemPrompt === "function";
-            }
-
-            if (systemPrompt && hasSystemPromptSetter(agentSpec.model)) {
+            if (systemPrompt) {
                 agentSpec.model.setSystemPrompt(systemPrompt);
             }
 

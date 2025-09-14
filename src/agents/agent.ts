@@ -39,4 +39,5 @@ export abstract class Agent {
 
   abstract load(): Promise<void>;
   abstract save(): Promise<void>;
+  abstract setSystemPrompt(s: string): void;
 }
