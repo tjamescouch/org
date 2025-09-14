@@ -123,7 +123,7 @@ export class DynamicAdvancedMemory extends AgentMemory {
     this.keepRecentTools   = Math.max(0, Math.floor(args.keepRecentTools ?? 3));
 
     // v2 persona defaults (env can override dynMode)
-    const envMode = (R?.env?.ORG_DYNAMIC_MEMORY) || "";
+    const envMode = (R.env?.ORG_DYNAMIC_MEMORY) || "";
     const mode: "off" | "shadow" | "auto" =
       args.dynMode ?? ((envMode === "off" || envMode === "shadow" || envMode === "auto") ? envMode : "shadow");
     this.dynMode = mode;
