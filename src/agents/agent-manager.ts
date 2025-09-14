@@ -62,9 +62,9 @@ export class AgentManger {
     private agents: Agent[] = [];
 
     private readonly creationHandlers: Record<string, AgentCreator> = {
-        ['ollama.openai']: openaiModelCreationHandler,
         ['lmstudio.openai']: openaiModelCreationHandler,
         ['lmstudio.google']: gemmaModelCreationHandler,
+        ['ollama.openai']: openaiModelCreationHandler,
         ['ollama.google']: gemmaModelCreationHandler,
         ['mock.mock']: mockModelCreationHanlder,
     };
