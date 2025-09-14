@@ -29,6 +29,7 @@ import Passthrough from "./input/passthrough";
 import { createFeedbackController } from "./ui/feedback";
 import { installHotkeys } from "./runtime/hotkeys";
 import { printInitCard } from "./ui/pretty";
+import { AgentManger } from "./agents/agent-manager";
 
 if (R.env.ORG_LAUNCHER_SCRIPT_RAN !== "1") { // TODO - safely support non-sandboxed workflows without opening up this hole.
   Logger.error(C.red("org must be launched via the org wrapper (sandbox). Refusing to run on host."));
@@ -41,29 +42,53 @@ export const setOutputPaused = (v: boolean) => {
   paused = v;
 }
 
+const agentManager = new AgentManger();
+
 // ───────────────────────────────────────────────────────────────────────────────
 // TTY guard: the RUNTIME holds the controller instance (R.ttyController)
 // ───────────────────────────────────────────────────────────────────────────────
 
 let installed = false;
 /** Hook signals; ensure finalizer runs once. */
-export function installTtyGuard(): void {
+export function installShutdownHook(): void {
   if (installed) return;
   installed = true;
 
-  const unwind = () => {
+  const unwindTty = () => {
     const c = R.ttyController;
     if (!c) return;
     c.unwind?.()
   };
 
-  R.on("SIGINT", () => { unwind(); Logger.error?.("SIGINT"); R.exit(130); });
-  R.on("SIGTERM", () => { unwind(); Logger.error?.("SIGTERM"); R.exit(143); });
-  R.on("uncaughtException", (err) => { unwind(); Logger.error?.(err); R.exit(1); });
-  R.on("unhandledRejection", (reason: unknown) => { unwind(); Logger.error?.(reason); R.exit(1); });
+  R.on("SIGINT", () => {
+    unwindTty();
+    agentManager.saveAll()
+    Logger.error("SIGINT");
+    R.exit(130);
+  });
+
+  R.on("SIGTERM", () => {
+    unwindTty();
+    agentManager.saveAll()
+    Logger.error("SIGTERM");
+    R.exit(143);
+  });
+
+  R.on("uncaughtException", (err) => { 
+    unwindTty(); 
+    Logger.error(err); 
+    R.exit(1); 
+  });
+
+  R.on("unhandledRejection", (reason: unknown) => { 
+    unwindTty(); 
+    Logger.error(reason); 
+    R.exit(1); 
+  });
 }
 
-installTtyGuard();
+installShutdownHook();
+
 Logger.debug("[org] Installing hotkeys 🔥");
 const uninstallHotkeys = installHotkeys({
   stdin: R.stdin as any,
@@ -85,16 +110,6 @@ export async function withRawTTY<T>(f: () => Promise<T> | T): Promise<T> {
   return ctl.withRawTTY(f);
 }
 
-
-function assertIsRepository(p: string): string {
-  let d = path.resolve(p);
-  if (fs.existsSync(path.join(d, ".git"))) return d;
-
-  Logger.error(`Not git repository at: ${p} (${d})`);
-
-  throw new Error(`Not a git repository.`);
-}
-
 function resolvePath(p: string): string {
   return path.resolve(p);
 }
@@ -113,43 +128,6 @@ function computeMode(extra?: { allowTools?: string[] }) {
   ExecutionGate.configure({ safe, interactive, allowTools: extra?.allowTools });
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
-// Agent parsing
-// ───────────────────────────────────────────────────────────────────────────────
-
-type ModelKind = "mock" | "lmstudio";
-type AgentSpec = { id: string; kind: ModelKind; model: unknown };
-
-function parseAgents(
-  spec: string | undefined,
-  llmDefaults: { model: string; baseUrl: string; protocol: "openai"; apiKey?: string },
-  recipeSystemPrompt?: string | null
-): AgentSpec[] {
-  const list = String(spec || "alice:lmstudio").split(",").map(x => x.trim()).filter(Boolean);
-  const out: AgentSpec[] = [];
-  for (const item of list) {
-    const [id, kindRaw = "mock"] = item.split(":");
-    const kind = (kindRaw as ModelKind) || "mock";
-    if (kind === "mock") {
-      out.push({ id, kind, model: new MockModel(id) });
-    } else if (kind === "lmstudio") {
-      if (llmDefaults.protocol !== "openai") throw new Error(`Unsupported protocol: ${llmDefaults.protocol}`);
-      const driver = makeStreamingOpenAiLmStudio({
-        baseUrl: llmDefaults.baseUrl,
-        model: llmDefaults.model,
-        apiKey: llmDefaults.apiKey
-      });
-      const agentModel = new LlmAgent(id, driver, llmDefaults.model) as unknown;
-      if (recipeSystemPrompt && (agentModel as { setSystemPrompt?: (s: string) => void }).setSystemPrompt) {
-        (agentModel as { setSystemPrompt: (s: string) => void }).setSystemPrompt(recipeSystemPrompt);
-      }
-      out.push({ id, kind, model: agentModel });
-    } else {
-      throw new Error(`Unknown model kind: ${kindRaw}`);
-    }
-  }
-  return out;
-}
 
 // ───────────────────────────────────────────────────────────────────────────────
 // Review helpers (pager + apply)
@@ -290,7 +268,7 @@ async function main() {
   const recipe = getRecipe(recipeName || null);
 
   // Build agents
-  const agentSpecs = parseAgents(String(args["agents"] || "alice:lmstudio"), cfg.llm, recipe?.system ?? null);
+  const agentSpecs = await agentManager.parse(String(args["agents"] || "alice:lmstudio"), cfg.llm, recipe?.system ?? null);
   if (agentSpecs.length === 0) {
     Logger.error('No agents. Use --agents "alice:lmstudio,bob:mock" or "alice:mock,bob:mock"');
     R.exit(1);

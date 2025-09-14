@@ -1,5 +1,9 @@
 import type { ChatDriver, ChatMessage } from "../drivers/types";
+import { R } from "../runtime/runtime";
 import { AgentMemory } from "./agent-memory";
+import { MemoryPersisitence } from "./memory-persistence";
+import path from 'path';
+
 
 /**
  * DynamicAdvancedMemory (v2)
@@ -23,6 +27,14 @@ import { AgentMemory } from "./agent-memory";
  * - Reflection is time-based, not keyword-triggered (language-agnostic).
  * - Default: every 3 turns (min gap), window-capped; single LLM call per pass.
  */
+
+
+type PersistedState = { 
+  version: number; 
+  persona: unknown; 
+  ledger: unknown;
+  messagesBuffer: any[];
+};
 
 export class DynamicAdvancedMemory extends AgentMemory {
   private readonly driver: ChatDriver;
@@ -51,6 +63,7 @@ export class DynamicAdvancedMemory extends AgentMemory {
   private readonly decayPerPass: number;             // default 0.03 (3%)
   private readonly minKeepWeight: number;            // default 0.22
   private readonly mergeAggressiveness: number;      // default 0.60 (how strongly new evidence bumps)
+  private readonly store:MemoryPersisitence<PersistedState>;
 
   private turnCounter = 0;
   private lastReflectTurn = 0;
@@ -64,7 +77,8 @@ export class DynamicAdvancedMemory extends AgentMemory {
     languages: []
   };
 
-  private readonly ledger: PersonaEvent[] = [];
+  private ledger: PersonaEvent[] = [];
+
 
   constructor(args: {
     driver: ChatDriver;
@@ -109,7 +123,7 @@ export class DynamicAdvancedMemory extends AgentMemory {
     this.keepRecentTools   = Math.max(0, Math.floor(args.keepRecentTools ?? 3));
 
     // v2 persona defaults (env can override dynMode)
-    const envMode = (typeof process !== "undefined" && process?.env?.ORG_DYNAMIC_MEMORY) || "";
+    const envMode = (R.env?.ORG_DYNAMIC_MEMORY) || "";
     const mode: "off" | "shadow" | "auto" =
       args.dynMode ?? ((envMode === "off" || envMode === "shadow" || envMode === "auto") ? envMode : "shadow");
     this.dynMode = mode;
@@ -121,6 +135,22 @@ export class DynamicAdvancedMemory extends AgentMemory {
     this.decayPerPass         = Math.min(0.15, Math.max(0.0, Number(args.decayPerPass ?? 0.03)));
     this.minKeepWeight        = Math.min(0.50, Math.max(0.05, Number(args.minKeepWeight ?? 0.22)));
     this.mergeAggressiveness  = Math.min(1.0, Math.max(0.1, Number(args.mergeAggressiveness ?? 0.60)));
+
+    this.store = new MemoryPersisitence<PersistedState>({ filePath: path.join(R.cwd(), ".orgmemories"), pretty: true });
+  }
+
+  //must be idempotent
+  async load() {
+    const prior = await this.store.load(); // PersistedState | null
+    if (prior) {
+      this.persona = prior?.persona as PersonaModel ?? {}; //FIXME - types
+      this.ledger = prior?.ledger as PersonaEvent ?? {};
+      this.messagesBuffer = prior?.messagesBuffer ?? [];
+    }
+  }
+
+  async save() {
+    await this.store.save({ version: this.persona.version, persona: this.persona, ledger: this.ledger, messagesBuffer: this.messagesBuffer });
   }
 
   // ---------------------------------------------------------------------------

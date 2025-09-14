@@ -23,10 +23,8 @@ const formatToolResult = (tr: ToolResult): string => {
     return `ok: ${tr.ok} code: ${tr.exit_code} stdout: ${tr.stdout} stderr: ${tr.stderr}`;
 }
 
-
 const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, memory: AgentMemory, guard: GuardRail): Promise<ToolHandlerResult> => {
     Logger.debug("shHanlder", toolcall);
-
 
     let args: any = {};
     try { 
@@ -89,6 +87,8 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
         await memory.add({ role: "system", content: repeatDecision.nudge, from: "System" });
     }
     if (repeatDecision?.endTurn) {
+        Logger.warn(`Repeat decision to end turn.`);
+
         // Still record the tool output so the model can read it later.
         const contentJSON = JSON.stringify(result);
         await memory.add({ role: "tool", content: contentJSON, tool_call_id: toolcall.id, name: "sh", from: "Tool" });
@@ -99,6 +99,10 @@ const shHandler = async (agentId: string, toolcall: ChatToolCall, text: string, 
 
     const content = JSON.stringify(result);
     await memory.add({ role: "tool", content, tool_call_id: toolcall.id, name: "sh", from: "Tool" });
+
+    if (!result.ok) {
+        Logger.error(C.magenta("sh error: "), {stderr: result.stderr, stdout: result.stdout, exit_code: result.exit_code});
+    }
 
     return { toolsUsed, forceEndTurn: false, stdout: result.stdout, stderr: result.stderr, ok: result.exit_code === 0, exit_code: result.exit_code };
 }
