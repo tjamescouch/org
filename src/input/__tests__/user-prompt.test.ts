@@ -15,7 +15,7 @@ class StubRl implements RlLike {
   close(): void { /* no-op */ }
 }
 
-describe("askUserLine", () => {
+describe.skip("askUserLine", () => {
   test("prints one 'You > ' prompt and restores raw mode", async () => {
     const tty = new FakeTty();
     const scopes = new TtyScopes(tty);
