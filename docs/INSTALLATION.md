@@ -74,23 +74,27 @@ orgctl vm ssh
 
 ## Networking model (default)
 
-* **Guest egress is denied** by default via UFW, except:
+* The **VM is the hard boundary**. **Guest egress is denied** by default (UFW), except:
+  * loopback (`127.0.0.1`), and
+  * **guest → host LLM** at `192.168.5.2:11434` (Lima’s host address).
+* Containers run rootless with **slirp4netns:allow_host_loopback=true** (egress-only), so they can reach only VM loopback and the host LLM above; no inbound to the container.
 
-  * loopback (`127.0.0.1`) and
-  * **guest → host LLM** on `192.168.5.2:11434` (Lima’s alias to the host loopback).
 * The installer sets and persists:
+  ```bash
+  export ORG_OPENAI_BASE_URL="http://192.168.5.2:11434/v1"
+````
+
+* You can override at any time:
 
   ```bash
-  ORG_LLM_BASE_URL=http://192.168.5.2:11434
-  ```
-
-  You can override at any time:
-
-  ```bash
-  export ORG_LLM_BASE_URL="http://host.lima.internal:11434"
+  export ORG_OPENAI_BASE_URL="http://host.lima.internal:11434/v1"
+  # or, if using a reverse SSH tunnel into the VM:
+  # export ORG_OPENAI_BASE_URL="http://127.0.0.1:11434/v1"
   ```
 
 ---
+
+```
 
 ## Troubleshooting
 
