@@ -93,12 +93,11 @@ export class AgentManger {
 
             // driverKind[.protocol]
             type Protocol = LlmDefaults["protocol"];
-            const PROTOCOLS = ["openai", "google", "deepseek", "antrhopic"] as const;
-            const isProtocol = (p: string): p is Protocol =>
-                (PROTOCOLS as readonly string[]).includes(p);
+            const protocols = ["openai", "google", "deepseek", "antrhopic"];
+            const isProtocol = (p: string): p is Protocol => protocols.includes(p);
 
-            type ModelKindStrict = "mock" | "lmstudio";
-            const isModelKind = (k: string): k is ModelKindStrict => k === "mock" || k === "lmstudio";
+            type ModelKindStrict = "mock" | "lmstudio" | "ollama";
+            const isModelKind = (k: string): k is ModelKindStrict => ["lmstudio", "ollama"].includes(k);
 
             let kind: ModelKindStrict = "lmstudio";
             let protocol: Protocol = llmDefaults.protocol;
