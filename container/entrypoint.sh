@@ -27,11 +27,12 @@ mkdir -p "${WORKDIR}" "${HOSTRUN_MOUNT}"
 # 1) Mirror repo from /project -> /work (idempotent)
 if command -v rsync >/dev/null 2>&1; then
   log "rsync /project -> /work"
-  rsync -a --delete \
-    --exclude ".git/***" \
-    --exclude ".org/***" \
-    --filter="P .org/" \
-    "${PROJECT_MOUNT}/." "${WORKDIR}/"
+  rsync -rltD \
+    --no-owner --no-group --omit-dir-times \
+    --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
+    --delete --delete-delay --force \
+    --exclude ".git/**" --exclude ".org/**" \
+      "${PROJECT_MOUNT}/." "${WORKDIR}/"
 else
   log "cp -a /project -> /work (rsync not present)"
   find "${WORKDIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
