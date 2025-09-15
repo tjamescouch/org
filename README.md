@@ -35,7 +35,7 @@ brew tap tjamescouch/org
 brew install org lima socket_vmnet
 
 # 2) One shot: create + provision the VM and attach when ready
-orgctl quickstart --verbose --attach
+orgctl quickstart
 ```
 
 ### Running
