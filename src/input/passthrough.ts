@@ -11,33 +11,16 @@
 
 import { Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
+import { IScheduler } from "../scheduler/scheduler";
 
 type PTState = "idle" | "reading" | "closed";
-
-interface SchedulerLike {
-  enqueue?(item: { role: "user"; content: string }): void | Promise<void>;
-  enqueueUserText?(text: string): void | Promise<void>;
-  send?(text: string): void | Promise<void>;
-  stop?(): void | Promise<void>;
-  drain?(): void | Promise<void>;
-}
-
-interface PassthroughOptions {
-  stdin: Readable;
-  stdout: Writable;
-  scheduler?: SchedulerLike;
-  /**
-   * Optional callback invoked after stop/drain on graceful EOF.
-   */
-  finalizer?: () => void | Promise<void>;
-}
 
 class Passthrough {
   public state: PTState = "idle";
 
   private readonly stdin: Readable;
   private readonly stdout: Writable;
-  private scheduler?: SchedulerLike;
+  private scheduler?: IScheduler;
   private finalizer?: () => void | Promise<void>;
 
   private decoder = new StringDecoder("utf8");
@@ -124,13 +107,14 @@ class Passthrough {
     // Forward collected input as a single "user" message if any.
     if (payload.length > 0) {
       const s = this.scheduler;
-      try {
-        if (s?.enqueueUserText) await s.enqueueUserText(payload);
-        else if (s?.enqueue) await s.enqueue({ role: "user", content: payload });
-        else if (s?.send) await s.send(payload);
-      } catch {
-        // Ignore delivery errors; we still attempt graceful finalize below.
-      }
+      //FIXME
+      //try {
+      //  if (s?.enqueueUserText) await s.enqueueUserText(payload);
+      //  else if (s?.enqueue) await s.enqueue({ role: "user", content: payload });
+      //  else if (s?.send) await s.send(payload);
+      //} catch {
+      //  // Ignore delivery errors; we still attempt graceful finalize below.
+      //}
     }
 
     await this.close(true);

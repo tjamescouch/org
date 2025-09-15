@@ -3,7 +3,7 @@ import { R } from "../runtime/runtime";
 import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
 import { AgentMemory } from "../memory";
 import { GuardRail } from "../guardrails/guardrail";
-import { Agent } from "./agent";
+import { Agent, AgentCallbacks, AgentReply } from "./agent";
 import { sanitizeContent } from "../utils/sanitize-content";
 import { sanitizeAndRepairAssistantReply } from "../guard/sanitizer";
 import { ToolExecutor } from "../executors/tool-executor";
@@ -11,12 +11,9 @@ import { StandardToolExecutor } from "../executors/standard-tool-executor";
 import { createPDAStreamFilterHeuristic } from "../utils/filter-passes/llm-pda-stream-heuristic";
 import { SH_TOOL_DEF } from "../tools/sh";
 import { DynamicAdvancedMemory } from "../memory/dynamic-advanced-memory";
-
-interface AgentReply {
-  message: string;   // assistant text
-  reasoning?: string;
-  toolsUsed: number; // number of tool calls consumed this hop
-}
+import { ChatResponse } from "../scheduler/types";
+import { routeWithSideEffects } from "../scheduler/router";
+import { NoiseFilters } from "../scheduler/filters";
 
 function buildSystemPrompt(id: string): string {
   return [
@@ -118,12 +115,63 @@ export class LlmAgent extends Agent {
     this.toolExecutor = new StandardToolExecutor();
   }
 
-  async load(): Promise<void>{
-    this.memory.load();
+  async load(): Promise<void> {
+    this.memory.load(this.id);
   }
 
-  async save(): Promise<void>{
-    this.memory.save();
+  async save(): Promise<void> {
+    this.memory.save(this.id);
+  }
+
+  async respond(messages: ChatMessage[], maxTools: number, filters: NoiseFilters, peers: Agent[], callbacks: AgentCallbacks): Promise<AgentReply[]> {
+
+    const result: AgentReply[] = [];
+
+    let remaining = maxTools;
+    let hop = 0;
+    let totalToolsUsed = 0;
+
+    // Initialize per-turn thresholds/counters in the guard rail.
+    this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
+
+    Logger.debug(`ask ${this.id} (hop ${hop}) with budget=${remaining}`);
+    for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
+      let replies: ChatResponse[] = [];
+      // ---- STREAM DEFERRAL (single seam to TTY controller) ----
+      callbacks.onStreamStart?.();
+      try {
+        replies = await this.respondOnce(
+          messages,
+          Math.max(0, remaining),
+          peers,
+          callbacks.onAbort,
+        );
+      } finally {
+        await callbacks?.onStreamEnd();
+      }
+      // ---------------------------------------------------------
+
+      for (const { message, toolsUsed } of replies) {
+        totalToolsUsed += toolsUsed;
+        Logger.debug(
+          `${this.id} replied toolsUsed=${toolsUsed} message=`,
+          JSON.stringify(message)
+        );
+
+        if (await callbacks.onRoute(message, filters)) {
+          callbacks.onAskedUser(message);
+        }
+      }
+
+      if (totalToolsUsed > 0) {
+        remaining = Math.max(0, remaining - totalToolsUsed);
+        if (remaining <= 0) break;
+      } else {
+        break;
+      }
+    }
+
+    return result;
   }
 
   /**
@@ -132,16 +180,12 @@ export class LlmAgent extends Agent {
    * - Let the model respond; if it asks for tools, execute (sh only) and loop.
    * - Stop after first assistant text with no more tool calls or when budget is hit.
    */
-  async respond(messages: ChatMessage[], maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply[]> {
+  async respondOnce(messages: ChatMessage[], maxTools: number, _peers: Agent[], abortCallback: () => boolean): Promise<AgentReply[]> {
     Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
     if (abortCallback?.()) {
       Logger.debug("Aborted turn");
       return [{ message: "Turn aborted.", toolsUsed: 0 }];
     }
-
-    // Initialize per-turn thresholds/counters in the guard rail.
-    this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
-
     //const reverse = [...messages].reverse();
     for (const message of messages) {
       await this.memory.addIfNotExists(message);

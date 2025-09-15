@@ -8,6 +8,7 @@ import type { Responder } from "./types";
 import type { ChatMessage } from "../types";
 import { NoiseFilters } from "./filters";
 import { ISandboxSession } from "../sandbox/types";
+import { R } from "../runtime/runtime";
 
 /** Side-effects required by routing (DMs, group fanout, files, user prompts). */
 interface RouteDeps {
@@ -49,7 +50,6 @@ export async function routeWithSideEffects(
     fromAgent: Responder,
     text: string,
     filters: NoiseFilters,
-    sandbox?: ISandboxSession,
 ): Promise<boolean> {
     const router = makeRouter({
         onAgent: async (_from, to, cleaned) => {
@@ -74,12 +74,12 @@ export async function routeWithSideEffects(
         onUser: async (from, _content) => {
             //Logger.info(C.blue(`[@@${from} → @@user]`));
             // In non-interactive mode, an @@user tag should terminate cleanly
-            if (!process.stdin.isTTY) {
+            if (!R.stdin.isTTY) {
                 Logger.info("Exiting...");
 
                 try { await finalizeRepository(); } catch (e) { Logger.error(e); }
-                process.stdout.write("\n");
-                process.exit(0);
+                R.stdout.write("\n");
+                R.exit(0);
             }
             deps.setLastUserDMTarget(fromAgent.id);
         },
@@ -89,15 +89,15 @@ export async function routeWithSideEffects(
             const bytes = Buffer.byteLength(body, "utf8");
 
             // Optional confirmation only when interactive
-            if (process.stdin.isTTY) {
+            if (R.stdin.isTTY) {
                 const confirm = `${body}\n***** Write to file? [y/N] ${rel}\n`;
-                const wasRaw = (process.stdin as any)?.isRaw;
+                const wasRaw = (R.stdin as any)?.isRaw;
                 try {
-                    if (wasRaw) (process.stdin as any).setRawMode(false);
+                    if (wasRaw) (R.stdin as any).setRawMode(false);
                     await ExecutionGate.gate(confirm);
                 } finally {
                     // restore only if we changed it
-                    if (wasRaw) (process.stdin as any).setRawMode(true);
+                    if (wasRaw) (R.stdin as any).setRawMode(true);
                 }
             }
 
@@ -108,18 +108,18 @@ export async function routeWithSideEffects(
         }
         ,
     },
-        deps.agents);
+    deps.agents);
 
     // Run the canonical router first.
     const outcome = await router(fromAgent.id, text || "");
 
     // Fallback: treat leading-line `@user` as `@@user` (case-insensitive).
     if (!outcome.yieldForUser && looksLikeUserTag(text)) {
-        if (!process.stdin.isTTY) {
+        if (!R.stdin.isTTY) {
             try { await finalizeRepository(); } catch { }
 
-            process.stdout.write("\n");
-            process.exit(0);
+            R.stdout.write("\n");
+            R.exit(0);
         }
         deps.setLastUserDMTarget(fromAgent.id);
         return true;

@@ -140,8 +140,8 @@ export class DynamicAdvancedMemory extends AgentMemory {
   }
 
   //must be idempotent
-  async load() {
-    const prior = await this.store.load(); // PersistedState | null
+  async load(id: string) {
+    const prior = await this.store.load(id); // PersistedState | null
     if (prior) {
       this.persona = prior?.persona as PersonaModel ?? {}; //FIXME - types
       this.ledger = prior?.ledger as PersonaEvent ?? {};
@@ -149,8 +149,8 @@ export class DynamicAdvancedMemory extends AgentMemory {
     }
   }
 
-  async save() {
-    await this.store.save({ version: this.persona.version, persona: this.persona, ledger: this.ledger, messagesBuffer: this.messagesBuffer });
+  async save(id: string) {
+    await this.store.save(id, { version: this.persona.version, persona: this.persona, ledger: this.ledger, messagesBuffer: this.messagesBuffer });
   }
 
   // ---------------------------------------------------------------------------

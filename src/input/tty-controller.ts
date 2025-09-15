@@ -22,6 +22,7 @@ import type { Writable } from "node:stream";
 import { R } from "../runtime/runtime";
 import { ESC_PRESSED_MSG, I_PRESSED_MSG } from "../constants";
 import { Logger } from "../logger";
+import { IScheduler } from "../scheduler/scheduler";
 
 /* ------------------------------ TTY primitives ----------------------------- */
 
@@ -136,7 +137,7 @@ export class TtyController {
   private onDataRef: (chunk: Buffer | string) => void;
 
   /* scheduler sink (tests introspect what was enqueued) */
-  private scheduler: SchedulerLike = {};
+  private scheduler: IScheduler = {};
 
   constructor(opts: TtyControllerOptions | TtyLike) {
     if (isTtyLike(opts)) {
@@ -182,7 +183,7 @@ export class TtyController {
   }
 
   /** hook scheduler sink (test double) */
-  setScheduler(s: SchedulerLike) {
+  setScheduler(s: IScheduler) {
     this.scheduler = s ?? {};
   }
 

@@ -20,8 +20,6 @@ import { C, Logger } from "./logger";
 import RandomScheduler from "./scheduler/random-scheduler";
 import type { IScheduler, SchedulerLike } from "./scheduler/scheduler";
 import { LlmAgent } from "./agents/llm-agent";
-import { MockModel } from "./agents/mock-model";
-import { makeStreamingOpenAiLmStudio } from "./drivers/streaming-openai-lmstudio";
 import { getRecipe } from "./recipes";
 import { sandboxMangers } from "./sandbox/session";
 import { TtyController } from "./input/tty-controller";
@@ -268,20 +266,13 @@ async function main() {
   const recipe = getRecipe(recipeName || null);
 
   // Build agents
-  const agentSpecs = await agentManager.parse(String(args["agents"] || "alice:lmstudio"), cfg.llm, recipe?.system ?? null);
+  const agentSpecs = await agentManager.parse(String(args["agents"] || "alice^lmstudio"), cfg.llm, recipe?.system ?? null);
   if (agentSpecs.length === 0) {
-    Logger.error('No agents. Use --agents "alice:lmstudio,bob:mock" or "alice:mock,bob:mock"');
+    Logger.error("No agents created.");
     R.exit(1);
   }
-  const agents = agentSpecs.map(a => ({
-    id: a.id,
-    respond: (prompt: string, budget: number, peers: string[], cb: () => boolean) =>
-      (a.model as { respond: typeof LlmAgent.prototype.respond }).respond(prompt, budget, peers, cb),
-    guardOnIdle: (state: unknown) => (a.model as { guardOnIdle?: (s: unknown) => unknown }).guardOnIdle?.(state) ?? null,
-    guardCheck: (route: unknown, content: string, peers: string[]) =>
-      (a.model as { guardCheck?: (r: unknown, c: string, p: string[]) => unknown }).guardCheck?.(route, content, peers) ?? null,
-  }));
 
+  const agents = agentSpecs.map(a => a.model);
   // kickoff FIRST so we can set promptEnabled properly
   const kickoff: string | undefined =
     typeof args["prompt"] === "string" ? String(args["prompt"])
@@ -320,18 +311,13 @@ async function main() {
     });
 
     R.ttyController = new TtyController({
-      beginFeedback: feedback.begin,
-      waitOverlayMessage: "Waiting for agent to finish",
-      waitSuppressOutput: true,
       stdin: R.stdin,
       stdout: R.stdout,
       prompt: String(args["banner"] ?? "You > "),
       interjectKey: String(args["interject-key"] ?? "i"),
       interjectBanner: String(args["banner"] ?? "You > "),
       // ESC path ends up here: stop → drain → review/apply
-      finalizer: async () => { await finalizeOnce(scheduler, workDir, reviewMode); },
       // Let the scheduler drive the idle loop
-      loopMode: "external",
     });
 
     // Wire scheduler into THIS instance (the one that owns stdin)

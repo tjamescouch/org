@@ -8,13 +8,14 @@ import { TagSplitter, TagPart } from "../utils/tag-splitter";
 import type { GuardDecision } from "../guardrails/guardrail";
 import type { ChatMessage } from "../types";
 import type {
-  Responder,
   SchedulerOptions,
   AskUserFn,
   ChatResponse,
 } from "./types";
 import { sleep } from "../utils/sleep";
 import { R } from "../runtime/runtime";
+import { Agent, AgentCallbacks } from "../agents/agent";
+import { probe } from "../utils/debugger";
 
 type Hooks = {
   onStreamStart: () => void;
@@ -56,7 +57,7 @@ export class RandomScheduler {
    */
   readUserLine?: () => Promise<string | undefined>;
 
-  private readonly agents: Responder[];
+  private readonly agents: Agent[];
   private readonly maxTools: number;
   private readonly shuffle: <T>(arr: T[]) => T[];
   private readonly filters = new NoiseFilters();
@@ -66,8 +67,8 @@ export class RandomScheduler {
   private paused = false;
   private draining = false;
 
-  private activeAgent: Responder | undefined;
-  private respondingAgent: Responder | undefined;
+  private activeAgent: Agent | undefined;
+  private respondingAgent: Agent | undefined;
 
   private keepAlive: NodeJS.Timeout | null = null;
 
@@ -130,6 +131,8 @@ export class RandomScheduler {
         await this.handleUserInterjection(this.interjection, { defaultTargetId: this.lastUserDMTarget ?? undefined, });
         this.interjection = undefined;
         this.rescheduleNow = true;
+
+        continue;
       }
 
       // Choose agents that currently have messages waiting.
@@ -156,83 +159,59 @@ export class RandomScheduler {
         let remaining = this.maxTools;
         let totalToolsUsed = 0;
         const messagesIn = [...messages];
+        this.activeAgent = a;
 
         try {
-          for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
-            const peers = this.agents.map((x) => x.id);
-            Logger.debug(`ask ${a.id} (hop ${hop}) with budget=${remaining}`);
-            this.activeAgent = a;
-
-            let replies: ChatResponse[] = [];
-            // ---- STREAM DEFERRAL (single seam to TTY controller) ----
-            this.onStreamStart?.();
-            try {
-              replies = await a.respond(
-                messagesIn,
-                Math.max(0, remaining),
-                peers,
-                () => this.draining
-              );
-            } finally {
-              if (this.onStreamEnd) {
-                await this.onStreamEnd();
+          const callbacks: AgentCallbacks = {
+            onAskedUser: async (message) => {
+              // interactive: open prompt as before
+              this.lastUserDMTarget = a.id;
+              const userText = (
+                (await this.askUser(a.id, message)) ?? ""
+              ).trim();
+              if (userText) {
+                await this.handleUserInterjection(userText, {
+                  defaultTargetId: a.id,
+                });
               }
-            }
-            // ---------------------------------------------------------
-
-            for (const { message, toolsUsed } of replies) {
-              totalToolsUsed += toolsUsed;
-              this.activeAgent = undefined;
-              Logger.debug(
-                `${a.id} replied toolsUsed=${toolsUsed} message=`,
-                JSON.stringify(message)
+              this.rescheduleNow = true;
+            },
+            onSetLastUserDMTarget: (id) => {
+              this.lastUserDMTarget = id;
+            },
+            onApplyGuardDecision: (agent: Agent, dec: GuardDecision) => this.applyGuardDecision(agent, dec),
+            onEnqueue: (toId, msg) => this.inbox.push(toId, msg),
+            onAbort: () => this.draining,
+            onStreamStart: this.onStreamStart,
+            onStreamEnd: this.onStreamEnd,
+            onSetRespondingAgent: (id) => {
+              this.respondingAgent = this.agents.find(
+                (x) => x.id === id
               );
-
-              const askedUser = await routeWithSideEffects(
+            },
+            onRoute: async (message: string, filters: NoiseFilters) => {
+              return await routeWithSideEffects(
                 {
                   agents: this.agents,
-                  enqueue: (toId, msg) => this.inbox.push(toId, msg),
-                  setRespondingAgent: (id) => {
-                    this.respondingAgent = this.agents.find(
-                      (x) => x.id === id
-                    );
-                  },
-                  applyGuard: (from, dec) => this.applyGuardDecision(from, dec),
-                  setLastUserDMTarget: (id) => {
-                    this.lastUserDMTarget = id;
-                  },
+                  enqueue: (toId, msg) => callbacks.onEnqueue(toId, msg),
+                  setRespondingAgent: callbacks.onSetRespondingAgent,
+                  applyGuard: (from, dec) => callbacks.onApplyGuardDecision(from, dec),
+                  setLastUserDMTarget: (id) => callbacks.onSetLastUserDMTarget(id),
                 },
-                a,
+                this,
                 message,
-                this.filters
+                filters
               );
-
-              didWork = true;
-
-              if (askedUser) {
-                // interactive: open prompt as before
-                this.lastUserDMTarget = a.id;
-                const userText = (
-                  (await this.askUser(a.id, message)) ?? ""
-                ).trim();
-                if (userText) {
-                  await this.handleUserInterjection(userText, {
-                    defaultTargetId: a.id,
-                  });
-                }
-                this.rescheduleNow = true;
-                //break;
-              }
-            }
-
-            //if (this.rescheduleNow) break;
-            if (totalToolsUsed > 0) {
-              remaining = Math.max(0, remaining - totalToolsUsed);
-              if (remaining <= 0) break;
-            } else {
-              break;
             }
           }
+
+          this.activeAgent.respond(
+            messagesIn,
+            Math.max(0, remaining),
+            this.filters,
+            this.agents.filter(agent => agent.id !== a.id),
+            callbacks
+          );
         } finally {
           if (totalToolsUsed > 0) { /*this.review.markDirty(agent.id);*/ }
         }
@@ -385,8 +364,11 @@ All agents are idle. Provide the next concrete instruction or question.`;
     const agentParts = parts.filter(
       (p) => p.kind === "agent"
     ) as Array<TagPart & { kind: "agent" }>;
+
+    Logger.info("agentParts", agentParts);
+
     if (agentParts.length > 0) {
-      const targets: Responder[] = [];
+      const targets: Agent[] = [];
       for (const ap of agentParts) {
         const ag = this.findAgentByIdExact(ap.tag);
         if (ag && !targets.some((t) => t.id === ag.id)) targets.push(ag);
@@ -422,7 +404,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
         this.respondingAgent = ag;
         this.lastUserDMTarget = ag.id;
         this.inbox.push(ag.id, msg);
-        Logger.info(`[user → @@${ag.id}] ${raw}`);
+        Logger.info(`[user → @@${ag.id} (def)] ${raw}`);
         this.rescheduleNow = true;
         return;
       }
@@ -448,7 +430,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
     this.mutedUntil.set(id, Date.now() + Math.max(250, ms));
   }
 
-  private async applyGuardDecision(agent: Responder, dec: GuardDecision) {
+  private async applyGuardDecision(agent: Agent, dec: GuardDecision) {
     if (dec.warnings && dec.warnings.length) {
       Logger.debug(`[guard][${agent.id}] ` + (dec as any).warnings.join("; "));
     }
@@ -472,7 +454,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
   }
 
   /** Exact id match, case-insensitive. */
-  private findAgentByIdExact(key: string): Responder | undefined {
+  private findAgentByIdExact(key: string): Agent | undefined {
     const t = key.toLowerCase();
     return this.agents.find((a) => a.id.toLowerCase() === t);
   }
