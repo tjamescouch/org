@@ -1,15 +1,21 @@
 import { ChatMessage } from "../drivers/types";
+import { NoiseFilters } from "../scheduler/filters";
 import { sleep } from "../utils/sleep";
-import { Agent, AgentReply } from "./agent";
+import { Agent, AgentCallbacks, AgentReply } from "./agent";
 
 export class MockModel extends Agent {
+
+  async load(): Promise<void> { }
+
+  async save(): Promise<void> { }
+
   private turn = 0;
 
   constructor(private readonly name: string) {
     super("mock");
   }
 
-  async respond(messages: ChatMessage[], maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply[]> { 
+  async respond(messages: ChatMessage[], maxTools: number, filters: NoiseFilters, peers: Agent[], callbacks: AgentCallbacks): Promise<AgentReply[]> {
     await sleep(1000);
     const writePem = messages.some(m => m.content.match(/\.pem/i));
     if (writePem) {

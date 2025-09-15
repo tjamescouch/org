@@ -1,5 +1,6 @@
 import { AdvancedGuardRail } from "../guardrails/advanced-guardrail";
-import { GuardRail, GuardRouteKind } from "../guardrails/guardrail";
+import { GuardDecision, GuardRail, GuardRouteKind } from "../guardrails/guardrail";
+import { NoiseFilters } from "../scheduler/filters";
 import { ChatMessage } from "../types";
 
 export interface AgentReply {
@@ -8,17 +9,30 @@ export interface AgentReply {
   toolsUsed: number; // number of tool calls consumed this hop
 }
 
+export type AgentCallbacks = {
+  onEnqueue: (to: string, msg: ChatMessage) => void;
+  onApplyGuardDecision: (agent: Agent, dec: GuardDecision) => Promise<void>;
+  onSetLastUserDMTarget: (id: string) => void;
+  onSetRespondingAgent: (id?: string) => void;
+  onAbort: () => boolean,
+  onStreamStart: () => void;
+  onStreamEnd: () => void | Promise<void>;
+  onAskedUser: (message: string) => Promise<void>;
+  onRoute: (message: string, filters: NoiseFilters) => Promise<boolean>;
+};
+
+
 export abstract class Agent {
   // Guard rails (loop / quality signals), per-agent, pluggable.
   protected readonly guard: GuardRail;
-  protected readonly id: string;
+  public readonly id: string;
 
   constructor(id: string, guard?: GuardRail) {
     this.id = id;
     this.guard = guard ?? new AdvancedGuardRail({ agentId: id });
   }
 
-  abstract respond(messages: ChatMessage[], maxTools: number, _peers: string[], abortCallback: () => boolean): Promise<AgentReply[]>;
+  abstract respond(messages: ChatMessage[], maxTools: number, filters: NoiseFilters, peers: Agent[], callbacks: AgentCallbacks): Promise<AgentReply[]>;
 
   formatMessage(message: ChatMessage): ChatMessage {
     return {

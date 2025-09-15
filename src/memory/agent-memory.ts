@@ -18,17 +18,15 @@ export abstract class AgentMemory {
     }
   }
 
-  abstract load(): Promise<void>;
-  abstract save(): Promise<void>;
+  abstract load(id: string): Promise<void>;
+  abstract save(id: string): Promise<void>;
 
   async add(msg: ChatMessage): Promise<void> {
-    this.load();
     this.messagesBuffer.push(msg);
     await this.onAfterAdd();
   }
 
   async addIfNotExists(msg: ChatMessage): Promise<void> {
-    this.load();
     const exists = this.messagesBuffer.some(m => (m.content===msg.content && m.role === msg.role));
     if(!exists) {
       this.messagesBuffer.push(msg);

@@ -1,40 +1,15 @@
 import type { ISandboxSession } from "../sandbox/types";
-import type { ChatMessage } from "../types";
-import type { GuardDecision, GuardRouteKind } from "../guardrails/guardrail";
+import { Agent } from "../agents/agent";
 
 
 export type ChatResponse = { message: string; toolsUsed: number };
 
-/**
- * Minimal surface the scheduler needs from an agent implementation.
- * Keep this stable; other parts of the system (tests, UI) depend on it.
- */
-export interface Responder {
-  id: string;
-  save: () => Promise<void>;
-  respond(
-    messages: ChatMessage[],
-    maxTools: number,
-    peers: string[],
-    abortCallback: () => boolean,
-  ): Promise<ChatResponse[]>;
-  /**
-   * Optional guard hook invoked by the scheduler when the system is idle.
-   * Agents may request a user prompt or suggest a nudge.
-   */
-  guardOnIdle?: (state: { idleTicks: number; peers: string[]; queuesEmpty: boolean }) => GuardDecision | null;
-  /**
-   * Optional per-message guard hook used during @@group delivery.
-   * Can request to suppress broadcast, add a nudge, ask the user, or mute temporarily.
-   */
-  guardCheck?: (route: GuardRouteKind, content: string, peers: string[]) => GuardDecision | null;
-}
 
 export type AskUserFn = (fromAgent: string, content: string) => Promise<void>;
 
 
 export type SchedulerOptions = {
-  agents: Responder[];
+  agents: Agent[];
   maxTools: number;
   projectDir: string;
   reviewMode?: "ask" | "never" | "auto"
