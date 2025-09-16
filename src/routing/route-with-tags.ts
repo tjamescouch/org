@@ -47,9 +47,9 @@ export function routeWithTags(raw: string, agentTokens: string[]): RouteOutcome 
     }
   }
 
-  // If no delivery was produced (e.g. empty string), treat as group message
+  // Default response if the model produces nothing
   if (deliveries.length === 0) {
-    deliveries.push({ kind: "group", content: "" });
+    deliveries.push({ kind: "user", content: "@@user" });
     sawGroup = true;
   }
 

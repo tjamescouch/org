@@ -24,20 +24,6 @@ interface RouteDeps {
     setLastUserDMTarget: (id: string) => void;
 }
 
-/**
- * Heuristic: detect a "talk to the human" request even if a model emitted `@user`
- * (single '@') or mixed case. We only accept it when it appears at the start
- * of a line (ignoring leading whitespace and an optional '>' quote marker),
- * to avoid false positives in email addresses etc.
- */
-function looksLikeUserTag(text: string): boolean {
-    if (/@{2}user\b/i.test(text)) return true; // canonical @@user anywhere
-    const lines = String(text ?? "").split(/\r?\n/);
-    for (const line of lines) {
-        if (/^\s*>?\s*@user\b/i.test(line)) return true;
-    }
-    return false;
-}
 
 const finalizeRepository = async (): Promise<void> => { }
 
@@ -112,18 +98,6 @@ export async function routeWithSideEffects(
 
     // Run the canonical router first.
     const outcome = await router(fromAgent.id, text || "");
-
-    // Fallback: treat leading-line `@user` as `@@user` (case-insensitive).
-    if (!outcome.yieldForUser && looksLikeUserTag(text)) {
-        if (!R.stdin.isTTY) {
-            try { await finalizeRepository(); } catch { }
-
-            R.stdout.write("\n");
-            R.exit(0);
-        }
-        deps.setLastUserDMTarget(fromAgent.id);
-        return true;
-    }
 
     return outcome.yieldForUser;
 }

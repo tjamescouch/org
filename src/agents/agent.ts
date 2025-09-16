@@ -10,15 +10,11 @@ export interface AgentReply {
 }
 
 export type AgentCallbacks = {
-  onEnqueue: (to: string, msg: ChatMessage) => void;
-  onApplyGuardDecision: (agent: Agent, dec: GuardDecision) => Promise<void>;
-  onSetLastUserDMTarget: (id: string) => void;
-  onSetRespondingAgent: (id?: string) => void;
-  onAbort: () => boolean,
+  shouldAbort: () => boolean,
   onStreamStart: () => void;
   onStreamEnd: () => void | Promise<void>;
-  onAskedUser: (message: string) => Promise<void>;
   onRoute: (message: string, filters: NoiseFilters) => Promise<boolean>;
+  onRouteCompleted: (message: string, numToolsUsed: number, yieldToUser: boolean) => Promise<boolean>;
 };
 
 

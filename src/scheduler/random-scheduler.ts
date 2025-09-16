@@ -10,12 +10,9 @@ import type { ChatMessage } from "../types";
 import type {
   SchedulerOptions,
   AskUserFn,
-  ChatResponse,
 } from "./types";
 import { sleep } from "../utils/sleep";
-import { R } from "../runtime/runtime";
 import { Agent, AgentCallbacks } from "../agents/agent";
-import { probe } from "../utils/debugger";
 
 type Hooks = {
   onStreamStart: () => void;
@@ -141,6 +138,7 @@ export class RandomScheduler {
 
       for (const agent of order) {
         if (this.rescheduleNow) break;
+
         if (this.isMuted(agent.id)) {
           Logger.debug(`muted: ${agent.id}`);
           continue;
@@ -163,8 +161,17 @@ export class RandomScheduler {
 
         try {
           const callbacks: AgentCallbacks = {
-            onAskedUser: async (message) => {
-              // interactive: open prompt as before
+            onRouteCompleted: async (message, numToolsUsed, askedUser) => {
+              if (numToolsUsed > 0) {
+                return false; //If the agent just did a tool call, let it continue
+              }
+
+              const shouldUserRespond = askedUser || this.agents.length === 1 || !this.inbox.hasAnyWork();
+
+              if (!shouldUserRespond) { 
+                return false; 
+              }
+
               this.lastUserDMTarget = a.id;
               const userText = (
                 (await this.askUser(a.id, message)) ?? ""
@@ -175,28 +182,24 @@ export class RandomScheduler {
                 });
               }
               this.rescheduleNow = true;
+
+              return true;
             },
-            onSetLastUserDMTarget: (id) => {
-              this.lastUserDMTarget = id;
-            },
-            onApplyGuardDecision: (agent: Agent, dec: GuardDecision) => this.applyGuardDecision(agent, dec),
-            onEnqueue: (toId, msg) => this.inbox.push(toId, msg),
-            onAbort: () => this.draining,
+            shouldAbort: () => this.draining,
             onStreamStart: this.onStreamStart,
             onStreamEnd: this.onStreamEnd,
-            onSetRespondingAgent: (id) => {
-              this.respondingAgent = this.agents.find(
-                (x) => x.id === id
-              );
-            },
             onRoute: async (message: string, filters: NoiseFilters) => {
               return await routeWithSideEffects(
                 {
                   agents: this.agents,
-                  enqueue: (toId, msg) => callbacks.onEnqueue(toId, msg),
-                  setRespondingAgent: callbacks.onSetRespondingAgent,
-                  applyGuard: (from, dec) => callbacks.onApplyGuardDecision(from, dec),
-                  setLastUserDMTarget: (id) => callbacks.onSetLastUserDMTarget(id),
+                  enqueue: (toId, msg) => this.inbox.push(toId, msg),
+                  setRespondingAgent: (id) => { 
+                    this.respondingAgent = this.agents.find((x) => x.id === id); 
+                  },
+                  applyGuard: (from, dec) => this.applyGuardDecision(agent, dec),
+                  setLastUserDMTarget: (id) => { 
+                    this.lastUserDMTarget = id; 
+                  },
                 },
                 this,
                 message,
@@ -205,13 +208,18 @@ export class RandomScheduler {
             }
           }
 
-          this.activeAgent.respond(
+          const result = await this.activeAgent.respond(
             messagesIn,
             Math.max(0, remaining),
             this.filters,
             this.agents.filter(agent => agent.id !== a.id),
             callbacks
           );
+
+          if (result.length > 0) {
+            didWork = true;
+          }
+
         } finally {
           if (totalToolsUsed > 0) { /*this.review.markDirty(agent.id);*/ }
         }
@@ -360,7 +368,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
       allowFileShorthand: false,
     });
 
-    // Explicit @@agent tags
+    // Explicit @@agent tag
     const agentParts = parts.filter(
       (p) => p.kind === "agent"
     ) as Array<TagPart & { kind: "agent" }>;
