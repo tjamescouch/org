@@ -18,6 +18,7 @@ import { NoiseFilters } from "../scheduler/filters";
 function buildSystemPrompt(id: string): string {
   return [
     `You are agent "${id}". Work autonomously in the caller's current directory inside a Debian VM.`,
+    "- Do what the user asks.",
     "- DO NOT LIE",
     "- Do not pretend or hallucinate tool call results. Do not misrepresent the facts.",
     "- Do the reasonable thing. Interpret things like a normal human would.",
@@ -126,6 +127,7 @@ export class LlmAgent extends Agent {
   async respond(messages: ChatMessage[], maxTools: number, filters: NoiseFilters, peers: Agent[], callbacks: AgentCallbacks): Promise<AgentReply[]> {
 
     const result: AgentReply[] = [];
+    let newMessages: ChatMessage[] = [...messages];
 
     let remaining = maxTools;
     let hop = 0;
@@ -135,21 +137,21 @@ export class LlmAgent extends Agent {
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
 
     Logger.debug(`ask ${this.id} (hop ${hop}) with budget=${remaining}`);
+
     for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
       let replies: ChatResponse[] = [];
       // ---- STREAM DEFERRAL (single seam to TTY controller) ----
       callbacks.onStreamStart?.();
       try {
         replies = await this.respondOnce(
-          messages,
+          newMessages,
           Math.max(0, remaining),
           peers,
-          callbacks.onAbort,
+          callbacks.shouldAbort,
         );
       } finally {
         await callbacks?.onStreamEnd();
       }
-      // ---------------------------------------------------------
 
       for (const { message, toolsUsed } of replies) {
         totalToolsUsed += toolsUsed;
@@ -158,8 +160,9 @@ export class LlmAgent extends Agent {
           JSON.stringify(message)
         );
 
-        if (await callbacks.onRoute(message, filters)) {
-          callbacks.onAskedUser(message);
+        const yieldToUser = await callbacks.onRoute(message, filters);
+        if(await callbacks.onRouteCompleted(message, toolsUsed, yieldToUser)) {
+          break;
         }
       }
 
@@ -169,6 +172,8 @@ export class LlmAgent extends Agent {
       } else {
         break;
       }
+
+      newMessages = [];
     }
 
     return result;
@@ -188,7 +193,8 @@ export class LlmAgent extends Agent {
     }
     //const reverse = [...messages].reverse();
     for (const message of messages) {
-      await this.memory.addIfNotExists(message);
+      //await this.memory.addIfNotExists(message);
+      await this.memory.add(message);
     }
 
     let hop = 0;
