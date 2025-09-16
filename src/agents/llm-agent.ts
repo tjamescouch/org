@@ -18,6 +18,7 @@ import { NoiseFilters } from "../scheduler/filters";
 function buildSystemPrompt(id: string): string {
   return [
     `You are agent "${id}". Work autonomously in the caller's current directory inside a Debian VM.`,
+    "- Do what the user asks.",
     "- DO NOT LIE",
     "- Do not pretend or hallucinate tool call results. Do not misrepresent the facts.",
     "- Do the reasonable thing. Interpret things like a normal human would.",
