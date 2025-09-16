@@ -168,13 +168,13 @@ export class RandomScheduler {
 
               const shouldUserRespond = askedUser || this.agents.length === 1 || !this.inbox.hasAnyWork();
 
-              if (!shouldUserRespond) { 
-                return false; 
+              if (!shouldUserRespond) {
+                return false;
               }
 
               this.lastUserDMTarget = a.id;
               const userText = (
-                (await this.askUser(a.id, message)) ?? ""
+                (await this.getUserText(a.id, message)) ?? ""
               ).trim();
               if (userText) {
                 await this.handleUserInterjection(userText, {
@@ -193,12 +193,12 @@ export class RandomScheduler {
                 {
                   agents: this.agents,
                   enqueue: (toId, msg) => this.inbox.push(toId, msg),
-                  setRespondingAgent: (id) => { 
-                    this.respondingAgent = this.agents.find((x) => x.id === id); 
+                  setRespondingAgent: (id) => {
+                    this.respondingAgent = this.agents.find((x) => x.id === id);
                   },
                   applyGuard: (from, dec) => this.applyGuardDecision(agent, dec),
-                  setLastUserDMTarget: (id) => { 
-                    this.lastUserDMTarget = id; 
+                  setLastUserDMTarget: (id) => {
+                    this.lastUserDMTarget = id;
                   },
                 },
                 this,
@@ -373,7 +373,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
       (p) => p.kind === "agent"
     ) as Array<TagPart & { kind: "agent" }>;
 
-    Logger.info("agentParts", agentParts);
+    Logger.debug("agentParts", agentParts);
 
     if (agentParts.length > 0) {
       const targets: Agent[] = [];
@@ -429,6 +429,19 @@ All agents are idle. Provide the next concrete instruction or question.`;
 
   // ------------------------------ Internals ------------------------------
 
+  // Inside RandomScheduler
+  private async getUserText(label: string, prompt: string): Promise<string> {
+    // If an external bridge exists, let the UI own the prompt & echo.
+    if (typeof this.readUserLine === "function") {
+      // Optional: emit the label/prompt to logs/UI; do NOT read here.
+      Logger.info(`[${label}] ${prompt}`);
+      return ((await this.readUserLine()) ?? "").trim();
+    }
+    // Fallback: legacy path
+    return ((await this.askUser(label, prompt)) ?? "").trim();
+  }
+
+
   private isMuted(id: string): boolean {
     const until = this.mutedUntil.get(id) ?? 0;
     return Date.now() < until;
@@ -454,7 +467,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
     }
     if (dec.askUser && this.promptEnabled) {
       this.lastUserDMTarget = agent.id; // prefer the nudging agent
-      const userText = ((await this.askUser(agent.id, dec.askUser)) ?? "").trim();
+      const userText = ((await this.getUserText(agent.id, dec.askUser)) ?? "").trim();
       if (userText) {
         await this.handleUserInterjection(userText, { defaultTargetId: agent.id });
       }
