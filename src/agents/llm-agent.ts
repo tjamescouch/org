@@ -10,23 +10,19 @@ import { ToolExecutor } from "../executors/tool-executor";
 import { StandardToolExecutor } from "../executors/standard-tool-executor";
 import { createPDAStreamFilterHeuristic } from "../utils/filter-passes/llm-pda-stream-heuristic";
 import { SH_TOOL_DEF } from "../tools/sh";
-import { DynamicAdvancedMemory } from "../memory/dynamic-advanced-memory";
 import { ChatResponse } from "../scheduler/types";
-import { routeWithSideEffects } from "../scheduler/router";
 import { NoiseFilters } from "../scheduler/filters";
+import { NormativeMemory } from "../memory/normative-memory";
 
-function buildSystemPrompt(id: string): string {
-  return [
-    `You are agent "${id}". Work autonomously in the caller's current directory inside a Debian VM.`,
-    "- Do what the user asks.",
+function buildSystemPrompt(id: string): [string, string] {
+  return [[
+    `You are agent "${id}".`,
     "- DO NOT LIE",
     "- Do not pretend or hallucinate tool call results. Do not misrepresent the facts.",
-    "- Do the reasonable thing. Interpret things like a normal human would.",
     "",
     "TOOLS",
     "- sh(cmd): run a POSIX command. Args: {cmd:string}. Returns {ok, stdout, stderr, exit_code, cmd}.",
     "  • Use for builds/tests/git/etc. Check exit_code and stderr. Never invent outputs.",
-    //    "- vimdiff(left,right[,cwd]): open an interactive vimdiff for human review. Returns {exitCode} when the user quits.",
     "",
     "FILES",
     "- Prefer tag-based writes for full files (no code fences):",
@@ -43,14 +39,26 @@ function buildSystemPrompt(id: string): string {
     "- **Only insert a tag when a reply from that participant is required.** If I can keep working on the task without waiting for input, I should proceed silently.",
     "",
     "POLICY",
-    "- Do the work, be concise. Validate results by running commands/tests.",
-    "- Avoid loops: do not repeat the same failing action; change approach or ask @@user.",
-    "- Use git locally and commit often; NEVER push.",
+    "- Use git locally and commit when asked; NEVER push.",
     "- Do not call tools with empty/malformed args.",
     "",
     "ENVIRONMENT",
     "- Commands are run in an ephemeral docker container within the VM, and then synced with the VM after a batch of commands.",
     "- Standard Unix tools available: git, bun, gcc/g++, python3, curl, grep, diff, ls, cat, pwd, etc.",
+    "",
+    "AVOID DUPLICATION",
+    "- Do not repeat the same output more than once unless the user explicitly asks for a repetition.  If a loop is detected (e.g., same block printed >1×), abort and ask for clarification.",
+    "COMPLETION",
+    '- Upon completion of your tasks PLEASE TAG the user (@@user). If you do not the conversation will simply continue.',
+  ].join("\n"),
+  [
+    `- ${id}, You Work autonomously in the caller's current directory inside a Debian VM.`,
+    "- Do the reasonable thing. Interpret things like a normal human would.",
+    "- Do what the user asks.",
+    "",
+    "POLICY",
+    "- Do the work, be concise. Validate results by running commands/tests.",
+    "- Avoid loops: do not repeat the same failing action; change approach or ask @@user.",
     "",
     "OUTPUT STYLE",
     '- Provide a single, concise response to each user query. If multiple steps are required, enumerate them in one message.',
@@ -58,11 +66,9 @@ function buildSystemPrompt(id: string): string {
     "- Do not prefix lines with other agents' names.",
     "- Keep chat replies brief unless you are writing files.",
     "- Only tag a participant when a response from them is needed; otherwise continue autonomously until completion.",
-    "AVOID DUPLICATION",
-    "- Do not repeat the same output more than once unless the user explicitly asks for a repetition.  If a loop is detected (e.g., same block printed >1×), abort and ask for clarification.",
-    "COMPLETION",
-    '- Upon completion of your tasks PLEASE TAG the user (@@user). If you do not the conversation will simply continue.',
-  ].join("\n");
+
+  ].join("\n")
+  ]
 }
 
 /**
@@ -79,7 +85,8 @@ export class LlmAgent extends Agent {
 
   // Memory replaces the old raw history array.
   private readonly memory: AgentMemory;
-  private readonly systemPrompt: string;
+  private readonly baseSystemPrompt: string;
+  private readonly defaultSystemPrompt: string;
 
   // New: polymorphic tool executor (pure refactor)
   private readonly toolExecutor: ToolExecutor;
@@ -92,13 +99,14 @@ export class LlmAgent extends Agent {
     this.model = model;
 
     // Compose system prompt: a short agent header + the shared default.
-    this.systemPrompt = buildSystemPrompt(this.id);
+    [this.baseSystemPrompt, this.defaultSystemPrompt] = buildSystemPrompt(this.id);
 
     // Attach a hysteresis-based memory that summarizes overflow.
-    this.memory = new DynamicAdvancedMemory({
+    this.memory = new NormativeMemory({
       driver: this.driver,
       model: this.model,
-      systemPrompt: this.systemPrompt,
+      baseSystemPrompt: this.baseSystemPrompt,
+      defaultSystemPrompt: this.defaultSystemPrompt,
 
       contextTokens: 30_000,          // model window
       reserveHeaderTokens: 1200,      // header/tool schema reserve
@@ -161,7 +169,7 @@ export class LlmAgent extends Agent {
         );
 
         const yieldToUser = await callbacks.onRoute(message, filters);
-        if(await callbacks.onRouteCompleted(message, toolsUsed, yieldToUser)) {
+        if (await callbacks.onRouteCompleted(message, toolsUsed, yieldToUser)) {
           break;
         }
       }

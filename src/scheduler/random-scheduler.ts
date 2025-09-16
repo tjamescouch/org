@@ -373,7 +373,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
       (p) => p.kind === "agent"
     ) as Array<TagPart & { kind: "agent" }>;
 
-    Logger.info("agentParts", agentParts);
+    Logger.debug("agentParts", agentParts);
 
     if (agentParts.length > 0) {
       const targets: Agent[] = [];
