@@ -369,12 +369,12 @@ export class DynamicAdvancedMemory extends AgentMemory {
       const norm = (arr: any): PersonaFacet[] =>
         Array.isArray(arr)
           ? arr
-              .slice(0, 12)
-              .map((x: any) => ({
-                text: String(x?.text ?? "").trim(),
-                weight: this.clamp01(Number(x?.weight ?? 0)),
-              }))
-              .filter((x: PersonaFacet) => x.text.length > 0 && x.text.length <= 80)
+            .slice(0, 12)
+            .map((x: any) => ({
+              text: String(x?.text ?? "").trim(),
+              weight: this.clamp01(Number(x?.weight ?? 0)),
+            }))
+            .filter((x: PersonaFacet) => x.text.length > 0 && x.text.length <= 80)
           : [];
 
       const upd: PersonaUpdate = {
@@ -399,7 +399,7 @@ export class DynamicAdvancedMemory extends AgentMemory {
   private mergePersona(update: PersonaUpdate): boolean {
     // Decay
     const decay = 1 - this.decayPerPass;
-    const aged = (xs: PersonaFacet[]) => xs.map((f) => ({ ...f, weight: f.weight * decay }));
+    const aged = (xs: PersonaFacet[]) => (xs ?? []).map((f) => ({ ...f, weight: f.weight * decay }));
 
     const now = this.turnCounter;
     this.persona.roles = aged(this.persona.roles);
@@ -434,7 +434,7 @@ export class DynamicAdvancedMemory extends AgentMemory {
       style: 6,
       heuristics: 8,
       antigoals: 6,
-      goals: 3,
+      goals: 4,
       languages: 2,
     };
 
