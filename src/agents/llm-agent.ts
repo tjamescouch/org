@@ -133,7 +133,6 @@ export class LlmAgent extends Agent {
   }
 
   async respond(messages: ChatMessage[], maxTools: number, filters: NoiseFilters, peers: Agent[], callbacks: AgentCallbacks): Promise<AgentReply[]> {
-
     const result: AgentReply[] = [];
     let newMessages: ChatMessage[] = [...messages];
 
@@ -183,6 +182,8 @@ export class LlmAgent extends Agent {
 
       newMessages = [];
     }
+
+    this.save();
 
     return result;
   }

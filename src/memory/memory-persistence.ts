@@ -45,7 +45,7 @@ export class MemoryPersisitence<T = unknown> implements IMemoryPersisitence<T> {
     /** Fallback value when a file doesn't exist or is empty (defaults to null). */
     defaultState?: T | null;
   }) {
-    const base = opts?.dirPath ?? opts?.filePath ?? path.join(R.cwd(), ".orgmemories");
+    const base = path.join(R.cwd(), ".orgmemories");
     this.dirPath = path.resolve(base);
     this.pretty = opts?.pretty ?? false;
     this.atomic = opts?.atomic ?? true;
