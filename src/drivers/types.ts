@@ -13,6 +13,7 @@ export interface ChatToolCall {
   id: string;
   type: "function";
   function: { name: string; arguments: string };
+  raw?: string;
 }
 
 export interface ChatOutput {

@@ -7,6 +7,7 @@ import { LlmAgent } from "./llm-agent";
 import { MockModel } from "./mock-model";
 import { R } from "../runtime/runtime";
 import { Logger } from "../logger";
+import { makeStreamingGoogleLmStudio } from "../drivers/streaming-google-lmstudio";
 
 type ModelKind = "mock" | "lmstudio";
 type AgentSpec = { id: string; kind: ModelKind; model: Agent };
@@ -34,7 +35,7 @@ const openaiModelCreationHandler = async (agentId: string, model: string, extra:
 const gemmaModelCreationHandler = async (agentId: string, model: string, extra: string, defaults: LlmDefaults): Promise<AgentSpec> => {
     Logger.debug("gemma", {agentId, model, extra, defaults});
 
-    const driver = makeStreamingOpenAiLmStudio({ //Same for now
+    const driver = makeStreamingGoogleLmStudio({ //Same for now
         baseUrl: defaults.baseUrl,
         model: defaults.model,
         //apiKey: defaults.apiKey

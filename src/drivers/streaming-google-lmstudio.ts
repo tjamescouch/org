@@ -1,0 +1,295 @@
+// streaming-openai-lmstudio.ts
+import { Logger } from "../logger";
+import { rateLimiter } from "../utils/rate-limiter";
+import { timedFetch } from "../utils/timed-fetch";
+import { GemmaToolcallParser } from "./gemma-toolcall-parser";
+
+import type { ChatDriver, ChatMessage, ChatOutput, ChatToolCall } from "./types";
+
+interface GoogleDriverConfig {
+  baseUrl: string;    // e.g. http://127.0.0.1:11434
+  model: string;
+  timeoutMs?: number; // default 2h (aligns with non-streaming driver)
+}
+
+/** Give the event loop a chance to run key handlers / UI. */
+function yieldToLoop(): Promise<void> {
+  return new Promise<void>((resolve) =>
+    typeof (globalThis as any).setImmediate === "function"
+      ? (globalThis as any).setImmediate(resolve)
+      : setTimeout(resolve, 0)
+  );
+}
+
+/** Cooperative scheduler: yield after ~1 KiB processed or ~8ms elapsed. */
+class YieldBudget {
+  private bytesSince = 0;
+  private last = Date.now();
+  constructor(
+    private readonly byteBudget = 1024,
+    private readonly msBudget = 8
+  ) { }
+  async maybe(extraBytes = 0): Promise<void> {
+    this.bytesSince += extraBytes;
+    const now = Date.now();
+    if (this.bytesSince >= this.byteBudget || (now - this.last) >= this.msBudget) {
+      this.bytesSince = 0;
+      this.last = now;
+      await yieldToLoop();
+    }
+  }
+}
+
+/**
+ * Streaming OpenAI-compatible chat driver for LM Studio / OpenAI-style endpoints.
+ * Streams tokens via optional callbacks while returning the final ChatOutput.
+ *
+ * Extra opts supported (all optional, ignored if unused):
+ *   - model?: string
+ *   - tools?: any[]
+ *   - onToken?(t: string): void
+ *   - onReasoningToken?(t: string): void
+ *   - onToolCallDelta?(delta: ChatToolCall): void
+ *   - signal?: AbortSignal
+ */
+export function makeStreamingGoogleLmStudio(cfg: GoogleDriverConfig): ChatDriver {
+  const base = cfg.baseUrl.replace(/\/+$/, "");
+  const endpoint = `${base}/v1/chat/completions`;
+  const defaultTimeout = cfg.timeoutMs ?? 2 * 60 * 60 * 1000;
+
+  async function chat(messages: ChatMessage[], opts?: any): Promise<ChatOutput> {
+    const parser = new GemmaToolcallParser();
+
+    await rateLimiter.limit("llm-ask", 1);
+    Logger.debug("streaming messages out", messages);
+
+    const controller = new AbortController();
+    const userSignal: AbortSignal | undefined = opts?.signal;
+    const linkAbort = () => controller.abort();
+    if (userSignal) {
+      if (userSignal.aborted) controller.abort();
+      else userSignal.addEventListener("abort", linkAbort, { once: true });
+    }
+    const timer = setTimeout(() => controller.abort(), defaultTimeout);
+
+    const model = opts?.model ?? cfg.model;
+    const tools = Array.isArray(opts?.tools) && opts.tools.length ? opts.tools : undefined;
+
+    const onToken: ((t: string) => void) | undefined = opts?.onToken;
+    const onReasoningToken: ((t: string) => void) | undefined = opts?.onReasoningToken;
+    const onToolCallDelta: ((t: ChatToolCall) => void) | undefined = opts?.onToolCallDelta;
+
+    const t0 = Date.now();
+    const approxChars =
+      Array.isArray(messages)
+        ? messages.reduce((s, m) => s + String((m as any).content ?? "").length, 0)
+        : 0;
+
+    Logger.debug("POST /chat (stream)", {
+      model,
+      messages: Array.isArray(messages) ? messages.length : 0,
+      approxChars,
+      tools: tools ? tools.length : 0,
+      timeoutMs: defaultTimeout
+    });
+
+    // Base payload for google-compatible streaming
+    const payload: any = {
+      model,
+      messages,
+      stream: true
+    };
+    if (tools) {
+      payload.tools = tools;
+      payload.tool_choice = "auto";
+    }
+
+    try {
+      const res = await timedFetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+        where: "driver:openai-lmstudio:stream",
+        timeoutMs: 2 * 60 * 60 * 1000
+      });
+
+      Logger.debug("resp(stream)", { status: res.status, ms: Date.now() - t0 });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`LM Studio / OpenAI chat (stream) failed (${res.status}): ${text}`);
+      }
+
+      // Some servers may fall back to non-streaming JSON despite stream:true
+      const ct = (res.headers.get("content-type") || "").toLowerCase();
+      if (!ct.includes("text/event-stream")) {
+        const data = await res.json().catch(() => ({}));
+        const choice = data?.choices?.[0];
+        const msg = choice?.message || {};
+        const content = typeof msg?.content === "string" ? msg.content : "";
+        const nativeToolCalls: ChatToolCall[] = Array.isArray(msg?.tool_calls) ? msg.tool_calls : [];
+        const structuredToolCalls: ChatToolCall[] = parser.parseAll(content);
+        if (content && onToken) onToken(content);
+        return { text: content, reasoning: msg?.reasoning || undefined, toolCalls };
+      }
+
+      // SSE streaming path
+      const decoder = new TextDecoder("utf-8");
+      const yb = new YieldBudget(1024, 8); // 1 KiB or 8ms
+      let buf = "";
+      let fullText = "";
+      let fullReasoning = "";
+
+      // Accumulate tool call deltas per index (OpenAI streaming format)
+      const toolByIndex = new Map<number, ChatToolCall>();
+
+      // Process one SSE event (cooperative: yields by size/time)
+      const pumpEvent = async (rawEvent: string) => {
+        // Lines typically "data: {...}" or "data: [DONE]"
+        const dataLines = rawEvent
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => l.startsWith("data:"))
+          .map((l) => l.replace(/^data:\s?/, ""));
+
+        if (!dataLines.length) return;
+        const joined = dataLines.join("\n").trim();
+        if (!joined || joined === "[DONE]") return;
+
+        let payload: any;
+        try {
+          payload = JSON.parse(joined);
+        } catch {
+          return; // ignore malformed
+        }
+
+        const delta = payload?.choices?.[0]?.delta;
+        if (!delta) return;
+
+        // Content tokens (may arrive as large CoT chunks; stream cooperatively)
+        if (typeof delta.content === "string" && delta.content.length) {
+          const clean = delta.content;
+          fullText += clean;
+          if (onToken) {
+            // break very large slices so UI can breathe
+            let s = delta.content;
+            while (s.length) {
+              const piece = s.slice(0, 512);
+              s = s.slice(512);
+              try { onToken(piece); } catch { /* ignore sink errors */ }
+              await yb.maybe(piece.length);
+            }
+          } else {
+            await yb.maybe(delta.content.length);
+          }
+        }
+
+        // Reasoning tokens (same cooperative strategy)
+        if (typeof delta.reasoning === "string" && delta.reasoning.length) {
+          fullReasoning += delta.reasoning;
+          if (onReasoningToken) {
+            let s = delta.reasoning;
+            while (s.length) {
+              const piece = s.slice(0, 512);
+              s = s.slice(512);
+              try { onReasoningToken(piece); } catch { /* ignore */ }
+              await yb.maybe(piece.length);
+            }
+          } else {
+            await yb.maybe(delta.reasoning.length);
+          }
+        }
+
+        // Tool call streaming (OpenAI delta for:q
+        // mat)
+        if (Array.isArray(delta.tool_calls)) {
+          for (const item of delta.tool_calls) {
+            const idx: number = typeof item?.index === "number" ? item.index : 0;
+            const prev = toolByIndex.get(idx) ?? {
+              id: "",
+              type: "function",
+              function: { name: "", arguments: "" }
+            };
+
+            const d = item?.delta ?? {};
+            if (typeof d.id === "string" && d.id) prev.id = d.id;
+            if (typeof d.type === "string" && d.type) (prev as any).type = d.type;
+
+            const f = item?.function ?? {};
+            if (typeof f.name === "string" && f.name) prev.function.name += f.name;
+            if (typeof f.arguments === "string" && f.arguments) prev.function.arguments += f.arguments;
+
+            toolByIndex.set(idx, prev);
+            if (onToolCallDelta) {
+              try { onToolCallDelta(prev); } catch { /* ignore */ }
+            }
+            await yb.maybe(64); // small budget for tool deltas
+          }
+        }
+      };
+
+      // Stream reader: WHATWG or Node stream
+      const body: any = res.body;
+
+      if (body && typeof body.getReader === "function") {
+        // WHATWG ReadableStream
+        const reader = body.getReader();
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          await yb.maybe((value as Uint8Array)?.byteLength ?? 0);
+
+          // Process complete events separated by \n\n
+          let sepIdx: number;
+          while ((sepIdx = buf.indexOf("\n\n")) !== -1) {
+            const rawEvent = buf.slice(0, sepIdx).trim();
+            buf = buf.slice(sepIdx + 2);
+            if (rawEvent) await pumpEvent(rawEvent);
+          }
+        }
+        // Drain remainder (if any)
+        if (buf.trim()) await pumpEvent(buf.trim());
+      } else if (body && typeof body[Symbol.asyncIterator] === "function") {
+        // Node.js Readable (for node-fetch/undici)
+        for await (const chunk of body as AsyncIterable<Uint8Array>) {
+          const bytes = chunk as Uint8Array;
+          buf += decoder.decode(bytes, { stream: true });
+          await yb.maybe(bytes.byteLength);
+
+          let sepIdx: number;
+          while ((sepIdx = buf.indexOf("\n\n")) !== -1) {
+            const rawEvent = buf.slice(0, sepIdx).trim();
+            buf = buf.slice(sepIdx + 2);
+            if (rawEvent) await pumpEvent(rawEvent);
+          }
+        }
+        if (buf.trim()) await pumpEvent(buf.trim());
+      } else {
+        // Last-resort fallback: try to read as text (non-streaming)
+        const txt = await res.text();
+        buf += txt;
+        const parts = buf.split("\n\n").map((s) => s.trim());
+        for (const part of parts) {
+          if (part) await pumpEvent(part);
+        }
+      }
+
+      Logger.debug("toolByIndex.entries()", toolByIndex.entries());
+      const toolCalls: ChatToolCall[] = Array.from(toolByIndex.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([, v]) => v);
+
+      return { text: fullText, reasoning: fullReasoning || undefined, toolCalls };
+    } catch (e: any) {
+      if (e?.name === "AbortError") Logger.debug("timeout(stream)", { ms: defaultTimeout });
+      throw e;
+    } finally {
+      clearTimeout(timer);
+      if (userSignal) userSignal.removeEventListener("abort", linkAbort);
+    }
+  }
+
+  return { chat };
+}
