@@ -131,7 +131,7 @@ export function makeStreamingGoogleLmStudio(cfg: GoogleDriverConfig): ChatDriver
         const nativeToolCalls: ChatToolCall[] = Array.isArray(msg?.tool_calls) ? msg.tool_calls : [];
         const structuredToolCalls: ChatToolCall[] = parser.parseAll(content);
         if (content && onToken) onToken(content);
-        return { text: content, reasoning: msg?.reasoning || undefined, toolCalls };
+        return { text: content, reasoning: msg?.reasoning || undefined, toolCalls: nativeToolCalls.concat(structuredToolCalls) };
       }
 
       // SSE streaming path
@@ -280,8 +280,9 @@ export function makeStreamingGoogleLmStudio(cfg: GoogleDriverConfig): ChatDriver
       const toolCalls: ChatToolCall[] = Array.from(toolByIndex.entries())
         .sort((a, b) => a[0] - b[0])
         .map(([, v]) => v);
+      const structuredToolCalls: ChatToolCall[] = parser.parseAll(fullText);
 
-      return { text: fullText, reasoning: fullReasoning || undefined, toolCalls };
+      return { text: fullText, reasoning: fullReasoning || undefined, toolCalls: toolCalls.concat(structuredToolCalls) };
     } catch (e: any) {
       if (e?.name === "AbortError") Logger.debug("timeout(stream)", { ms: defaultTimeout });
       throw e;

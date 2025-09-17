@@ -76,6 +76,7 @@ export class NormativeMemory extends AgentMemory {
     roles: [],
     style: [],
     heuristics: [],
+    goals: [],
     antigoals: [],
     languages: [],
   };
@@ -364,6 +365,7 @@ export class NormativeMemory extends AgentMemory {
       `    "roles":      [{"text": "...", "weight": 0.0}],`,
       `    "style":      [{"text": "...", "weight": 0.0}],`,
       `    "heuristics": [{"text": "...", "weight": 0.0}],`,
+      `    "goals":      [{"text": "...", "weight": 0.0}],`,
       `    "antigoals":  [{"text": "...", "weight": 0.0}],`,
       `    "languages":  [{"text": "...", "weight": 0.0}]`,
       `  }`,
@@ -409,6 +411,7 @@ export class NormativeMemory extends AgentMemory {
           roles: norm(p.roles),
           style: norm(p.style),
           heuristics: norm(p.heuristics),
+          goals: norm(p.goals),
           antigoals: norm(p.antigoals),
           languages: norm(p.languages),
         },
@@ -423,17 +426,18 @@ export class NormativeMemory extends AgentMemory {
   private mergePersona(update: PersonaUpdate): boolean {
     // Decay
     const decay = 1 - this.decayPerPass;
-    const aged = (xs: PersonaFacet[]) => xs.map((f) => ({ ...f, weight: f.weight * decay }));
+    const aged = (xs: PersonaFacet[]) => (xs ?? []).map((f) => ({ ...f, weight: f.weight * decay }));
 
     const now = this.turnCounter;
     this.persona.roles = aged(this.persona.roles);
     this.persona.style = aged(this.persona.style);
     this.persona.heuristics = aged(this.persona.heuristics);
+    this.persona.goals = aged(this.persona.goals);
     this.persona.antigoals = aged(this.persona.antigoals);
     this.persona.languages = aged(this.persona.languages);
 
     // Merge (string-equality after normalization)
-    const mergeArr = (dst: PersonaFacet[], inc: PersonaFacet[], cap: number) => {
+    const mergeArr = (dst: PersonaFacet[] = [], inc: PersonaFacet[] = [], cap: number) => {
       for (const it of inc) {
         const key = this.normKey(it.text);
         const idx = dst.findIndex((d) => this.normKey(d.text) === key);
@@ -456,6 +460,7 @@ export class NormativeMemory extends AgentMemory {
       roles: 3,
       style: 6,
       heuristics: 8,
+      goals: 4,
       antigoals: 6,
       languages: 2,
     };
@@ -464,6 +469,7 @@ export class NormativeMemory extends AgentMemory {
     this.persona.roles = mergeArr(this.persona.roles, update.persona.roles, caps.roles);
     this.persona.style = mergeArr(this.persona.style, update.persona.style, caps.style);
     this.persona.heuristics = mergeArr(this.persona.heuristics, update.persona.heuristics, caps.heuristics);
+    this.persona.goals = mergeArr(this.persona.goals, update.persona.goals, caps.goals);
     this.persona.antigoals = mergeArr(this.persona.antigoals, update.persona.antigoals, caps.antigoals);
     this.persona.languages = mergeArr(this.persona.languages, update.persona.languages, caps.languages);
 
@@ -501,6 +507,7 @@ export class NormativeMemory extends AgentMemory {
       sect("Roles & POV", this.persona.roles),
       sect("Style & Rhythm", this.persona.style),
       sect("Decision Heuristics", this.persona.heuristics),
+      sect("Hard goals", this.persona.goals),
       sect("Soft Anti-goals", this.persona.antigoals),
       sect("Languages", this.persona.languages),
     ].filter(Boolean);
@@ -802,6 +809,7 @@ type PersonaModel = {
   roles: PersonaFacet[];
   style: PersonaFacet[];
   heuristics: PersonaFacet[];
+  goals: PersonaFacet[];
   antigoals: PersonaFacet[];
   languages: PersonaFacet[];
 };
@@ -813,6 +821,7 @@ type PersonaUpdate = {
     roles: PersonaFacet[];
     style: PersonaFacet[];
     heuristics: PersonaFacet[];
+    goals: PersonaFacet[];
     antigoals: PersonaFacet[];
     languages: PersonaFacet[];
   };

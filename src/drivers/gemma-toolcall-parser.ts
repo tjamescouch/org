@@ -1,27 +1,12 @@
 // toolcall-parser.ts
-// Parse JSON inside ```toolcall ... ``` code fences (tmux/CLI safe, no deps).
-// Accepts either a single object or an array of objects per fence.
-// Coerces common field names: name|tool|tool_name, arguments|args|parameters|input,
-// and function: { name, arguments } (OpenAI-style).
-//
-// Example fence:
-// ```toolcall
-// { "tool_name": "search", "arguments": { "query": "mnist" }, "id": "c1" }
-// ```
-//
-// Multiple fences are supported anywhere in the text.
+// Parse tool calls emitted as:
+//   1) ```toolcall … ```   (and tool_request|tool_call|tool)   ← backtick fences
+//   2) [TOOL_REQUEST] … [END_TOOL_REQUEST]                     ← bracket blocks
+//   3) Mixed: ```tool_request … [END_TOOL_REQUEST]
+// Strict JSON inside; no “fixups”.
 
 import { ChatToolCall } from "./types";
-import { randomUUID as uuid } from 'node:crypto';
-
-export type Json =
-  | null
-  | boolean
-  | number
-  | string
-  | Json[]
-  | { [key: string]: Json };
-
+import { randomUUID as uuid } from "node:crypto";
 
 export class ToolCallParseError extends Error {
   constructor(
@@ -48,37 +33,25 @@ export class GemmaToolcallParser {
     this.throwOnError = !!opts.throwOnError;
   }
 
-  /** Return all parsed tool calls from every ```toolcall fence in `text`. */
+  /** Return all parsed tool calls from every supported block in `text`. */
   parseAll(text: string): ChatToolCall[] {
-    const blocks = this.findToolcallFences(text);
+    const blocks = this.findToolcallBlocks(text);
     const out: ChatToolCall[] = [];
 
     blocks.forEach((b, i) => {
       try {
         const value = this.strictJsonParse(b.content.trim());
         if (Array.isArray(value)) {
-          value.forEach((v, j) => {
-            const call = this.coerceToolCall(v, i, b.start, b.end);
-            call.raw = this.stringifyStable(v);
-            out.push(call);
-          });
+          for (const v of value) out.push(this.coerceToolCall(v, i, b.start, b.end));
         } else {
-          const call = this.coerceToolCall(value, i, b.start, b.end);
-          call.raw = this.stringifyStable(value);
-          out.push(call);
+          out.push(this.coerceToolCall(value, i, b.start, b.end));
         }
       } catch (e) {
         if (this.throwOnError) {
           if (e instanceof ToolCallParseError) throw e;
-          throw new ToolCallParseError(
-            "Failed to parse toolcall fence JSON",
-            i,
-            b.start,
-            b.end,
-            e
-          );
+          throw new ToolCallParseError("Failed to parse toolcall block JSON", i, b.start, b.end, e);
         }
-        // else skip malformed fence
+        // skip malformed block
       }
     });
 
@@ -93,43 +66,7 @@ export class GemmaToolcallParser {
 
   // ---------- internals ----------
 
-  private findToolcallFences(text: string): Array<{ content: string; start: number; end: number }> {
-    const blocks: Array<{ content: string; start: number; end: number }> = [];
-    let i = 0;
-    const needle = "```toolcall";
-
-    while (true) {
-      const start = text.indexOf(needle, i);
-      if (start === -1) break;
-
-      // End of the opening line
-      const openLineEnd = text.indexOf("\n", start);
-      if (openLineEnd === -1) break; // incomplete block; ignore
-
-      // Find the closing fence that starts at beginning of a line.
-      let searchFrom = openLineEnd + 1;
-      let close = -1;
-      while (true) {
-        const pos = text.indexOf("```", searchFrom);
-        if (pos === -1) break;
-        const atLineStart = pos === 0 || text[pos - 1] === "\n";
-        if (atLineStart) {
-          close = pos;
-          break;
-        }
-        searchFrom = pos + 1;
-      }
-      if (close === -1) break; // unmatched; ignore remainder
-
-      const content = text.slice(openLineEnd + 1, close);
-      blocks.push({ content, start, end: close + 3 });
-      i = close + 3;
-    }
-    return blocks;
-  }
-
   private strictJsonParse(s: string): unknown {
-    // Fast path: standard JSON only (fail fast; caller decides skip/throw).
     return JSON.parse(s) as unknown;
   }
 
@@ -149,84 +86,151 @@ export class GemmaToolcallParser {
     end: number
   ): ChatToolCall {
     if (!this.isObject(v)) {
-      throw new ToolCallParseError("Toolcall JSON must be an object or array of objects", fenceIndex, start, end);
+      throw new ToolCallParseError(
+        "Toolcall JSON must be an object or array of objects",
+        fenceIndex,
+        start,
+        end
+      );
     }
 
-    // Accept both flat and { function: { name, arguments } } shapes.
-    const fn = this.isObject(v.function) ? (v.function as Record<string, unknown>) : undefined;
+    // Support both flat and OpenAI-style { function: { name, arguments } }.
+    const fnObj = this.isObject((v as Record<string, unknown>)["function"])
+      ? ((v as Record<string, unknown>)["function"] as Record<string, unknown>)
+      : undefined;
 
     const name =
       this.getString(v, "name") ??
       this.getString(v, "tool") ??
       this.getString(v, "tool_name") ??
-      (fn ? this.getString(fn, "name") : undefined);
+      (fnObj ? this.getString(fnObj, "name") : undefined);
 
     if (!name || !name.trim()) {
-      throw new ToolCallParseError("Missing tool name (name|tool|tool_name|function.name)", fenceIndex, start, end);
+      throw new ToolCallParseError(
+        "Missing tool name (name|tool|tool_name|function.name)",
+        fenceIndex,
+        start,
+        end
+      );
     }
 
     const id =
       this.getString(v, "id") ??
       this.getString(v, "call_id") ??
-      (fn ? this.getString(fn, "id") : undefined);
+      (fnObj ? this.getString(fnObj, "id") : undefined) ??
+      uuid();
 
+    // Prefer top-level arguments, then function.arguments. Serialize to JSON string.
     const argsCandidate =
       (v as Record<string, unknown>)["arguments"] ??
       (v as Record<string, unknown>)["args"] ??
       (v as Record<string, unknown>)["parameters"] ??
       (v as Record<string, unknown>)["input"] ??
-      (fn ? fn["arguments"] : undefined);
+      (fnObj ? fnObj["arguments"] : undefined);
 
-    // Arguments can be any JSON value; undefined if absent.
+    const argsString =
+      typeof argsCandidate === "string"
+        ? argsCandidate
+        : this.stringifyStable(argsCandidate ?? {});
+
     const tc: ChatToolCall = {
-      id: id ?? uuid(),
+      id,
       type: "function",
       function: {
         name: name.trim(),
-        arguments: argsCandidate as string
+        arguments: argsString,
       },
     };
 
     return tc;
   }
 
-  private asJson(v: unknown): Json | undefined {
-    // We trust JSON.parse for structure; just narrow primitives/objects/arrays to Json.
-    if (v === undefined) return undefined;
-    if (v === null) return null;
-    const t = typeof v;
-    if (t === "string" || t === "number" || t === "boolean") return v as Json;
-    if (Array.isArray(v)) return v.map((e) => this.asJson(e) as Json) as Json;
-    if (this.isObject(v)) {
-      const out: { [k: string]: Json } = {};
-      for (const [k, val] of Object.entries(v)) out[k] = this.asJson(val) as Json;
-      return out;
-    }
-    // Non-JSON (e.g., function, symbol) should not occur from JSON.parse; treat as string.
-    return String(v) as unknown as Json;
-  }
-
   private stringifyStable(v: unknown): string {
-    return JSON.stringify(v, this.stableReplacer, 2);
+    return JSON.stringify(v, (key, value) => {
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const obj = value as Record<string, unknown>;
+        const sorted = Object.keys(obj)
+          .sort()
+          .reduce<Record<string, unknown>>((acc, k) => {
+            acc[k] = obj[k];
+            return acc;
+          }, {});
+        return sorted;
+      }
+      return value;
+    });
   }
 
-  // Stable key order for deterministic raw snapshots.
-  private stableReplacer(this: unknown, key: string, value: unknown): unknown {
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      const obj = value as Record<string, unknown>;
-      const sorted = Object.keys(obj)
-        .sort()
-        .reduce<Record<string, unknown>>((acc, k) => {
-          acc[k] = (obj as Record<string, unknown>)[k];
-          return acc;
-        }, {});
-      return sorted;
+  // ----- block detection supporting multiple syntaxes -----
+
+  private findToolcallBlocks(
+    text: string
+  ): Array<{ content: string; start: number; end: number }> {
+    const blocks: Array<{ content: string; start: number; end: number }> = [];
+
+    // Openers at line start (case-insensitive):
+    //   ```tool_request]   or ```tool_request
+    //   ```tool_call|toolcall|tool
+    //   [TOOL_REQUEST]  (also TOOL_CALL/TOOL)
+    const openRe =
+      /^(?:```[ \t]*(toolcall|tool_request|tool_call|tool)\]?[^\n]*\n|\[(tool_request|tool_call|tool)\][ \t]*\r?\n)/gim;
+
+    let m: RegExpExecArray | null;
+    while ((m = openRe.exec(text))) {
+      const openStart = m.index;
+      const contentStart = openRe.lastIndex;
+      const label = (m[1] ? m[1] : m[2] ? m[2] : "tool_request").toString();
+
+      const rest = text.slice(contentStart);
+
+      // Closers (earliest wins):
+      //   1) line with ``` alone
+      //   2) line with [END_<LABEL>] or [/LABEL]  (case-insensitive)
+      const closeBacktick = this.execFirst(rest, /^```[ \t]*$/gim);
+      const labelUpper = label.toUpperCase().replace(/\]$/, "");
+      const endTagRe = new RegExp(
+        String.raw`^\[(?:END_|\/)${this.escapeRe(labelUpper)}\][ \t]*$`,
+        "gim"
+      );
+      // Fallback: any [END_*] tag
+      const endAnyRe = /^\[(?:END_|\/)[A-Z0-9_]+\][ \t]*$/gim;
+
+      const closeBracketSpecific = this.execFirst(rest, endTagRe);
+      const closeBracketAny = this.execFirst(rest, endAnyRe);
+
+      const candidates = [closeBacktick, closeBracketSpecific, closeBracketAny]
+        .filter(Boolean)
+        .sort((a, b) => (a!.index < b!.index ? -1 : 1)) as Array<{
+        index: number;
+        match: string;
+      }>;
+
+      if (!candidates.length) break; // unmatched; stop scanning
+
+      const chosen = candidates[0];
+      const content = rest.slice(0, chosen.index);
+      const end = contentStart + chosen.index + chosen.match.length;
+
+      blocks.push({ content, start: openStart, end });
+
+      // Continue scanning after this block
+      openRe.lastIndex = end;
     }
-    return value;
-  }
-}
 
-// Convenience one-liner
-export function parseGemmaToolCalls(text: string, opts?: ParserOptions): ChatToolCall[] {
-  return new GemmaToolcallParser(opts).parseAll(text);
+    return blocks;
+  }
+
+  private execFirst(
+    s: string,
+    re: RegExp
+  ): { index: number; match: string } | null {
+    const r = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
+    let m: RegExpExecArray | null;
+    while ((m = r.exec(s))) return { index: m.index, match: m[0] };
+    return null;
+  }
+
+  private escapeRe(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
 }
