@@ -35,9 +35,6 @@ export class MemoryPersisitence<T = unknown> implements IMemoryPersisitence<T> {
      * Target directory for memory files (defaults to "<cwd>/.orgmemories").
      * For backwards compatibility, if `filePath` is provided it is treated as a directory.
      */
-    dirPath?: string;
-    /** @deprecated Use dirPath; kept for compatibility. */
-    filePath?: string;
     /** Pretty-print JSON with trailing newline (defaults to false). */
     pretty?: boolean;
     /** Use tmp+rename atomic writes (defaults to true). */
