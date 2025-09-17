@@ -100,7 +100,9 @@ export class RandomScheduler {
     // NEW: wire the external prompt bridge if provided
     this.readUserLine = opts.readUserLine;
 
-    for (const a of this.agents) this.inbox.ensure(a.id);
+    for (const a of this.agents) {
+      this.inbox.ensure(a.id);
+    }
   }
 
   /** Start the scheduling loop (idempotent). */
