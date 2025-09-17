@@ -75,3 +75,8 @@ MIT
 
 
 
+![GitHub all releases](https://img.shields.io/github/downloads/tjamescouch/org/total)
+![v0.11.0](https://img.shields.io/github/downloads/tjamescouch/org/v1.1.0/total)
+
+
+
