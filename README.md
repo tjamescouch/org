@@ -50,7 +50,7 @@ When the tool wants to touch the filesystem, it first produces a **patch**. You 
 
 All artifacts for each run land in `.org/runs/<uuid>/` with comprehensive logs and the final patch.
 
-[![asciicast](https://asciinema.org/a/739902.svg)](https://asciinema.org/a/739902)
+[![asciicast](https://asciinema.org/a/741256.svg)](https://asciinema.org/a/741256)
 
 ## Installation
 
