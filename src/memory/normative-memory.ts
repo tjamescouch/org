@@ -151,7 +151,6 @@ export class NormativeMemory extends AgentMemory {
     this.mergeAggressiveness = Math.min(1.0, Math.max(0.1, Number(args.mergeAggressiveness ?? 0.6)));
 
     this.store = new MemoryPersisitence<PersistedState>({
-      filePath: path.join(R.cwd(), ".orgmemories"),
       pretty: true,
     });
 

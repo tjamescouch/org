@@ -1,0 +1,5 @@
+{"type":"interface","name":"IStore","path":"src/store.ts:12..87","attrs":{"stability":"stable","owners":["alice"]}}
+{"type":"fn","name":"Store.add","path":"src/store.ts:40..68","attrs":{"version":3}}
+{"type":"edge","rel":"implements","from":"fn:Store.add","to":"interface:IStore"}
+{"type":"fn","name":"persist","path":"src/db.ts:10..40"}
+{"type":"edge","rel":"calls","from":"fn:Store.add","to":"fn:persist"}
