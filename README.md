@@ -50,7 +50,7 @@ When the tool wants to touch the filesystem, it first produces a **patch**. You 
 
 All artifacts for each run land in `.org/runs/<uuid>/` with comprehensive logs and the final patch.
 
-[![asciicast](https://asciinema.org/a/739902.svg)](https://asciinema.org/a/739902)
+[![asciicast](https://asciinema.org/a/741256.svg)](https://asciinema.org/a/741256)
 
 ## Installation
 
@@ -72,6 +72,11 @@ See [INSTALLATION.md](docs/INSTALLATION.md) for complete setup instructions.
 MIT
 
 <img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/1bb9a0ec-bd45-45eb-864e-10340d2c9286" />
+
+
+
+![GitHub all releases](https://img.shields.io/github/downloads/tjamescouch/org/total)
+![v0.11.0](https://img.shields.io/github/downloads/tjamescouch/org/v1.1.0/total)
 
 
 

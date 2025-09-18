@@ -8,8 +8,10 @@ import { MockModel } from "./mock-model";
 import { R } from "../runtime/runtime";
 import { Logger } from "../logger";
 import { makeStreamingGoogleLmStudio } from "../drivers/streaming-google-lmstudio";
+import { makeStreamingDeepseekOllama } from "../drivers/streaming-deepseek-ollama";
+import { makeStreamingDeepseekNoToolsOllama } from "../drivers/streaming-deepseek-no-toools-ollama";
 
-type ModelKind = "mock" | "lmstudio";
+type ModelKind = "mock" | "lmstudio" | "ollama";
 type AgentSpec = { id: string; kind: ModelKind; model: Agent };
 type AgentCreator = (agentId: string, model: string, extra: string, defaults: LlmDefaults) => Promise<AgentSpec>;
 type LlmDefaults = { model: string; baseUrl: string; protocol: "openai" | "google" | "deepseek" | "antrhopic"; apiKey?: string };
@@ -35,7 +37,7 @@ const openaiModelCreationHandler = async (agentId: string, model: string, extra:
 const gemmaModelCreationHandler = async (agentId: string, model: string, extra: string, defaults: LlmDefaults): Promise<AgentSpec> => {
     Logger.debug("gemma", {agentId, model, extra, defaults});
 
-    const driver = makeStreamingGoogleLmStudio({ //Same for now
+    const driver = makeStreamingGoogleLmStudio({
         baseUrl: defaults.baseUrl,
         model: defaults.model,
         //apiKey: defaults.apiKey
@@ -49,6 +51,43 @@ const gemmaModelCreationHandler = async (agentId: string, model: string, extra: 
         model: agentModel,
     };
 };
+
+const deepseekModelCreationHandler = async (agentId: string, model: string, extra: string, defaults: LlmDefaults): Promise<AgentSpec> => {
+    Logger.debug("deepseek", {agentId, model, extra, defaults});
+
+    const driver = makeStreamingDeepseekOllama({
+        baseUrl: defaults.baseUrl,
+        model: defaults.model,
+        //apiKey: defaults.apiKey
+    });
+    const agentModel = new LlmAgent(agentId, driver, defaults.model);
+    await agentModel.load();
+
+    return {
+        id: agentId,
+        kind: "ollama",
+        model: agentModel,
+    };
+};
+
+const deepseekNoToolsModelCreationHandler = async (agentId: string, model: string, extra: string, defaults: LlmDefaults): Promise<AgentSpec> => {
+    Logger.debug("deepseek-notools", {agentId, model, extra, defaults});
+
+    const driver = makeStreamingDeepseekNoToolsOllama({
+        baseUrl: defaults.baseUrl,
+        model: defaults.model,
+        //apiKey: defaults.apiKey
+    });
+    const agentModel = new LlmAgent(agentId, driver, defaults.model);
+    await agentModel.load();
+
+    return {
+        id: agentId,
+        kind: "ollama",
+        model: agentModel,
+    };
+};
+
 
 const mockModelCreationHanlder = async (agentId: string, model: string, extra: string, defaults: LlmDefaults): Promise<AgentSpec> => {
     const agentModel = new MockModel(agentId);
@@ -67,6 +106,10 @@ export class AgentManger {
         ['lmstudio.openai']: openaiModelCreationHandler,
         ['lmstudio.google']: gemmaModelCreationHandler,
         ['ollama.google']: gemmaModelCreationHandler,
+        ['lmstudio.deepseek']: deepseekModelCreationHandler,
+        ['ollama.deepseek']: deepseekModelCreationHandler,
+        ['lmstudio.deepseek-notools']: deepseekNoToolsModelCreationHandler,
+        ['ollama.deepseek-notools']: deepseekNoToolsModelCreationHandler,
         ['mock.mock']: mockModelCreationHanlder,
     };
 
@@ -94,12 +137,12 @@ export class AgentManger {
 
             // driverKind[.protocol]
             type Protocol = LlmDefaults["protocol"];
-            const PROTOCOLS = ["openai", "google", "deepseek", "antrhopic"] as const;
+            const PROTOCOLS = ["openai", "google", "deepseek", "antrhopic", "deepseek-notools"] as const;
             const isProtocol = (p: string): p is Protocol =>
                 (PROTOCOLS as readonly string[]).includes(p);
 
             type ModelKindStrict = "mock" | "lmstudio";
-            const isModelKind = (k: string): k is ModelKindStrict => k === "mock" || k === "lmstudio";
+            const isModelKind = (k: string): k is ModelKindStrict => k === "mock" || k === "lmstudio" || k === "ollama";
 
             let kind: ModelKindStrict = "lmstudio";
             let protocol: Protocol = llmDefaults.protocol;
