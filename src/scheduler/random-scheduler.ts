@@ -487,5 +487,3 @@ All agents are idle. Provide the next concrete instruction or question.`;
     return new Promise<void>((r) => setTimeout(r, ms));
   }
 }
-
-export default RandomScheduler;
