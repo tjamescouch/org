@@ -13,6 +13,7 @@ import type {
 } from "./types";
 import { sleep } from "../utils/sleep";
 import { Agent, AgentCallbacks } from "../agents/agent";
+import { IScheduler } from "./scheduler";
 
 type Hooks = {
   onStreamStart: () => void;
@@ -47,7 +48,7 @@ type SchedulerOptionsWithBridge = Hooks &
  *  - Added *external prompt bridge* (`readUserLine`) so the UI (TTY controller) can
  *    own the prompt/echo while the scheduler retains turn/state logic.
  */
-export class RandomScheduler {
+export class RandomScheduler implements IScheduler {
   /**
    * If provided, scheduler will not render its own 'You >' banner or readline.
    * Instead it awaits this provider and treats the returned line as user input.

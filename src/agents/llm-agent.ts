@@ -134,7 +134,7 @@ export class LlmAgent extends Agent {
 
   async respond(messages: ChatMessage[], maxTools: number, filters: NoiseFilters, peers: Agent[], callbacks: AgentCallbacks): Promise<AgentReply[]> {
     const result: AgentReply[] = [];
-    let newMessages: ChatMessage[] = [...messages];
+    let newMessages: ChatMessage[] = [...messages].reverse();
 
     let remaining = maxTools;
     let hop = 0;
@@ -169,7 +169,7 @@ export class LlmAgent extends Agent {
 
         const yieldToUser = await callbacks.onRoute(message, filters);
         if (await callbacks.onRouteCompleted(message, toolsUsed, yieldToUser)) {
-          break;
+          return result;
         }
 
         if (yieldToUser) {
