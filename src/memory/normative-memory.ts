@@ -291,6 +291,30 @@ export class NormativeMemory extends AgentMemory {
         this.messagesBuffer.splice(0, this.messagesBuffer.length, ...pruned);
       }
     });
+
+    // ---- metrics: per-turn step event (non-fatal if it fails) ----
+    try {
+      const headIdx = this.messagesBuffer.findIndex(m => m.role === "system");
+      const headMsgs = headIdx >= 0 ? [this.messagesBuffer[headIdx]] : [];
+      const headerTokens = this.estimateTokens(headMsgs);
+      const totalTokens = this.estimateTokens(this.messagesBuffer);
+
+      const lastAssistant = [...this.messagesBuffer].reverse().find(m => m.role === "assistant");
+      const userVisibleReply =
+        typeof lastAssistant?.content === "string" ? lastAssistant.content : undefined;
+
+      await RunMetrics.emitStep({
+        runId: process.env.ORG_RUN_ID || "default",
+        turn: this.turnCounter,
+        agent: (this as any).name || "agent",
+        phase: (this as any).phase || undefined,
+        headerTokens,
+        totalTokens,
+        userVisibleReply,
+        personaVersion: (this as any).persona?.version,
+        normativeVersion: undefined, // optional; fill in later if you add a counter
+      });
+    } catch { /* never break the run for metrics */ }
   }
 
   // ---------------------------------------------------------------------------
@@ -395,12 +419,12 @@ export class NormativeMemory extends AgentMemory {
       const norm = (arr: any): PersonaFacet[] =>
         Array.isArray(arr)
           ? arr
-              .slice(0, 12)
-              .map((x: any) => ({
-                text: String(x?.text ?? "").trim(),
-                weight: this.clamp01(Number(x?.weight ?? 0)),
-              }))
-              .filter((x: PersonaFacet) => x.text.length > 0 && x.text.length <= 80)
+            .slice(0, 12)
+            .map((x: any) => ({
+              text: String(x?.text ?? "").trim(),
+              weight: this.clamp01(Number(x?.weight ?? 0)),
+            }))
+            .filter((x: PersonaFacet) => x.text.length > 0 && x.text.length <= 80)
           : [];
 
       const upd: PersonaUpdate = {

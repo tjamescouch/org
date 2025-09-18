@@ -171,6 +171,10 @@ export class LlmAgent extends Agent {
         if (await callbacks.onRouteCompleted(message, toolsUsed, yieldToUser)) {
           break;
         }
+
+        if (yieldToUser) {
+          return result;
+        }
       }
 
       if (totalToolsUsed > 0) {
