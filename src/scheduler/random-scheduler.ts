@@ -165,6 +165,7 @@ export class RandomScheduler implements IScheduler {
         try {
           const callbacks: AgentCallbacks = {
             onRouteCompleted: async (message, numToolsUsed, askedUser) => {
+              //
               if (numToolsUsed > 0) {
                 return false; //If the agent just did a tool call, let it continue
               }
@@ -199,7 +200,7 @@ export class RandomScheduler implements IScheduler {
                   setRespondingAgent: (id) => {
                     this.respondingAgent = this.agents.find((x) => x.id === id);
                   },
-                  applyGuard: (from, dec) => this.applyGuardDecision(agent, dec),
+                  applyGuard: async (from, dec) => this.applyGuardDecision(agent, dec),
                   setLastUserDMTarget: (id) => {
                     this.lastUserDMTarget = id;
                   },

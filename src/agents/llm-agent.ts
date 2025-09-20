@@ -14,6 +14,12 @@ import { ChatResponse } from "../scheduler/types";
 import { NoiseFilters } from "../scheduler/filters";
 import { NormativeMemory } from "../memory/normative-memory";
 
+enum ResponState {
+  IDLE = 'IDLE',
+  USING_TOOLS = 'USING_TOOLS',
+  FINAL_RESPONSE = 'FINAL_RESPONSE'
+}
+
 function buildSystemPrompt(id: string): [string, string] {
   return [[
     `You are agent "${id}".`,
@@ -88,6 +94,9 @@ export class LlmAgent extends Agent {
   private readonly baseSystemPrompt: string;
   private readonly defaultSystemPrompt: string;
 
+  private respondState: ResponState = ResponState.IDLE;
+  private yieldToUser: boolean = false;
+
   // New: polymorphic tool executor (pure refactor)
   private readonly toolExecutor: ToolExecutor;
   private streamFilter = createPDAStreamFilterHeuristic();
@@ -134,62 +143,89 @@ export class LlmAgent extends Agent {
 
   async respond(messages: ChatMessage[], maxTools: number, filters: NoiseFilters, peers: Agent[], callbacks: AgentCallbacks): Promise<AgentReply[]> {
     const result: AgentReply[] = [];
-    let newMessages: ChatMessage[] = [...messages].reverse();
-
-    let remaining = maxTools;
     let hop = 0;
-    let totalToolsUsed = 0;
 
     // Initialize per-turn thresholds/counters in the guard rail.
     this.guard.beginTurn({ maxToolHops: Math.max(0, maxTools) });
 
-    Logger.debug(`ask ${this.id} (hop ${hop}) with budget=${remaining}`);
+    Logger.debug(`ask ${this.id} (hop ${hop}) with budget=${maxTools}`);
 
-    for (let hop = 0; hop < Math.max(1, remaining + 1); hop++) {
-      let replies: ChatResponse[] = [];
-      // ---- STREAM DEFERRAL (single seam to TTY controller) ----
-      callbacks.onStreamStart?.();
-      try {
-        replies = await this.respondOnce(
-          newMessages,
-          Math.max(0, remaining),
-          peers,
-          callbacks.shouldAbort,
-        );
-      } finally {
-        await callbacks?.onStreamEnd();
+    for (let hop = 0; hop < Math.max(1, maxTools + 1); hop++) {
+      const remaining = maxTools - hop;
+      switch (this.respondState) {
+        case ResponState.IDLE:
+          if (this.yieldToUser) {
+            this.yieldToUser = false;
+            this.respondState = ResponState.IDLE;
+
+            return result;
+          }
+          if (remaining > 1) {
+            this.respondState = ResponState.USING_TOOLS;
+          } else {
+            this.respondState = ResponState.FINAL_RESPONSE;
+          }
+          break;
+        case ResponState.USING_TOOLS:
+          result.push(...(await this.onHandleMessages(messages, remaining, filters, peers, callbacks)));
+          if (this.yieldToUser) {
+            this.yieldToUser = false;
+            this.respondState = ResponState.IDLE;
+
+            return result;
+          }
+          if (remaining > 1) {
+            this.respondState = ResponState.USING_TOOLS;
+          } else {
+            this.respondState = ResponState.FINAL_RESPONSE;
+          }
+          break;
+        case ResponState.FINAL_RESPONSE:
+          result.push(...(await this.onHandleMessages(messages, remaining, filters, peers, callbacks)));
+          if (this.yieldToUser) {
+            this.yieldToUser = false;
+            this.respondState = ResponState.IDLE;
+
+            return result;
+          }
+          this.respondState = ResponState.IDLE;
+          return result;
       }
+    }
+    await this.save();
+
+    return result;
+  }
+
+  async onHandleMessages(messages: ChatMessage[], remaining: number, filters: NoiseFilters, peers: Agent[], callbacks: AgentCallbacks): Promise<AgentReply[]> {
+    let replies: ChatResponse[] = [];
+    // ---- STREAM DEFERRAL (single seam to TTY controller) ----
+    callbacks.onStreamStart?.();
+    try {
+      replies = await this.respondOnce(
+        messages,
+        remaining,
+        peers,
+        callbacks.shouldAbort,
+      );
 
       for (const { message, toolsUsed } of replies) {
-        totalToolsUsed += toolsUsed;
         Logger.debug(
-          `${this.id} replied toolsUsed=${toolsUsed} message=`,
+          `${this.id} replied toolsRemaining=${remaining} message=`,
           JSON.stringify(message)
         );
 
-        const yieldToUser = await callbacks.onRoute(message, filters);
-        if (await callbacks.onRouteCompleted(message, toolsUsed, yieldToUser)) {
-          return result;
-        }
-
+        const maybeYieldToUser = await callbacks.onRoute(message, filters);
+        const yieldToUser = await callbacks.onRouteCompleted(message, toolsUsed, maybeYieldToUser);
         if (yieldToUser) {
-          return result;
+          this.yieldToUser = true;
         }
       }
-
-      if (totalToolsUsed > 0) {
-        remaining = Math.max(0, remaining - totalToolsUsed);
-        if (remaining <= 0) break;
-      } else {
-        break;
-      }
-
-      newMessages = [];
+    } finally {
+      await callbacks?.onStreamEnd();
     }
 
-    this.save();
-
-    return result;
+    return replies;
   }
 
   /**
@@ -198,8 +234,8 @@ export class LlmAgent extends Agent {
    * - Let the model respond; if it asks for tools, execute (sh only) and loop.
    * - Stop after first assistant text with no more tool calls or when budget is hit.
    */
-  async respondOnce(messages: ChatMessage[], maxTools: number, _peers: Agent[], abortCallback: () => boolean): Promise<AgentReply[]> {
-    Logger.debug(`${this.id} start`, { promptChars: prompt.length, maxTools });
+  async respondOnce(messages: ChatMessage[], remaining: number, _peers: Agent[], abortCallback: () => boolean): Promise<AgentReply[]> {
+    Logger.debug(`${this.id} start`, { promptChars: prompt.length, remaining });
     if (abortCallback?.()) {
       Logger.debug("Aborted turn");
       return [{ message: "Turn aborted.", toolsUsed: 0 }];
@@ -210,11 +246,9 @@ export class LlmAgent extends Agent {
       await this.memory.add(message);
     }
 
-    let hop = 0;
-
     Logger.info(C.green(`${this.id} is thinking.`));
     const msgs = this.memory.messages();
-    Logger.debug(`${this.id} chat ->`, { hop: hop++, msgs: msgs.length });
+    Logger.debug(`${this.id} chat ->`, { msgs: msgs.length });
     const t0 = Date.now();
     Logger.debug('memory', this.memory.messages());
     const prevToolCallDeltas: Record<string, ChatToolCall[]> = {};
@@ -313,7 +347,7 @@ export class LlmAgent extends Agent {
       calls: sanitizedCalls,
       decision: firstDecision,
       forceRetry: _forceRetry,
-    } = sanitizeAndRepairAssistantReply({ text: finalText, calls, toolsAllowed: this.tools.map(t => t.function.name), didRetry: false /* FIXME */ });
+    } = sanitizeAndRepairAssistantReply({ text: finalText, calls, toolsAllowed: remaining > 1 ? this.tools.map(t => t.function.name) : [], didRetry: false /* FIXME */ });
 
     if (firstDecision) {
       if (firstDecision?.nudge) {
@@ -321,7 +355,7 @@ export class LlmAgent extends Agent {
       }
       if (firstDecision?.endTurn) {
         Logger.warn(`System prematurely ended turn.`);
-        const totalUsed = maxTools; // consume budget → end turn
+        const totalUsed = remaining;
         forceEndTurn = true;
         if (finalText) await this.memory.add({ role: "system", content: finalText, from: "System" });
 
@@ -332,7 +366,7 @@ export class LlmAgent extends Agent {
     // Delegate to executor (pure behavior)
     const execResult = await this.toolExecutor.execute({
       calls: sanitizedCalls,
-      maxTools,
+      maxTools: remaining,
       abortCallback,
       guard: this.guard,
       memory: this.memory,
@@ -342,14 +376,12 @@ export class LlmAgent extends Agent {
     const toolsUsed = execResult.toolsUsed;
     forceEndTurn = execResult.forceEndTurn;
 
-    if (toolsUsed >= maxTools) {
-      if (finalText) {
-        Logger.debug(`${this.id} add assistant memory`, { chars: finalText.length });
-        await this.memory.add({ role: "assistant", content: `${allReasoning ? `${allReasoning} -> ` : ""}${finalText}`, from: "Me" });
-      } else if (allReasoning) {
-        Logger.debug(`${this.id} add assistant memory`, { chars: allReasoning.length });
-        await this.memory.add({ role: "assistant", content: allReasoning, from: "Me" });
-      }
+    if (finalText) {
+      Logger.debug(`${this.id} add assistant memory`, { chars: finalText.length });
+      await this.memory.add({ role: "assistant", content: `${allReasoning ? `${allReasoning} -> ` : ""}${finalText}`, from: "Me" });
+    } else if (allReasoning) {
+      Logger.debug(`${this.id} add assistant memory`, { chars: allReasoning.length });
+      await this.memory.add({ role: "assistant", content: allReasoning, from: "Me" });
     }
 
     Logger.info(C.blue(`\n[${this.id}] wrote. [${calls.length}] tools requested. [${toolsUsed}] tools used.`));

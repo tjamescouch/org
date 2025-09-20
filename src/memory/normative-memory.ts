@@ -1,5 +1,9 @@
-import type { ChatDriver, ChatMessage } from "../drivers/types";
+import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
+import { C, Logger } from "../logger";
+import { RunMetrics } from "../metrics/runtime-metrics";
 import { R } from "../runtime/runtime";
+import { createPDAStreamFilterHeuristic } from "../utils/filter-passes/llm-pda-stream-heuristic";
+import { sanitizeContent } from "../utils/sanitize-content";
 import { AgentMemory } from "./agent-memory";
 import { MemoryPersisitence } from "./memory-persistence";
 import path from "path";
@@ -36,6 +40,7 @@ export class NormativeMemory extends AgentMemory {
   private readonly driver: ChatDriver;
   private readonly model: string;
 
+  private streamFilter = createPDAStreamFilterHeuristic();
   // Context budgeting knobs (unchanged)
   private readonly contextTokens: number;
   private readonly reserveHeaderTokens: number;
@@ -408,7 +413,14 @@ export class NormativeMemory extends AgentMemory {
       ].join("\n\n"),
     };
 
-    const out = await this.driver.chat([sys, usr], { model: this.model });
+    const out = await this.driver.chat([sys, usr], { model: this.model, 
+      onReasoningToken: t => {
+      },
+      onToken: t => {
+      },
+      onToolCallDelta: tcd => {}
+
+    });
     const text = this.extractText(out);
     const obj = this.safeParseJson(text);
     if (!obj || typeof obj !== "object") return null;
@@ -703,7 +715,7 @@ export class NormativeMemory extends AgentMemory {
           return "Summarize prior ASSISTANT replies (decisions, plans, code edits, commands & outcomes).";
         case "system":
           return [
-            "Synthesize a present‑tense NORMATIVE policy recap (imperative bullets) from prior SYSTEM content and the prior Normative block.",
+            "Synthesize a present-tense NORMATIVE policy recap (imperative bullets) from prior SYSTEM content and the prior Normative block.",
             "Principles:",
             "- Write defaults in present tense (e.g., “Respond concisely unless writing files”).",
             "- DO include tone/formatting defaults when helpful.",
