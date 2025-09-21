@@ -1,5 +1,3 @@
-import { R } from "./runtime/runtime";
-
 const Reset = "\u001b[0m";
 const Dim = "\u001b[2m";
 const FgCyan = "\u001b[36m";

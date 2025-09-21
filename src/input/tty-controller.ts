@@ -21,7 +21,6 @@
 import type { Writable } from "node:stream";
 import { R } from "../runtime/runtime";
 import { ESC_PRESSED_MSG, I_PRESSED_MSG } from "../constants";
-import { Logger } from "../logger";
 import { IScheduler } from "../scheduler/scheduler";
 
 /* ------------------------------ TTY primitives ----------------------------- */
@@ -236,7 +235,7 @@ export class TtyController {
 
     let buf = "";
     return new Promise<string>((resolve) => {
-      const handler = (chunk: Buffer | string) => {
+      const handler = async (chunk: Buffer | string) => {
         // When prompting, we deliberately ignore the global hotkey handler,
         // except for ESC which cancels and finalizes (as the test expects).
         const s = bufferToString(chunk);
@@ -252,7 +251,7 @@ export class TtyController {
               ESC_PRESSED_MSG + "\n",
             );
 
-            void this.finalizeThenExit();
+            await this.finalizeThenExit();
             // resolve an empty string to unblock any awaiting callers
             return resolve("");
           }

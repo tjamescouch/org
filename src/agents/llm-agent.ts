@@ -142,6 +142,14 @@ export class LlmAgent extends Agent {
   }
 
   async respond(messages: ChatMessage[], maxTools: number, filters: NoiseFilters, peers: Agent[], callbacks: AgentCallbacks): Promise<AgentReply[]> {
+    try {
+      return this.startFsm(messages, maxTools, filters, peers, callbacks);
+    } finally {
+      this.save();
+    }
+  }
+
+  async startFsm(messages: ChatMessage[], maxTools: number, filters: NoiseFilters, peers: Agent[], callbacks: AgentCallbacks): Promise<AgentReply[]> {
     const result: AgentReply[] = [];
     let hop = 0;
 

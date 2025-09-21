@@ -165,6 +165,18 @@ export class RandomScheduler implements IScheduler {
         try {
           const callbacks: AgentCallbacks = {
             onRouteCompleted: async (message, numToolsUsed, askedUser) => {
+              if (this.respondingAgent) {
+                return true;
+              }
+
+              if (this.interjection) {
+                await this.handleUserInterjection(this.interjection, {
+                  defaultTargetId: a.id,
+                });
+
+                return true;
+              }
+
               //
               if (numToolsUsed > 0) {
                 return false; //If the agent just did a tool call, let it continue
@@ -199,6 +211,7 @@ export class RandomScheduler implements IScheduler {
                   enqueue: (toId, msg) => this.inbox.push(toId, msg),
                   setRespondingAgent: (id) => {
                     this.respondingAgent = this.agents.find((x) => x.id === id);
+                    this.rescheduleNow = true;
                   },
                   applyGuard: async (from, dec) => this.applyGuardDecision(agent, dec),
                   setLastUserDMTarget: (id) => {
@@ -438,7 +451,7 @@ All agents are idle. Provide the next concrete instruction or question.`;
     // If an external bridge exists, let the UI own the prompt & echo.
     if (typeof this.readUserLine === "function") {
       // Optional: emit the label/prompt to logs/UI; do NOT read here.
-      Logger.info(`[${label}] ${prompt}`);
+      // Logger.info(`[${label}] ${prompt}`);
       return ((await this.readUserLine()) ?? "").trim();
     }
     // Fallback: legacy path
