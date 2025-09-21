@@ -4,6 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "metrics": "bun tsx src/metrics/run-metrics.ts summarize",
     "start": "bun run src/app.ts",
     "start:node": "node --loader ts-node/esm src/app.ts",
     "test": "bun test"

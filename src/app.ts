@@ -17,9 +17,7 @@ import { R } from "./runtime/runtime";
 import { ExecutionGate } from "./tools/execution-gate";
 import { loadConfig } from "./config/config";
 import { C, Logger } from "./logger";
-import RandomScheduler from "./scheduler/random-scheduler";
 import type { IScheduler, SchedulerLike } from "./scheduler/scheduler";
-import { LlmAgent } from "./agents/llm-agent";
 import { getRecipe } from "./recipes";
 import { sandboxMangers } from "./sandbox/session";
 import { TtyController } from "./input/tty-controller";
@@ -28,6 +26,7 @@ import { createFeedbackController } from "./ui/feedback";
 import { installHotkeys } from "./runtime/hotkeys";
 import { printInitCard } from "./ui/pretty";
 import { AgentManger } from "./agents/agent-manager";
+import { RandomScheduler } from "./scheduler/random-scheduler";
 
 if (R.env.ORG_LAUNCHER_SCRIPT_RAN !== "1") { // TODO - safely support non-sandboxed workflows without opening up this hole.
   Logger.error(C.red("org must be launched via the org wrapper (sandbox). Refusing to run on host."));
@@ -282,7 +281,7 @@ async function main() {
   const reviewMode = (args["review"] ?? "ask") as "ask" | "auto" | "never";
 
   const scheduler: IScheduler = new RandomScheduler({
-    agents, //FIXME - types
+    agents,
     maxTools: Math.max(0, Number(args["max-tools"] ?? (recipe?.budgets?.maxTools ?? 20))),
     onAskUser: async (_: string, content: string) => {
       if (R.isInteractive()) {

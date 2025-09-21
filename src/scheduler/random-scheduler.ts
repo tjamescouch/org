@@ -13,6 +13,7 @@ import type {
 } from "./types";
 import { sleep } from "../utils/sleep";
 import { Agent, AgentCallbacks } from "../agents/agent";
+import { IScheduler } from "./scheduler";
 
 type Hooks = {
   onStreamStart: () => void;
@@ -47,7 +48,7 @@ type SchedulerOptionsWithBridge = Hooks &
  *  - Added *external prompt bridge* (`readUserLine`) so the UI (TTY controller) can
  *    own the prompt/echo while the scheduler retains turn/state logic.
  */
-export class RandomScheduler {
+export class RandomScheduler implements IScheduler {
   /**
    * If provided, scheduler will not render its own 'You >' banner or readline.
    * Instead it awaits this provider and treats the returned line as user input.
@@ -164,6 +165,7 @@ export class RandomScheduler {
         try {
           const callbacks: AgentCallbacks = {
             onRouteCompleted: async (message, numToolsUsed, askedUser) => {
+              //
               if (numToolsUsed > 0) {
                 return false; //If the agent just did a tool call, let it continue
               }
@@ -198,7 +200,7 @@ export class RandomScheduler {
                   setRespondingAgent: (id) => {
                     this.respondingAgent = this.agents.find((x) => x.id === id);
                   },
-                  applyGuard: (from, dec) => this.applyGuardDecision(agent, dec),
+                  applyGuard: async (from, dec) => this.applyGuardDecision(agent, dec),
                   setLastUserDMTarget: (id) => {
                     this.lastUserDMTarget = id;
                   },
@@ -486,5 +488,3 @@ All agents are idle. Provide the next concrete instruction or question.`;
     return new Promise<void>((r) => setTimeout(r, ms));
   }
 }
-
-export default RandomScheduler;

@@ -1,5 +1,9 @@
-import type { ChatDriver, ChatMessage } from "../drivers/types";
+import type { ChatDriver, ChatMessage, ChatToolCall } from "../drivers/types";
+import { C, Logger } from "../logger";
+import { RunMetrics } from "../metrics/runtime-metrics";
 import { R } from "../runtime/runtime";
+import { createPDAStreamFilterHeuristic } from "../utils/filter-passes/llm-pda-stream-heuristic";
+import { sanitizeContent } from "../utils/sanitize-content";
 import { AgentMemory } from "./agent-memory";
 import { MemoryPersisitence } from "./memory-persistence";
 import path from "path";
@@ -36,6 +40,7 @@ export class NormativeMemory extends AgentMemory {
   private readonly driver: ChatDriver;
   private readonly model: string;
 
+  private streamFilter = createPDAStreamFilterHeuristic();
   // Context budgeting knobs (unchanged)
   private readonly contextTokens: number;
   private readonly reserveHeaderTokens: number;
@@ -291,6 +296,30 @@ export class NormativeMemory extends AgentMemory {
         this.messagesBuffer.splice(0, this.messagesBuffer.length, ...pruned);
       }
     });
+
+    // ---- metrics: per-turn step event (non-fatal if it fails) ----
+    try {
+      const headIdx = this.messagesBuffer.findIndex(m => m.role === "system");
+      const headMsgs = headIdx >= 0 ? [this.messagesBuffer[headIdx]] : [];
+      const headerTokens = this.estimateTokens(headMsgs);
+      const totalTokens = this.estimateTokens(this.messagesBuffer);
+
+      const lastAssistant = [...this.messagesBuffer].reverse().find(m => m.role === "assistant");
+      const userVisibleReply =
+        typeof lastAssistant?.content === "string" ? lastAssistant.content : undefined;
+
+      await RunMetrics.emitStep({
+        runId: process.env.ORG_RUN_ID || "default",
+        turn: this.turnCounter,
+        agent: (this as any).name || "agent",
+        phase: (this as any).phase || undefined,
+        headerTokens,
+        totalTokens,
+        userVisibleReply,
+        personaVersion: (this as any).persona?.version,
+        normativeVersion: undefined, // optional; fill in later if you add a counter
+      });
+    } catch { /* never break the run for metrics */ }
   }
 
   // ---------------------------------------------------------------------------
@@ -384,7 +413,14 @@ export class NormativeMemory extends AgentMemory {
       ].join("\n\n"),
     };
 
-    const out = await this.driver.chat([sys, usr], { model: this.model });
+    const out = await this.driver.chat([sys, usr], { model: this.model, 
+      onReasoningToken: t => {
+      },
+      onToken: t => {
+      },
+      onToolCallDelta: tcd => {}
+
+    });
     const text = this.extractText(out);
     const obj = this.safeParseJson(text);
     if (!obj || typeof obj !== "object") return null;
@@ -395,12 +431,12 @@ export class NormativeMemory extends AgentMemory {
       const norm = (arr: any): PersonaFacet[] =>
         Array.isArray(arr)
           ? arr
-              .slice(0, 12)
-              .map((x: any) => ({
-                text: String(x?.text ?? "").trim(),
-                weight: this.clamp01(Number(x?.weight ?? 0)),
-              }))
-              .filter((x: PersonaFacet) => x.text.length > 0 && x.text.length <= 80)
+            .slice(0, 12)
+            .map((x: any) => ({
+              text: String(x?.text ?? "").trim(),
+              weight: this.clamp01(Number(x?.weight ?? 0)),
+            }))
+            .filter((x: PersonaFacet) => x.text.length > 0 && x.text.length <= 80)
           : [];
 
       const upd: PersonaUpdate = {
@@ -679,7 +715,7 @@ export class NormativeMemory extends AgentMemory {
           return "Summarize prior ASSISTANT replies (decisions, plans, code edits, commands & outcomes).";
         case "system":
           return [
-            "Synthesize a present‑tense NORMATIVE policy recap (imperative bullets) from prior SYSTEM content and the prior Normative block.",
+            "Synthesize a present-tense NORMATIVE policy recap (imperative bullets) from prior SYSTEM content and the prior Normative block.",
             "Principles:",
             "- Write defaults in present tense (e.g., “Respond concisely unless writing files”).",
             "- DO include tone/formatting defaults when helpful.",

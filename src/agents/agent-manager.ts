@@ -137,7 +137,7 @@ export class AgentManger {
 
             // driverKind[.protocol]
             type Protocol = LlmDefaults["protocol"];
-            const PROTOCOLS = ["openai", "google", "deepseek", "antrhopic", "deepseek-notools"] as const;
+            const PROTOCOLS = ["openai", "google", "deepseek", "anthropic", "deepseek-notools"] as const;
             const isProtocol = (p: string): p is Protocol =>
                 (PROTOCOLS as readonly string[]).includes(p);
 
