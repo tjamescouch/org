@@ -9,26 +9,31 @@ using namespace std;
 // Board representation: 8x8 char array. Uppercase = White, lowercase = Black.
 class ChessBoard {
 public:
-    // board[row][col] where row 0 is rank 8 (top), row 7 is rank 1 (bottom)
-    vector<string> board;
-    bool whiteTurn; // true if it's White's move
+    vector<string> board; // rows 0..7 (rank 8..1)
+    bool whiteTurn;
+    // Castling rights: KQkq
+    bool whiteCanCastleKingSide;
+    bool whiteCanCastleQueenSide;
+    bool blackCanCastleKingSide;
+    bool blackCanCastleQueenSide;
+    // En passant target square column (0-7) if a pawn just moved two squares, else -1
+    int enPassantTargetCol;
 
-    ChessBoard() : board(8, string(8, '.')), whiteTurn(true) {
+    ChessBoard()
+        : board(8, string(8, '.')),
+          whiteTurn(true),
+          whiteCanCastleKingSide(true), whiteCanCastleQueenSide(true),
+          blackCanCastleKingSide(true), blackCanCastleQueenSide(true),
+          enPassantTargetCol(-1) {
         setupStartingPosition();
     }
 
     void setupStartingPosition() {
-        // Set up pieces using standard starting position.
-        const string backRankWhite = "RNBQKBNR"; // a1 to h1 (but we store reversed)
+        const string backRankWhite = "RNBQKBNR";
         const string backRankBlack = "rnbqkbnr";
-        // Rank 8 (row 0) black back rank
         board[0] = backRankBlack;
-        // Rank 7 (row 1) black pawns
         board[1] = string(8, 'p');
-        // Ranks 6-3 empty already '.'
-        // Rank 2 (row 6) white pawns
         board[6] = string(8, 'P');
-        // Rank 1 (row 7) white back rank
         board[7] = backRankWhite;
     }
 
@@ -39,9 +44,8 @@ public:
             cout << rank << " | ";
             for (int c = 0; c < 8; ++c) {
                 char piece = board[r][c];
-                if (piece == '.') cout << ".";
-                else cout << piece;
-                if (c != 7) cout << " ";
+                cout << (piece == '.' ? '.' : piece);
+                if (c != 7) cout << ' ';
             }
             cout << " |" << endl;
         }
@@ -49,104 +53,106 @@ public:
         cout << "    a b c d e f g h" << endl;
     }
 
-    // Convert algebraic coordinate (e.g., "e2") to row and col indices.
     bool coordToIndices(const string &coord, int &row, int &col) const {
         if (coord.size() != 2) return false;
-        char file = coord[0];
+        char file = tolower(coord[0]);
         char rank = coord[1];
         if (file < 'a' || file > 'h') return false;
         if (rank < '1' || rank > '8') return false;
         col = file - 'a';
-        row = 8 - (rank - '0'); // rank '8' -> row 0, rank '1' -> row 7
+        row = 8 - (rank - '0');
         return true;
     }
 
-    // Determine if a piece belongs to the current player.
     bool isCurrentPlayerPiece(char piece) const {
         if (piece == '.') return false;
-        if (whiteTurn) return isupper(piece);
-        else return islower(piece);
+        return whiteTurn ? isupper(piece) : islower(piece);
     }
-
-    // Determine opponent's color.
     bool isOpponentPiece(char piece) const {
         if (piece == '.') return false;
-        if (whiteTurn) return islower(piece);
-        else return isupper(piece);
+        return whiteTurn ? islower(piece) : isupper(piece);
     }
 
-    // Check sliding piece path clearance.
-    bool isPathClear(int srcRow, int srcCol, int dstRow, int dstCol) const {
-        int dRow = (dstRow - srcRow);
-        int dCol = (dstCol - srcCol);
+    // Path clearance for sliding pieces
+    bool isPathClear(int sr, int sc, int dr, int dc) const {
+        int dRow = dr - sr;
+        int dCol = dc - sc;
         int stepRow = (dRow == 0) ? 0 : (dRow > 0 ? 1 : -1);
         int stepCol = (dCol == 0) ? 0 : (dCol > 0 ? 1 : -1);
-        // Ensure movement is straight line.
-        if (stepRow != 0 && stepCol != 0 && abs(dRow) != abs(dCol)) return false; // Not a straight line for bishop/rook
-        int curRow = srcRow + stepRow;
-        int curCol = srcCol + stepCol;
-        while (curRow != dstRow || curCol != dstCol) {
-            if (board[curRow][curCol] != '.') return false; // blocked
-            curRow += stepRow;
-            curCol += stepCol;
+        // Ensure straight line
+        if (stepRow != 0 && stepCol != 0 && abs(dRow) != abs(dCol)) return false;
+        int r = sr + stepRow, c = sc + stepCol;
+        while (r != dr || c != dc) {
+            if (board[r][c] != '.') return false;
+            r += stepRow; c += stepCol;
         }
         return true;
     }
 
-    bool isLegalMove(int srcRow, int srcCol, int dstRow, int dstCol) const {
-        char piece = board[srcRow][srcCol];
-        char target = board[dstRow][dstCol];
-        // Basic checks: source has current player's piece, destination not own piece.
+    bool isLegalPawnMove(int sr, int sc, int dr, int dc, char piece) const {
+        int dir = isupper(piece) ? -1 : 1; // white up
+        // Simple forward
+        if (dc == 0 && dr == sr + dir && board[dr][dc] == '.') return true;
+        // Double step from start
+        int startRow = isupper(piece) ? 6 : 1;
+        if (dc == 0 && sr == startRow && dr == sr + 2*dir &&
+            board[sr+dir][sc] == '.' && board[dr][dc] == '.') return true;
+        // Capture
+        if (abs(dc - sc) == 1 && dr == sr + dir && isOpponentPiece(board[dr][dc]))
+            return true;
+        // En passant capture
+        if (enPassantTargetCol != -1 && abs(dc - sc) == 1 && dr == sr + dir &&
+            dc == enPassantTargetCol) {
+            // target square must be empty
+            if (board[dr][dc] == '.') return true;
+        }
+        return false;
+    }
+
+    bool isLegalMove(int sr, int sc, int dr, int dc) const {
+        char piece = board[sr][sc];
+        char target = board[dr][dc];
         if (!isCurrentPlayerPiece(piece)) return false;
-        if (target != '.' && !isOpponentPiece(target)) return false; // cannot capture own
-        int dRow = dstRow - srcRow;
-        int dCol = dstCol - srcCol;
+        if (target != '.' && !isOpponentPiece(target)) return false;
+
+        int dRow = dr - sr;
+        int dCol = dc - sc;
         switch (tolower(piece)) {
-            case 'p': { // pawn
-                int direction = isupper(piece) ? -1 : 1; // white moves up (row-), black down (row+)
-                // Simple move forward one
-                if (dCol == 0 && dRow == direction && target == '.') {
-                    return true;
-                }
-                // Double step from starting rank
-                int startRow = isupper(piece) ? 6 : 1; // white pawn starts at row 6 (rank2), black at row 1 (rank7)
-                if (dCol == 0 && dRow == 2*direction && srcRow == startRow && target == '.' && board[srcRow + direction][srcCol] == '.') {
-                    return true;
-                }
-                // Captures diagonally
-                if (abs(dCol) == 1 && dRow == direction && isOpponentPiece(target)) {
-                    return true;
-                }
-                // TODO: en passant not implemented.
-                return false;
-            }
-            case 'n': { // knight
-                if ((abs(dRow) == 2 && abs(dCol) == 1) || (abs(dRow) == 1 && abs(dCol) == 2)) {
-                    return true;
-                }
-                return false;
-            }
-            case 'b': { // bishop
-                if (abs(dRow) == abs(dCol) && isPathClear(srcRow, srcCol, dstRow, dstCol)) {
-                    return true;
-                }
-                return false;
-            }
-            case 'r': { // rook
-                if ((dRow == 0 || dCol == 0) && isPathClear(srcRow, srcCol, dstRow, dstCol)) {
-                    return true;
-                }
-                return false;
-            }
-            case 'q': { // queen
-                if (((abs(dRow) == abs(dCol)) || (dRow == 0 || dCol == 0)) && isPathClear(srcRow, srcCol, dstRow, dstCol)) {
-                    return true;
-                }
-                return false;
-            }
-            case 'k': { // king
-                if (abs(dRow) <= 1 && abs(dCol) <= 1) {
-                    return true; // no castling
+            case 'p':
+                return isLegalPawnMove(sr, sc, dr, dc, piece);
+            case 'n':
+                return (abs(dRow) == 2 && abs(dCol) == 1) ||
+                       (abs(dRow) == 1 && abs(dCol) == 2);
+            case 'b':
+                return abs(dRow) == abs(dCol) && isPathClear(sr, sc, dr, dc);
+            case 'r':
+                return ((dRow == 0 || dCol == 0) && isPathClear(sr, sc, dr, dc));
+            case 'q':
+                return (((abs(dRow) == abs(dCol)) ||
+                        (dRow == 0 || dCol == 0)) &&
+                       isPathClear(sr, sc, dr, dc));
+            case 'k': {
+                // Normal king move
+                if (abs(dRow) <= 1 && abs(dCol) <= 1) return true;
+                // Castling
+                if (whiteTurn) {
+                    if (sr == 7 && sc == 4) { // white king original square
+                        // King side O-O
+                        if (dc == 6 && dr == 7 && whiteCanCastleKingSide &&
+                            board[7][5] == '.' && board[7][6] == '.') return true;
+                        // Queen side O-O-O
+                        if (dc == 2 && dr == 7 && whiteCanCastleQueenSide &&
+                            board[7][1] == '.' && board[7][2] == '.' && board[7][3] == '.')
+                            return true;
+                    }
+                } else {
+                    if (sr == 0 && sc == 4) { // black king original
+                        if (dc == 6 && dr == 0 && blackCanCastleKingSide &&
+                            board[0][5] == '.' && board[0][6] == '.') return true;
+                        if (dc == 2 && dr == 0 && blackCanCastleQueenSide &&
+                            board[0][1] == '.' && board[0][2] == '.' && board[0][3] == '.')
+                            return true;
+                    }
                 }
                 return false;
             }
@@ -155,18 +161,58 @@ public:
         }
     }
 
-    void makeMove(int srcRow, int srcCol, int dstRow, int dstCol) {
-        char piece = board[srcRow][srcCol];
-        // Handle promotion for pawn reaching last rank.
-        if (tolower(piece) == 'p') {
-            if ((isupper(piece) && dstRow == 0) || (islower(piece) && dstRow == 7)) {
-                // Promote to queen automatically.
-                piece = isupper(piece) ? 'Q' : 'q';
+    void makeMove(int sr, int sc, int dr, int dc) {
+        char piece = board[sr][sc];
+        // Handle en passant capture
+        if (tolower(piece) == 'p' && enPassantTargetCol != -1 &&
+            abs(dc - sc) == 1 && dr == sr + (isupper(piece) ? -1 : 1) &&
+            dc == enPassantTargetCol && board[dr][dc] == '.') {
+            // capture pawn behind the target square
+            int capturedRow = sr;
+            board[capturedRow][dc] = '.';
+        }
+
+        // Castling move: move rook as well
+        if (tolower(piece) == 'k' && abs(dc - sc) == 2) {
+            // King side
+            if (dc == 6) {
+                int rookColFrom = 7;
+                int rookColTo = 5;
+                board[dr][rookColTo] = board[dr][rookColFrom];
+                board[dr][rookColFrom] = '.';
+            } else if (dc == 2) { // queen side
+                int rookColFrom = 0;
+                int rookColTo = 3;
+                board[dr][rookColTo] = board[dr][rookColFrom];
+                board[dr][rookColFrom] = '.';
             }
         }
-        board[dstRow][dstCol] = piece;
-        board[srcRow][srcCol] = '.';
-        whiteTurn = !whiteTurn; // switch turn
+
+        // Promotion
+        if (tolower(piece) == 'p' && ((isupper(piece) && dr == 0) || (islower(piece) && dr == 7))) {
+            piece = isupper(piece) ? 'Q' : 'q'; // auto promote to queen
+        }
+
+        board[dr][dc] = piece;
+        board[sr][sc] = '.';
+
+        // Update castling rights if king or rook moved
+        if (tolower(piece) == 'k') {
+            if (whiteTurn) { whiteCanCastleKingSide = false; whiteCanCastleQueenSide = false; }
+            else { blackCanCastleKingSide = false; blackCanCastleQueenSide = false; }
+        }
+        if (piece == 'R' && sr == 7 && sc == 0) whiteCanCastleQueenSide = false;
+        if (piece == 'R' && sr == 7 && sc == 7) whiteCanCastleKingSide = false;
+        if (piece == 'r' && sr == 0 && sc == 0) blackCanCastleQueenSide = false;
+        if (piece == 'r' && sr == 0 && sc == 7) blackCanCastleKingSide = false;
+
+        // Set en passant target column
+        enPassantTargetCol = -1;
+        if (tolower(piece) == 'p' && abs(dr - sr) == 2) {
+            enPassantTargetCol = dc; // column where capture could occur
+        }
+
+        whiteTurn = !whiteTurn;
     }
 };
 
@@ -175,33 +221,43 @@ int main() {
     string line;
     while (true) {
         game.print();
-        cout << (game.whiteTurn ? "White" : "Black") << " to move. Enter move (e.g., e2e4) or 'exit': ";
-        if (!getline(cin, line)) break; // EOF
+        cout << (game.whiteTurn ? "White" : "Black") << " to move. Enter move (e2e4, O-O, O-O-O) or 'exit': ";
+        if (!getline(cin, line)) break;
         if (line.empty()) continue;
-        // Trim whitespace
+        // trim
         stringstream ss(line);
         ss >> line;
         if (line == "exit" || line == "quit") {
             cout << "Goodbye!" << endl;
             break;
         }
-        if (line.size() < 4) {
-            cout << "Invalid input format. Use e.g., e2e4." << endl;
+        int sr, sc, dr, dc;
+        bool parsed = false;
+        if ((line == "O-O" || line == "o-o")) {
+            // king side castling
+            if (game.whiteTurn) { sr = 7; sc = 4; dr = 7; dc = 6; }
+            else { sr = 0; sc = 4; dr = 0; dc = 6; }
+            parsed = true;
+        } else if ((line == "O-O-O" || line == "o-o-o")) {
+            // queen side castling
+            if (game.whiteTurn) { sr = 7; sc = 4; dr = 7; dc = 2; }
+            else { sr = 0; sc = 4; dr = 0; dc = 2; }
+            parsed = true;
+        } else if (line.size() >= 4) {
+            string src = line.substr(0,2);
+            string dst = line.substr(2,2);
+            if (game.coordToIndices(src,sr,sc) && game.coordToIndices(dst,dr,dc))
+                parsed = true;
+        }
+        if (!parsed) {
+            cout << "Invalid input format." << endl;
             continue;
         }
-        string src = line.substr(0, 2);
-        string dst = line.substr(2, 2);
-        int srcRow, srcCol, dstRow, dstCol;
-        if (!game.coordToIndices(src, srcRow, srcCol) || !game.coordToIndices(dst, dstRow, dstCol)) {
-            cout << "Invalid coordinates. Use a-h and 1-8." << endl;
-            continue;
-        }
-        if (game.isLegalMove(srcRow, srcCol, dstRow, dstCol)) {
-            game.makeMove(srcRow, srcCol, dstRow, dstCol);
+        if (game.isLegalMove(sr, sc, dr, dc)) {
+            game.makeMove(sr, sc, dr, dc);
         } else {
             cout << "Illegal move. Try again." << endl;
         }
     }
     return 0;
 }
-
