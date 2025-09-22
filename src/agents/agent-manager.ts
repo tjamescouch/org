@@ -122,8 +122,8 @@ export class AgentManger {
         const out: AgentSpec[] = [];
         for (const item of list) {
 
-
-            // item is a single agent segment, e.g. "alice^lmstudio.openai^openai/gpt-oss-120b^##system-prompt.txt"
+            // item is a single agent segment
+            // ORDER: "id ^ model ^ [driverKind.protocol] ^ [##system-prompt.txt|inline]"
             const seg = item.trim();
             const partsRaw = seg.split("^");
             const parts = partsRaw.map(s => s.trim());
@@ -135,7 +135,13 @@ export class AgentManger {
 
             const id = parts[0];
 
-            // driverKind[.protocol]
+            // -------------------- MODEL (now field #2) --------------------
+            let model = llmDefaults.model;
+            if (parts.length >= 2) {
+                model = parts[1];
+            }
+
+            // -------------------- KIND.PROTOCOL (now field #3) --------------------
             type Protocol = LlmDefaults["protocol"];
             const PROTOCOLS = ["openai", "google", "deepseek", "anthropic", "deepseek-notools"] as const;
             const isProtocol = (p: string): p is Protocol =>
@@ -147,10 +153,11 @@ export class AgentManger {
             let kind: ModelKindStrict = "lmstudio";
             let protocol: Protocol = llmDefaults.protocol;
 
-            if (parts.length >= 2) {
-                const [k, p] = parts[1].split(".", 2).map(s => s.trim());
+            if (parts.length >= 3) {
+                const [k, p] = parts[2].split(".", 2).map(s => s.trim());
                 if (k) {
                     if (!isModelKind(k)) throw new Error(`[agents] unknown driver kind: ${k}`);
+                    // @ts-expect-error keep existing surface (ollama allowed at runtime)
                     kind = k;
                 }
                 if (p) {
@@ -159,13 +166,7 @@ export class AgentManger {
                 }
             }
 
-            // model
-            let model = llmDefaults.model;
-            if (parts.length >= 3) {
-                model = parts[2];
-            }
-
-            // system prompt (inline or file via ##path)
+            // -------------------- SYSTEM PROMPT (still field #4) --------------------
             let systemPrompt: string | undefined;
             if (parts.length >= 4) {
                 const pr = parts[3];
